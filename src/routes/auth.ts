@@ -51,6 +51,18 @@ function publicUser(u: { id: string; name: string; email: string; role: string }
   return { id: u.id, name: u.name, email: u.email, role: u.role };
 }
 
+// Strict password policy: >=8 chars, 1 uppercase, 1 digit, 1 special char.
+const PASSWORD_RULE_MSG =
+  'Password must be at least 8 characters and include one capital letter, one number, and one special character.';
+function passwordPolicyError(pw: unknown): string | null {
+  const s = String(pw ?? '');
+  if (s.length < 8) return PASSWORD_RULE_MSG;
+  if (!/[A-Z]/.test(s)) return PASSWORD_RULE_MSG;
+  if (!/[0-9]/.test(s)) return PASSWORD_RULE_MSG;
+  if (!/[^A-Za-z0-9]/.test(s)) return PASSWORD_RULE_MSG;
+  return null;
+}
+
 function setSession(req: Request, userId: string, companyId: string, role: Role): Promise<void> {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => {
@@ -91,8 +103,9 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
-    if (String(password).length < 10) {
-      res.status(400).json({ error: 'Password must be at least 10 characters.' });
+    const pwErr = passwordPolicyError(password);
+    if (pwErr) {
+      res.status(400).json({ error: pwErr });
       return;
     }
 
@@ -285,8 +298,9 @@ router.post('/password-reset/confirm', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Token and a new password are required.' });
       return;
     }
-    if (String(newPassword).length < 10) {
-      res.status(400).json({ error: 'Password must be at least 10 characters.' });
+    const newPwErr = passwordPolicyError(newPassword);
+    if (newPwErr) {
+      res.status(400).json({ error: newPwErr });
       return;
     }
 

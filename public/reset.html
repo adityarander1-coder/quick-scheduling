@@ -18,8 +18,8 @@
       <form id="reset-form" novalidate>
         <label>
           New password
-          <span class="hint">At least 10 characters.</span>
-          <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" minlength="10" required>
+          <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
+          <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" minlength="8" required>
         </label>
         <label>
           Confirm new password
@@ -58,8 +58,9 @@
           showError('Please enter and confirm your new password.');
           return;
         }
-        if (newPassword.length < 10) {
-          showError('Password must be at least 10 characters.');
+        var pwOk = newPassword.length >= 8 && /[A-Z]/.test(newPassword) && /[0-9]/.test(newPassword) && /[^A-Za-z0-9]/.test(newPassword);
+        if (!pwOk) {
+          showError('Password must be at least 8 characters and include one capital letter, one number, and one special character.');
           return;
         }
         if (newPassword !== confirmPassword) {
