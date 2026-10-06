@@ -35,31 +35,8 @@
     </div>
 
     <div id="add-user-section" class="card hidden">
-      <h2>Add a team member</h2>
-      <div id="add-user-error" class="alert alert-error hidden" role="alert"></div>
-      <div id="add-user-success" class="alert alert-success hidden" role="status"></div>
-      <form id="add-user-form" novalidate>
-        <div class="add-user-grid">
-          <label>
-            Name
-            <input type="text" id="new-name" autocomplete="off" required>
-          </label>
-          <label>
-            Email
-            <input type="email" id="new-email" autocomplete="off" required>
-          </label>
-          <label>
-            Password
-            <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
-            <span class="pw-wrap"><input type="password" id="new-password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="new-password" aria-label="Show password">Show</button></span>
-          </label>
-          <label>
-            Role
-            <select id="new-role"></select>
-          </label>
-        </div>
-        <div><button type="submit" id="add-user-submit">Add user</button></div>
-      </form>
+      <h2>Team members</h2>
+      <p>Manage your team, send invites, and review candidates on the <a href="/team.html">Team members page</a>.</p>
     </div>
   </div>
   <script>
@@ -72,11 +49,6 @@
       var addUserSection = document.getElementById('add-user-section');
       var usersBody = document.getElementById('users-body');
       var usersError = document.getElementById('users-error');
-      var addUserForm = document.getElementById('add-user-form');
-      var addUserError = document.getElementById('add-user-error');
-      var addUserSuccess = document.getElementById('add-user-success');
-      var addUserSubmit = document.getElementById('add-user-submit');
-      var roleSelect = document.getElementById('new-role');
 
       function roleBadgeClass(role) {
         if (role === 'owner') return 'badge badge-owner';
@@ -162,66 +134,6 @@
         });
       }
 
-      function setupAddUser() {
-        // Role options limited by the current user's role: only owners can create owners.
-        roleSelect.textContent = '';
-        var roles = me.user.role === 'owner'
-          ? ['owner', 'scheduler', 'employee']
-          : ['scheduler', 'employee'];
-        roles.forEach(function (r) {
-          var opt = document.createElement('option');
-          opt.value = r;
-          opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
-          roleSelect.appendChild(opt);
-        });
-
-        addUserForm.addEventListener('submit', function (e) {
-          e.preventDefault();
-          addUserError.textContent = '';
-          addUserError.classList.add('hidden');
-          addUserSuccess.textContent = '';
-          addUserSuccess.classList.add('hidden');
-          var name = document.getElementById('new-name').value.trim();
-          var email = document.getElementById('new-email').value.trim();
-          var password = document.getElementById('new-password').value;
-          var role = roleSelect.value;
-          if (!name || !email || !password || !role) {
-            addUserError.textContent = 'Please fill in all fields.';
-            addUserError.classList.remove('hidden');
-            return;
-          }
-          var pwOk = password.length >= 8 && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password);
-          if (!pwOk) {
-            addUserError.textContent = 'Password must be at least 8 characters and include one capital letter, one number, and one special character.';
-            addUserError.classList.remove('hidden');
-            return;
-          }
-          addUserSubmit.disabled = true;
-          api('/api/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name, email: email, password: password, role: role })
-          }).then(function (result) {
-            addUserSubmit.disabled = false;
-            if (result.ok) {
-              addUserForm.reset();
-              addUserSuccess.textContent = 'User added.';
-              addUserSuccess.classList.remove('hidden');
-              loadUsers();
-            } else {
-              addUserError.textContent = result.data && result.data.error
-                ? result.data.error
-                : 'Could not add user.';
-              addUserError.classList.remove('hidden');
-            }
-          }).catch(function () {
-            addUserSubmit.disabled = false;
-            addUserError.textContent = 'Network error. Please try again.';
-            addUserError.classList.remove('hidden');
-          });
-        });
-      }
-
       // Boot: load session, require login.
       api('/api/auth/me').then(function (result) {
         if (!result) { return; } // 401 redirect already in progress
@@ -235,7 +147,6 @@
           document.getElementById('nav-candidates').classList.remove('hidden');
           usersSection.classList.remove('hidden');
           addUserSection.classList.remove('hidden');
-          setupAddUser();
           loadUsers();
         }
         document.querySelectorAll('.pw-toggle').forEach(function (btn) {
