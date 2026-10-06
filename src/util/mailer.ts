@@ -1,39 +1,20 @@
-// util/mailer.ts — SMTP email via nodemailer.
-// Current provider: Gmail SMTP (temporary — Resend is the planned long-term
-// provider). Gmail config: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587,
-// SMTP_SECURE=false (STARTTLS), SMTP_USER/SMTP_PASS (Gmail address + App
-// Password — NOT the regular Gmail password). The From address defaults to
-// SMTP_USER (Gmail requires it to match the account).
-// When SMTP_HOST/SMTP_USER are unset, email is unavailable and callers must
+// util/mailer.ts — transactional email via Resend's HTTPS API.
+// Resend works over HTTPS (port 443), which hosting providers don't block —
+// unlike SMTP ports, which Render's free tier blocks entirely (Gmail SMTP
+// was tried and fails with ETIMEDOUT).
+// Config: RESEND_API_KEY, RESEND_FROM (e.g. "Quick Scheduling <noreply@yourdomain.com>").
+// Until a domain is verified in Resend, use Resend's test sender.
+// When RESEND_API_KEY is unset, email is unavailable and callers must
 // degrade gracefully (see POST /api/users/:id/send-invite's 503 path).
 
-import nodemailer from 'nodemailer';
-
-/** True when the minimum SMTP config is present. */
+/** True when the Resend API key is present. */
 export function isMailConfigured(): boolean {
-  return !!(process.env.SMTP_HOST && process.env.SMTP_USER);
+  return !!process.env.RESEND_API_KEY;
 }
 
-/** From address: explicit SMTP_FROM, else SMTP_USER (what Gmail requires). */
+/** From address for outgoing mail. */
 export function mailFrom(): string {
-  return process.env.SMTP_FROM || process.env.SMTP_USER || '';
-}
-
-let transporter: nodemailer.Transporter | null = null;
-
-function getTransporter(): nodemailer.Transporter | null {
-  if (!isMailConfigured()) return null;
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: process.env.SMTP_USER
-        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS ?? '' }
-        : undefined,
-    });
-  }
-  return transporter;
+  return process.env.RESEND_FROM || 'Quick Scheduling <onboarding@resend.dev>';
 }
 
 export interface MailOptions {
@@ -43,17 +24,39 @@ export interface MailOptions {
   html: string;
 }
 
-/** Send an email. Throws when SMTP is not configured — callers decide how to degrade. */
+interface ResendError {
+  message?: string;
+  name?: string;
+}
+
+/** Send an email via Resend. Throws when not configured — callers decide how to degrade. */
 export async function sendMail(opts: MailOptions): Promise<void> {
-  const t = getTransporter();
-  if (!t) throw new Error('Email sending is not set up yet.');
-  await t.sendMail({
-    from: mailFrom(),
-    to: opts.to,
-    subject: opts.subject,
-    text: opts.text,
-    html: opts.html,
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('Email sending is not set up yet.');
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: mailFrom(),
+      to: [opts.to],
+      subject: opts.subject,
+      text: opts.text,
+      html: opts.html,
+    }),
   });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = (await res.json()) as ResendError;
+      if (body && body.message) detail += ` ${body.message}`;
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(`Resend rejected the email (${detail}).`);
+  }
 }
 
 /** Escape user-controlled text for the HTML email body. */

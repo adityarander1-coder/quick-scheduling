@@ -421,7 +421,7 @@ router.post('/:id/invite-sent', requireRole('owner', 'scheduler'), async (req: R
 
 // POST /api/users/:id/send-invite — owner/scheduler only.
 // Emails the member their invite link (fresh token, like reinvite) and marks
-// the invite "sent". Requires SMTP config; without it returns 503 and the UI
+// the invite "sent". Requires Resend API key; without it returns 503 and the UI
 // falls back to the manual copy-link flow.
 router.post('/:id/send-invite', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
