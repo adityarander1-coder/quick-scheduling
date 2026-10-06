@@ -150,3 +150,20 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 600px) {
   .add-user-grid { grid-template-columns: 1fr; }
 }
+
+.pw-wrap { position: relative; display: block; }
+.pw-wrap input { padding-right: 3.5rem; }
+.pw-toggle {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+}
+.pw-toggle:hover { color: var(--text); }

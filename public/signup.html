@@ -30,7 +30,7 @@
         <label>
           Password
           <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
-          <input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>
+          <span class="pw-wrap"><input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></span>
         </label>
         <button type="submit" id="submit">Create account</button>
       </form>
@@ -91,6 +91,16 @@
         });
       });
     })();
+  
+    document.querySelectorAll('.pw-toggle').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var input = document.getElementById(btn.getAttribute('data-for'));
+        var show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.textContent = show ? 'Hide' : 'Show';
+        btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      });
+    });
   </script>
 </body>
 </html>
