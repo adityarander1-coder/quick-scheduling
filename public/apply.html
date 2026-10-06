@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apply — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div>
+        <h1>Quick Scheduling</h1>
+        <p id="company-line" style="margin:0.3rem 0 0">Job application</p>
+      </div>
+    </div>
+
+    <div id="link-error" class="alert alert-error hidden" role="alert"></div>
+
+    <div id="form-card" class="card hidden">
+      <h2>Apply to <span id="company-name"></span></h2>
+      <div id="submit-error" class="alert alert-error hidden" role="alert"></div>
+      <form id="apply-form" novalidate>
+        <div class="grid-2">
+          <label>Full name<input type="text" id="name" autocomplete="off" required></label>
+          <label>Nickname <span class="hint">(optional)</span><input type="text" id="nickname" autocomplete="off"></label>
+          <label>Email<input type="email" id="email" autocomplete="off"></label>
+          <label>Phone<input type="tel" id="phone" autocomplete="off"></label>
+          <label>Department<select id="department"><option value="">— None —</option></select></label>
+          <label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span><input type="text" id="jobrole" autocomplete="off"></label>
+        </div>
+        <label>Anything we should know? <span class="hint">(optional)</span><textarea id="notes" rows="3"></textarea></label>
+        <div style="margin-top:0.8rem"><button type="submit" id="submit">Submit application</button></div>
+      </form>
+    </div>
+
+    <div id="done-card" class="card hidden">
+      <h2>Application received</h2>
+      <div class="alert alert-success" role="status">Thanks — your application has been submitted. The hiring team will review it.</div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var companyId = null;
+
+      function showLinkError(msg) {
+        var el = document.getElementById('link-error');
+        el.textContent = msg;
+        el.classList.remove('hidden');
+      }
+
+      function get(path) {
+        return fetch(path, { credentials: 'same-origin' }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        });
+      }
+
+      var params = new URLSearchParams(window.location.search);
+      var c = params.get('c');
+      if (!c) {
+        showLinkError('This application link is not valid. Please ask for a new link.');
+        return;
+      }
+
+      get('/api/candidates/company?id=' + encodeURIComponent(c)).then(function (result) {
+        if (!result.ok) {
+          showLinkError((result.data && result.data.error) || 'This application link is not valid.');
+          return;
+        }
+        companyId = result.data.company.id;
+        document.getElementById('company-name').textContent = result.data.company.name;
+        document.getElementById('form-card').classList.remove('hidden');
+        return get('/api/candidates/departments?companyId=' + encodeURIComponent(companyId));
+      }).then(function (result) {
+        if (!result || !result.ok) return;
+        var sel = document.getElementById('department');
+        (result.data.departments || []).forEach(function (d) {
+          var opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = d.name;
+          sel.appendChild(opt);
+        });
+      }).catch(function () {
+        showLinkError('Could not load the application form. Please try again later.');
+      });
+
+      document.getElementById('apply-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var errEl = document.getElementById('submit-error');
+        errEl.textContent = '';
+        errEl.classList.add('hidden');
+        var name = document.getElementById('name').value.trim();
+        if (!name) {
+          errEl.textContent = 'Please enter your name.';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        var email = document.getElementById('email').value.trim();
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          errEl.textContent = 'Please enter a valid email address.';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        var btn = document.getElementById('submit');
+        btn.disabled = true;
+        fetch('/api/candidates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            companyId: companyId,
+            name: name,
+            nickname: document.getElementById('nickname').value.trim(),
+            email: email,
+            phone: document.getElementById('phone').value.trim(),
+            departmentId: document.getElementById('department').value,
+            jobRole: document.getElementById('jobrole').value.trim(),
+            notes: document.getElementById('notes').value.trim()
+          })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+          btn.disabled = false;
+          if (result.ok) {
+            document.getElementById('form-card').classList.add('hidden');
+            document.getElementById('done-card').classList.remove('hidden');
+          } else {
+            errEl.textContent = (result.data && result.data.error) || 'Could not submit. Please try again.';
+            errEl.classList.remove('hidden');
+          }
+        }).catch(function () {
+          btn.disabled = false;
+          errEl.textContent = 'Network error. Please try again.';
+          errEl.classList.remove('hidden');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

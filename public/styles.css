@@ -86,7 +86,7 @@ label { font-weight: 600; font-size: 0.95rem; display: grid; gap: 0.3rem; }
 
 .hint { font-weight: 400; font-size: 0.85rem; color: var(--muted); }
 
-input, select {
+input, select, textarea {
   width: 100%;
   padding: 0.6rem 0.7rem;
   font-size: 1rem;
@@ -95,7 +95,7 @@ input, select {
   background: #fff;
   color: var(--text);
 }
-input:focus, select:focus {
+input:focus, select:focus, textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--accent);
@@ -150,6 +150,8 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 600px) {
   .add-user-grid { grid-template-columns: 1fr; }
 }
+
+.nav-links a { margin-right: 1rem; }
 
 .pw-wrap { position: relative; display: block; }
 .pw-wrap input { padding-right: 3.5rem; }

@@ -12,6 +12,11 @@
       <div>
         <h1 id="company-name">Quick Scheduling</h1>
         <span class="user-chip" id="user-chip"></span>
+        <div class="nav-links" style="margin-top:0.5rem">
+          <a href="/home.html">Home</a>
+          <a href="/team.html">Team members</a>
+          <a href="/candidates.html" id="nav-candidates" class="hidden">Candidates</a>
+        </div>
       </div>
       <button type="button" id="logout" class="btn-secondary">Log out</button>
     </div>
@@ -45,8 +50,8 @@
           </label>
           <label>
             Password
-            <span class="hint">At least 10 characters.</span>
-            <input type="password" id="new-password" autocomplete="new-password" minlength="10" required>
+            <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
+            <span class="pw-wrap"><input type="password" id="new-password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="new-password" aria-label="Show password">Show</button></span>
           </label>
           <label>
             Role
@@ -185,8 +190,9 @@
             addUserError.classList.remove('hidden');
             return;
           }
-          if (password.length < 10) {
-            addUserError.textContent = 'Password must be at least 10 characters.';
+          var pwOk = password.length >= 8 && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password);
+          if (!pwOk) {
+            addUserError.textContent = 'Password must be at least 8 characters and include one capital letter, one number, and one special character.';
             addUserError.classList.remove('hidden');
             return;
           }
@@ -226,11 +232,20 @@
         me = result.data;
         renderMe();
         if (me.user.role === 'owner' || me.user.role === 'scheduler') {
+          document.getElementById('nav-candidates').classList.remove('hidden');
           usersSection.classList.remove('hidden');
           addUserSection.classList.remove('hidden');
           setupAddUser();
           loadUsers();
         }
+        document.querySelectorAll('.pw-toggle').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var input = document.getElementById(btn.getAttribute('data-for'));
+            var show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.textContent = show ? 'Hide' : 'Show';
+          });
+        });
       }).catch(function () {
         window.location.href = '/login.html';
       });

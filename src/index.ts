@@ -12,6 +12,8 @@ import { ensureReady } from './db';
 import { PGliteSessionStore } from './sessionStore';
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
+import departmentsRouter from './routes/departments';
+import candidatesRouter from './routes/candidates';
 
 const app = express();
 
@@ -56,6 +58,8 @@ if (!isProd) {
 
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
+app.use('/api/departments', departmentsRouter);
+app.use('/api/candidates', candidatesRouter);
 
 // GET / → /home.html when signed in, else /login.html.
 app.get('/', (req: Request, res: Response) => {
@@ -63,9 +67,26 @@ app.get('/', (req: Request, res: Response) => {
   else res.redirect('/login.html');
 });
 
-// Guard home.html server-side: anonymous visitors are bounced to /login.html.
+// Guard logged-in pages server-side: anonymous visitors are bounced to /login.html.
+// /apply.html is public (candidate intake); /team.html needs any login;
+// /candidates.html needs owner/scheduler (checked again in the API).
 app.get('/home.html', (req: Request, res: Response, next: NextFunction) => {
   if (!req.session?.userId) {
+    res.redirect('/login.html');
+    return;
+  }
+  next();
+});
+app.get('/team.html', (req: Request, res: Response, next: NextFunction) => {
+  if (!req.session?.userId) {
+    res.redirect('/login.html');
+    return;
+  }
+  next();
+});
+app.get('/candidates.html', (req: Request, res: Response, next: NextFunction) => {
+  const role = req.session?.role;
+  if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {
     res.redirect('/login.html');
     return;
   }

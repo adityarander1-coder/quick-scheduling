@@ -37,7 +37,13 @@ interface DbUser {
   id: string;
   company_id: string;
   name: string;
+  nickname: string | null;
   email: string;
+  phone: string | null;
+  department_id: string | null;
+  job_role: string | null;
+  end_date: string | null;
+  is_active: boolean;
   password_hash: string;
   role: Role;
 }
@@ -47,14 +53,44 @@ interface DbCompany {
   name: string;
 }
 
-function publicUser(u: { id: string; name: string; email: string; role: string }) {
-  return { id: u.id, name: u.name, email: u.email, role: u.role };
+function publicUser(u: {
+  id: string;
+  name: string;
+  nickname?: string | null;
+  email: string;
+  phone?: string | null;
+  department_id?: string | null;
+  job_role?: string | null;
+  end_date?: string | null;
+  is_active?: boolean;
+  role: string;
+}) {
+  return {
+    id: u.id,
+    name: u.name,
+    nickname: u.nickname ?? null,
+    email: u.email,
+    phone: u.phone ?? null,
+    departmentId: u.department_id ?? null,
+    jobRole: u.job_role ?? null,
+    endDate: toDateStr(u.end_date),
+    isActive: u.is_active ?? true,
+    role: u.role,
+  };
+}
+
+/** PGlite returns `date` columns as Date objects (UTC midnight); pg returns strings. */
+function toDateStr(v: any): string | null {
+  if (!v) return null;
+  if (typeof v === 'string') return v.slice(0, 10);
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  return null;
 }
 
 // Strict password policy: >=8 chars, 1 uppercase, 1 digit, 1 special char.
 const PASSWORD_RULE_MSG =
   'Password must be at least 8 characters and include one capital letter, one number, and one special character.';
-function passwordPolicyError(pw: unknown): string | null {
+export function passwordPolicyError(pw: unknown): string | null {
   const s = String(pw ?? '');
   if (s.length < 8) return PASSWORD_RULE_MSG;
   if (!/[A-Z]/.test(s)) return PASSWORD_RULE_MSG;
@@ -77,7 +113,8 @@ function setSession(req: Request, userId: string, companyId: string, role: Role)
 
 async function loadUserAndCompany(userId: string) {
   const { rows } = await query<DbUser & { company_name: string }>(
-    `SELECT u.id, u.company_id, u.name, u.email, u.role, c.name AS company_name
+    `SELECT u.id, u.company_id, u.name, u.nickname, u.email, u.phone, u.department_id,
+            u.job_role, u.end_date, u.is_active, u.role, c.name AS company_name
      FROM users u JOIN companies c ON c.id = u.company_id
      WHERE u.id = $1`,
     [userId]
@@ -165,6 +202,10 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     const ok = await bcrypt.compare(String(password), user.password_hash);
     if (!ok) {
       bad();
+      return;
+    }
+    if (!user.is_active) {
+      res.status(401).json({ error: 'This account has been deactivated. Contact your administrator.' });
       return;
     }
     await setSession(req, user.id, user.company_id, user.role);

@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Team members — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .nav-links a { margin-right: 1rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    .row-actions button { margin-right: 0.4rem; margin-bottom: 0.2rem; }
+    .badge-inactive { background: #fee2e2; color: #991b1b; }
+    .badge-active { background: #dcfce7; color: #166534; }
+    .warn-badge { background: #fef3c7; color: #92400e; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div>
+        <h1 id="company-name">Quick Scheduling</h1>
+        <span class="user-chip" id="user-chip"></span>
+        <div class="nav-links" style="margin-top:0.5rem">
+          <a href="/home.html">Home</a>
+          <a href="/team.html">Team members</a>
+          <a href="/candidates.html" id="nav-candidates" class="hidden">Candidates</a>
+        </div>
+      </div>
+      <button type="button" id="logout" class="btn-secondary">Log out</button>
+    </div>
+
+    <div id="page-error" class="alert alert-error hidden" role="alert"></div>
+
+    <div class="card">
+      <h2>Team members</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th><th>Email</th><th>Phone</th><th>Department</th>
+              <th>Job role</th><th>System role</th><th>End date</th><th>Status</th>
+              <th id="actions-head" class="hidden">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="members-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="my-profile-section" class="card hidden">
+      <h2>My profile</h2>
+      <div id="my-profile-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="my-profile-success" class="alert alert-success hidden" role="status"></div>
+      <form id="my-profile-form" novalidate>
+        <div class="grid-2">
+          <label>Nickname<input type="text" id="my-nickname" autocomplete="off"></label>
+          <label>Phone<input type="tel" id="my-phone" autocomplete="off"></label>
+        </div>
+        <div style="margin-top:0.8rem"><button type="submit">Save my profile</button></div>
+      </form>
+    </div>
+
+    <div id="add-section" class="card hidden">
+      <h2>Add a team member</h2>
+      <div id="add-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="add-success" class="alert alert-success hidden" role="status"></div>
+      <form id="add-form" novalidate>
+        <div class="grid-2">
+          <label>Full name<input type="text" id="add-name" autocomplete="off" required></label>
+          <label>Nickname<input type="text" id="add-nickname" autocomplete="off"></label>
+          <label>Email<input type="email" id="add-email" autocomplete="off" required></label>
+          <label>Phone<input type="tel" id="add-phone" autocomplete="off"></label>
+          <label>Password
+            <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
+            <span class="pw-wrap">
+              <input type="password" id="add-password" autocomplete="new-password" minlength="8" required>
+              <button type="button" class="pw-toggle" data-for="add-password" aria-label="Show password">Show</button>
+            </span>
+          </label>
+          <label>System role<select id="add-role"></select></label>
+          <label>Department<select id="add-dept"><option value="">— None —</option></select></label>
+          <label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span><input type="text" id="add-jobrole" autocomplete="off"></label>
+        </div>
+        <div style="margin-top:0.8rem"><button type="submit" id="add-submit">Add team member</button></div>
+      </form>
+    </div>
+
+    <div id="edit-section" class="card hidden">
+      <h2>Edit team member</h2>
+      <div id="edit-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="edit-success" class="alert alert-success hidden" role="status"></div>
+      <form id="edit-form" novalidate>
+        <div class="grid-2">
+          <label>Full name<input type="text" id="edit-name" autocomplete="off" required></label>
+          <label>Nickname<input type="text" id="edit-nickname" autocomplete="off"></label>
+          <label>Phone<input type="tel" id="edit-phone" autocomplete="off"></label>
+          <label>Department<select id="edit-dept"><option value="">— None —</option></select></label>
+          <label>Job role<input type="text" id="edit-jobrole" autocomplete="off"></label>
+          <label>End date <span class="hint">Last day on the schedule (YYYY-MM-DD)</span><input type="date" id="edit-enddate"></label>
+          <label id="edit-role-wrap">System role<select id="edit-role"></select></label>
+        </div>
+        <div style="margin-top:0.8rem">
+          <button type="submit" id="edit-submit">Save changes</button>
+          <button type="button" id="edit-cancel" class="btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="dept-section" class="card hidden">
+      <h2>Departments</h2>
+      <div id="dept-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="dept-list"></div>
+      <form id="dept-form" novalidate style="margin-top:0.8rem">
+        <div class="grid-2">
+          <label>New department<input type="text" id="dept-name" autocomplete="off" required></label>
+        </div>
+        <div style="margin-top:0.8rem"><button type="submit">Add department</button></div>
+      </form>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var me = null;
+      var members = [];
+      var departments = [];
+      var editingId = null;
+
+      var companyNameEl = document.getElementById('company-name');
+      var userChipEl = document.getElementById('user-chip');
+      var pageError = document.getElementById('page-error');
+
+      function isManager() {
+        return me && (me.user.role === 'owner' || me.user.role === 'scheduler');
+      }
+
+      function api(path, options) {
+        options = options || {};
+        options.credentials = 'same-origin';
+        return fetch(path, options).then(function (res) {
+          if (res.status === 401) {
+            window.location.href = '/login.html';
+            return new Promise(function () {});
+          }
+          return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+        });
+      }
+
+      function showError(el, msg) {
+        el.textContent = msg;
+        el.classList.remove('hidden');
+      }
+      function hideError(el) {
+        el.textContent = '';
+        el.classList.add('hidden');
+      }
+
+      function roleBadgeClass(role) {
+        if (role === 'owner') return 'badge badge-owner';
+        if (role === 'scheduler') return 'badge badge-scheduler';
+        return 'badge badge-employee';
+      }
+
+      function esc(s) { return s == null ? '' : String(s); }
+
+      function renderMe() {
+        companyNameEl.textContent = (me.company && me.company.name) || 'Quick Scheduling';
+        userChipEl.textContent = '';
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = me.user.name;
+        var badge = document.createElement('span');
+        badge.className = roleBadgeClass(me.user.role);
+        badge.textContent = me.user.role;
+        userChipEl.appendChild(nameSpan);
+        userChipEl.appendChild(document.createTextNode(' '));
+        userChipEl.appendChild(badge);
+      }
+
+      function displayName(u) {
+        return u.nickname ? u.name + ' (' + u.nickname + ')' : u.name;
+      }
+
+      function renderMembers() {
+        var body = document.getElementById('members-body');
+        body.textContent = '';
+        document.getElementById('actions-head').classList.toggle('hidden', !isManager());
+        if (!members.length) {
+          var r = document.createElement('tr');
+          var c = document.createElement('td');
+          c.colSpan = 9;
+          c.textContent = 'No team members yet.';
+          r.appendChild(c);
+          body.appendChild(r);
+          return;
+        }
+        members.forEach(function (u) {
+          var row = document.createElement('tr');
+          function cell(text) {
+            var td = document.createElement('td');
+            td.textContent = text;
+            return td;
+          }
+          row.appendChild(cell(displayName(u)));
+          row.appendChild(cell(u.email || ''));
+          row.appendChild(cell(u.phone || ''));
+          row.appendChild(cell(u.department || ''));
+          row.appendChild(cell(u.jobRole || ''));
+          var roleCell = document.createElement('td');
+          var badge = document.createElement('span');
+          badge.className = roleBadgeClass(u.role);
+          badge.textContent = u.role || '';
+          roleCell.appendChild(badge);
+          row.appendChild(roleCell);
+          row.appendChild(cell(u.endDate || ''));
+          var statusCell = document.createElement('td');
+          var sBadge = document.createElement('span');
+          sBadge.className = 'badge ' + (u.isActive ? 'badge-active' : 'badge-inactive');
+          sBadge.textContent = u.isActive ? 'Active' : 'Inactive';
+          statusCell.appendChild(sBadge);
+          row.appendChild(statusCell);
+          if (isManager()) {
+            var actCell = document.createElement('td');
+            actCell.className = 'row-actions';
+            var editBtn = document.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn-secondary';
+            editBtn.textContent = 'Edit';
+            editBtn.addEventListener('click', function () { startEdit(u.id); });
+            actCell.appendChild(editBtn);
+            if (u.id !== me.user.id) {
+              var toggleBtn = document.createElement('button');
+              toggleBtn.type = 'button';
+              toggleBtn.className = 'btn-secondary';
+              toggleBtn.textContent = u.isActive ? 'Deactivate' : 'Reactivate';
+              toggleBtn.addEventListener('click', function () { toggleActive(u); });
+              actCell.appendChild(toggleBtn);
+            }
+            row.appendChild(actCell);
+          }
+          body.appendChild(row);
+        });
+      }
+
+      function loadMembers() {
+        hideError(pageError);
+        api('/api/users').then(function (result) {
+          if (!result) return;
+          if (result.ok) {
+            members = result.data.users || [];
+            renderMembers();
+          } else {
+            showError(pageError, (result.data && result.data.error) || 'Could not load team members.');
+          }
+        }).catch(function () {
+          showError(pageError, 'Network error. Could not load team members.');
+        });
+      }
+
+      function fillDeptSelect(selectEl, selectedId) {
+        selectEl.textContent = '';
+        var none = document.createElement('option');
+        none.value = '';
+        none.textContent = '— None —';
+        selectEl.appendChild(none);
+        departments.forEach(function (d) {
+          var opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = d.name;
+          if (d.id === selectedId) opt.selected = true;
+          selectEl.appendChild(opt);
+        });
+      }
+
+      function loadDepartments() {
+        api('/api/departments').then(function (result) {
+          if (!result || !result.ok) return;
+          departments = result.data.departments || [];
+          var editMember = editingId ? memberById(editingId) : null;
+          fillDeptSelect(document.getElementById('add-dept'), '');
+          fillDeptSelect(document.getElementById('edit-dept'), editMember ? editMember.departmentId : '');
+          renderDeptList();
+        });
+      }
+
+      function memberById(id) {
+        for (var i = 0; i < members.length; i++) {
+          if (members[i].id === id) return members[i];
+        }
+        return null;
+      }
+
+      function renderDeptList() {
+        var list = document.getElementById('dept-list');
+        list.textContent = '';
+        if (!departments.length) {
+          list.textContent = 'No departments yet.';
+          return;
+        }
+        departments.forEach(function (d) {
+          var div = document.createElement('div');
+          div.style.cssText = 'display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border)';
+          var nameSpan = document.createElement('span');
+          nameSpan.style.flex = '1';
+          nameSpan.textContent = d.name;
+          var renameBtn = document.createElement('button');
+          renameBtn.type = 'button';
+          renameBtn.className = 'btn-secondary';
+          renameBtn.textContent = 'Rename';
+          renameBtn.addEventListener('click', function () {
+            var next = window.prompt('Rename department:', d.name);
+            if (next === null) return;
+            next = next.trim();
+            if (!next) return;
+            api('/api/departments/' + d.id, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: next })
+            }).then(function (r) {
+              if (r && r.ok) { loadDepartments(); loadMembers(); }
+              else if (r) showError(document.getElementById('dept-error'), (r.data && r.data.error) || 'Could not rename.');
+            });
+          });
+          var delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'btn-secondary';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', function () {
+            if (!window.confirm('Delete department "' + d.name + '"? Team members keep their accounts.')) return;
+            api('/api/departments/' + d.id, { method: 'DELETE' }).then(function (r) {
+              if (r && r.ok) { loadDepartments(); loadMembers(); }
+              else if (r) showError(document.getElementById('dept-error'), (r.data && r.data.error) || 'Could not delete.');
+            });
+          });
+          div.appendChild(nameSpan);
+          div.appendChild(renameBtn);
+          div.appendChild(delBtn);
+          list.appendChild(div);
+        });
+      }
+
+      function toggleActive(u) {
+        var action = u.isActive ? 'deactivate' : 'reactivate';
+        if (u.isActive && !window.confirm('Deactivate ' + u.name + '? They will be signed out and cannot log in.')) return;
+        api('/api/users/' + u.id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: !u.isActive })
+        }).then(function (result) {
+          if (!result) return;
+          if (result.ok) loadMembers();
+          else showError(pageError, (result.data && result.data.error) || 'Could not ' + action + '.');
+        });
+      }
+
+      function startEdit(id) {
+        var u = memberById(id);
+        if (!u) return;
+        editingId = id;
+        hideError(document.getElementById('edit-error'));
+        document.getElementById('edit-success').classList.add('hidden');
+        document.getElementById('edit-name').value = u.name || '';
+        document.getElementById('edit-nickname').value = u.nickname || '';
+        document.getElementById('edit-phone').value = u.phone || '';
+        fillDeptSelect(document.getElementById('edit-dept'), u.departmentId);
+        document.getElementById('edit-jobrole').value = u.jobRole || '';
+        document.getElementById('edit-enddate').value = u.endDate || '';
+        var roleWrap = document.getElementById('edit-role-wrap');
+        var roleSelect = document.getElementById('edit-role');
+        if (me.user.role === 'owner' && u.id !== me.user.id) {
+          roleWrap.classList.remove('hidden');
+          roleSelect.textContent = '';
+          ['owner', 'scheduler', 'employee'].forEach(function (r) {
+            var opt = document.createElement('option');
+            opt.value = r;
+            opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+            if (r === u.role) opt.selected = true;
+            roleSelect.appendChild(opt);
+          });
+        } else {
+          roleWrap.classList.add('hidden');
+        }
+        document.getElementById('edit-section').classList.remove('hidden');
+        document.getElementById('edit-section').scrollIntoView();
+      }
+
+      function setupEdit() {
+        document.getElementById('edit-cancel').addEventListener('click', function () {
+          editingId = null;
+          document.getElementById('edit-section').classList.add('hidden');
+        });
+        document.getElementById('edit-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (!editingId) return;
+          var errEl = document.getElementById('edit-error');
+          var okEl = document.getElementById('edit-success');
+          hideError(errEl);
+          okEl.classList.add('hidden');
+          var payload = {
+            name: document.getElementById('edit-name').value.trim(),
+            nickname: document.getElementById('edit-nickname').value.trim(),
+            phone: document.getElementById('edit-phone').value.trim(),
+            departmentId: document.getElementById('edit-dept').value,
+            jobRole: document.getElementById('edit-jobrole').value.trim(),
+            endDate: document.getElementById('edit-enddate').value
+          };
+          var roleWrap = document.getElementById('edit-role-wrap');
+          if (!roleWrap.classList.contains('hidden')) {
+            payload.role = document.getElementById('edit-role').value;
+          }
+          if (!payload.name) {
+            showError(errEl, 'Name cannot be empty.');
+            return;
+          }
+          document.getElementById('edit-submit').disabled = true;
+          api('/api/users/' + editingId, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).then(function (result) {
+            document.getElementById('edit-submit').disabled = false;
+            if (!result) return;
+            if (result.ok) {
+              okEl.textContent = 'Saved.';
+              okEl.classList.remove('hidden');
+              loadMembers();
+            } else {
+              showError(errEl, (result.data && result.data.error) || 'Could not save.');
+            }
+          }).catch(function () {
+            document.getElementById('edit-submit').disabled = false;
+            showError(errEl, 'Network error. Please try again.');
+          });
+        });
+      }
+
+      function setupAdd() {
+        var roleSelect = document.getElementById('add-role');
+        var roles = me.user.role === 'owner' ? ['owner', 'scheduler', 'employee'] : ['scheduler', 'employee'];
+        roles.forEach(function (r) {
+          var opt = document.createElement('option');
+          opt.value = r;
+          opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+          if (r === 'employee') opt.selected = true;
+          roleSelect.appendChild(opt);
+        });
+        document.getElementById('add-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var errEl = document.getElementById('add-error');
+          var okEl = document.getElementById('add-success');
+          hideError(errEl);
+          okEl.classList.add('hidden');
+          var payload = {
+            name: document.getElementById('add-name').value.trim(),
+            email: document.getElementById('add-email').value.trim(),
+            password: document.getElementById('add-password').value,
+            role: roleSelect.value,
+            nickname: document.getElementById('add-nickname').value.trim(),
+            phone: document.getElementById('add-phone').value.trim(),
+            departmentId: document.getElementById('add-dept').value,
+            jobRole: document.getElementById('add-jobrole').value.trim()
+          };
+          if (!payload.name || !payload.email || !payload.password) {
+            showError(errEl, 'Name, email, and password are required.');
+            return;
+          }
+          var v = payload.password;
+          var pwOk = v.length >= 8 && /[A-Z]/.test(v) && /[0-9]/.test(v) && /[^A-Za-z0-9]/.test(v);
+          if (!pwOk) {
+            showError(errEl, 'Password must be at least 8 characters and include one capital letter, one number, and one special character.');
+            return;
+          }
+          document.getElementById('add-submit').disabled = true;
+          api('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).then(function (result) {
+            document.getElementById('add-submit').disabled = false;
+            if (!result) return;
+            if (result.ok) {
+              document.getElementById('add-form').reset();
+              okEl.textContent = 'Team member added.';
+              okEl.classList.remove('hidden');
+              loadMembers();
+            } else {
+              showError(errEl, (result.data && result.data.error) || 'Could not add team member.');
+            }
+          }).catch(function () {
+            document.getElementById('add-submit').disabled = false;
+            showError(errEl, 'Network error. Please try again.');
+          });
+        });
+      }
+
+      function setupDeptForm() {
+        document.getElementById('dept-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var errEl = document.getElementById('dept-error');
+          hideError(errEl);
+          var name = document.getElementById('dept-name').value.trim();
+          if (!name) {
+            showError(errEl, 'Department name is required.');
+            return;
+          }
+          api('/api/departments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name })
+          }).then(function (result) {
+            if (!result) return;
+            if (result.ok) {
+              document.getElementById('dept-name').value = '';
+              loadDepartments();
+            } else {
+              showError(errEl, (result.data && result.data.error) || 'Could not add department.');
+            }
+          }).catch(function () {
+            showError(errEl, 'Network error. Please try again.');
+          });
+        });
+      }
+
+      function setupMyProfile() {
+        document.getElementById('my-nickname').value = me.user.nickname || '';
+        document.getElementById('my-phone').value = me.user.phone || '';
+        document.getElementById('my-profile-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          var errEl = document.getElementById('my-profile-error');
+          var okEl = document.getElementById('my-profile-success');
+          hideError(errEl);
+          okEl.classList.add('hidden');
+          api('/api/users/' + me.user.id, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              nickname: document.getElementById('my-nickname').value.trim(),
+              phone: document.getElementById('my-phone').value.trim()
+            })
+          }).then(function (result) {
+            if (!result) return;
+            if (result.ok) {
+              me.user.nickname = result.data.user.nickname;
+              me.user.phone = result.data.user.phone;
+              okEl.textContent = 'Profile saved.';
+              okEl.classList.remove('hidden');
+              loadMembers();
+            } else {
+              showError(errEl, (result.data && result.data.error) || 'Could not save.');
+            }
+          }).catch(function () {
+            showError(errEl, 'Network error. Please try again.');
+          });
+        });
+      }
+
+      function setupPwToggles() {
+        document.querySelectorAll('.pw-toggle').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var input = document.getElementById(btn.getAttribute('data-for'));
+            var show = input.type === 'password';
+            input.type = show ? 'text' : 'password';
+            btn.textContent = show ? 'Hide' : 'Show';
+            btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+          });
+        });
+      }
+
+      // Boot
+      api('/api/auth/me').then(function (result) {
+        if (!result) return;
+        if (!result.ok) {
+          window.location.href = '/login.html';
+          return;
+        }
+        me = result.data;
+        renderMe();
+        setupPwToggles();
+        if (isManager()) {
+          document.getElementById('nav-candidates').classList.remove('hidden');
+          document.getElementById('add-section').classList.remove('hidden');
+          document.getElementById('dept-section').classList.remove('hidden');
+          setupAdd();
+          setupEdit();
+          setupDeptForm();
+        } else {
+          document.getElementById('my-profile-section').classList.remove('hidden');
+          setupMyProfile();
+        }
+        loadDepartments();
+        loadMembers();
+      }).catch(function () {
+        window.location.href = '/login.html';
+      });
+
+      document.getElementById('logout').addEventListener('click', function () {
+        fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+          .finally(function () { window.location.href = '/login.html'; });
+      });
+    })();
+  </script>
+</body>
+</html>
