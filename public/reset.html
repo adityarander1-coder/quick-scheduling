@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set a new password — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container narrow">
+    <div class="brand">
+      <h1>Quick Scheduling</h1>
+      <p>Choose a new password</p>
+    </div>
+    <div class="card">
+      <div id="error" class="alert alert-error hidden" role="alert"></div>
+      <div id="success" class="alert alert-success hidden" role="status"></div>
+      <form id="reset-form" novalidate>
+        <label>
+          New password
+          <span class="hint">At least 10 characters.</span>
+          <input type="password" id="newPassword" name="newPassword" autocomplete="new-password" minlength="10" required>
+        </label>
+        <label>
+          Confirm new password
+          <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required>
+        </label>
+        <button type="submit" id="submit">Set new password</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var form = document.getElementById('reset-form');
+      var errorBox = document.getElementById('error');
+      var successBox = document.getElementById('success');
+      var submitBtn = document.getElementById('submit');
+      var token = new URLSearchParams(window.location.search).get('token');
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('hidden');
+      }
+
+      if (!token) {
+        form.classList.add('hidden');
+        showError('This reset link is missing its token. Please request a new reset link from the "Forgot password?" page.');
+        return;
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        errorBox.textContent = '';
+        errorBox.classList.add('hidden');
+        var newPassword = document.getElementById('newPassword').value;
+        var confirmPassword = document.getElementById('confirmPassword').value;
+        if (!newPassword || !confirmPassword) {
+          showError('Please enter and confirm your new password.');
+          return;
+        }
+        if (newPassword.length < 10) {
+          showError('Password must be at least 10 characters.');
+          return;
+        }
+        if (newPassword !== confirmPassword) {
+          showError('The passwords do not match.');
+          return;
+        }
+        submitBtn.disabled = true;
+        fetch('/api/auth/password-reset/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ token: token, newPassword: newPassword })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+          submitBtn.disabled = false;
+          if (result.ok) {
+            form.classList.add('hidden');
+            successBox.textContent = '';
+            var link = document.createElement('a');
+            link.href = '/login.html';
+            link.textContent = 'Log in';
+            successBox.appendChild(document.createTextNode('Your password has been reset. '));
+            successBox.appendChild(link);
+            successBox.appendChild(document.createTextNode(' with your new password.'));
+            successBox.classList.remove('hidden');
+          } else {
+            showError(result.data && result.data.error
+              ? result.data.error
+              : 'This reset link is invalid or has expired. Please request a new one.');
+          }
+        }).catch(function () {
+          submitBtn.disabled = false;
+          showError('Network error. Please check your connection and try again.');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

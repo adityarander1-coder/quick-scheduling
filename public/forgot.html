@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forgot password — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container narrow">
+    <div class="brand">
+      <h1>Quick Scheduling</h1>
+      <p>Reset your password</p>
+    </div>
+    <div class="card">
+      <div id="success" class="alert alert-success hidden" role="status"></div>
+      <form id="forgot-form" novalidate>
+        <label>
+          Email
+          <input type="email" id="email" name="email" autocomplete="email" required>
+        </label>
+        <button type="submit" id="submit">Send reset link</button>
+      </form>
+      <p id="dev-note" class="hint hidden" style="margin-top: 1rem;"></p>
+    </div>
+    <div class="form-links" style="margin-top: 1rem;">
+      <a href="/login.html">Back to log in</a>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var form = document.getElementById('forgot-form');
+      var successBox = document.getElementById('success');
+      var submitBtn = document.getElementById('submit');
+      var devNote = document.getElementById('dev-note');
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var email = document.getElementById('email').value.trim();
+        if (!email) { return; }
+        submitBtn.disabled = true;
+        fetch('/api/auth/password-reset/request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ email: email })
+        }).then(function (res) {
+          submitBtn.disabled = false;
+          if (res.ok) {
+            form.classList.add('hidden');
+            successBox.textContent = 'If an account exists for that email, a password reset link was sent.';
+            successBox.classList.remove('hidden');
+            // Dev convenience: surface the reset token when DEV_MODE is on.
+            return fetch('/api/auth/password-reset/dev-token?email=' + encodeURIComponent(email), {
+              credentials: 'same-origin'
+            }).then(function (devRes) {
+              if (devRes.ok) {
+                return devRes.json().then(function (data) {
+                  if (data && data.token) {
+                    devNote.textContent = 'Dev mode: your reset token is ' + data.token +
+                      ' — open reset.html?token=' + data.token + ' to continue.';
+                    devNote.classList.remove('hidden');
+                  }
+                });
+              }
+            }).catch(function () { /* dev endpoint unavailable; ignore */ });
+          } else {
+            // Per contract the request is always 200; anything else is unexpected.
+            successBox.textContent = 'If an account exists for that email, a password reset link was sent.';
+            successBox.classList.remove('hidden');
+            form.classList.add('hidden');
+          }
+        }).catch(function () {
+          submitBtn.disabled = false;
+          successBox.textContent = 'If an account exists for that email, a password reset link was sent.';
+          successBox.classList.remove('hidden');
+          form.classList.add('hidden');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create a company account — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container narrow">
+    <div class="brand">
+      <h1>Quick Scheduling</h1>
+      <p>Create your company account</p>
+    </div>
+    <div class="card">
+      <div id="error" class="alert alert-error hidden" role="alert"></div>
+      <form id="signup-form" novalidate>
+        <label>
+          Company name
+          <input type="text" id="companyName" name="companyName" autocomplete="organization" required>
+        </label>
+        <label>
+          Your name
+          <input type="text" id="contactName" name="contactName" autocomplete="name" required>
+        </label>
+        <label>
+          Email
+          <input type="email" id="email" name="email" autocomplete="email" required>
+        </label>
+        <label>
+          Password
+          <span class="hint">At least 10 characters.</span>
+          <input type="password" id="password" name="password" autocomplete="new-password" minlength="10" required>
+        </label>
+        <button type="submit" id="submit">Create account</button>
+      </form>
+    </div>
+    <div class="form-links" style="margin-top: 1rem;">
+      <a href="/login.html">Already have an account? Log in</a>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var form = document.getElementById('signup-form');
+      var errorBox = document.getElementById('error');
+      var submitBtn = document.getElementById('submit');
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('hidden');
+      }
+      function clearError() {
+        errorBox.textContent = '';
+        errorBox.classList.add('hidden');
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearError();
+        var companyName = document.getElementById('companyName').value.trim();
+        var contactName = document.getElementById('contactName').value.trim();
+        var email = document.getElementById('email').value.trim();
+        var password = document.getElementById('password').value;
+        if (!companyName || !contactName || !email || !password) {
+          showError('Please fill in all fields.');
+          return;
+        }
+        if (password.length < 10) {
+          showError('Password must be at least 10 characters.');
+          return;
+        }
+        submitBtn.disabled = true;
+        fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ companyName: companyName, contactName: contactName, email: email, password: password })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+          submitBtn.disabled = false;
+          if (result.ok) {
+            window.location.href = '/home.html';
+          } else {
+            showError(result.data && result.data.error ? result.data.error : 'Sign up failed. Please try again.');
+          }
+        }).catch(function () {
+          submitBtn.disabled = false;
+          showError('Network error. Please check your connection and try again.');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

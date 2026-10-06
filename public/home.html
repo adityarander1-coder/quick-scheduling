@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div>
+        <h1 id="company-name">Quick Scheduling</h1>
+        <span class="user-chip" id="user-chip"></span>
+      </div>
+      <button type="button" id="logout" class="btn-secondary">Log out</button>
+    </div>
+
+    <div id="users-section" class="card hidden">
+      <h2>Team members</h2>
+      <div id="users-error" class="alert alert-error hidden" role="alert"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr>
+          </thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="add-user-section" class="card hidden">
+      <h2>Add a team member</h2>
+      <div id="add-user-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="add-user-success" class="alert alert-success hidden" role="status"></div>
+      <form id="add-user-form" novalidate>
+        <div class="add-user-grid">
+          <label>
+            Name
+            <input type="text" id="new-name" autocomplete="off" required>
+          </label>
+          <label>
+            Email
+            <input type="email" id="new-email" autocomplete="off" required>
+          </label>
+          <label>
+            Password
+            <span class="hint">At least 10 characters.</span>
+            <input type="password" id="new-password" autocomplete="new-password" minlength="10" required>
+          </label>
+          <label>
+            Role
+            <select id="new-role"></select>
+          </label>
+        </div>
+        <div><button type="submit" id="add-user-submit">Add user</button></div>
+      </form>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var me = null; // {user, company}
+
+      var companyNameEl = document.getElementById('company-name');
+      var userChipEl = document.getElementById('user-chip');
+      var usersSection = document.getElementById('users-section');
+      var addUserSection = document.getElementById('add-user-section');
+      var usersBody = document.getElementById('users-body');
+      var usersError = document.getElementById('users-error');
+      var addUserForm = document.getElementById('add-user-form');
+      var addUserError = document.getElementById('add-user-error');
+      var addUserSuccess = document.getElementById('add-user-success');
+      var addUserSubmit = document.getElementById('add-user-submit');
+      var roleSelect = document.getElementById('new-role');
+
+      function roleBadgeClass(role) {
+        if (role === 'owner') return 'badge badge-owner';
+        if (role === 'scheduler') return 'badge badge-scheduler';
+        return 'badge badge-employee';
+      }
+
+      function formatDate(value) {
+        if (!value) return '';
+        var d = new Date(value);
+        return isNaN(d.getTime()) ? '' : d.toLocaleString();
+      }
+
+      function api(path, options) {
+        options = options || {};
+        options.credentials = 'same-origin';
+        return fetch(path, options).then(function (res) {
+          if (res.status === 401) {
+            window.location.href = '/login.html';
+            return new Promise(function () {}); // stop the chain
+          }
+          return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+        });
+      }
+
+      function renderMe() {
+        companyNameEl.textContent = me.company && me.company.name ? me.company.name : 'Quick Scheduling';
+        userChipEl.textContent = '';
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = me.user.name;
+        var badge = document.createElement('span');
+        badge.className = roleBadgeClass(me.user.role);
+        badge.textContent = me.user.role;
+        userChipEl.appendChild(nameSpan);
+        userChipEl.appendChild(document.createTextNode(' '));
+        userChipEl.appendChild(badge);
+      }
+
+      function renderUserTable(users) {
+        usersBody.textContent = '';
+        if (!users || users.length === 0) {
+          var emptyRow = document.createElement('tr');
+          var emptyCell = document.createElement('td');
+          emptyCell.colSpan = 4;
+          emptyCell.textContent = 'No users yet.';
+          emptyRow.appendChild(emptyCell);
+          usersBody.appendChild(emptyRow);
+          return;
+        }
+        users.forEach(function (u) {
+          var row = document.createElement('tr');
+          var nameCell = document.createElement('td'); nameCell.textContent = u.name || '';
+          var emailCell = document.createElement('td'); emailCell.textContent = u.email || '';
+          var roleCell = document.createElement('td');
+          var badge = document.createElement('span');
+          badge.className = roleBadgeClass(u.role);
+          badge.textContent = u.role || '';
+          roleCell.appendChild(badge);
+          var createdCell = document.createElement('td'); createdCell.textContent = formatDate(u.createdAt);
+          row.appendChild(nameCell);
+          row.appendChild(emailCell);
+          row.appendChild(roleCell);
+          row.appendChild(createdCell);
+          usersBody.appendChild(row);
+        });
+      }
+
+      function loadUsers() {
+        usersError.textContent = '';
+        usersError.classList.add('hidden');
+        api('/api/users').then(function (result) {
+          if (result.ok) {
+            renderUserTable(result.data.users);
+          } else {
+            usersError.textContent = result.data && result.data.error
+              ? result.data.error
+              : 'Could not load users.';
+            usersError.classList.remove('hidden');
+          }
+        }).catch(function () {
+          usersError.textContent = 'Network error. Could not load users.';
+          usersError.classList.remove('hidden');
+        });
+      }
+
+      function setupAddUser() {
+        // Role options limited by the current user's role: only owners can create owners.
+        roleSelect.textContent = '';
+        var roles = me.user.role === 'owner'
+          ? ['owner', 'scheduler', 'employee']
+          : ['scheduler', 'employee'];
+        roles.forEach(function (r) {
+          var opt = document.createElement('option');
+          opt.value = r;
+          opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+          roleSelect.appendChild(opt);
+        });
+
+        addUserForm.addEventListener('submit', function (e) {
+          e.preventDefault();
+          addUserError.textContent = '';
+          addUserError.classList.add('hidden');
+          addUserSuccess.textContent = '';
+          addUserSuccess.classList.add('hidden');
+          var name = document.getElementById('new-name').value.trim();
+          var email = document.getElementById('new-email').value.trim();
+          var password = document.getElementById('new-password').value;
+          var role = roleSelect.value;
+          if (!name || !email || !password || !role) {
+            addUserError.textContent = 'Please fill in all fields.';
+            addUserError.classList.remove('hidden');
+            return;
+          }
+          if (password.length < 10) {
+            addUserError.textContent = 'Password must be at least 10 characters.';
+            addUserError.classList.remove('hidden');
+            return;
+          }
+          addUserSubmit.disabled = true;
+          api('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, email: email, password: password, role: role })
+          }).then(function (result) {
+            addUserSubmit.disabled = false;
+            if (result.ok) {
+              addUserForm.reset();
+              addUserSuccess.textContent = 'User added.';
+              addUserSuccess.classList.remove('hidden');
+              loadUsers();
+            } else {
+              addUserError.textContent = result.data && result.data.error
+                ? result.data.error
+                : 'Could not add user.';
+              addUserError.classList.remove('hidden');
+            }
+          }).catch(function () {
+            addUserSubmit.disabled = false;
+            addUserError.textContent = 'Network error. Please try again.';
+            addUserError.classList.remove('hidden');
+          });
+        });
+      }
+
+      // Boot: load session, require login.
+      api('/api/auth/me').then(function (result) {
+        if (!result) { return; } // 401 redirect already in progress
+        if (!result.ok) {
+          window.location.href = '/login.html';
+          return;
+        }
+        me = result.data;
+        renderMe();
+        if (me.user.role === 'owner' || me.user.role === 'scheduler') {
+          usersSection.classList.remove('hidden');
+          addUserSection.classList.remove('hidden');
+          setupAddUser();
+          loadUsers();
+        }
+      }).catch(function () {
+        window.location.href = '/login.html';
+      });
+
+      document.getElementById('logout').addEventListener('click', function () {
+        fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+          .finally(function () { window.location.href = '/login.html'; });
+      });
+    })();
+  </script>
+</body>
+</html>

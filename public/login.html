@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container narrow">
+    <div class="brand">
+      <h1>Quick Scheduling</h1>
+      <p>Log in to your company account</p>
+    </div>
+    <div class="card">
+      <div id="error" class="alert alert-error hidden" role="alert"></div>
+      <form id="login-form" novalidate>
+        <label>
+          Email
+          <input type="email" id="email" name="email" autocomplete="email" required>
+        </label>
+        <label>
+          Password
+          <input type="password" id="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" id="submit">Log in</button>
+      </form>
+    </div>
+    <div class="form-links" style="margin-top: 1rem;">
+      <a href="/forgot.html">Forgot password?</a>
+      <a href="/signup.html">Create a company account</a>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var form = document.getElementById('login-form');
+      var errorBox = document.getElementById('error');
+      var submitBtn = document.getElementById('submit');
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('hidden');
+      }
+      function clearError() {
+        errorBox.textContent = '';
+        errorBox.classList.add('hidden');
+      }
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearError();
+        var email = document.getElementById('email').value.trim();
+        var password = document.getElementById('password').value;
+        if (!email || !password) {
+          showError('Please enter your email and password.');
+          return;
+        }
+        submitBtn.disabled = true;
+        fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ email: email, password: password })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+          submitBtn.disabled = false;
+          if (result.ok) {
+            window.location.href = '/home.html';
+          } else {
+            showError(result.data && result.data.error ? result.data.error : 'Login failed. Please try again.');
+          }
+        }).catch(function () {
+          submitBtn.disabled = false;
+          showError('Network error. Please check your connection and try again.');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
