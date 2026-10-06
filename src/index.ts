@@ -18,7 +18,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const isProd = process.env.NODE_ENV === 'production';
 
-app.set('trust proxy', false);
+app.set('trust proxy', 1); // Trust Render's reverse proxy so req.secure is true on HTTPS (required for the Secure session cookie).
 app.disable('x-powered-by');
 app.use(express.json());
 
