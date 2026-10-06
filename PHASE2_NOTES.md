@@ -130,10 +130,95 @@ can only exact-match. Warnings never block anything.
 - `npx tsc --noEmit` clean; page scripts `node --check` clean.
 
 ## Known limitations / next steps
-- No email sending: the temp password must be handed to the hire manually;
-  the reset flow is still DEV_MODE-only.
 - `end_date` is stored but not yet enforced in any schedule (Phase 3).
 - No audit log of who approved/deactivated whom.
 - CSRF tokens, account lockout, backups still pending (see Phase 1 notes).
 - Test data was wiped after verification (`data/pgdata` removed); the app
   boots with zero data.
+
+## Update 2026-10-06 — first/last names + invite flow (no admin-set passwords)
+
+### First + last name (`migrations/004_names.sql`)
+- `users` gains `first_name` / `last_name`; the old `name` column is kept as a
+  populated display value ("First Last") for backward compatibility.
+- Existing rows were backfilled by splitting on the first space (single-token
+  names get `last_name=''`); same split lives in `src/util/names.ts`
+  (`splitName`/`joinName`) and is reused by the API.
+- `POST /api/users` and `PATCH /api/users/:id` accept `firstName`/`lastName`
+  (and still accept a legacy `name`, split the same way). `GET /api/users` and
+  `GET /api/auth/me` return `firstName`, `lastName`, plus computed `name`.
+- team.html add/edit forms now show separate First name / Last name fields.
+- Candidate approval maps the candidate's `name` → first/last with the same split.
+- Duplicate/similar-name warnings keep working on the combined display name.
+
+### Invite flow (`migrations/005_invites.sql`, `src/routes/invites.ts`, `src/util/invites.ts`)
+Deepika: "why we need password when adding team members?" — admins no longer
+set passwords. Flow:
+1. Owner/scheduler adds a member (`POST /api/users`, no password field). The
+   account is created with an unusable bcrypt hash (random bytes — no password
+   can ever match, so login is impossible before acceptance).
+2. The API returns `inviteLink` (`/accept-invite.html?token=<64-hex>`). Tokens
+   are 32 crypto-random bytes; only SHA-256 hashes are stored; links expire in
+   7 days. The admin copies/shares the link manually (sending is optional).
+3. The new member opens the link: `GET /api/invites/info?token=` greets them
+   with company + name; they choose their own password on `accept-invite.html`
+   (strict policy + strength meter, same as signup). `POST /api/invites/accept`
+   sets the bcrypt hash, marks the invite used, and signs them in.
+4. Used/expired/unknown tokens → `400 "This invite link is invalid or has expired."`
+   Accept is rate-limited (10/min).
+
+Invite status per member (shown in the team table STATUS column):
+- `not_sent` — link generated, admin hasn't sent it ("Invite not sent", amber)
+- `sent` — admin marked it sent ("Invite sent", blue)
+- `expired` — link lapsed, member never accepted ("Invite expired", red)
+- `accepted` — member set their password → normal "Active" (green)
+- `null` — never invited (e.g. the original owner) → "Active"
+
+Admin endpoints (owner/scheduler, own company only):
+- `POST /api/users/:id/reinvite` → fresh link, invalidates prior unused links,
+  resets status to "not sent". Blocked once the member accepted.
+- `POST /api/users/:id/invite-link` → get a valid link to copy later. Raw
+  tokens are never stored, so this mints a fresh link (same effect as reinvite).
+- `POST /api/users/:id/invite-sent` → marks the current invite "sent"
+  (`404` when there is no unsent invite).
+- `POST /api/users/:id/send-invite` → emails the invite link (fresh token) and
+  marks it "sent". See email section below.
+
+Security preserved: tenant isolation by session `company_id` on every invite
+endpoint (cross-company ids → 404), scheduler still can't create owners or
+change roles, employees get 403 on all invite endpoints, no stack leaks.
+
+### Email: mandatory for members/candidates, optional phone
+- `POST /api/users` and candidate intake (`POST /api/candidates`) now require a
+  valid `email` (400 otherwise); `phone` is optional everywhere. Candidate
+  edit can no longer clear the email. team.html and apply.html mark Email
+  required and Phone "(optional)".
+
+### Invite emails via Gmail SMTP (temporary)
+- `src/util/mailer.ts` (nodemailer). Config: `SMTP_HOST=smtp.gmail.com`,
+  `SMTP_PORT=587`, `SMTP_SECURE=false` (STARTTLS), `SMTP_USER`/`SMTP_PASS`
+  (Gmail address + **App Password**, not the Gmail password); From defaults to
+  `SMTP_USER` (override with `SMTP_FROM`). See `.env.example`.
+- `POST /api/users/:id/send-invite` sends subject
+  `"[Company] invited you to join Quick Scheduling"` (plain-text + basic HTML,
+  invite link + 7-day expiry note). Without SMTP config → `503
+  {error:"Email sending is not set up yet."}` and team.html falls back to the
+  copy-link button.
+- **Gmail is temporary.** The planned long-term provider is Resend — swap the
+  transport in `src/util/mailer.ts` when ready; the `sendMail` interface stays.
+- Password-reset emails are still not sent; a clearly-marked `TODO(Phase 6)` in
+  `src/routes/auth.ts` shows where the reset flow will hook into the mailer.
+
+### Verified 2026-10-06 (local dev server, curl)
+- Add member → invite link returned, no password in response; login before
+  accept → 401; weak password on accept → 400; accept → 200 + session cookie,
+  `/api/auth/me` works; token reuse → 400; expired token → 400; cross-company
+  reinvite/invite-sent → 404; reinvite invalidates old token, resets to
+  "not sent"; invite-sent → "sent"; send-invite without SMTP → 503;
+  reinvite after accept → 400; legacy `{name}` splits on create + PATCH;
+  scheduler→owner → 403; employee self firstName → 403, self phone → 200,
+  employee reinvite → 403; candidate intake without email → 400; duplicate
+  warning fires on exact name; approve splits name; `npx tsc --noEmit` clean.
+- Note: one stale `tsx watch` process served old code mid-test (status showed
+  `not_sent` for an expired invite); after a clean restart all statuses
+  verified correct. If statuses ever look wrong, restart the dev server.

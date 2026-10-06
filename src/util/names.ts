@@ -26,8 +26,7 @@ function nameParts(name: string): { first: string; last: string } {
 }
 
 /** Compare a name against existing records in the same company. */
-export function findNameWarnings(name: string, existing: NamedRecord[]): NameWarning[] {
-  const target = norm(name);
+export function findNameWarnings(name: string, existing: NamedRecord[]): NameWarning[] {  const target = norm(name);
   if (!target) return [];
   const tp = nameParts(target);
   const warnings: NameWarning[] = [];
@@ -47,4 +46,21 @@ export function findNameWarnings(name: string, existing: NamedRecord[]): NameWar
     }
   }
   return warnings;
+}
+
+/**
+ * Split a full name into first/last. First token -> first, remainder -> last.
+ * Single-token names get last = ''. Mirrors migrations/004_names.sql.
+ */
+export function splitName(name: unknown): { first: string; last: string } {
+  const clean = String(name ?? '').trim().replace(/\s+/g, ' ');
+  if (!clean) return { first: '', last: '' };
+  const idx = clean.indexOf(' ');
+  if (idx === -1) return { first: clean, last: '' };
+  return { first: clean.slice(0, idx), last: clean.slice(idx + 1).trim() };
+}
+
+/** Recombine first/last into the display name stored on users.name. */
+export function joinName(first: unknown, last: unknown): string {
+  return [String(first ?? '').trim(), String(last ?? '').trim()].filter(Boolean).join(' ');
 }

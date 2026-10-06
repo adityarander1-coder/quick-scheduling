@@ -15,6 +15,8 @@ import usersRouter from './routes/users';
 import departmentsRouter from './routes/departments';
 import candidatesRouter from './routes/candidates';
 
+import invitesRouter from './routes/invites';
+
 const app = express();
 
 const PORT = Number(process.env.PORT || 3000);
@@ -60,6 +62,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/candidates', candidatesRouter);
+app.use('/api/invites', invitesRouter);
 
 // GET / → /home.html when signed in, else /login.html.
 app.get('/', (req: Request, res: Response) => {

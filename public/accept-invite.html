@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accept your invite — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container narrow">
+    <div class="brand">
+      <h1>Quick Scheduling</h1>
+      <p id="invite-heading">You've been invited</p>
+    </div>
+    <div class="card">
+      <div id="loading">Checking your invite…</div>
+      <div id="invalid" class="hidden">
+        <div class="alert alert-error" role="alert">This invite link is invalid or has expired. Please ask your administrator for a new one.</div>
+      </div>
+      <div id="accept-wrap" class="hidden">
+        <p id="welcome"></p>
+        <div id="error" class="alert alert-error hidden" role="alert"></div>
+        <form id="accept-form" novalidate>
+          <label>
+            Choose a password
+            <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
+            <span class="pw-wrap"><input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></span><span class="pw-meter" aria-hidden="true"><span class="pw-meter-fill" id="password-meter-fill"></span></span><span class="pw-strength" id="password-strength"></span>
+          </label>
+          <button type="submit" id="submit">Set password and continue</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var token = new URLSearchParams(window.location.search).get('token');
+      var loadingEl = document.getElementById('loading');
+      var invalidEl = document.getElementById('invalid');
+      var wrapEl = document.getElementById('accept-wrap');
+      var errorBox = document.getElementById('error');
+      var submitBtn = document.getElementById('submit');
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('hidden');
+      }
+      function clearError() {
+        errorBox.textContent = '';
+        errorBox.classList.add('hidden');
+      }
+
+      function showInvalid() {
+        loadingEl.classList.add('hidden');
+        wrapEl.classList.add('hidden');
+        invalidEl.classList.remove('hidden');
+      }
+
+      // Show/hide password toggle.
+      document.querySelectorAll('.pw-toggle').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var input = document.getElementById(btn.getAttribute('data-for'));
+          var show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? 'Hide' : 'Show';
+          btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+        });
+      });
+
+      // Live password strength meter.
+      var pwInput = document.getElementById('password');
+      var pwFill = document.getElementById('password-meter-fill');
+      var pwLabel = document.getElementById('password-strength');
+      pwInput.addEventListener('input', function () {
+        var v = pwInput.value;
+        if (!v) { pwFill.style.width = '0'; pwLabel.textContent = ''; pwLabel.className = 'pw-strength'; return; }
+        var score = 0;
+        if (v.length >= 8) score++;
+        if (/[A-Z]/.test(v)) score++;
+        if (/[0-9]/.test(v)) score++;
+        if (/[^A-Za-z0-9]/.test(v)) score++;
+        if (v.length >= 12) score++;
+        pwFill.style.width = Math.round(score / 5 * 100) + '%';
+        if (score <= 2) {
+          pwFill.style.backgroundColor = '#dc2626';
+          pwLabel.textContent = 'Weak password';
+          pwLabel.className = 'pw-strength weak';
+        } else if (score <= 3) {
+          pwFill.style.backgroundColor = '#d97706';
+          pwLabel.textContent = 'Fair — add more character types';
+          pwLabel.className = 'pw-strength fair';
+        } else {
+          pwFill.style.backgroundColor = '#16a34a';
+          pwLabel.textContent = 'Strong password';
+          pwLabel.className = 'pw-strength strong';
+        }
+      });
+
+      if (!token) {
+        showInvalid();
+        return;
+      }
+
+      fetch('/api/invites/info?token=' + encodeURIComponent(token)).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      }).then(function (result) {
+        loadingEl.classList.add('hidden');
+        if (!result.ok) {
+          showInvalid();
+          return;
+        }
+        document.getElementById('welcome').textContent =
+          'Hi ' + result.data.name + ' — set a password to join ' + result.data.companyName + '.';
+        wrapEl.classList.remove('hidden');
+      }).catch(function () {
+        showInvalid();
+      });
+
+      document.getElementById('accept-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        clearError();
+        var password = pwInput.value;
+        var pwOk = password.length >= 8 && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password);
+        if (!pwOk) {
+          showError('Password must be at least 8 characters and include one capital letter, one number, and one special character.');
+          return;
+        }
+        submitBtn.disabled = true;
+        fetch('/api/invites/accept', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ token: token, password: password })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+        }).then(function (result) {
+          submitBtn.disabled = false;
+          if (result.ok) {
+            window.location.href = '/home.html';
+          } else {
+            showError((result.data && result.data.error) || 'Could not accept the invite. Please try again.');
+          }
+        }).catch(function () {
+          submitBtn.disabled = false;
+          showError('Network error. Please check your connection and try again.');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

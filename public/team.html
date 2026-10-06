@@ -12,6 +12,9 @@
     .row-actions button { margin-right: 0.4rem; margin-bottom: 0.2rem; }
     .badge-inactive { background: #fee2e2; color: #991b1b; }
     .badge-active { background: #dcfce7; color: #166534; }
+    .badge-invite { background: #fef3c7; color: #92400e; }
+    .badge-sent { background: #dbeafe; color: #1e40af; }
+    .badge-expired { background: #fee2e2; color: #991b1b; }
     .warn-badge { background: #fef3c7; color: #92400e; }
   </style>
 </head>
@@ -67,23 +70,27 @@
       <div id="add-success" class="alert alert-success hidden" role="status"></div>
       <form id="add-form" novalidate>
         <div class="grid-2">
-          <label>Full name<input type="text" id="add-name" autocomplete="off" required></label>
+          <label>First name<input type="text" id="add-firstname" autocomplete="off" required></label>
+          <label>Last name<input type="text" id="add-lastname" autocomplete="off"></label>
           <label>Nickname<input type="text" id="add-nickname" autocomplete="off"></label>
           <label>Email<input type="email" id="add-email" autocomplete="off" required></label>
-          <label>Phone<input type="tel" id="add-phone" autocomplete="off"></label>
-          <label>Password
-            <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
-            <span class="pw-wrap">
-              <input type="password" id="add-password" autocomplete="new-password" minlength="8" required>
-              <button type="button" class="pw-toggle" data-for="add-password" aria-label="Show password">Show</button>
-            </span>
-          </label>
+          <label>Phone <span class="hint">(optional)</span><input type="tel" id="add-phone" autocomplete="off"></label>
           <label>System role<select id="add-role"></select></label>
           <label>Department<select id="add-dept"><option value="">— None —</option></select></label>
           <label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span><input type="text" id="add-jobrole" autocomplete="off"></label>
         </div>
         <div style="margin-top:0.8rem"><button type="submit" id="add-submit">Add team member</button></div>
       </form>
+      <div id="invite-box" class="hidden" style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem">
+        <p><strong>Invite link</strong> — share this with the new team member so they can set their own password:</p>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <input type="text" id="invite-link" readonly style="flex:1;min-width:200px">
+          <button type="button" id="invite-copy" class="btn-secondary">Copy</button>
+          <button type="button" id="invite-send" class="btn-secondary">Send invite</button>
+          <button type="button" id="invite-mark-sent" class="btn-secondary">Mark as sent</button>
+        </div>
+        <div id="invite-note" class="alert hidden" role="status" style="margin-top:0.6rem"></div>
+      </div>
     </div>
 
     <div id="edit-section" class="card hidden">
@@ -92,7 +99,8 @@
       <div id="edit-success" class="alert alert-success hidden" role="status"></div>
       <form id="edit-form" novalidate>
         <div class="grid-2">
-          <label>Full name<input type="text" id="edit-name" autocomplete="off" required></label>
+          <label>First name<input type="text" id="edit-firstname" autocomplete="off" required></label>
+          <label>Last name<input type="text" id="edit-lastname" autocomplete="off"></label>
           <label>Nickname<input type="text" id="edit-nickname" autocomplete="off"></label>
           <label>Phone<input type="tel" id="edit-phone" autocomplete="off"></label>
           <label>Department<select id="edit-dept"><option value="">— None —</option></select></label>
@@ -180,6 +188,31 @@
         return u.nickname ? u.name + ' (' + u.nickname + ')' : u.name;
       }
 
+      function statusBadge(u) {
+        var sBadge = document.createElement('span');
+        if (!u.isActive) {
+          sBadge.className = 'badge badge-inactive';
+          sBadge.textContent = 'Inactive';
+        } else if (u.inviteStatus === 'not_sent') {
+          sBadge.className = 'badge badge-invite';
+          sBadge.textContent = 'Invite not sent';
+        } else if (u.inviteStatus === 'sent') {
+          sBadge.className = 'badge badge-sent';
+          sBadge.textContent = 'Invite sent';
+        } else if (u.inviteStatus === 'expired') {
+          sBadge.className = 'badge badge-expired';
+          sBadge.textContent = 'Invite expired';
+        } else {
+          sBadge.className = 'badge badge-active';
+          sBadge.textContent = 'Active';
+        }
+        return sBadge;
+      }
+
+      function invitePending(u) {
+        return u.isActive && (u.inviteStatus === 'not_sent' || u.inviteStatus === 'sent' || u.inviteStatus === 'expired');
+      }
+
       function renderMembers() {
         var body = document.getElementById('members-body');
         body.textContent = '';
@@ -213,10 +246,7 @@
           row.appendChild(roleCell);
           row.appendChild(cell(u.endDate || ''));
           var statusCell = document.createElement('td');
-          var sBadge = document.createElement('span');
-          sBadge.className = 'badge ' + (u.isActive ? 'badge-active' : 'badge-inactive');
-          sBadge.textContent = u.isActive ? 'Active' : 'Inactive';
-          statusCell.appendChild(sBadge);
+          statusCell.appendChild(statusBadge(u));
           row.appendChild(statusCell);
           if (isManager()) {
             var actCell = document.createElement('td');
@@ -227,6 +257,28 @@
             editBtn.textContent = 'Edit';
             editBtn.addEventListener('click', function () { startEdit(u.id); });
             actCell.appendChild(editBtn);
+            if (invitePending(u)) {
+              var linkBtn = document.createElement('button');
+              linkBtn.type = 'button';
+              linkBtn.className = 'btn-secondary';
+              linkBtn.textContent = 'Copy invite link';
+              linkBtn.addEventListener('click', function () { fetchInviteLink(u.id); });
+              actCell.appendChild(linkBtn);
+              var sendBtn = document.createElement('button');
+              sendBtn.type = 'button';
+              sendBtn.className = 'btn-secondary';
+              sendBtn.textContent = 'Send invite';
+              sendBtn.addEventListener('click', function () { sendInvite(u.id); });
+              actCell.appendChild(sendBtn);
+              if (u.inviteStatus === 'not_sent') {
+                var sentBtn = document.createElement('button');
+                sentBtn.type = 'button';
+                sentBtn.className = 'btn-secondary';
+                sentBtn.textContent = 'Mark as sent';
+                sentBtn.addEventListener('click', function () { markInviteSent(u.id); });
+                actCell.appendChild(sentBtn);
+              }
+            }
             if (u.id !== me.user.id) {
               var toggleBtn = document.createElement('button');
               toggleBtn.type = 'button';
@@ -358,7 +410,8 @@
         editingId = id;
         hideError(document.getElementById('edit-error'));
         document.getElementById('edit-success').classList.add('hidden');
-        document.getElementById('edit-name').value = u.name || '';
+        document.getElementById('edit-firstname').value = u.firstName || '';
+        document.getElementById('edit-lastname').value = u.lastName || '';
         document.getElementById('edit-nickname').value = u.nickname || '';
         document.getElementById('edit-phone').value = u.phone || '';
         fillDeptSelect(document.getElementById('edit-dept'), u.departmentId);
@@ -396,7 +449,8 @@
           hideError(errEl);
           okEl.classList.add('hidden');
           var payload = {
-            name: document.getElementById('edit-name').value.trim(),
+            firstName: document.getElementById('edit-firstname').value.trim(),
+            lastName: document.getElementById('edit-lastname').value.trim(),
             nickname: document.getElementById('edit-nickname').value.trim(),
             phone: document.getElementById('edit-phone').value.trim(),
             departmentId: document.getElementById('edit-dept').value,
@@ -407,8 +461,8 @@
           if (!roleWrap.classList.contains('hidden')) {
             payload.role = document.getElementById('edit-role').value;
           }
-          if (!payload.name) {
-            showError(errEl, 'Name cannot be empty.');
+          if (!payload.firstName) {
+            showError(errEl, 'First name cannot be empty.');
             return;
           }
           document.getElementById('edit-submit').disabled = true;
@@ -433,6 +487,95 @@
         });
       }
 
+      var inviteUserId = null;
+
+      function fullInviteUrl(path) {
+        return window.location.origin + path;
+      }
+
+      function showInviteNote(msg, isError) {
+        var note = document.getElementById('invite-note');
+        note.textContent = msg;
+        note.classList.remove('hidden');
+        note.classList.toggle('alert-error', !!isError);
+        note.classList.toggle('alert-success', !isError);
+      }
+
+      function showInviteBox(userId, inviteLink) {
+        inviteUserId = userId;
+        document.getElementById('invite-link').value = fullInviteUrl(inviteLink);
+        document.getElementById('invite-box').classList.remove('hidden');
+        showInviteNote('', false);
+        document.getElementById('invite-note').classList.add('hidden');
+        document.getElementById('invite-box').scrollIntoView();
+      }
+
+      function copyInviteLink() {
+        var input = document.getElementById('invite-link');
+        function done() { showInviteNote('Link copied.', false); }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(input.value).then(done, function () {
+            input.select();
+            document.execCommand('copy');
+            done();
+          });
+        } else {
+          input.select();
+          document.execCommand('copy');
+          done();
+        }
+      }
+
+      function fetchInviteLink(userId) {
+        api('/api/users/' + userId + '/invite-link', { method: 'POST' }).then(function (result) {
+          if (!result) return;
+          if (result.ok) {
+            showInviteBox(userId, result.data.inviteLink);
+          } else {
+            showError(pageError, (result.data && result.data.error) || 'Could not get invite link.');
+          }
+        }).catch(function () {
+          showError(pageError, 'Network error. Could not get invite link.');
+        });
+      }
+
+      function markInviteSent(userId) {
+        api('/api/users/' + userId + '/invite-sent', { method: 'POST' }).then(function (result) {
+          if (!result) return;
+          if (result.ok) {
+            loadMembers();
+            showInviteNote('Marked as sent.', false);
+          } else {
+            showError(pageError, (result.data && result.data.error) || 'Could not mark as sent.');
+          }
+        }).catch(function () {
+          showError(pageError, 'Network error.');
+        });
+      }
+
+      function sendInvite(userId) {
+        showInviteNote('Sending…', false);
+        api('/api/users/' + userId + '/send-invite', { method: 'POST' }).then(function (result) {
+          if (!result) return;
+          if (result.ok) {
+            loadMembers();
+            showInviteNote('Invite email sent.', false);
+            if (result.data && result.data.inviteLink) {
+              showInviteBox(userId, result.data.inviteLink);
+              showInviteNote('Invite email sent.', false);
+            }
+          } else if (result.status === 503) {
+            // Email not configured — fall back to the manual copy-link flow.
+            fetchInviteLink(userId);
+            showInviteNote('Email is not set up yet — copy the link manually instead.', true);
+          } else {
+            showInviteNote((result.data && result.data.error) || 'Could not send invite.', true);
+          }
+        }).catch(function () {
+          showInviteNote('Network error.', true);
+        });
+      }
+
       function setupAdd() {
         var roleSelect = document.getElementById('add-role');
         var roles = me.user.role === 'owner' ? ['owner', 'scheduler', 'employee'] : ['scheduler', 'employee'];
@@ -450,23 +593,17 @@
           hideError(errEl);
           okEl.classList.add('hidden');
           var payload = {
-            name: document.getElementById('add-name').value.trim(),
+            firstName: document.getElementById('add-firstname').value.trim(),
+            lastName: document.getElementById('add-lastname').value.trim(),
             email: document.getElementById('add-email').value.trim(),
-            password: document.getElementById('add-password').value,
             role: roleSelect.value,
             nickname: document.getElementById('add-nickname').value.trim(),
             phone: document.getElementById('add-phone').value.trim(),
             departmentId: document.getElementById('add-dept').value,
             jobRole: document.getElementById('add-jobrole').value.trim()
           };
-          if (!payload.name || !payload.email || !payload.password) {
-            showError(errEl, 'Name, email, and password are required.');
-            return;
-          }
-          var v = payload.password;
-          var pwOk = v.length >= 8 && /[A-Z]/.test(v) && /[0-9]/.test(v) && /[^A-Za-z0-9]/.test(v);
-          if (!pwOk) {
-            showError(errEl, 'Password must be at least 8 characters and include one capital letter, one number, and one special character.');
+          if (!payload.firstName || !payload.email) {
+            showError(errEl, 'First name and email are required.');
             return;
           }
           document.getElementById('add-submit').disabled = true;
@@ -479,9 +616,12 @@
             if (!result) return;
             if (result.ok) {
               document.getElementById('add-form').reset();
-              okEl.textContent = 'Team member added.';
+              okEl.textContent = 'Team member added. Share the invite link below so they can set their password.';
               okEl.classList.remove('hidden');
               loadMembers();
+              if (result.data && result.data.inviteLink) {
+                showInviteBox(result.data.user.id, result.data.inviteLink);
+              }
             } else {
               showError(errEl, (result.data && result.data.error) || 'Could not add team member.');
             }
@@ -553,18 +693,6 @@
         });
       }
 
-      function setupPwToggles() {
-        document.querySelectorAll('.pw-toggle').forEach(function (btn) {
-          btn.addEventListener('click', function () {
-            var input = document.getElementById(btn.getAttribute('data-for'));
-            var show = input.type === 'password';
-            input.type = show ? 'text' : 'password';
-            btn.textContent = show ? 'Hide' : 'Show';
-            btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
-          });
-        });
-      }
-
       // Boot
       api('/api/auth/me').then(function (result) {
         if (!result) return;
@@ -574,7 +702,6 @@
         }
         me = result.data;
         renderMe();
-        setupPwToggles();
         if (isManager()) {
           document.getElementById('nav-candidates').classList.remove('hidden');
           document.getElementById('add-section').classList.remove('hidden');
@@ -582,6 +709,13 @@
           setupAdd();
           setupEdit();
           setupDeptForm();
+          document.getElementById('invite-copy').addEventListener('click', copyInviteLink);
+          document.getElementById('invite-send').addEventListener('click', function () {
+            if (inviteUserId) sendInvite(inviteUserId);
+          });
+          document.getElementById('invite-mark-sent').addEventListener('click', function () {
+            if (inviteUserId) markInviteSent(inviteUserId);
+          });
         } else {
           document.getElementById('my-profile-section').classList.remove('hidden');
           setupMyProfile();

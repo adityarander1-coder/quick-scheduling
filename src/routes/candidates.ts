@@ -12,6 +12,7 @@ import crypto from 'crypto';
 import { query } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { findNameWarnings, NameWarning } from '../util/names';
+import { splitName, joinName } from '../util/names';
 
 const router = Router();
 
@@ -143,7 +144,7 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
       return;
     }
     const cleanEmail = String(email ?? '').trim();
-    if (cleanEmail && !EMAIL_RE.test(cleanEmail)) {
+    if (!EMAIL_RE.test(cleanEmail)) {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
@@ -171,7 +172,7 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
         companyId,
         cleanName,
         String(nickname ?? '').trim() || null,
-        cleanEmail || null,
+        cleanEmail,
         String(phone ?? '').trim() || null,
         deptId,
         String(jobRole ?? '').trim() || null,
@@ -262,11 +263,11 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (body.nickname !== undefined) push('nickname', String(body.nickname).trim() || null);
     if (body.email !== undefined) {
       const v = String(body.email).trim();
-      if (v && !EMAIL_RE.test(v)) {
+      if (!EMAIL_RE.test(v)) {
         res.status(400).json({ error: 'Please enter a valid email address.' });
         return;
       }
-      push('email', v || null);
+      push('email', v);
     }
     if (body.phone !== undefined) push('phone', String(body.phone).trim() || null);
     if (body.departmentId !== undefined) {
@@ -338,14 +339,17 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
     const tempPassword = generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
     const userId = crypto.randomUUID();
+    const nameSplit = splitName(cand.name);
     await query(
       `INSERT INTO users
-         (id, company_id, name, nickname, email, phone, department_id, job_role, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'employee')`,
+         (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'employee')`,
       [
         userId,
         companyId,
-        cand.name,
+        nameSplit.first,
+        nameSplit.last,
+        joinName(nameSplit.first, nameSplit.last),
         cand.nickname,
         email,
         cand.phone,
@@ -359,7 +363,9 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
     res.status(201).json({
       user: {
         id: userId,
-        name: cand.name,
+        firstName: nameSplit.first,
+        lastName: nameSplit.last,
+        name: joinName(nameSplit.first, nameSplit.last),
         nickname: cand.nickname,
         email,
         phone: cand.phone,

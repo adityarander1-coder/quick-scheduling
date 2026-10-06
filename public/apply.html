@@ -28,8 +28,8 @@
         <div class="grid-2">
           <label>Full name<input type="text" id="name" autocomplete="off" required></label>
           <label>Nickname <span class="hint">(optional)</span><input type="text" id="nickname" autocomplete="off"></label>
-          <label>Email<input type="email" id="email" autocomplete="off"></label>
-          <label>Phone<input type="tel" id="phone" autocomplete="off"></label>
+          <label>Email<input type="email" id="email" autocomplete="off" required></label>
+          <label>Phone <span class="hint">(optional)</span><input type="tel" id="phone" autocomplete="off"></label>
           <label>Department<select id="department"><option value="">— None —</option></select></label>
           <label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span><input type="text" id="jobrole" autocomplete="off"></label>
         </div>
@@ -100,7 +100,7 @@
           return;
         }
         var email = document.getElementById('email').value.trim();
-        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
           errEl.textContent = 'Please enter a valid email address.';
           errEl.classList.remove('hidden');
           return;

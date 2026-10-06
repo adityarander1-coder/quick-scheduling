@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { query } from '../db';
 import { requireAuth, Role } from '../middleware/auth';
+import { splitName, joinName } from '../util/names';
 
 const router = Router();
 
@@ -36,6 +37,8 @@ export const resetRequestLimiter = jsonLimit(5);
 interface DbUser {
   id: string;
   company_id: string;
+  first_name: string;
+  last_name: string;
   name: string;
   nickname: string | null;
   email: string;
@@ -55,6 +58,8 @@ interface DbCompany {
 
 function publicUser(u: {
   id: string;
+  first_name?: string | null;
+  last_name?: string | null;
   name: string;
   nickname?: string | null;
   email: string;
@@ -65,9 +70,14 @@ function publicUser(u: {
   is_active?: boolean;
   role: string;
 }) {
+  const first = u.first_name ?? '';
+  const last = u.last_name ?? '';
+  const display = [first, last].filter(Boolean).join(' ') || u.name;
   return {
     id: u.id,
-    name: u.name,
+    firstName: first,
+    lastName: last,
+    name: display,
     nickname: u.nickname ?? null,
     email: u.email,
     phone: u.phone ?? null,
@@ -99,7 +109,7 @@ export function passwordPolicyError(pw: unknown): string | null {
   return null;
 }
 
-function setSession(req: Request, userId: string, companyId: string, role: Role): Promise<void> {
+export function setSession(req: Request, userId: string, companyId: string, role: Role): Promise<void> {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => {
       if (err) return reject(err);
@@ -113,7 +123,7 @@ function setSession(req: Request, userId: string, companyId: string, role: Role)
 
 async function loadUserAndCompany(userId: string) {
   const { rows } = await query<DbUser & { company_name: string }>(
-    `SELECT u.id, u.company_id, u.name, u.nickname, u.email, u.phone, u.department_id,
+    `SELECT u.id, u.company_id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
             u.job_role, u.end_date, u.is_active, u.role, c.name AS company_name
      FROM users u JOIN companies c ON c.id = u.company_id
      WHERE u.id = $1`,
@@ -155,21 +165,37 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(String(password), BCRYPT_COST);
     const companyId = crypto.randomUUID();
     const userId = crypto.randomUUID();
+    const nameSplit = splitName(contactName);
 
     await query(
       `INSERT INTO companies (id, name) VALUES ($1, $2)`,
       [companyId, String(companyName).trim()]
     );
     await query(
-      `INSERT INTO users (id, company_id, name, email, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, 'owner')`,
-      [userId, companyId, String(contactName).trim(), cleanEmail, passwordHash]
+      `INSERT INTO users (id, company_id, first_name, last_name, name, email, password_hash, role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'owner')`,
+      [
+        userId,
+        companyId,
+        nameSplit.first,
+        nameSplit.last,
+        joinName(nameSplit.first, nameSplit.last),
+        cleanEmail,
+        passwordHash,
+      ]
     );
 
     await setSession(req, userId, companyId, 'owner');
 
     res.status(201).json({
-      user: publicUser({ id: userId, name: String(contactName).trim(), email: cleanEmail, role: 'owner' }),
+      user: publicUser({
+        id: userId,
+        first_name: nameSplit.first,
+        last_name: nameSplit.last,
+        name: joinName(nameSplit.first, nameSplit.last),
+        email: cleanEmail,
+        role: 'owner',
+      }),
       company: { id: companyId, name: String(companyName).trim() },
     });
   } catch (err) {
@@ -282,6 +308,10 @@ router.post('/password-reset/request', resetRequestLimiter, async (req: Request,
           [crypto.randomUUID(), rows[0].id, tokenHash, expiresAt.toISOString()]
         );
         devStoreToken(tokenHash, token, expiresAt.getTime());
+        // TODO(Phase 6): send the password-reset email via src/util/mailer.ts
+        // (sendMail) once SMTP is configured — subject like
+        // "[Quick Scheduling] Reset your password", body with the reset link
+        // /reset.html?token=<token> and the 1-hour expiry note.
         if (isDev()) {
           console.log(`[auth][dev] password reset token for ${rows[0].email}: ${token}`);
         }
