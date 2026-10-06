@@ -19,7 +19,7 @@
         <label>
           New password
           <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
-          <span class="pw-wrap"><input type="password" id="newPassword" name="newPassword" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="newPassword" aria-label="Show password">Show</button></span>
+          <span class="pw-wrap"><input type="password" id="newPassword" name="newPassword" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="newPassword" aria-label="Show password">Show</button></span><span class="pw-meter" aria-hidden="true"><span class="pw-meter-fill" id="newPassword-meter-fill"></span></span><span class="pw-strength" id="newPassword-strength"></span>
         </label>
         <label>
           Confirm new password
@@ -108,6 +108,37 @@
         btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
       });
     });
+  
+    var pwInput = document.getElementById('newPassword');
+    var pwFill = document.getElementById('newPassword-meter-fill');
+    var pwLabel = document.getElementById('newPassword-strength');
+    if (pwInput && pwFill && pwLabel) {
+      pwInput.addEventListener('input', function () {
+        var v = pwInput.value;
+        if (!v) { pwFill.style.width = '0'; pwLabel.textContent = ''; pwLabel.className = 'pw-strength'; return; }
+        var score = 0;
+        if (v.length >= 8) score++;
+        if (/[A-Z]/.test(v)) score++;
+        if (/[0-9]/.test(v)) score++;
+        if (/[^A-Za-z0-9]/.test(v)) score++;
+        if (v.length >= 12) score++;
+        var pct = Math.round(score / 5 * 100);
+        pwFill.style.width = pct + '%';
+        if (score <= 2) {
+          pwFill.style.backgroundColor = '#dc2626';
+          pwLabel.textContent = 'Weak password';
+          pwLabel.className = 'pw-strength weak';
+        } else if (score <= 3) {
+          pwFill.style.backgroundColor = '#d97706';
+          pwLabel.textContent = 'Fair — add more character types';
+          pwLabel.className = 'pw-strength fair';
+        } else {
+          pwFill.style.backgroundColor = '#16a34a';
+          pwLabel.textContent = 'Strong password';
+          pwLabel.className = 'pw-strength strong';
+        }
+      });
+    }
   </script>
 </body>
 </html>

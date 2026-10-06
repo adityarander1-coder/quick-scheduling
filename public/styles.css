@@ -167,3 +167,10 @@ tr:last-child td { border-bottom: none; }
   padding: 0.3rem 0.5rem;
 }
 .pw-toggle:hover { color: var(--text); }
+
+.pw-meter { display: block; height: 6px; border-radius: 3px; background: #e5e7eb; margin-top: 0.4rem; overflow: hidden; }
+.pw-meter-fill { display: block; height: 100%; width: 0; border-radius: 3px; transition: width 0.2s, background-color 0.2s; }
+.pw-strength { font-size: 0.85rem; font-weight: 600; margin-top: 0.2rem; display: block; min-height: 1.1rem; }
+.pw-strength.weak { color: #dc2626; }
+.pw-strength.fair { color: #d97706; }
+.pw-strength.strong { color: #16a34a; }
