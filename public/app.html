@@ -498,7 +498,7 @@
           var dc = commentsFor(s.date).filter(function (c) { return c.userId === s.userId; });
           dc.forEach(function (c) { note += '<div class="day-note">\uD83D\uDCAC ' + esc(c.comment) + '</div>'; });
           return '<div class="shift-grid" data-shift-id="' + s.id + '">' +
-            '<div class="shift-cat" style="background:' + tint(color, 90) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + '</div>' +
             '</div>';
         }
@@ -585,7 +585,7 @@
           var st = shiftTypeById(s.shiftTypeId);
           var color = st ? st.color : '#637a8e';
           var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
-          return '<div class="month-chip" style="background:' + tint(color, 92) + ';border-color:' + tint(color, 55) +
+          return '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
             '" title="' + esc(nm + ' \u2014 ' + (st ? st.name : '')) + '">' +
             '<span class="dot" style="background:' + esc(color) + '"></span><span>' + esc(nm) + '</span></div>';
         }
@@ -1094,7 +1094,7 @@
                       var st = stById(e.a.shiftTypeId);
                       var color = st ? st.color : '#637a8e';
                       var nm = (e.a.firstName || '') + ' ' + (e.a.lastName || '');
-                      html += '<div class="assign-chip" style="background:' + tint(color, 90) + ';border-color:' + tint(color, 60) + '">' +
+                      html += '<div class="assign-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' +
                         esc(nm.trim()) + ' — ' + esc(st ? st.name : '') + '<br><span style="font-weight:400">Days ' + e.days.sort(function(x,y){return x-y;}).join(', ') + '</span></div>';
                     });
                     html += '</div>';
