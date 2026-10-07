@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schedule — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .sched-toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    .view-tabs { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .view-tabs button { border: none; border-radius: 0; padding: 0.5rem 1rem; background: #fff; cursor: pointer; }
+    .view-tabs button.active { background: var(--primary); color: #fff; }
+    .date-nav { display: flex; gap: 0.4rem; align-items: center; }
+    .date-nav button { padding: 0.4rem 0.7rem; }
+    #current-range { font-weight: 600; min-width: 180px; text-align: center; }
+    .legend { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.85rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.3rem; }
+    .legend-swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+    /* Month grid */
+    .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .month-dow { background: #f1f5f9; padding: 0.5rem; text-align: center; font-weight: 600; font-size: 0.8rem; }
+    .day-box { background: #fff; min-height: 110px; padding: 0.4rem; cursor: pointer; position: relative; }
+    .day-box:hover { background: #f8fafc; }
+    .day-box.other-month { background: #f8fafc; color: #94a3b8; }
+    .day-box.today { outline: 2px solid var(--primary); outline-offset: -2px; }
+    .day-num { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; display: flex; justify-content: space-between; align-items: center; }
+    .draft-dot { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block; }
+    .pub-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; }
+    .shift-chip { border-radius: 4px; padding: 0.15rem 0.4rem; margin-bottom: 0.2rem; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+    .shift-chip:hover { opacity: 0.85; }
+    .day-comment-flag { font-size: 0.75rem; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 0.1rem 0.35rem; margin-top: 0.2rem; }
+    /* Week / day list */
+    .week-day { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.8rem; overflow: hidden; }
+    .week-day-header { background: #f1f5f9; padding: 0.5rem 0.8rem; display: flex; justify-content: space-between; align-items: center; }
+    .week-day-body { padding: 0.6rem 0.8rem; }
+    .shift-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0; border-bottom: 1px solid #f1f5f9; }
+    .shift-row:last-child { border-bottom: none; }
+    .shift-color-bar { width: 4px; align-self: stretch; border-radius: 2px; }
+    /* Modal */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal { background: #fff; border-radius: 10px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
+    .modal h3 { margin-top: 0; }
+    .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; }
+    .form-row { margin-bottom: 0.8rem; }
+    .form-row label { display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 0.9rem; }
+    .form-row input, .form-row select, .form-row textarea { width: 100%; }
+    .comment-item { background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 0.5rem 0.7rem; margin-bottom: 0.4rem; font-size: 0.85rem; }
+    .comment-item .del { float: right; color: #991b1b; cursor: pointer; border: none; background: none; font-size: 0.8rem; }
+    .publish-bar { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1rem; padding: 0.6rem 0.8rem; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div>
+        <h1 id="company-name">Quick Scheduling</h1>
+        <span class="user-chip" id="user-chip"></span>
+        <div class="nav-links" style="margin-top:0.5rem">
+          <a href="/home.html">Home</a>
+          <a href="/team.html">Team members</a>
+          <a href="/schedule.html">Schedule</a>
+          <a href="/candidates.html" id="nav-candidates" class="hidden">Candidates</a>
+        </div>
+      </div>
+      <button type="button" id="logout" class="btn-secondary">Log out</button>
+    </div>
+
+    <div id="page-error" class="alert alert-error hidden" role="alert"></div>
+    <div id="page-success" class="alert alert-success hidden" role="status"></div>
+
+    <div class="sched-toolbar">
+      <div class="view-tabs" role="tablist">
+        <button type="button" data-view="day" role="tab">Day</button>
+        <button type="button" data-view="week" role="tab" class="active">Week</button>
+        <button type="button" data-view="month" role="tab">Month</button>
+      </div>
+      <div class="date-nav">
+        <button type="button" id="prev-btn" class="btn-secondary">&larr;</button>
+        <button type="button" id="today-btn" class="btn-secondary">Today</button>
+        <button type="button" id="next-btn" class="btn-secondary">&rarr;</button>
+        <span id="current-range"></span>
+      </div>
+    </div>
+
+    <div class="legend" id="legend"></div>
+
+    <div class="publish-bar" id="publish-bar">
+      <span id="publish-status"></span>
+      <button type="button" id="publish-btn" class="btn-secondary">Publish visible dates</button>
+      <button type="button" id="unpublish-btn" class="btn-secondary">Unpublish visible dates</button>
+    </div>
+
+    <div id="schedule-view"></div>
+  </div>
+
+  <!-- Assign shift modal -->
+  <div id="assign-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3 id="assign-title">Assign shift</h3>
+      <div id="assign-error" class="alert alert-error hidden"></div>
+      <div class="form-row">
+        <label>Team member</label>
+        <select id="assign-user"></select>
+      </div>
+      <div class="form-row">
+        <label>Shift type</label>
+        <select id="assign-shifttype"></select>
+      </div>
+      <div class="form-row">
+        <label>Notes <span class="hint">(optional)</span></label>
+        <input type="text" id="assign-notes" autocomplete="off">
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="assign-cancel" class="btn-secondary">Cancel</button>
+        <button type="button" id="assign-save">Assign</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Day detail modal (shifts + comments for one date) -->
+  <div id="day-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3 id="day-title">Day</h3>
+      <div id="day-error" class="alert alert-error hidden"></div>
+      <div id="day-shifts"></div>
+      <h4 style="margin-top:1rem">Comments</h4>
+      <div id="day-comments"></div>
+      <div class="form-row" id="comment-form-row">
+        <label>Add a comment</label>
+        <textarea id="comment-text" rows="2"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="day-close" class="btn-secondary">Close</button>
+        <button type="button" id="comment-save">Add comment</button>
+        <button type="button" id="day-assign">+ Assign shift</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // schedule.html — Phase 3 scheduling UI.
+    var state = {
+      view: 'week',
+      anchorDate: new Date(),
+      shiftTypes: [],
+      members: [],
+      shifts: [],
+      days: {},
+      comments: [],
+      canEdit: false,
+      assignDate: null,
+      dayModalDate: null,
+    };
+
+    function $(id) { return document.getElementById(id); }
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function fmtDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function parseDate(s) { var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]); }
+    function fmtLong(s) {
+      var d = parseDate(s);
+      return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    }
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function fullName(u) {
+      var fn = (u.firstName || '') + ' ' + (u.lastName || '');
+      fn = fn.trim();
+      return fn || u.name || u.email || '';
+    }
+
+    function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      return fetch(path, opts).then(function (res) {
+        return res.json().then(function (data) {
+          return { ok: res.ok, status: res.status, data: data };
+        });
+      });
+    }
+
+    function pageError(msg) {
+      var el = $('page-error');
+      el.textContent = msg; show(el);
+      setTimeout(function () { hide(el); }, 6000);
+    }
+    function pageSuccess(msg) {
+      var el = $('page-success');
+      el.textContent = msg; show(el);
+      setTimeout(function () { hide(el); }, 4000);
+    }
+
+    // --- date range for current view ---
+    function viewRange() {
+      var a = new Date(state.anchorDate);
+      a.setHours(0, 0, 0, 0);
+      var from, to;
+      if (state.view === 'day') {
+        from = new Date(a); to = new Date(a);
+      } else if (state.view === 'week') {
+        var dow = a.getDay();
+        from = new Date(a); from.setDate(a.getDate() - dow);
+        to = new Date(from); to.setDate(from.getDate() + 6);
+      } else {
+        from = new Date(a.getFullYear(), a.getMonth(), 1);
+        to = new Date(a.getFullYear(), a.getMonth() + 1, 0);
+      }
+      return { from: fmtDate(from), to: fmtDate(to) };
+    }
+
+    function rangeLabel() {
+      var r = viewRange();
+      if (state.view === 'day') return fmtLong(r.from);
+      var f = parseDate(r.from), t = parseDate(r.to);
+      var opts = { month: 'short', day: 'numeric' };
+      var s = f.toLocaleDateString(undefined, opts) + ' – ' + t.toLocaleDateString(undefined, opts);
+      if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
+      else s += ', ' + f.getFullYear();
+      return s;
+    }
+
+    // --- data loading ---
+    function loadAll() {
+      var r = viewRange();
+      $('current-range').textContent = rangeLabel();
+      return Promise.all([
+        api('/api/schedule/shift-types'),
+        api('/api/users'),
+        api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
+        api('/api/schedule/days?from=' + r.from + '&to=' + r.to),
+        api('/api/schedule/comments?from=' + r.from + '&to=' + r.to),
+        api('/api/auth/me'),
+      ]).then(function (results) {
+        var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], meR = results[5];
+        if (!meR.ok) { window.location.href = '/login.html'; return; }
+        var role = meR.data.user.role;
+        state.canEdit = (role === 'owner' || role === 'scheduler');
+        $('company-name').textContent = meR.data.company.name;
+        $('user-chip').textContent = meR.data.user.name + ' (' + role + ')';
+        if (role === 'owner' || role === 'scheduler') show($('nav-candidates'));
+
+        if (stR.ok) state.shiftTypes = stR.data.shiftTypes || [];
+        if (uR.ok) state.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
+        if (sR.ok) state.shifts = sR.data.shifts || [];
+        if (dR.ok) state.days = dR.data.days || {};
+        if (cR.ok) state.comments = cR.data.comments || [];
+
+        renderLegend();
+        renderView();
+        renderPublishBar();
+        if (!state.canEdit) hide($('publish-bar'));
+      }).catch(function () { pageError('Could not load the schedule.'); });
+    }
+
+    function renderLegend() {
+      var html = '';
+      state.shiftTypes.forEach(function (st) {
+        if (!st.isActive) return;
+        html += '<span class="legend-item"><span class="legend-swatch" style="background:' +
+          esc(st.color) + '"></span>' + esc(st.name) + '</span>';
+      });
+      $('legend').innerHTML = html;
+    }
+
+    function shiftsFor(dateStr) {
+      return state.shifts.filter(function (s) { return s.date === dateStr; });
+    }
+    function commentsFor(dateStr) {
+      return state.comments.filter(function (c) { return c.date === dateStr; });
+    }
+    function isPublished(dateStr) { return !!state.days[dateStr]; }
+    function shiftTypeById(id) {
+      for (var i = 0; i < state.shiftTypes.length; i++)
+        if (state.shiftTypes[i].id === id) return state.shiftTypes[i];
+      return null;
+    }
+
+    // --- views ---
+    function renderView() {
+      var el = $('schedule-view');
+      if (state.view === 'month') renderMonth(el);
+      else if (state.view === 'week') renderWeek(el);
+      else renderDay(el);
+    }
+
+    function dayBoxHtml(dateStr, inMonth) {
+      var d = parseDate(dateStr);
+      var shifts = shiftsFor(dateStr);
+      var comments = commentsFor(dateStr);
+      var pub = isPublished(dateStr);
+      var today = fmtDate(new Date()) === dateStr;
+      var cls = 'day-box' + (inMonth === false ? ' other-month' : '') + (today ? ' today' : '');
+      var html = '<div class="' + cls + '" data-date="' + dateStr + '">';
+      html += '<div class="day-num"><span>' + d.getDate() + '</span>' +
+        '<span class="' + (pub ? 'pub-dot' : 'draft-dot') + '" title="' + (pub ? 'Published' : 'Draft') + '"></span></div>';
+      shifts.forEach(function (s) {
+        var st = shiftTypeById(s.shiftTypeId);
+        var bg = st ? st.color : '#64748b';
+        var fg = st ? st.textColor : '#fff';
+        var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+        html += '<div class="shift-chip" data-shift-id="' + s.id + '" style="background:' + esc(bg) +
+          ';color:' + esc(fg) + '" title="' + esc(nm + ' — ' + (st ? st.name : '')) + '">' +
+          esc(nm) + '</div>';
+      });
+      if (comments.length) {
+        html += '<div class="day-comment-flag">💬 ' + comments.length + ' note' + (comments.length > 1 ? 's' : '') + '</div>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function renderMonth(el) {
+      var r = viewRange();
+      var first = parseDate(r.from);
+      var startDow = first.getDay();
+      var gridStart = new Date(first); gridStart.setDate(first.getDate() - startDow);
+      var html = '<div class="month-grid">';
+      ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(function (d) {
+        html += '<div class="month-dow">' + d + '</div>';
+      });
+      for (var i = 0; i < 42; i++) {
+        var d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+        var ds = fmtDate(d);
+        if (i >= 35 && d.getMonth() !== first.getMonth()) break;
+        html += dayBoxHtml(ds, d.getMonth() === first.getMonth());
+      }
+      html += '</div>';
+      el.innerHTML = html;
+      bindDayBoxes(el);
+    }
+
+    function renderWeek(el) {
+      var r = viewRange();
+      var html = '';
+      for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
+        var ds = new Date(ms).toISOString().slice(0, 10);
+        // fix: toISOString is UTC; recompute local
+        var dd = new Date(ms);
+        ds = fmtDate(new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()));
+        var pub = isPublished(ds);
+        var shifts = shiftsFor(ds);
+        var comments = commentsFor(ds);
+        html += '<div class="week-day" data-date="' + ds + '">';
+        html += '<div class="week-day-header"><strong>' + fmtLong(ds) + '</strong><span>' +
+          '<span class="' + (pub ? 'pub-dot' : 'draft-dot') + '"></span> ' + (pub ? 'Published' : 'Draft') +
+          (state.canEdit ? ' <button type="button" class="btn-secondary day-detail-btn" data-date="' + ds + '" style="margin-left:0.6rem">Details</button>' : '') +
+          '</span></div>';
+        html += '<div class="week-day-body">';
+        if (!shifts.length) html += '<div style="color:#94a3b8;font-size:0.85rem">No shifts assigned.</div>';
+        shifts.forEach(function (s) {
+          var st = shiftTypeById(s.shiftTypeId);
+          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+          html += '<div class="shift-row"><span class="shift-color-bar" style="background:' +
+            esc(st ? st.color : '#64748b') + '"></span><span><strong>' + esc(nm) + '</strong> — ' +
+            esc(st ? st.name : '') + (s.notes ? ' <span style="color:#64748b">(' + esc(s.notes) + ')</span>' : '') +
+            '</span>' + (state.canEdit ? '<button type="button" class="btn-secondary shift-del" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
+        });
+        comments.forEach(function (c) {
+          var about = c.firstName ? ' (' + esc(c.firstName + ' ' + (c.lastName || '')) + ')' : '';
+          html += '<div class="day-comment-flag">💬 ' + esc(c.comment) + about + '</div>';
+        });
+        html += '</div></div>';
+      }
+      el.innerHTML = html;
+      el.querySelectorAll('.day-detail-btn').forEach(function (b) {
+        b.addEventListener('click', function () { openDayModal(b.getAttribute('data-date')); });
+      });
+      el.querySelectorAll('.shift-del').forEach(function (b) {
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (confirm('Remove this shift?')) deleteShift(b.getAttribute('data-shift-id'));
+        });
+      });
+    }
+
+    function renderDay(el) {
+      var r = viewRange();
+      var ds = r.from;
+      var pub = isPublished(ds);
+      var shifts = shiftsFor(ds);
+      var comments = commentsFor(ds);
+      var html = '<div class="week-day"><div class="week-day-header"><strong>' + fmtLong(ds) +
+        '</strong><span><span class="' + (pub ? 'pub-dot' : 'draft-dot') + '"></span> ' +
+        (pub ? 'Published' : 'Draft') + '</span></div><div class="week-day-body">';
+      // group by shift type
+      var byType = {};
+      shifts.forEach(function (s) {
+        (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
+      });
+      state.shiftTypes.forEach(function (st) {
+        var list = byType[st.id] || [];
+        if (!list.length) return;
+        html += '<h4 style="margin:0.6rem 0 0.3rem"><span class="legend-swatch" style="background:' +
+          esc(st.color) + '"></span> ' + esc(st.name) + ' (' + list.length + ')</h4>';
+        list.forEach(function (s) {
+          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+          html += '<div class="shift-row"><span><strong>' + esc(nm) + '</strong>' +
+            (s.notes ? ' <span style="color:#64748b">(' + esc(s.notes) + ')</span>' : '') + '</span>' +
+            (state.canEdit ? '<button type="button" class="btn-secondary shift-del" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
+        });
+      });
+      if (!shifts.length) html += '<div style="color:#94a3b8">No shifts assigned for this day.</div>';
+      if (comments.length) {
+        html += '<h4 style="margin:0.8rem 0 0.3rem">Notes</h4>';
+        comments.forEach(function (c) {
+          var about = c.firstName ? ' <strong>' + esc(c.firstName + ' ' + (c.lastName || '')) + ':</strong>' : '';
+          html += '<div class="comment-item">' + about + ' ' + esc(c.comment) + '</div>';
+        });
+      }
+      if (state.canEdit) {
+        html += '<div style="margin-top:0.8rem;display:flex;gap:0.5rem"><button type="button" id="day-assign-btn">+ Assign shift</button>' +
+          '<button type="button" id="day-comment-btn" class="btn-secondary">+ Add note</button></div>';
+      }
+      html += '</div></div>';
+      el.innerHTML = html;
+      el.querySelectorAll('.shift-del').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (confirm('Remove this shift?')) deleteShift(b.getAttribute('data-shift-id'));
+        });
+      });
+      var ab = $('day-assign-btn');
+      if (ab) ab.addEventListener('click', function () { openAssignModal(ds); });
+      var cb = $('day-comment-btn');
+      if (cb) cb.addEventListener('click', function () { openDayModal(ds); });
+    }
+
+    function bindDayBoxes(el) {
+      el.querySelectorAll('.day-box').forEach(function (box) {
+        box.addEventListener('click', function (e) {
+          if (e.target.classList.contains('shift-chip')) {
+            if (state.canEdit && confirm('Remove this shift?')) {
+              deleteShift(e.target.getAttribute('data-shift-id'));
+            }
+            return;
+          }
+          openDayModal(box.getAttribute('data-date'));
+        });
+      });
+    }
+
+    function renderPublishBar() {
+      var r = viewRange();
+      var dates = [];
+      for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
+        var d = new Date(ms);
+        dates.push(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
+      }
+      var pubCount = dates.filter(isPublished).length;
+      $('publish-status').textContent = pubCount + ' of ' + dates.length + ' visible dates published.';
+    }
+
+    // --- actions ---
+    function deleteShift(id) {
+      api('/api/schedule/shifts/' + id, { method: 'DELETE' }).then(function (r) {
+        if (r.ok) { pageSuccess('Shift removed.'); loadAll(); }
+        else pageError((r.data && r.data.error) || 'Could not remove shift.');
+      });
+    }
+
+    function openAssignModal(dateStr) {
+      if (!state.canEdit) return;
+      state.assignDate = dateStr;
+      $('assign-title').textContent = 'Assign shift — ' + fmtLong(dateStr);
+      $('assign-error').classList.add('hidden');
+      $('assign-notes').value = '';
+      var uSel = $('assign-user');
+      uSel.innerHTML = '';
+      state.members.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m.id; o.textContent = fullName(m) + (m.jobRole ? ' (' + m.jobRole + ')' : '');
+        uSel.appendChild(o);
+      });
+      var tSel = $('assign-shifttype');
+      tSel.innerHTML = '';
+      state.shiftTypes.forEach(function (st) {
+        if (!st.isActive) return;
+        var o = document.createElement('option');
+        o.value = st.id; o.textContent = st.name;
+        tSel.appendChild(o);
+      });
+      show($('assign-modal'));
+    }
+
+    function openDayModal(dateStr) {
+      state.dayModalDate = dateStr;
+      $('day-title').textContent = fmtLong(dateStr);
+      $('day-error').classList.add('hidden');
+      $('comment-text').value = '';
+      renderDayModal();
+      show($('day-modal'));
+      if (!state.canEdit) hide($('comment-form-row'));
+      else show($('comment-form-row'));
+    }
+
+    function renderDayModal() {
+      var ds = state.dayModalDate;
+      var shifts = shiftsFor(ds);
+      var comments = commentsFor(ds);
+      var html = '';
+      if (!shifts.length) html += '<p style="color:#94a3b8">No shifts assigned.</p>';
+      shifts.forEach(function (s) {
+        var st = shiftTypeById(s.shiftTypeId);
+        var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+        html += '<div class="shift-row"><span class="shift-color-bar" style="background:' +
+          esc(st ? st.color : '#64748b') + '"></span><span><strong>' + esc(nm) + '</strong> — ' +
+          esc(st ? st.name : '') + '</span>' +
+          (state.canEdit ? '<button type="button" class="btn-secondary shift-del-m" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
+      });
+      $('day-shifts').innerHTML = html;
+      var ch = '';
+      comments.forEach(function (c) {
+        var about = c.firstName ? ' <strong>' + esc(c.firstName + ' ' + (c.lastName || '')) + ':</strong>' : '';
+        ch += '<div class="comment-item">' +
+          (state.canEdit ? '<button type="button" class="del" data-comment-id="' + c.id + '">✕</button>' : '') +
+          about + ' ' + esc(c.comment) + '</div>';
+      });
+      if (!comments.length) ch = '<p style="color:#94a3b8;font-size:0.85rem">No notes for this day.</p>';
+      $('day-comments').innerHTML = ch;
+      $('day-shifts').querySelectorAll('.shift-del-m').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (confirm('Remove this shift?')) deleteShift(b.getAttribute('data-shift-id'));
+          renderDayModal();
+        });
+      });
+      $('day-comments').querySelectorAll('.del').forEach(function (b) {
+        b.addEventListener('click', function () {
+          api('/api/schedule/comments/' + b.getAttribute('data-comment-id'), { method: 'DELETE' })
+            .then(function (r) { if (r.ok) loadAll().then(renderDayModal); });
+        });
+      });
+    }
+
+    // --- events ---
+    document.querySelectorAll('.view-tabs button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        document.querySelectorAll('.view-tabs button').forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        state.view = b.getAttribute('data-view');
+        loadAll();
+      });
+    });
+    $('prev-btn').addEventListener('click', function () {
+      var a = state.anchorDate;
+      if (state.view === 'day') a.setDate(a.getDate() - 1);
+      else if (state.view === 'week') a.setDate(a.getDate() - 7);
+      else a.setMonth(a.getMonth() - 1);
+      loadAll();
+    });
+    $('next-btn').addEventListener('click', function () {
+      var a = state.anchorDate;
+      if (state.view === 'day') a.setDate(a.getDate() + 1);
+      else if (state.view === 'week') a.setDate(a.getDate() + 7);
+      else a.setMonth(a.getMonth() + 1);
+      loadAll();
+    });
+    $('today-btn').addEventListener('click', function () {
+      state.anchorDate = new Date();
+      loadAll();
+    });
+    $('publish-btn').addEventListener('click', function () {
+      var r = viewRange();
+      var dates = [];
+      for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
+        var d = new Date(ms);
+        dates.push(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
+      }
+      api('/api/schedule/days/publish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
+        .then(function (res) {
+          if (res.ok) { pageSuccess('Published ' + res.data.published + ' dates.'); loadAll(); }
+          else pageError((res.data && res.data.error) || 'Could not publish.');
+        });
+    });
+    $('unpublish-btn').addEventListener('click', function () {
+      var r = viewRange();
+      var dates = [];
+      for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
+        var d = new Date(ms);
+        dates.push(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
+      }
+      api('/api/schedule/days/unpublish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
+        .then(function (res) {
+          if (res.ok) { pageSuccess('Unpublished ' + res.data.unpublished + ' dates.'); loadAll(); }
+          else pageError((res.data && res.data.error) || 'Could not unpublish.');
+        });
+    });
+    $('assign-cancel').addEventListener('click', function () { hide($('assign-modal')); });
+    $('assign-save').addEventListener('click', function () {
+      var body = {
+        userId: $('assign-user').value,
+        shiftTypeId: $('assign-shifttype').value,
+        date: state.assignDate,
+        notes: $('assign-notes').value.trim() || undefined,
+      };
+      api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+        if (r.ok) {
+          hide($('assign-modal'));
+          if (!$('day-modal').classList.contains('hidden')) renderDayModal();
+          pageSuccess('Shift assigned.');
+          loadAll();
+        } else {
+          var el = $('assign-error');
+          el.textContent = (r.data && r.data.error) || 'Could not assign shift.';
+          show(el);
+        }
+      });
+    });
+    $('day-close').addEventListener('click', function () { hide($('day-modal')); });
+    $('day-assign').addEventListener('click', function () {
+      hide($('day-modal'));
+      openAssignModal(state.dayModalDate);
+    });
+    $('comment-save').addEventListener('click', function () {
+      var text = $('comment-text').value.trim();
+      if (!text) return;
+      api('/api/schedule/comments', {
+        method: 'POST',
+        body: JSON.stringify({ date: state.dayModalDate, comment: text }),
+      }).then(function (r) {
+        if (r.ok) { loadAll().then(renderDayModal); }
+        else {
+          var el = $('day-error');
+          el.textContent = (r.data && r.data.error) || 'Could not add comment.';
+          show(el);
+        }
+      });
+    });
+    $('assign-modal').addEventListener('click', function (e) {
+      if (e.target === $('assign-modal')) hide($('assign-modal'));
+    });
+    $('day-modal').addEventListener('click', function (e) {
+      if (e.target === $('day-modal')) hide($('day-modal'));
+    });
+    $('logout').addEventListener('click', function () {
+      api('/api/auth/logout', { method: 'POST' }).then(function () {
+        window.location.href = '/login.html';
+      });
+    });
+
+    // nav guard + init
+    api('/api/auth/me').then(function (r) {
+      if (!r.ok) { window.location.href = '/login.html'; return; }
+      loadAll();
+    });
+  </script>
+</body>
+</html>

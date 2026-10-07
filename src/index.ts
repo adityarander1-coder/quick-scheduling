@@ -16,6 +16,7 @@ import departmentsRouter from './routes/departments';
 import candidatesRouter from './routes/candidates';
 
 import invitesRouter from './routes/invites';
+import scheduleRouter from './routes/schedule';
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/users', usersRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/candidates', candidatesRouter);
 app.use('/api/invites', invitesRouter);
+app.use('/api/schedule', scheduleRouter);
 
 // GET / → /home.html when signed in, else /login.html.
 app.get('/', (req: Request, res: Response) => {
@@ -81,6 +83,13 @@ app.get('/home.html', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.get('/team.html', (req: Request, res: Response, next: NextFunction) => {
+  if (!req.session?.userId) {
+    res.redirect('/login.html');
+    return;
+  }
+  next();
+});
+app.get('/schedule.html', (req: Request, res: Response, next: NextFunction) => {
   if (!req.session?.userId) {
     res.redirect('/login.html');
     return;
