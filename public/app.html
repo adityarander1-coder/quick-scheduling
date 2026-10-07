@@ -4,6 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quick Scheduling</title>
+  <script>
+    // Shared utilities — defined early so sub-tab scripts can use them.
+    function $(id) { return document.getElementById(id); }
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+    function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      return fetch(path, opts).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+      });
+    }
+    function pageError(m) { var e = $('page-error'); if (e) { e.textContent = m; show(e); } }
+    function pageSuccess(m) { var e = $('page-success'); if (e) { e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); } }
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+  </script>
   <style>
     /* Design tokens from demo */
     :root {
@@ -2215,18 +2234,7 @@
   </main>
 
   <script>
-    function $(id) { return document.getElementById(id); }
-    function show(el) { el.classList.remove('hidden'); }
-    function hide(el) { el.classList.add('hidden'); }
-    function api(path, opts) {
-      opts = opts || {};
-      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
-      return fetch(path, opts).then(function (res) {
-        return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
-      });
-    }
-    function pageError(m) { var e = $('page-error'); e.textContent = m; show(e); }
-    function pageSuccess(m) { var e = $('page-success'); e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); }
+    // (Shared utilities $, show, hide, api, pageError, pageSuccess, esc are defined in <head>.)
 
     var routes = {
       'schedule': function() { activateTab('schedule'); },
