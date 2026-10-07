@@ -96,6 +96,7 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
 // ---------------------------------------------------------------------------
 
 // GET /api/schedule/shifts?from=YYYY-MM-DD&to=YYYY-MM-DD — list in range.
+// Includes both manual shifts and rotation-generated shifts.
 router.get('/shifts', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -110,7 +111,8 @@ router.get('/shifts', async (req: Request, res: Response) => {
               s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
               u.nickname, s.shift_type_id AS "shiftTypeId",
               st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
-              st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor"
+              st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
+              false AS "isRotation", NULL AS "rotationId", NULL AS "rotationName"
        FROM shifts s
        JOIN users u ON u.id = s.user_id
        JOIN shift_types st ON st.id = s.shift_type_id
@@ -118,7 +120,102 @@ router.get('/shifts', async (req: Request, res: Response) => {
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
       [companyId, from, to]
     );
-    res.json({ shifts: rows });
+
+    // Generate shifts from active rotations
+    const { rows: rotations } = await query(
+      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate"
+       FROM rotations WHERE company_id = $1 AND is_active = true`,
+      [companyId]
+    );
+
+    const rotationShifts: any[] = [];
+    for (const rot of rotations) {
+      const { rows: assignments } = await query(
+        `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
+                ra.shift_type_id AS "shiftTypeId",
+                u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
+                u.is_active AS "userActive", u.end_date AS "userEndDate",
+                st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
+                st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
+                st.sort_order AS "sortOrder"
+         FROM rotation_assignments ra
+         JOIN users u ON u.id = ra.user_id
+         JOIN shift_types st ON st.id = ra.shift_type_id
+         WHERE ra.rotation_id = $1 AND u.is_active = true`,
+        [rot.id]
+      );
+
+      if (assignments.length === 0) continue;
+
+      // Build map: cycleDay -> assignments
+      const byDay = new Map<number, typeof assignments>();
+      for (const a of assignments) {
+        if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
+        byDay.get(a.cycleDay)!.push(a);
+      }
+
+      const startDate = new Date(rot.startDate + 'T00:00:00');
+      const fromDate = new Date(from + 'T00:00:00');
+      const toDate = new Date(to + 'T00:00:00');
+      const cycleDays = rot.cycleDays;
+
+      // Iterate each date in range
+      for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().slice(0, 10);
+        if (d < startDate) continue;
+
+        const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+        const cycleDay = (daysSinceStart % cycleDays) + 1; // 1-indexed
+
+        const dayAssignments = byDay.get(cycleDay);
+        if (!dayAssignments) continue;
+
+        for (const a of dayAssignments) {
+          // Skip if employee has ended before this date
+          if (a.userEndDate && dateStr > String(a.userEndDate).slice(0, 10)) continue;
+
+          // Skip if a manual shift already exists for this user/date/shiftType
+          // (manual shifts take precedence)
+          const hasManual = rows.some((s: any) =>
+            s.userId === a.userId && s.date === dateStr && s.shiftTypeId === a.shiftTypeId
+          );
+          if (hasManual) continue;
+
+          rotationShifts.push({
+            id: `rot-${rot.id}-${a.userId}-${dateStr}`,
+            date: dateStr,
+            notes: null,
+            userId: a.userId,
+            firstName: a.firstName,
+            lastName: a.lastName,
+            nickname: a.nickname,
+            shiftTypeId: a.shiftTypeId,
+            shiftTypeName: a.shiftTypeName,
+            shiftTypeShort: a.shiftTypeShort,
+            shiftTypeColor: a.shiftTypeColor,
+            shiftTypeTextColor: a.shiftTypeTextColor,
+            isRotation: true,
+            rotationId: rot.id,
+            rotationName: rot.name,
+            _sortOrder: a.sortOrder,
+          });
+        }
+      }
+    }
+
+    // Merge and sort
+    const all = [...rows, ...rotationShifts];
+    all.sort((a: any, b: any) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      const soA = a._sortOrder ?? 999;
+      const soB = b._sortOrder ?? 999;
+      if (soA !== soB) return soA - soB;
+      const nA = `${a.firstName} ${a.lastName}`;
+      const nB = `${b.firstName} ${b.lastName}`;
+      return nA.localeCompare(nB);
+    });
+
+    res.json({ shifts: all });
   } catch (err) {
     console.error('[schedule] list shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
