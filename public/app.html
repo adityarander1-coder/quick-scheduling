@@ -1922,6 +1922,7 @@
                     targets[i].targetCount = Math.min(20, Math.max(0, targets[i].targetCount + d));
                     $('staff-count-' + i).textContent = targets[i].targetCount;
                   });
+                });
                 $('staff-targets-list').querySelectorAll('[data-expand]').forEach(function (b) {
                   b.addEventListener('click', function () {
                     var i = b.getAttribute('data-expand');
