@@ -303,6 +303,17 @@
         #tab-schedule .dm-shift-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0; border-bottom: 1px solid #eef2f6; }
         #tab-schedule .dm-shift-row:last-child { border-bottom: none; }
         #tab-schedule .shift-color-bar { width: 4px; align-self: stretch; min-height: 24px; border-radius: 2px; }
+        #tab-schedule .shift-nm { position: relative; padding-right: 2rem; }
+        #tab-schedule .shift-comment-btn { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border); background: #fff; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+        #tab-schedule .shift-comment-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+        #tab-schedule .shift-comment-btn.has-comment { color: var(--accent); border-color: var(--accent); }
+        #tab-schedule .entry-name-comment { display: flex; align-items: flex-start; gap: 4px; margin-top: 3px; font-size: 10px; line-height: 1.3; font-weight: 600; color: #0a0a0a; }
+        #tab-schedule .entry-name-comment svg { flex: 0 0 auto; margin-top: 1px; }
+        #tab-schedule .entry-name-comment span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+        #tab-schedule .comment-who { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.9rem; }
+        #tab-schedule .comment-who .who-avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; font-size: 1.05rem; flex-shrink: 0; }
+        #tab-schedule .comment-who strong { display: block; color: var(--text); font-size: 1rem; }
+        #tab-schedule .comment-who small { color: var(--dim); font-size: 0.85rem; }
       </style>
 
       <h2 id="sched-h1" class="sched-h1">Schedule</h2>
@@ -381,6 +392,28 @@
         </div>
       </div>
 
+      <!-- Per-employee daily comment modal -->
+      <div id="sched-ec-modal" class="modal-backdrop hidden">
+        <div class="modal">
+          <h3>Daily comment</h3>
+          <div id="sched-ec-error" class="alert alert-error hidden"></div>
+          <div class="comment-who">
+            <span class="who-avatar" id="sched-ec-avatar">?</span>
+            <div><strong id="sched-ec-name">Team member</strong><small id="sched-ec-date"></small></div>
+          </div>
+          <div class="form-row">
+            <label>Comment for this day</label>
+            <textarea id="sched-ec-input" rows="4" maxlength="500" placeholder="Example: Leaving early at 3:00 PM"></textarea>
+          </div>
+          <p style="color:var(--dim);font-size:0.85rem;margin:0 0 0.5rem">This comment appears beside the employee&rsquo;s name on this date only.</p>
+          <div class="modal-actions">
+            <button type="button" id="sched-ec-delete" class="btn-danger hidden">Delete comment</button>
+            <button type="button" id="sched-ec-cancel" class="btn-secondary">Cancel</button>
+            <button type="button" id="sched-ec-save" class="btn">Save comment</button>
+          </div>
+        </div>
+      </div>
+
       <script>
       (function () {
         // Schedule tab — ported from schedule.html, restyled to demo tokens.
@@ -421,6 +454,7 @@
           r = Math.round(r + (255-r)*t); g = Math.round(g + (255-g)*t); b = Math.round(b + (255-b)*t);
           return 'rgb('+r+','+g+','+b+')';
         }
+        var BUBBLE_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>';
         function fullName(u) {
           var fn = ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
           return fn || u.name || u.email || '';
@@ -531,10 +565,16 @@
           var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return c.userId === s.userId; });
-          dc.forEach(function (c) { note += '<div class="day-note">\uD83D\uDCAC ' + esc(c.comment) + '</div>'; });
+          dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
+          var cBtn = '';
+          if (sched.canEdit && s.userId) {
+            cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
+              ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
+              ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
+          }
           return '<div class="shift-grid" data-shift-id="' + s.id + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + '</div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
             '</div>';
         }
 
@@ -760,6 +800,12 @@
           scope.querySelectorAll('.day-row-date').forEach(function (t) {
             t.addEventListener('click', function () { openDayModal(t.getAttribute('data-date')); });
           });
+          scope.querySelectorAll('.shift-comment-btn').forEach(function (b) {
+            b.addEventListener('click', function (e) {
+              e.stopPropagation();
+              openEmployeeCommentModal(b.getAttribute('data-user-id'), b.getAttribute('data-date'));
+            });
+          });
         }
 
         function renderPublishBar() {
@@ -882,6 +928,84 @@
           });
         }
 
+        // --- per-employee daily comments (demo: DailyCommentSheet) ---
+        var ecState = { userId: null, date: null, commentId: null };
+
+        function openEmployeeCommentModal(userId, dateStr) {
+          if (!sched.canEdit) return;
+          var m = null;
+          for (var i = 0; i < sched.members.length; i++) {
+            if (sched.members[i].id === userId) { m = sched.members[i]; break; }
+          }
+          var existing = commentsFor(dateStr).filter(function (c) { return c.userId === userId; })[0] || null;
+          var nm = m ? fullName(m) : (existing ? ((existing.firstName || '') + ' ' + (existing.lastName || '')).trim() : 'Team member');
+          if (!nm) nm = 'Team member';
+          ecState = { userId: userId, date: dateStr, commentId: existing ? existing.id : null };
+          $('sched-ec-avatar').textContent = nm.charAt(0).toUpperCase();
+          $('sched-ec-name').textContent = nm;
+          $('sched-ec-date').textContent = fmtLong(dateStr);
+          $('sched-ec-input').value = existing ? existing.comment : '';
+          hide($('sched-ec-error'));
+          if (existing) show($('sched-ec-delete')); else hide($('sched-ec-delete'));
+          show($('sched-ec-modal'));
+        }
+
+        function reloadComments() {
+          var r = viewRange();
+          return api('/api/schedule/comments?from=' + r.from + '&to=' + r.to).then(function (res) {
+            if (res.ok) sched.comments = res.data.comments || [];
+            renderView();
+          });
+        }
+
+        function saveEmployeeComment() {
+          var text = $('sched-ec-input').value.trim();
+          if (!text) {
+            $('sched-ec-error').textContent = 'Write a comment before saving.';
+            show($('sched-ec-error'));
+            return;
+          }
+          hide($('sched-ec-error'));
+          var st = { userId: ecState.userId, date: ecState.date };
+          var post = function () {
+            return api('/api/schedule/comments', {
+              method: 'POST',
+              body: JSON.stringify({ date: st.date, userId: st.userId, comment: text })
+            });
+          };
+          // POST always inserts, so remove the old one first to avoid duplicates.
+          var p = ecState.commentId
+            ? api('/api/schedule/comments/' + ecState.commentId, { method: 'DELETE' }).then(post)
+            : post();
+          p.then(function (r) {
+            if (r.ok) {
+              hide($('sched-ec-modal'));
+              pageSuccess('Comment saved.');
+              reloadComments();
+            } else {
+              $('sched-ec-error').textContent = (r.data && r.data.error) || 'Could not save comment.';
+              show($('sched-ec-error'));
+            }
+          }).catch(function () {
+            $('sched-ec-error').textContent = 'Network error. Could not save comment.';
+            show($('sched-ec-error'));
+          });
+        }
+
+        function deleteEmployeeComment() {
+          if (!ecState.commentId) return;
+          if (!confirm('Delete this comment?')) return;
+          api('/api/schedule/comments/' + ecState.commentId, { method: 'DELETE' }).then(function (r) {
+            if (r.ok) {
+              hide($('sched-ec-modal'));
+              pageSuccess('Comment deleted.');
+              reloadComments();
+            } else {
+              pageError((r.data && r.data.error) || 'Could not delete comment.');
+            }
+          });
+        }
+
         // --- events (scoped to this tab) ---
         document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
@@ -948,6 +1072,12 @@
             });
         });
         $('sched-assign-cancel').addEventListener('click', function () { hide($('sched-assign-modal')); });
+        $('sched-ec-cancel').addEventListener('click', function () { hide($('sched-ec-modal')); });
+        $('sched-ec-save').addEventListener('click', saveEmployeeComment);
+        $('sched-ec-delete').addEventListener('click', deleteEmployeeComment);
+        $('sched-ec-modal').addEventListener('click', function (e) {
+          if (e.target === $('sched-ec-modal')) hide($('sched-ec-modal'));
+        });
         $('sched-assign-save').addEventListener('click', function () {
           var body = {
             userId: $('sched-assign-user').value,
