@@ -652,10 +652,10 @@
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
             // Highlight button (cycles through colors)
-            var hlColor = sched.highlights[s.userId];
+            var hlBg = highlightColorFor(s.userId) || '#fff';
             cBtn += '<button type="button" class="shift-hl-btn" data-user-id="' + s.userId + '" data-shift-id="' + s.id + '"' +
               ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
-              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + (hlColor || '#fff') + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
+              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
             // Replace and delete buttons (show on all shifts)
             cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
               ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
@@ -904,7 +904,11 @@
               e.stopPropagation();
               var userId = b.getAttribute('data-user-id');
               var cur = sched.highlights[userId];
-              var idx = HIGHLIGHT_COLORS.indexOf(cur);
+              var curHue = (cur && typeof cur === 'object' && cur.hue != null) ? cur.hue : cur;
+              var idx = -1;
+              for (var i = 0; i < HIGHLIGHT_COLORS.length; i++) {
+                if (HIGHLIGHT_COLORS[i].hue === curHue) { idx = i; break; }
+              }
               if (idx === -1) {
                 sched.highlights[userId] = HIGHLIGHT_COLORS[0];
               } else if (idx === HIGHLIGHT_COLORS.length - 1) {
@@ -1157,9 +1161,16 @@
         }
 
         function highlightStyleFor(userId) {
-          var hue = sched.highlights[userId];
-          if (hue == null) return '';
+          var hl = sched.highlights[userId];
+          if (hl == null) return '';
+          var hue = (typeof hl === 'object' && hl.hue != null) ? hl.hue : hl;
           return ' style="--highlight-hue:' + hue + '"';
+        }
+        function highlightColorFor(userId) {
+          var hl = sched.highlights[userId];
+          if (hl == null) return null;
+          var hue = (typeof hl === 'object' && hl.hue != null) ? hl.hue : hl;
+          return 'hsl(' + hue + ' 85% 65%)';
         }
 
         function openPersonActions(shiftId) {
