@@ -662,6 +662,9 @@
               cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
                 ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
                 ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
+              cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '"' +
+                ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
+                ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
             }
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
@@ -942,6 +945,15 @@
               var n = parseInt(choice, 10);
               if (n >= 1 && n <= candidates.length) {
                 replaceShift(s, candidates[n - 1].id);
+              }
+            });
+          });
+          // Delete button
+          scope.querySelectorAll('.shift-delete-btn').forEach(function (b) {
+            b.addEventListener('click', function (e) {
+              e.stopPropagation();
+              if (confirm('Delete this shift?')) {
+                deleteShift(b.getAttribute('data-shift-id'));
               }
             });
           });
