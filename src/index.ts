@@ -96,6 +96,14 @@ app.get('/schedule.html', (req: Request, res: Response, next: NextFunction) => {
   }
   next();
 });
+app.get('/rotations.html', (req: Request, res: Response, next: NextFunction) => {
+  const role = req.session?.role;
+  if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {
+    res.redirect('/login.html');
+    return;
+  }
+  next();
+});
 app.get('/candidates.html', (req: Request, res: Response, next: NextFunction) => {
   const role = req.session?.role;
   if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {

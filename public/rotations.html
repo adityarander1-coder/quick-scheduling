@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shift patterns — Quick Scheduling</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .rot-card { border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1rem; background: #fff; }
+    .rot-card h3 { margin: 0 0 0.3rem; font-size: 1.15rem; }
+    .rot-meta { color: #5c7185; font-size: 0.95rem; margin-bottom: 0.6rem; }
+    .assign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.5rem; margin: 0.6rem 0; }
+    .assign-chip { border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.9rem; font-weight: 600; color: #0a0a0a; border: 1px solid; }
+    .rot-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+    .form-row { margin-bottom: 0.8rem; }
+    .form-row label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
+    .form-row input, .form-row select { width: 100%; padding: 0.5rem; font-size: 1rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    .day-toggles { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
+    .day-toggle { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; cursor: pointer; font-weight: 600; background: #fff; }
+    .day-toggle.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal { background: #fff; border-radius: 10px; padding: 1.5rem; width: min(560px, 94vw); max-height: 90vh; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div>
+        <h1 id="company-name">Quick Scheduling</h1>
+        <span class="user-chip" id="user-chip"></span>
+        <div class="nav-links" style="margin-top:0.5rem">
+          <a href="/home.html">Home</a>
+          <a href="/team.html">Team members</a>
+          <a href="/schedule.html">Schedule</a>
+          <a href="/rotations.html">Shift patterns</a>
+          <a href="/candidates.html" id="nav-candidates" class="hidden">Candidates</a>
+        </div>
+      </div>
+      <button type="button" id="logout" class="btn-secondary">Log out</button>
+    </div>
+
+    <div id="page-error" class="alert alert-error hidden" role="alert"></div>
+    <div id="page-success" class="alert alert-success hidden" role="status"></div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem">
+        <h2 style="margin:0">Shift patterns</h2>
+        <button type="button" id="new-rot-btn">+ New pattern</button>
+      </div>
+      <p style="color:#5c7185">Repeating schedules — e.g. "7 on / 7 off". Build a pattern once, then apply it to any date range.</p>
+      <div id="rot-list"></div>
+    </div>
+  </div>
+
+  <!-- New rotation modal -->
+  <div id="rot-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3 style="margin-top:0">New shift pattern</h3>
+      <div id="rot-error" class="alert alert-error hidden"></div>
+      <div class="form-row">
+        <label>Pattern name</label>
+        <input type="text" id="rot-name" placeholder="e.g. 7 on / 7 off" autocomplete="off">
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Repeats every (days, 1–84)</label>
+          <input type="number" id="rot-cycle" min="1" max="84" value="7">
+        </div>
+        <div class="form-row">
+          <label>Starts on</label>
+          <input type="date" id="rot-start">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Team member</label>
+        <select id="rot-user"></select>
+      </div>
+      <div class="form-row">
+        <label>Shift type</label>
+        <select id="rot-shifttype"></select>
+      </div>
+      <div class="form-row">
+        <label>Which days of the cycle?</label>
+        <div class="day-toggles" id="rot-days"></div>
+      </div>
+      <div style="display:flex;gap:0.6rem;justify-content:flex-end;margin-top:1rem">
+        <button type="button" id="rot-cancel" class="btn-secondary">Cancel</button>
+        <button type="button" id="rot-save">Save pattern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply modal -->
+  <div id="apply-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3 style="margin-top:0" id="apply-title">Apply pattern</h3>
+      <div id="apply-error" class="alert alert-error hidden"></div>
+      <div class="grid-2">
+        <div class="form-row"><label>From</label><input type="date" id="apply-from"></div>
+        <div class="form-row"><label>To</label><input type="date" id="apply-to"></div>
+      </div>
+      <div style="display:flex;gap:0.6rem;justify-content:flex-end;margin-top:1rem">
+        <button type="button" id="apply-cancel" class="btn-secondary">Cancel</button>
+        <button type="button" id="apply-go">Apply shifts</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var members = [], shiftTypes = [], applyRotId = null;
+
+    function $(id) { return document.getElementById(id); }
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function tint(hex, pct) {
+      var n = hex.replace('#', '');
+      if (n.length === 3) n = n[0]+n[0]+n[1]+n[1]+n[2]+n[2];
+      var r = parseInt(n.slice(0,2),16), g = parseInt(n.slice(2,4),16), b = parseInt(n.slice(4,6),16);
+      var t = pct/100;
+      r = Math.round(r+(255-r)*t); g = Math.round(g+(255-g)*t); b = Math.round(b+(255-b)*t);
+      return 'rgb('+r+','+g+','+b+')';
+    }
+    function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      return fetch(path, opts).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+      });
+    }
+    function pageError(m) { var e = $('page-error'); e.textContent = m; show(e); setTimeout(function(){hide(e);}, 6000); }
+    function pageSuccess(m) { var e = $('page-success'); e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); }
+    function fullName(u) {
+      var fn = ((u.firstName||'') + ' ' + (u.lastName||'')).trim();
+      return fn || u.name || u.email || '';
+    }
+    function stById(id) {
+      for (var i = 0; i < shiftTypes.length; i++) if (shiftTypes[i].id === id) return shiftTypes[i];
+      return null;
+    }
+
+    function loadAll() {
+      return Promise.all([
+        api('/api/auth/me'), api('/api/users'),
+        api('/api/schedule/shift-types'), api('/api/schedule/rotations'),
+      ]).then(function (rs) {
+        var me = rs[0];
+        if (!me.ok) { window.location.href = '/login.html'; return; }
+        var role = me.data.user.role;
+        if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
+        $('company-name').textContent = me.data.company.name;
+        $('user-chip').textContent = me.data.user.name + ' (' + role + ')';
+        show($('nav-candidates'));
+        members = (rs[1].data.users || []).filter(function (u) { return u.isActive; });
+        shiftTypes = rs[2].data.shiftTypes || [];
+        renderList(rs[3].data.rotations || []);
+      });
+    }
+
+    function renderList(rots) {
+      var el = $('rot-list');
+      if (!rots.length) {
+        el.innerHTML = '<p style="color:#94a3b8">No shift patterns yet. Create one to get started.</p>';
+        return;
+      }
+      var html = '';
+      rots.forEach(function (r) {
+        html += '<div class="rot-card"><h3>' + esc(r.name) + '</h3>';
+        html += '<div class="rot-meta">Repeats every ' + r.cycleDays + ' days · starts ' + esc(r.startDate) +
+          ' · ' + (r.assignments ? r.assignments.length : 0) + ' assignments</div>';
+        if (r.assignments && r.assignments.length) {
+          html += '<div class="assign-grid">';
+          var seen = {};
+          r.assignments.forEach(function (a) {
+            var key = a.userId + '|' + a.shiftTypeId;
+            if (seen[key]) { seen[key].days.push(a.cycleDay); return; }
+            seen[key] = { a: a, days: [a.cycleDay] };
+          });
+          Object.keys(seen).forEach(function (k) {
+            var e = seen[k];
+            var st = stById(e.a.shiftTypeId);
+            var color = st ? st.color : '#637a8e';
+            var nm = (e.a.firstName || '') + ' ' + (e.a.lastName || '');
+            html += '<div class="assign-chip" style="background:' + tint(color, 90) + ';border-color:' + tint(color, 60) + '">' +
+              esc(nm.trim()) + ' — ' + esc(st ? st.name : '') + '<br><span style="font-weight:400">Days ' + e.days.sort(function(x,y){return x-y;}).join(', ') + '</span></div>';
+          });
+          html += '</div>';
+        }
+        html += '<div class="rot-actions">' +
+          '<button type="button" class="apply-btn" data-id="' + r.id + '" data-name="' + esc(r.name) + '">Apply to dates…</button>' +
+          '<button type="button" class="btn-secondary del-btn" data-id="' + r.id + '">Delete</button>' +
+          '</div></div>';
+      });
+      el.innerHTML = html;
+      el.querySelectorAll('.apply-btn').forEach(function (b) {
+        b.addEventListener('click', function () {
+          applyRotId = b.getAttribute('data-id');
+          $('apply-title').textContent = 'Apply "' + b.getAttribute('data-name') + '"';
+          var t = new Date();
+          $('apply-from').value = t.toISOString().slice(0, 10);
+          var t2 = new Date(); t2.setDate(t2.getDate() + 27);
+          $('apply-to').value = t2.toISOString().slice(0, 10);
+          hide($('apply-error'));
+          show($('apply-modal'));
+        });
+      });
+      el.querySelectorAll('.del-btn').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (!confirm('Delete this pattern? Existing shifts stay.')) return;
+          api('/api/schedule/rotations/' + b.getAttribute('data-id'), { method: 'DELETE' })
+            .then(function (r) { if (r.ok) { pageSuccess('Pattern deleted.'); loadAll(); } });
+        });
+      });
+    }
+
+    function renderDayToggles() {
+      var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value) || 7));
+      var html = '';
+      var dows = ['S','M','T','W','T','F','S'];
+      for (var d = 1; d <= n; d++) {
+        html += '<button type="button" class="day-toggle" data-day="' + d + '">Day ' + d + '</button>';
+      }
+      $('rot-days').innerHTML = html;
+      $('rot-days').querySelectorAll('.day-toggle').forEach(function (b) {
+        b.addEventListener('click', function () { b.classList.toggle('on'); });
+      });
+    }
+
+    $('new-rot-btn').addEventListener('click', function () {
+      $('rot-name').value = '';
+      $('rot-cycle').value = 7;
+      $('rot-start').value = new Date().toISOString().slice(0, 10);
+      var us = $('rot-user'); us.innerHTML = '';
+      members.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = fullName(m) + (m.jobRole ? ' (' + m.jobRole + ')' : '');
+        us.appendChild(o);
+      });
+      var ts = $('rot-shifttype'); ts.innerHTML = '';
+      shiftTypes.forEach(function (st) {
+        if (!st.isActive) return;
+        var o = document.createElement('option');
+        o.value = st.id; o.textContent = st.name;
+        ts.appendChild(o);
+      });
+      renderDayToggles();
+      hide($('rot-error'));
+      show($('rot-modal'));
+    });
+    $('rot-cycle').addEventListener('change', renderDayToggles);
+    $('rot-cancel').addEventListener('click', function () { hide($('rot-modal')); });
+    $('rot-save').addEventListener('click', function () {
+      var days = [];
+      $('rot-days').querySelectorAll('.day-toggle.on').forEach(function (b) {
+        days.push(parseInt(b.getAttribute('data-day')));
+      });
+      if (!days.length) {
+        var e = $('rot-error'); e.textContent = 'Pick at least one day of the cycle.'; show(e); return;
+      }
+      var body = {
+        name: $('rot-name').value.trim() || 'Shift pattern',
+        cycleDays: parseInt($('rot-cycle').value) || 7,
+        startDate: $('rot-start').value,
+        assignments: days.map(function (d) {
+          return { userId: $('rot-user').value, cycleDay: d, shiftTypeId: $('rot-shifttype').value };
+        }),
+      };
+      api('/api/schedule/rotations', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+        if (r.ok) { hide($('rot-modal')); pageSuccess('Pattern saved.'); loadAll(); }
+        else { var e = $('rot-error'); e.textContent = (r.data && r.data.error) || 'Could not save.'; show(e); }
+      });
+    });
+    $('apply-cancel').addEventListener('click', function () { hide($('apply-modal')); });
+    $('apply-go').addEventListener('click', function () {
+      var body = { from: $('apply-from').value, to: $('apply-to').value };
+      api('/api/schedule/rotations/' + applyRotId + '/apply', { method: 'POST', body: JSON.stringify(body) })
+        .then(function (r) {
+          if (r.ok) { hide($('apply-modal')); pageSuccess('Created ' + r.data.created + ' shifts.'); }
+          else { var e = $('apply-error'); e.textContent = (r.data && r.data.error) || 'Could not apply.'; show(e); }
+        });
+    });
+    $('rot-modal').addEventListener('click', function (e) { if (e.target === $('rot-modal')) hide($('rot-modal')); });
+    $('apply-modal').addEventListener('click', function (e) { if (e.target === $('apply-modal')) hide($('apply-modal')); });
+    $('logout').addEventListener('click', function () {
+      api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>
