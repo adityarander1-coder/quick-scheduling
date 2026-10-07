@@ -1014,7 +1014,11 @@
         window.qsReplaceShift = function(sid) {
           var s = shiftById(sid);
           if (!s) return;
-          // Anybody can swap - just exclude the current person
+          // Anybody can swap - show who's working vs off that day
+          var workingIds = {};
+          sched.shifts.forEach(function (sh) {
+            if (sh.date === s.date && sh.userId) workingIds[String(sh.userId)] = true;
+          });
           var candidates = sched.members.filter(function (c) {
             return String(c.id) !== String(s.userId);
           });
@@ -1022,9 +1026,19 @@
             showInfo('No other team members to swap with.');
             return;
           }
-          var listHtml = candidates.map(function (c, i) {
+          // Sort: off first, then working
+          candidates.sort(function(a, b) {
+            var aOff = workingIds[String(a.id)] ? 1 : 0;
+            var bOff = workingIds[String(b.id)] ? 1 : 0;
+            return aOff - bOff;
+          });
+          var listHtml = candidates.map(function (c) {
             var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
-            return '<button type="button" class="sp-item" onclick="window.qsDoReplace(\'' + sid + '\',\'' + c.id + '\')"><span class="sp-ic" style="background:#e3f0fa">👤</span>' + esc(cn) + '</button>';
+            var isWorking = workingIds[String(c.id)];
+            var badge = isWorking
+              ? '<span style="font-size:11px;color:#b45309;background:#fef3c7;border-radius:6px;padding:2px 6px;margin-left:6px">Working</span>'
+              : '<span style="font-size:11px;color:#137f72;background:#d1fae5;border-radius:6px;padding:2px 6px;margin-left:6px">Off</span>';
+            return '<button type="button" class="sp-item" onclick="window.qsDoReplace(\'' + sid + '\',\'' + c.id + '\')"><span class="sp-ic" style="background:#e3f0fa">👤</span><span>' + esc(cn) + badge + '</span></button>';
           }).join('');
           showDialog('Replace with', '<p style="color:var(--dim);font-size:13px;margin-bottom:8px">Choose a team member:</p>' + listHtml, [
             { label: 'Cancel' }
