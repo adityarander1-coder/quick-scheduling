@@ -494,4 +494,100 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
   }
 });
 
+// ---------------------------------------------------------------------------
+// Staffing targets — how many of each shift type are needed per day.
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/staffing-targets — list with shift type info.
+router.get('/staffing-targets', async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await ensureShiftTypes(companyId);
+    const { rows } = await query(
+      `SELECT st.id AS "shiftTypeId", st.name, st.color,
+              COALESCE(t.target_count, 0) AS "targetCount",
+              COALESCE(t.weekdays, '{0,1,2,3,4,5,6}') AS weekdays,
+              t.start_date::text AS "startDate", t.end_date::text AS "endDate"
+       FROM shift_types st
+       LEFT JOIN staffing_targets t ON t.shift_type_id = st.id AND t.company_id = $1
+       WHERE st.company_id = $1 AND st.is_active = true
+       ORDER BY st.sort_order, st.name`,
+      [companyId]
+    );
+    res.json({ targets: rows });
+  } catch (err) {
+    console.error('[schedule] list staffing targets failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/staffing-targets — save all targets (owner/scheduler).
+router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const targets = req.body.targets;
+    if (!Array.isArray(targets)) {
+      res.status(400).json({ error: 'targets must be an array.' });
+      return;
+    }
+    for (const t of targets) {
+      const count = Math.min(20, Math.max(0, parseInt(t.targetCount) || 0));
+      await query(
+        `INSERT INTO staffing_targets (id, company_id, shift_type_id, target_count, weekdays, start_date, end_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (company_id, shift_type_id)
+         DO UPDATE SET target_count = $4, weekdays = $5, start_date = $6, end_date = $7`,
+        [crypto.randomUUID(), companyId, t.shiftTypeId, count,
+         Array.isArray(t.weekdays) ? t.weekdays : [0,1,2,3,4,5,6],
+         t.startDate || null, t.endDate || null]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] save staffing targets failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shift settings — default start/end times per shift type.
+// ---------------------------------------------------------------------------
+
+// PUT /api/schedule/shift-types/:id — update times (owner/scheduler).
+router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { startTime, endTime, name, color } = req.body;
+    const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const updates: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    if (startTime !== undefined) {
+      if (!timeRe.test(startTime)) { res.status(400).json({ error: 'Invalid start time.' }); return; }
+      updates.push(`start_time = $${i++}`); vals.push(startTime);
+    }
+    if (endTime !== undefined) {
+      if (!timeRe.test(endTime)) { res.status(400).json({ error: 'Invalid end time.' }); return; }
+      updates.push(`end_time = $${i++}`); vals.push(endTime);
+    }
+    if (name !== undefined && typeof name === 'string' && name.trim()) {
+      updates.push(`name = $${i++}`); vals.push(name.trim());
+    }
+    if (color !== undefined && /^#[0-9a-fA-F]{6}$/.test(color)) {
+      updates.push(`color = $${i++}`); vals.push(color);
+    }
+    if (!updates.length) { res.status(400).json({ error: 'Nothing to update.' }); return; }
+    vals.push(req.params.id, companyId);
+    const { rowCount } = await query(
+      `UPDATE shift_types SET ${updates.join(', ')} WHERE id = $${i++} AND company_id = $${i}`,
+      vals
+    );
+    if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update shift type failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
