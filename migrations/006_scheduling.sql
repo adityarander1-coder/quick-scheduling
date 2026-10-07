@@ -80,3 +80,7 @@ CREATE TABLE IF NOT EXISTS rotation_assignments (
   UNIQUE (rotation_id, user_id, cycle_day, shift_type_id)
 );
 CREATE INDEX IF NOT EXISTS rotation_assignments_rotation_idx ON rotation_assignments (rotation_id);
+
+-- Shift start/end times (prototype: DH 08:00-20:00, Swing 12:00-00:00, NH 20:00-08:00, NNP 20:00-08:00).
+ALTER TABLE shift_types ADD COLUMN IF NOT EXISTS start_time text;
+ALTER TABLE shift_types ADD COLUMN IF NOT EXISTS end_time text;

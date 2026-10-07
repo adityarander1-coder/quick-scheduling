@@ -26,8 +26,13 @@
     .day-num { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem; display: flex; justify-content: space-between; align-items: center; }
     .draft-dot { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block; }
     .pub-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; }
-    .shift-chip { border-radius: 4px; padding: 0.15rem 0.4rem; margin-bottom: 0.2rem; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-    .shift-chip:hover { opacity: 0.85; }
+    .shift-row2 { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 4px; margin-bottom: 6px; min-height: 50px; }
+    .shift-cat-box { border-radius: 8px; padding: 0.35rem 0.5rem; font-size: 0.75rem; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
+    .shift-name-box { background: #fff; border-radius: 8px; padding: 0.35rem 0.5rem; font-size: 0.75rem; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
+    .shift-name-box .day-note { font-weight: 400; color: #5c7185; font-size: 0.7rem; margin-top: 0.15rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .status-pill { display: inline-block; border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border: 1px solid; cursor: pointer; }
+    .status-draft { background: #f1f5f9; border-color: #cbd5e1; color: #64748b; }
+    .status-published { background: rgba(0,169,164,0.1); border-color: rgba(0,169,164,0.4); color: #137f72; }
     .day-comment-flag { font-size: 0.75rem; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 0.1rem 0.35rem; margin-top: 0.2rem; }
     /* Week / day list */
     .week-day { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.8rem; overflow: hidden; }
@@ -166,6 +171,15 @@
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    function tint(hex, pct) {
+      // mix hex color with white by pct (0-100)
+      var n = hex.replace('#', '');
+      if (n.length === 3) n = n[0]+n[0]+n[1]+n[1]+n[2]+n[2];
+      var r = parseInt(n.slice(0,2),16), g = parseInt(n.slice(2,4),16), b = parseInt(n.slice(4,6),16);
+      var t = pct / 100;
+      r = Math.round(r + (255-r)*t); g = Math.round(g + (255-g)*t); b = Math.round(b + (255-b)*t);
+      return 'rgb('+r+','+g+','+b+')';
+    }
     function fullName(u) {
       var fn = (u.firstName || '') + ' ' + (u.lastName || '');
       fn = fn.trim();
@@ -201,7 +215,7 @@
       if (state.view === 'day') {
         from = new Date(a); to = new Date(a);
       } else if (state.view === 'week') {
-        var dow = a.getDay();
+        var dow = (a.getDay() + 6) % 7; // Monday start
         from = new Date(a); from.setDate(a.getDate() - dow);
         to = new Date(from); to.setDate(from.getDate() + 6);
       } else {
@@ -272,6 +286,25 @@
       return state.comments.filter(function (c) { return c.date === dateStr; });
     }
     function isPublished(dateStr) { return !!state.days[dateStr]; }
+    function shiftBoxHtml(s) {
+      var st = shiftTypeById(s.shiftTypeId);
+      var color = st ? st.color : '#637a8e';
+      var label = st ? st.name : 'Shift';
+      var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+      var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
+      // also check day comments for this person+date
+      var dc = commentsFor(s.date).filter(function(c){ return c.userId === s.userId; });
+      dc.forEach(function(c){ note += '<div class="day-note">\uD83D\uDCAC ' + esc(c.comment) + '</div>'; });
+      return '<div class="shift-row2" data-shift-id="' + s.id + '">' +
+        '<div class="shift-cat-box" style="background:' + tint(color, 90) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
+        '<div class="shift-name-box" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + '</div>' +
+        '</div>';
+    }
+    function statusPillHtml(dateStr) {
+      var pub = isPublished(dateStr);
+      return '<span class="status-pill ' + (pub ? 'status-published' : 'status-draft') + '" data-date="' + dateStr + '" title="Click to toggle">' +
+        (pub ? 'Published' : 'Draft') + '</span>';
+    }
     function shiftTypeById(id) {
       for (var i = 0; i < state.shiftTypes.length; i++)
         if (state.shiftTypes[i].id === id) return state.shiftTypes[i];
@@ -294,20 +327,8 @@
       var today = fmtDate(new Date()) === dateStr;
       var cls = 'day-box' + (inMonth === false ? ' other-month' : '') + (today ? ' today' : '');
       var html = '<div class="' + cls + '" data-date="' + dateStr + '">';
-      html += '<div class="day-num"><span>' + d.getDate() + '</span>' +
-        '<span class="' + (pub ? 'pub-dot' : 'draft-dot') + '" title="' + (pub ? 'Published' : 'Draft') + '"></span></div>';
-      shifts.forEach(function (s) {
-        var st = shiftTypeById(s.shiftTypeId);
-        var bg = st ? st.color : '#64748b';
-        var fg = st ? st.textColor : '#fff';
-        var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
-        html += '<div class="shift-chip" data-shift-id="' + s.id + '" style="background:' + esc(bg) +
-          ';color:' + esc(fg) + '" title="' + esc(nm + ' — ' + (st ? st.name : '')) + '">' +
-          esc(nm) + '</div>';
-      });
-      if (comments.length) {
-        html += '<div class="day-comment-flag">💬 ' + comments.length + ' note' + (comments.length > 1 ? 's' : '') + '</div>';
-      }
+      html += '<div class="day-num"><span>' + d.getDate() + '</span>' + statusPillHtml(dateStr) + '</div>';
+      shifts.forEach(function (s) { html += shiftBoxHtml(s); });
       html += '</div>';
       return html;
     }
@@ -330,6 +351,7 @@
       html += '</div>';
       el.innerHTML = html;
       bindDayBoxes(el);
+      bindStatusPills(el);
     }
 
     function renderWeek(el) {
@@ -340,31 +362,19 @@
         // fix: toISOString is UTC; recompute local
         var dd = new Date(ms);
         ds = fmtDate(new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()));
-        var pub = isPublished(ds);
         var shifts = shiftsFor(ds);
-        var comments = commentsFor(ds);
         html += '<div class="week-day" data-date="' + ds + '">';
         html += '<div class="week-day-header"><strong>' + fmtLong(ds) + '</strong><span>' +
-          '<span class="' + (pub ? 'pub-dot' : 'draft-dot') + '"></span> ' + (pub ? 'Published' : 'Draft') +
+          statusPillHtml(ds) +
           (state.canEdit ? ' <button type="button" class="btn-secondary day-detail-btn" data-date="' + ds + '" style="margin-left:0.6rem">Details</button>' : '') +
           '</span></div>';
         html += '<div class="week-day-body">';
         if (!shifts.length) html += '<div style="color:#94a3b8;font-size:0.85rem">No shifts assigned.</div>';
-        shifts.forEach(function (s) {
-          var st = shiftTypeById(s.shiftTypeId);
-          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
-          html += '<div class="shift-row"><span class="shift-color-bar" style="background:' +
-            esc(st ? st.color : '#64748b') + '"></span><span><strong>' + esc(nm) + '</strong> — ' +
-            esc(st ? st.name : '') + (s.notes ? ' <span style="color:#64748b">(' + esc(s.notes) + ')</span>' : '') +
-            '</span>' + (state.canEdit ? '<button type="button" class="btn-secondary shift-del" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
-        });
-        comments.forEach(function (c) {
-          var about = c.firstName ? ' (' + esc(c.firstName + ' ' + (c.lastName || '')) + ')' : '';
-          html += '<div class="day-comment-flag">💬 ' + esc(c.comment) + about + '</div>';
-        });
+        shifts.forEach(function (s) { html += shiftBoxHtml(s); });
         html += '</div></div>';
       }
       el.innerHTML = html;
+      bindStatusPills(el);
       el.querySelectorAll('.day-detail-btn').forEach(function (b) {
         b.addEventListener('click', function () { openDayModal(b.getAttribute('data-date')); });
       });
@@ -383,9 +393,8 @@
       var shifts = shiftsFor(ds);
       var comments = commentsFor(ds);
       var html = '<div class="week-day"><div class="week-day-header"><strong>' + fmtLong(ds) +
-        '</strong><span><span class="' + (pub ? 'pub-dot' : 'draft-dot') + '"></span> ' +
-        (pub ? 'Published' : 'Draft') + '</span></div><div class="week-day-body">';
-      // group by shift type
+        '</strong><span>' + statusPillHtml(ds) + '</span></div><div class="week-day-body">';
+      // group by shift type (prototype category order)
       var byType = {};
       shifts.forEach(function (s) {
         (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
@@ -395,12 +404,7 @@
         if (!list.length) return;
         html += '<h4 style="margin:0.6rem 0 0.3rem"><span class="legend-swatch" style="background:' +
           esc(st.color) + '"></span> ' + esc(st.name) + ' (' + list.length + ')</h4>';
-        list.forEach(function (s) {
-          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
-          html += '<div class="shift-row"><span><strong>' + esc(nm) + '</strong>' +
-            (s.notes ? ' <span style="color:#64748b">(' + esc(s.notes) + ')</span>' : '') + '</span>' +
-            (state.canEdit ? '<button type="button" class="btn-secondary shift-del" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
-        });
+        list.forEach(function (s) { html += shiftBoxHtml(s); });
       });
       if (!shifts.length) html += '<div style="color:#94a3b8">No shifts assigned for this day.</div>';
       if (comments.length) {
@@ -427,6 +431,21 @@
       if (cb) cb.addEventListener('click', function () { openDayModal(ds); });
     }
 
+    function bindStatusPills(el) {
+      el.querySelectorAll('.status-pill').forEach(function (p) {
+        p.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!state.canEdit) return;
+          var ds = p.getAttribute('data-date');
+          var pub = isPublished(ds);
+          var endpoint = pub ? '/api/schedule/days/unpublish' : '/api/schedule/days/publish';
+          api(endpoint, { method: 'POST', body: JSON.stringify({ dates: [ds] }) }).then(function (r) {
+            if (r.ok) { pageSuccess(pub ? 'Moved to draft.' : 'Published.'); loadAll(); }
+            else pageError((r.data && r.data.error) || 'Could not update.');
+          });
+        });
+      });
+    }
     function bindDayBoxes(el) {
       el.querySelectorAll('.day-box').forEach(function (box) {
         box.addEventListener('click', function (e) {

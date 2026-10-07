@@ -14,11 +14,11 @@ const router = Router();
 // Colors match the prototype: Day Hospitalist blue, Swing amber, Night dark.
 // ---------------------------------------------------------------------------
 const DEFAULT_SHIFT_TYPES = [
-  { name: 'Day Hospitalist', shortName: 'DH', color: '#2563eb', textColor: '#ffffff', sortOrder: 1 },
-  { name: 'Swing Shift', shortName: 'SW', color: '#f59e0b', textColor: '#1f2937', sortOrder: 2 },
-  { name: 'Night Hospitalist', shortName: 'NH', color: '#1e293b', textColor: '#ffffff', sortOrder: 3 },
-  { name: 'Night NP', shortName: 'NNP', color: '#7c3aed', textColor: '#ffffff', sortOrder: 4 },
-  { name: 'Day NP', shortName: 'DNP', color: '#0891b2', textColor: '#ffffff', sortOrder: 5 },
+  { name: 'Day Hospitalist', shortName: 'DH', color: '#f06e5b', textColor: '#ffffff', sortOrder: 1, startTime: '08:00', endTime: '20:00' },
+  { name: 'Swing Shift', shortName: 'SW', color: '#d98314', textColor: '#ffffff', sortOrder: 2, startTime: '12:00', endTime: '00:00' },
+  { name: 'Night Hospitalist', shortName: 'NH', color: '#2672d8', textColor: '#ffffff', sortOrder: 3, startTime: '20:00', endTime: '08:00' },
+  { name: 'Night NP', shortName: 'NNP', color: '#8a5fb0', textColor: '#ffffff', sortOrder: 4, startTime: '20:00', endTime: '08:00' },
+  { name: 'Day NP', shortName: 'DNP', color: '#00a88f', textColor: '#ffffff', sortOrder: 5, startTime: '08:00', endTime: '20:00' },
 ];
 
 /** Ensure the company has shift types; seed defaults if none exist. */
@@ -30,9 +30,9 @@ async function ensureShiftTypes(companyId: string) {
   if (rows.length) return;
   for (const st of DEFAULT_SHIFT_TYPES) {
     await query(
-      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [crypto.randomUUID(), companyId, st.name, st.shortName, st.color, st.textColor, st.sortOrder]
+      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, start_time, end_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [crypto.randomUUID(), companyId, st.name, st.shortName, st.color, st.textColor, st.sortOrder, (st as any).startTime || null, (st as any).endTime || null]
     );
   }
 }
@@ -52,7 +52,8 @@ router.get('/shift-types', async (req: Request, res: Response) => {
     await ensureShiftTypes(companyId);
     const { rows } = await query(
       `SELECT id, name, short_name AS "shortName", color, text_color AS "textColor",
-              sort_order AS "sortOrder", is_active AS "isActive"
+              sort_order AS "sortOrder", is_active AS "isActive",
+              start_time AS "startTime", end_time AS "endTime"
        FROM shift_types WHERE company_id = $1 ORDER BY sort_order, name`,
       [companyId]
     );
