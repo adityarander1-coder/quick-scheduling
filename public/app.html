@@ -656,16 +656,13 @@
             cBtn += '<button type="button" class="shift-hl-btn" data-user-id="' + s.userId + '" data-shift-id="' + s.id + '"' +
               ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + (hlColor || '#fff') + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
-            // Replace button (not for rotation shifts)
-            var isRot = s.id && s.id.indexOf('rot-') === 0;
-            if (!isRot) {
-              cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
-                ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
-                ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
-              cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '"' +
-                ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
-                ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
-            }
+            // Replace and delete buttons (show on all shifts)
+            cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
+              ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
+              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
+            cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '"' +
+              ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
+              ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
@@ -919,29 +916,40 @@
               renderSchedule();
             });
           });
-          // Replace button: shows candidate list
+          // Replace button: shows candidates NOT working that day
           scope.querySelectorAll('.shift-replace-btn').forEach(function (b) {
             b.addEventListener('click', function (e) {
               e.stopPropagation();
               var s = shiftById(b.getAttribute('data-shift-id'));
               if (!s) return;
+              var isRot = s.id && s.id.indexOf('rot-') === 0;
+              if (isRot) {
+                alert('This is a rotation shift. To replace it, edit the rotation itself.');
+                return;
+              }
               var m = memberById(s.userId);
               var role = m ? (m.jobRole || m.role || '') : '';
+              // People already working this date (any shift type)
+              var workingIds = {};
+              sched.shifts.forEach(function (sh) {
+                if (sh.date === s.date && sh.userId) workingIds[String(sh.userId)] = true;
+              });
               var candidates = sched.members.filter(function (c) {
                 if (String(c.id) === String(s.userId)) return false;
+                if (workingIds[String(c.id)]) return false; // already working that day
                 var cRole = c.jobRole || c.role || '';
                 if (role && cRole !== role) return false;
                 return true;
               });
               if (!candidates.length) {
-                alert('No other team member with the same title available.');
+                alert('No available team member with the same title on this day.');
                 return;
               }
               var names = candidates.map(function (c, i) {
                 var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
                 return (i + 1) + '. ' + cn;
               }).join('\n');
-              var choice = prompt('Replace with:\n' + names + '\n\nEnter number:');
+              var choice = prompt('Replace with (not working that day):\n' + names + '\n\nEnter number:');
               var n = parseInt(choice, 10);
               if (n >= 1 && n <= candidates.length) {
                 replaceShift(s, candidates[n - 1].id);
@@ -952,8 +960,14 @@
           scope.querySelectorAll('.shift-delete-btn').forEach(function (b) {
             b.addEventListener('click', function (e) {
               e.stopPropagation();
+              var sid = b.getAttribute('data-shift-id');
+              var isRot = sid && sid.indexOf('rot-') === 0;
+              if (isRot) {
+                alert('This is a rotation shift. Edit the rotation to remove it.');
+                return;
+              }
               if (confirm('Delete this shift?')) {
-                deleteShift(b.getAttribute('data-shift-id'));
+                deleteShift(sid);
               }
             });
           });
