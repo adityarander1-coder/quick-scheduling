@@ -1051,12 +1051,16 @@
         }
 
         function openPersonActions(shiftId) {
-          if (!sched.canEdit) return;
           var s = shiftById(shiftId);
-          if (!s) return;
+          if (!s) { console.error('Shift not found:', shiftId); return; }
           // Rotation-generated shifts can't be deleted/replaced directly
           paShift = s;
-          renderPersonActions();
+          try {
+            renderPersonActions();
+          } catch (e) {
+            console.error('renderPersonActions failed:', e);
+            return;
+          }
           show($('person-actions-backdrop'));
         }
 
