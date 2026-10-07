@@ -260,7 +260,7 @@
         #tab-schedule .add-shift-btn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--navy); color: #fff; font-size: 1.4rem; font-weight: 700; cursor: pointer; line-height: 1; padding: 0; }
         #tab-schedule .add-shift-btn:hover { filter: brightness(1.15); }
         #tab-schedule .day-row-body { padding: 0.8rem 1rem; }
-        #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr auto 1.32fr; gap: 4px; min-height: 50px; margin-bottom: 8px; align-items: center; }
+        #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 4px; min-height: 50px; margin-bottom: 8px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
         #tab-schedule .shift-cat { border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm { background: #ffffff; border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
@@ -647,19 +647,25 @@
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
           var cBtn = '';
-          var actBtn = '';
           if (sched.canEdit && s.userId) {
             cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
-            // Actions button between shift type and name (opens PersonActions sidebar)
-            actBtn = '<button type="button" class="shift-actions-btn" data-shift-id="' + s.id + '"' +
-              ' title="Shift actions" aria-label="Open shift actions for ' + esc(nm) + '"' +
-              ' style="width:30px;height:30px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:16px;line-height:1;color:var(--dim);justify-self:center">⋮</button>';
+            // Highlight button (cycles through colors)
+            var hlColor = sched.highlights[s.userId];
+            cBtn += '<button type="button" class="shift-hl-btn" data-user-id="' + s.userId + '" data-shift-id="' + s.id + '"' +
+              ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
+              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + (hlColor || '#fff') + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
+            // Replace button (not for rotation shifts)
+            var isRot = s.id && s.id.indexOf('rot-') === 0;
+            if (!isRot) {
+              cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
+                ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
+                ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
+            }
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
-            actBtn +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
             '</div>';
         }
@@ -890,6 +896,53 @@
             b.addEventListener('click', function (e) {
               e.stopPropagation();
               openEmployeeCommentModal(b.getAttribute('data-user-id'), b.getAttribute('data-date'));
+            });
+          });
+          // Highlight button: cycles through colors
+          scope.querySelectorAll('.shift-hl-btn').forEach(function (b) {
+            b.addEventListener('click', function (e) {
+              e.stopPropagation();
+              var userId = b.getAttribute('data-user-id');
+              var cur = sched.highlights[userId];
+              var idx = HIGHLIGHT_COLORS.indexOf(cur);
+              if (idx === -1) {
+                sched.highlights[userId] = HIGHLIGHT_COLORS[0];
+              } else if (idx === HIGHLIGHT_COLORS.length - 1) {
+                delete sched.highlights[userId];
+              } else {
+                sched.highlights[userId] = HIGHLIGHT_COLORS[idx + 1];
+              }
+              try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
+              renderSchedule();
+            });
+          });
+          // Replace button: shows candidate list
+          scope.querySelectorAll('.shift-replace-btn').forEach(function (b) {
+            b.addEventListener('click', function (e) {
+              e.stopPropagation();
+              var s = shiftById(b.getAttribute('data-shift-id'));
+              if (!s) return;
+              var m = memberById(s.userId);
+              var role = m ? (m.jobRole || m.role || '') : '';
+              var candidates = sched.members.filter(function (c) {
+                if (String(c.id) === String(s.userId)) return false;
+                var cRole = c.jobRole || c.role || '';
+                if (role && cRole !== role) return false;
+                return true;
+              });
+              if (!candidates.length) {
+                alert('No other team member with the same title available.');
+                return;
+              }
+              var names = candidates.map(function (c, i) {
+                var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
+                return (i + 1) + '. ' + cn;
+              }).join('\n');
+              var choice = prompt('Replace with:\n' + names + '\n\nEnter number:');
+              var n = parseInt(choice, 10);
+              if (n >= 1 && n <= candidates.length) {
+                replaceShift(s, candidates[n - 1].id);
+              }
             });
           });
           // Person actions sidebar: click a shift box to open (entire grid, not just name)
