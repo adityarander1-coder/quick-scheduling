@@ -1870,6 +1870,7 @@
             (function () {
               // Staffing sub-panel — ported from settings.html staffing section, IDs prefixed staff-.
               var targets = [];
+              var expanded = {};
 
               function esc(s) {
                 return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -1899,7 +1900,7 @@
                     '<button type="button" class="btn-secondary" data-expand="' + i + '" style="margin-left:auto;padding:0.3rem 0.7rem;font-size:0.85rem">' +
                       (everyDay ? 'Every day' : weekdays.map(function(d){return dayNames[d];}).join(', ')) + ' ▾</button>' +
                     '</div>' +
-                    '<div id="staff-expand-' + i + '" class="hidden" style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px dashed var(--border)">' +
+                    '<div id="staff-expand-' + i + '" class="' + (expanded[i] ? '' : 'hidden') + '" style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px dashed var(--border)">' +
                       '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.6rem">' +
                         dayNames.map(function (dn, d) {
                           var on = weekdays.indexOf(d) >= 0;
@@ -1927,8 +1928,8 @@
                   b.addEventListener('click', function () {
                     var i = b.getAttribute('data-expand');
                     var panel = $('staff-expand-' + i);
-                    if (panel.classList.contains('hidden')) show(panel);
-                    else hide(panel);
+                    if (panel.classList.contains('hidden')) { show(panel); expanded[i] = true; }
+                    else { hide(panel); expanded[i] = false; }
                   });
                 });
                 $('staff-targets-list').querySelectorAll('.day-toggle').forEach(function (b) {
