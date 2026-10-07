@@ -33,12 +33,23 @@
       --dim: #5c7185;
       --border: #cbdbe5;
       --accent: #0878d1;
+      --accent-hover: #0566b4;
       --navy: #082f4f;
+      --navy-soft: #123f60;
       --teal: #00a9a4;
       --success: #137f72;
       --danger: #bd3d4a;
       --box-ink: #0a0a0a;
       --radius: 22px;
+      --shadow: 0 20px 54px rgba(8, 47, 79, 0.14);
+      --shadow-soft: 0 8px 24px rgba(8, 47, 79, 0.08);
+      /* Shift category colors */
+      --cat-day-hospitalist: #f06e5b;
+      --cat-night-hospitalist: #2672d8;
+      --cat-day-np: #00a88f;
+      --cat-swing: #d98314;
+      --cat-night-np: #8a5fb0;
+      --cat-custom: #637a8e;
     }
     * { box-sizing: border-box; }
     body {
@@ -106,6 +117,7 @@
       border: 1px solid var(--border);
       padding: 1.5rem;
       margin-bottom: 1.2rem;
+      box-shadow: var(--shadow-soft);
     }
     .card h2 { margin: 0 0 1rem; font-size: 1.4rem; }
     .sub-tabs {
@@ -1724,8 +1736,12 @@
 
               function renderTargets() {
                 var html = '';
+                var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                 targets.forEach(function (t, i) {
-                  html += '<div class="target-row">' +
+                  var weekdays = t.weekdays || [0,1,2,3,4,5,6];
+                  var everyDay = weekdays.length === 7;
+                  html += '<div class="target-row" style="flex-direction:column;align-items:stretch">' +
+                    '<div style="display:flex;align-items:center;gap:0.8rem;flex-wrap:wrap">' +
                     '<span class="color-dot" style="background:' + esc(t.color) + '"></span>' +
                     '<span class="target-name">' + esc(t.name) + '</span>' +
                     '<div class="stepper">' +
@@ -1734,6 +1750,22 @@
                       '<button type="button" data-i="' + i + '" data-d="1">+</button>' +
                     '</div>' +
                     '<span style="color:#5c7185;font-size:0.9rem">per day</span>' +
+                    '<button type="button" class="btn-secondary" data-expand="' + i + '" style="margin-left:auto;padding:0.3rem 0.7rem;font-size:0.85rem">' +
+                      (everyDay ? 'Every day' : weekdays.map(function(d){return dayNames[d];}).join(', ')) + ' ▾</button>' +
+                    '</div>' +
+                    '<div id="staff-expand-' + i + '" class="hidden" style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px dashed var(--border)">' +
+                      '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.6rem">' +
+                        dayNames.map(function (dn, d) {
+                          var on = weekdays.indexOf(d) >= 0;
+                          return '<button type="button" class="day-toggle' + (on ? ' on' : '') + '" data-ti="' + i + '" data-day="' + d + '" ' +
+                            'style="border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;cursor:pointer;font-weight:600;background:' + (on ? 'var(--accent)' : '#fff') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + dn + '</button>';
+                        }).join('') +
+                      '</div>' +
+                      '<div style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap">' +
+                        '<label style="font-size:0.9rem">From <input type="date" id="staff-start-' + i + '" value="' + esc(t.startDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"></label>' +
+                        '<label style="font-size:0.9rem">To <input type="date" id="staff-end-' + i + '" value="' + esc(t.endDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"></label>' +
+                      '</div>' +
+                    '</div>' +
                     '</div>';
                 });
                 $('staff-targets-list').innerHTML = html;
@@ -1743,6 +1775,26 @@
                     var d = parseInt(b.getAttribute('data-d'));
                     targets[i].targetCount = Math.min(20, Math.max(0, targets[i].targetCount + d));
                     $('staff-count-' + i).textContent = targets[i].targetCount;
+                  });
+                $('staff-targets-list').querySelectorAll('[data-expand]').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var i = b.getAttribute('data-expand');
+                    var panel = $('staff-expand-' + i);
+                    if (panel.classList.contains('hidden')) show(panel);
+                    else hide(panel);
+                  });
+                });
+                $('staff-targets-list').querySelectorAll('.day-toggle').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var ti = parseInt(b.getAttribute('data-ti'));
+                    var day = parseInt(b.getAttribute('data-day'));
+                    var wd = targets[ti].weekdays || [0,1,2,3,4,5,6];
+                    var idx = wd.indexOf(day);
+                    if (idx >= 0) wd.splice(idx, 1);
+                    else wd.push(day);
+                    wd.sort();
+                    targets[ti].weekdays = wd;
+                    renderTargets();
                   });
                 });
               }
@@ -1755,8 +1807,16 @@
               }
 
               $('staff-save-btn').addEventListener('click', function () {
-                var payload = targets.map(function (t) {
-                  return { shiftTypeId: t.shiftTypeId, targetCount: t.targetCount };
+                var payload = targets.map(function (t, i) {
+                  var startEl = $('staff-start-' + i);
+                  var endEl = $('staff-end-' + i);
+                  return {
+                    shiftTypeId: t.shiftTypeId,
+                    targetCount: t.targetCount,
+                    weekdays: t.weekdays || [0,1,2,3,4,5,6],
+                    startDate: startEl ? startEl.value || null : null,
+                    endDate: endEl ? endEl.value || null : null,
+                  };
                 });
                 api('/api/schedule/staffing-targets', { method: 'PUT', body: JSON.stringify({ targets: payload }) })
                   .then(function (r) {
