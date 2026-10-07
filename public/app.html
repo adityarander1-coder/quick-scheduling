@@ -316,6 +316,18 @@
         #tab-schedule .comment-who small { color: var(--dim); font-size: 0.85rem; }
         /* Person actions sidebar (demo parity) */
         .person-actions-backdrop { position: fixed; inset: 0; z-index: 90; display: flex; justify-content: flex-end; background: rgba(3, 22, 35, .42); }
+        /* Shift actions popup menu */
+        .shift-popup { position: fixed; z-index: 95; background: #fff; border-radius: 14px; box-shadow: 0 12px 36px rgba(8,47,79,.22); padding: 8px; min-width: 220px; max-width: 280px; border: 1px solid var(--border); }
+        .shift-popup-header { padding: 8px 10px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+        .shift-popup-header #sp-name { font-weight: 700; font-size: 14px; display: block; }
+        .shift-popup-header #sp-date { font-size: 11px; color: var(--dim); }
+        .sp-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; background: none; border-radius: 8px; cursor: pointer; font-size: 14px; text-align: left; font-family: inherit; color: var(--text); }
+        .sp-item:hover { background: #f0f6fa; }
+        .sp-item .sp-ic { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+        .sp-item.danger { color: #bd3d4a; }
+        .sp-colors { display: flex; gap: 6px; padding: 4px 10px 8px; }
+        .sp-dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+        .sp-dot.sel { border-color: #102d47; }
         .person-actions-sidebar { width: min(88vw, 360px); height: 100%; overflow-y: auto; padding: 18px 16px 22px; background: var(--surface); box-shadow: -18px 0 42px rgba(3, 22, 35, .24); }
         .person-actions-sidebar > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 14px; }
         .person-actions-sidebar > header span { color: var(--dim); font-size: 10px; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
@@ -464,6 +476,11 @@
           </header>
           <div class="person-action-list" id="pa-list"></div>
         </aside>
+      </div>
+      <!-- Shift actions popup (replaces sidebar) -->
+      <div id="shift-popup" class="shift-popup hidden" role="menu">
+        <div class="shift-popup-header"><span id="sp-name">Team member</span><span id="sp-date"></span></div>
+        <div id="sp-list"></div>
       </div>
 
       <script>
@@ -627,7 +644,7 @@
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
-          var dc = commentsFor(s.date).filter(function (c) { return c.userId === s.userId; });
+          var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
           var cBtn = '';
           var actBtn = '';
@@ -1020,7 +1037,7 @@
           for (var i = 0; i < sched.members.length; i++) {
             if (sched.members[i].id === userId) { m = sched.members[i]; break; }
           }
-          var existing = commentsFor(dateStr).filter(function (c) { return c.userId === userId; })[0] || null;
+          var existing = commentsFor(dateStr).filter(function (c) { return String(c.userId) === String(userId); })[0] || null;
           var nm = m ? fullName(m) : (existing ? ((existing.firstName || '') + ' ' + (existing.lastName || '')).trim() : 'Team member');
           if (!nm) nm = 'Team member';
           ecState = { userId: userId, date: dateStr, commentId: existing ? existing.id : null };
@@ -1084,6 +1101,122 @@
           hide($('person-actions-backdrop'));
           paShift = null;
         }
+
+        // Shift actions popup (simpler replacement for sidebar)
+        var popupShift = null;
+        function openShiftPopup(shiftId, btnEl) {
+          var s = shiftById(shiftId);
+          if (!s) return;
+          popupShift = s;
+          var popup = $('shift-popup');
+          var nm = displayName(s);
+          $('sp-name').textContent = nm;
+          $('sp-date').textContent = fmtDate(s.date);
+          var isRot = s.id && s.id.indexOf('rot-') === 0;
+          var list = $('sp-list');
+          var html = '';
+          // Highlight with color dots
+          var curHl = sched.highlights[s.userId];
+          html += '<div style="padding:8px 10px 2px;font-size:12px;color:var(--dim);font-weight:600">Highlight</div>';
+          html += '<div class="sp-colors">' + HIGHLIGHT_COLORS.map(function (c) {
+            return '<button class="sp-dot' + (curHl === c ? ' sel' : '') + '" data-color="' + c + '" style="background:' + c + '" aria-label="Highlight color"></button>';
+          }).join('') + (curHl != null ? '<button class="sp-dot" data-color="" style="background:#fff;border:1px dashed #cbdbe5" title="Clear">✕</button>' : '') + '</div>';
+          // Comment
+          var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
+          html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
+          // Replace / Delete (not for rotation shifts)
+          if (!isRot) {
+            html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
+            html += '<div id="sp-replace-list" class="hidden"></div>';
+            html += '<button class="sp-item danger" data-act="delete"><span class="sp-ic" style="background:#fde8ea">🗑️</span>Delete shift</button>';
+          } else {
+            html += '<div style="padding:8px 10px;font-size:12px;color:var(--dim)">Rotation shift — edit the rotation to change it.</div>';
+          }
+          list.innerHTML = html;
+          // Position near button
+          show(popup);
+          var r = btnEl.getBoundingClientRect();
+          var pw = popup.offsetWidth, ph = popup.offsetHeight;
+          var x = Math.min(r.left, window.innerWidth - pw - 8);
+          var y = r.bottom + 6;
+          if (y + ph > window.innerHeight - 8) y = Math.max(8, r.top - ph - 6);
+          popup.style.left = Math.max(8, x) + 'px';
+          popup.style.top = y + 'px';
+        }
+        function closeShiftPopup() {
+          hide($('shift-popup'));
+          popupShift = null;
+        }
+        // Popup item clicks (delegated)
+        document.addEventListener('click', function (e) {
+          var dot = e.target.closest ? e.target.closest('#shift-popup .sp-dot') : null;
+          if (dot && popupShift) {
+            var color = dot.getAttribute('data-color');
+            if (color) { sched.highlights[popupShift.userId] = color; }
+            else { delete sched.highlights[popupShift.userId]; }
+            try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
+            closeShiftPopup();
+            renderSchedule();
+            return;
+          }
+          var item = e.target.closest ? e.target.closest('#shift-popup .sp-item') : null;
+          if (item && popupShift) {
+            var act = item.getAttribute('data-act');
+            var s = popupShift;
+            if (act === 'comment') {
+              closeShiftPopup();
+              openEmployeeCommentModal(s.userId, s.date);
+            } else if (act === 'replace') {
+              // Show candidate list inline in popup
+              var rlist = $('sp-replace-list');
+              if (!rlist.classList.contains('hidden')) { hide(rlist); return; }
+              var m = memberById(s.userId);
+              var role = m ? (m.jobRole || m.role || '') : '';
+              var candidates = sched.members.filter(function (c) {
+                if (String(c.id) === String(s.userId)) return false;
+                var cRole = c.jobRole || c.role || '';
+                if (role && cRole !== role) return false;
+                return true;
+              });
+              var rh = '';
+              if (!candidates.length) {
+                rh = '<div style="padding:8px 10px;font-size:13px;color:var(--dim)">No other team member with the same title.</div>';
+              } else {
+                candidates.forEach(function (c) {
+                  var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
+                  rh += '<button class="sp-item" data-replace-id="' + c.id + '"><span class="sp-ic" style="background:#e3f0fa">👤</span>' + esc(cn) + '</button>';
+                });
+              }
+              rlist.innerHTML = rh;
+              show(rlist);
+              // Reposition popup (content grew)
+              var popup = $('shift-popup');
+              var ph = popup.offsetHeight;
+              var top = parseInt(popup.style.top, 10);
+              if (top + ph > window.innerHeight - 8) popup.style.top = Math.max(8, window.innerHeight - ph - 8) + 'px';
+            } else if (act === 'delete') {
+              closeShiftPopup();
+              if (confirm('Delete this shift?')) deleteShift(s.id);
+            }
+            return;
+          }
+          // Replace candidate clicked
+          var repBtn = e.target.closest ? e.target.closest('#shift-popup [data-replace-id]') : null;
+          if (repBtn && popupShift) {
+            var newId = repBtn.getAttribute('data-replace-id');
+            var sh = popupShift;
+            closeShiftPopup();
+            replaceShift(sh, newId);
+            return;
+          }
+          // Click outside popup closes it
+          var popup = $('shift-popup');
+          if (popup && !popup.classList.contains('hidden')) {
+            var inPopup = e.target.closest ? e.target.closest('#shift-popup') : null;
+            var onBtn = e.target.closest ? e.target.closest('.shift-actions-btn') : null;
+            if (!inPopup && !onBtn) closeShiftPopup();
+          }
+        });
 
         function renderPersonActions() {
           var s = paShift;
@@ -1394,13 +1527,10 @@
           var actBtn = e.target.closest ? e.target.closest('.shift-actions-btn') : null;
           if (actBtn) {
             e.stopPropagation();
-            // DEBUG: verify click reaches handler
-            alert('Button clicked! Shift ID: ' + actBtn.getAttribute('data-shift-id'));
             try {
-              openPersonActions(actBtn.getAttribute('data-shift-id'));
+              openShiftPopup(actBtn.getAttribute('data-shift-id'), actBtn);
             } catch (err) {
-              console.error('PersonActions failed:', err);
-              alert('Error: ' + err.message);
+              console.error('Shift popup failed:', err);
             }
             return;
           }
