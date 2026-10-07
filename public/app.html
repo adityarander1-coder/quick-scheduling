@@ -1382,6 +1382,24 @@
         $('person-actions-backdrop').addEventListener('click', function (e) {
           if (e.target === $('person-actions-backdrop')) closePersonActions();
         });
+        // Fallback: document-level delegation for shift grid clicks (robust)
+        document.addEventListener('click', function (e) {
+          var grid = e.target.closest ? e.target.closest('.shift-grid[data-shift-id]') : null;
+          if (!grid) return;
+          // Don't trigger for comment button, open slots, or inside modals/sidebar
+          if (e.target.closest('.shift-comment-btn')) return;
+          if (e.target.closest('.open-slot')) return;
+          if (e.target.closest('.modal')) return;
+          if (e.target.closest('.person-actions-sidebar')) return;
+          // Only for schedule tab
+          if (!grid.closest('#tab-schedule')) return;
+          e.stopPropagation();
+          try {
+            openPersonActions(grid.getAttribute('data-shift-id'));
+          } catch (err) {
+            console.error('PersonActions failed:', err);
+          }
+        });
         // Load saved highlights
         try {
           var savedHl = localStorage.getItem('qs-highlights');
