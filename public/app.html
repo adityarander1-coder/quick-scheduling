@@ -1394,10 +1394,13 @@
           var actBtn = e.target.closest ? e.target.closest('.shift-actions-btn') : null;
           if (actBtn) {
             e.stopPropagation();
+            // DEBUG: verify click reaches handler
+            alert('Button clicked! Shift ID: ' + actBtn.getAttribute('data-shift-id'));
             try {
               openPersonActions(actBtn.getAttribute('data-shift-id'));
             } catch (err) {
               console.error('PersonActions failed:', err);
+              alert('Error: ' + err.message);
             }
             return;
           }
