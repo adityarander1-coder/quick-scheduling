@@ -5,6 +5,7 @@
     "@types/express": "^4.17.21",
     "@types/express-session": "^1.18.0",
     "@types/node": "^22.9.0",
+    "@types/pg": "^8.23.1",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
@@ -26,8 +27,5 @@
     "migrate": "tsx src/migrate.ts",
     "start": "node dist/index.js"
   },
-  "version": "0.1.0",
-  "devDependencies": {
-    "@types/pg": "^8.23.1"
-  }
+  "version": "0.1.0"
 }
