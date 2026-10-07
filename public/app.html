@@ -660,7 +660,7 @@
         // Clickable open-slot placeholder, styled like a shift box but dashed.
         function openSlotHtml(dateStr, st, n) {
           var color = st.color || '#637a8e';
-          var label = st.shortName || st.name;
+          var label = st.name;
           return '<button type="button" class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '"' +
             ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
             '<span class="shift-cat" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(label) + '</span>' +
