@@ -634,6 +634,10 @@
             cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
+            // Actions button (opens PersonActions sidebar) - explicit and reliable
+            cBtn += '<button type="button" class="shift-actions-btn" data-shift-id="' + s.id + '"' +
+              ' title="Shift actions" aria-label="Open shift actions for ' + esc(nm) + '"' +
+              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1;color:var(--dim)">⋮</button>';
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
@@ -1384,6 +1388,17 @@
         });
         // Fallback: document-level delegation for shift grid clicks (robust)
         document.addEventListener('click', function (e) {
+          // Explicit actions button (most reliable)
+          var actBtn = e.target.closest ? e.target.closest('.shift-actions-btn') : null;
+          if (actBtn) {
+            e.stopPropagation();
+            try {
+              openPersonActions(actBtn.getAttribute('data-shift-id'));
+            } catch (err) {
+              console.error('PersonActions failed:', err);
+            }
+            return;
+          }
           var grid = e.target.closest ? e.target.closest('.shift-grid[data-shift-id]') : null;
           if (!grid) return;
           // Don't trigger for comment button, open slots, or inside modals/sidebar
