@@ -859,13 +859,18 @@
               openEmployeeCommentModal(b.getAttribute('data-user-id'), b.getAttribute('data-date'));
             });
           });
-          // Person actions sidebar: click a shift name box to open
-          scope.querySelectorAll('.shift-grid[data-shift-id] .shift-nm').forEach(function (nm) {
-            nm.addEventListener('click', function (e) {
-              // Don't trigger if clicking the comment button inside
+          // Person actions sidebar: click a shift box to open (entire grid, not just name)
+          scope.querySelectorAll('.shift-grid[data-shift-id]').forEach(function (grid) {
+            grid.style.cursor = 'pointer';
+            grid.addEventListener('click', function (e) {
+              // Don't trigger if clicking the comment button or open slot inside
               if (e.target.closest('.shift-comment-btn')) return;
-              var grid = nm.closest('.shift-grid');
-              if (grid) openPersonActions(grid.getAttribute('data-shift-id'));
+              if (e.target.closest('.open-slot')) return;
+              try {
+                openPersonActions(grid.getAttribute('data-shift-id'));
+              } catch (err) {
+                console.error('PersonActions open failed:', err);
+              }
             });
           });
         }
