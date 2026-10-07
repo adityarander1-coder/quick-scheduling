@@ -144,6 +144,32 @@
     }
     .sub-panel { display: none; }
     .sub-panel.active { display: block; }
+    /* Demo-style team member cards */
+    .settings-section-head { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 11px; padding: 3px 2px 12px; }
+    .settings-section-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: rgba(8,120,209,0.11); color: var(--accent); }
+    .settings-section-head h3 { margin: 0; font-size: 18px; line-height: 1.2; font-weight: 850; letter-spacing: -.02em; }
+    .settings-section-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .team-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 28px; }
+    .team-row { min-height: 82px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; box-shadow: var(--shadow-soft); }
+    .team-row.inactive { opacity: .58; }
+    .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
+    .color-coral { background: #f06e5b; }
+    .color-sage { background: #4b9a7d; }
+    .color-blue { background: #2672d8; }
+    .color-gold { background: #c48d2c; }
+    .color-plum { background: #8a5fb0; }
+    .color-slate { background: #637a8e; }
+    .team-name { min-width: 0; display: flex; flex-direction: column; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; padding: 0; }
+    .team-name strong, .team-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .team-name strong { font-size: 14px; }
+    .team-name small { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .team-name .employee-end-date { color: var(--danger); }
+    .text-button { padding: 8px 5px; border: 0; border-radius: 999px; background: transparent; color: var(--accent); font-size: 12px; font-weight: 850; cursor: pointer; }
+    .team-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+    .remove-shifts-link { border: 0; padding: 6px 5px; background: transparent; color: var(--danger); font-size: 10px; font-weight: 850; cursor: pointer; }
+    @media (max-width: 480px) {
+      .team-row { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 8px; padding: 9px 10px; }
+    }
     .btn {
       background: var(--accent);
       color: #fff;
@@ -903,6 +929,21 @@
         #tab-settings .assign-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.5rem; margin: 0.6rem 0; }
         #tab-settings .assign-chip { border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.9rem; font-weight: 600; color: #0a0a0a; border: 1px solid; }
         #tab-settings .rot-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+        /* Rotations: employee cards (demo structure) */
+        #tab-settings .employee-rotation-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.1rem 1.2rem; margin-bottom: 1rem; box-shadow: var(--shadow-soft); }
+        #tab-settings .erc-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+        #tab-settings .erc-avatar { width: 44px; height: 44px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 1.2rem; flex-shrink: 0; }
+        #tab-settings .erc-id { flex: 1; min-width: 140px; display: flex; flex-direction: column; }
+        #tab-settings .erc-id strong { font-size: 1.05rem; color: var(--text); }
+        #tab-settings .erc-id span { font-size: 0.85rem; color: var(--dim); }
+        #tab-settings .erc-empty { color: var(--dim); font-size: 0.9rem; margin: 0.6rem 0 0; }
+        #tab-settings .erc-rots { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.7rem; }
+        #tab-settings .erc-rot { display: flex; align-items: center; gap: 0.7rem; text-align: left; width: 100%; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem; cursor: pointer; font-family: inherit; }
+        #tab-settings .erc-rot:hover { border-color: var(--accent); }
+        #tab-settings .erc-rot-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+        #tab-settings .erc-rot-main { flex: 1; display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+        #tab-settings .erc-rot-main strong { font-size: 0.95rem; color: var(--text); }
+        #tab-settings .erc-rot-main span { font-size: 0.82rem; color: var(--dim); }
         #tab-settings .form-row { margin-bottom: 0.8rem; }
         #tab-settings .form-row label { display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 0.9rem; color: var(--text); }
         #tab-settings .form-row input, #tab-settings .form-row select, #tab-settings .form-row textarea { width: 100%; padding: 0.5rem; font-size: 1rem; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; }
@@ -968,17 +1009,20 @@
         <div class="subpanel-container">
           <div id="subtab-rotations" class="sub-panel active">
             <div class="set-head-row">
-              <h3 class="set-h3" style="margin:0">Shift patterns</h3>
-              <button type="button" id="rot-new-btn" class="btn">+ New pattern</button>
+              <h3 class="set-h3" style="margin:0">Rotations</h3>
             </div>
-            <p class="set-desc">Repeating schedules — e.g. "7 on / 7 off". Build a pattern once, then apply it to any date range.</p>
-            <div id="rot-list"></div>
+            <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
+            <div id="rot-emp-list"></div>
 
-            <!-- New pattern modal -->
+            <!-- New/Edit rotation modal -->
             <div id="rot-modal" class="modal-backdrop hidden">
               <div class="modal">
-                <h3>New shift pattern</h3>
+                <h3 id="rot-modal-title">New rotation</h3>
                 <div id="rot-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <label>Team member</label>
+                  <div id="rot-emp-display" style="display:flex;align-items:center;gap:0.6rem"></div>
+                </div>
                 <div class="form-row">
                   <label>Pattern name</label>
                   <input type="text" id="rot-name" placeholder="e.g. 7 on / 7 off" autocomplete="off">
@@ -994,10 +1038,6 @@
                   </div>
                 </div>
                 <div class="form-row">
-                  <label>Team member</label>
-                  <select id="rot-user"></select>
-                </div>
-                <div class="form-row">
                   <label>Shift type</label>
                   <select id="rot-shifttype"></select>
                 </div>
@@ -1007,44 +1047,22 @@
                 </div>
                 <div class="modal-actions">
                   <button type="button" id="rot-cancel" class="btn-secondary">Cancel</button>
-                  <button type="button" id="rot-save" class="btn">Save pattern</button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Apply modal -->
-            <div id="rot-apply-modal" class="modal-backdrop hidden">
-              <div class="modal">
-                <h3 id="rot-apply-title">Apply pattern</h3>
-                <div id="rot-apply-error" class="alert alert-error hidden"></div>
-                <div class="grid-2">
-                  <div class="form-row"><label>From</label><input type="date" id="rot-apply-from"></div>
-                  <div class="form-row"><label>To</label><input type="date" id="rot-apply-to"></div>
-                </div>
-                <div class="modal-actions">
-                  <button type="button" id="rot-apply-cancel" class="btn-secondary">Cancel</button>
-                  <button type="button" id="rot-apply-go" class="btn">Apply shifts</button>
+                  <button type="button" id="rot-del" class="btn-danger hidden">Delete</button>
+                  <button type="button" id="rot-save" class="btn">Save rotation</button>
                 </div>
               </div>
             </div>
 
             <script>
             (function () {
-              // Rotations sub-panel — ported from rotations.html, IDs prefixed rot-.
-              var members = [], shiftTypes = [], applyRotId = null;
+              // Rotations sub-panel — employee-centric (demo structure).
+              // Each employee card lists their rotations; no "apply to dates".
+              var members = [], shiftTypes = [], allRots = [];
+              var modalUserId = null;
+              var editingRotId = null;
 
-              function esc(s) {
-                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-              }
-              function tint(hex, pct) {
-                var n = String(hex || '').replace('#', '');
-                if (n.length === 3) n = n[0]+n[0]+n[1]+n[1]+n[2]+n[2];
-                var r = parseInt(n.slice(0,2),16), g = parseInt(n.slice(2,4),16), b = parseInt(n.slice(4,6),16);
-                var t = pct/100;
-                r = Math.round(r+(255-r)*t); g = Math.round(g+(255-g)*t); b = Math.round(b+(255-b)*t);
-                return 'rgb('+r+','+g+','+b+')';
-              }
+              var AVATAR_COLORS = ['#f06e5b', '#2672d8', '#00a88f', '#d98314', '#8a5fb0', '#637a8e'];
+
               function fullName(u) {
                 var fn = ((u.firstName||'') + ' ' + (u.lastName||'')).trim();
                 return fn || u.name || u.email || '';
@@ -1052,6 +1070,23 @@
               function stById(id) {
                 for (var i = 0; i < shiftTypes.length; i++) if (shiftTypes[i].id === id) return shiftTypes[i];
                 return null;
+              }
+              function memberById(id) {
+                for (var i = 0; i < members.length; i++) if (members[i].id === id) return members[i];
+                return null;
+              }
+              function avatarColor(name) {
+                var h = 0;
+                for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997;
+                return AVATAR_COLORS[h % AVATAR_COLORS.length];
+              }
+              function fmtTime(t) {
+                if (!t) return '';
+                var p = String(t).split(':');
+                var h = parseInt(p[0], 10), m = p[1] || '00';
+                var ap = h >= 12 ? 'PM' : 'AM';
+                h = h % 12; if (h === 0) h = 12;
+                return h + ':' + m + ' ' + ap;
               }
               function isActive() {
                 var h = window.location.hash || '#settings/rotations';
@@ -1064,73 +1099,95 @@
                   api('/api/schedule/shift-types'),
                   api('/api/schedule/rotations'),
                 ]).then(function (rs) {
+                  if (!rs[0].ok || !rs[1].ok || !rs[2].ok) { pageError('Could not load rotations.'); return; }
                   members = (rs[0].data.users || []).filter(function (u) { return u.isActive; });
                   shiftTypes = rs[1].data.shiftTypes || [];
-                  renderList(rs[2].data.rotations || []);
-                }).catch(function () { pageError('Could not load shift patterns.'); });
+                  allRots = rs[2].data.rotations || [];
+                  renderEmployees();
+                }).catch(function () { pageError('Could not load rotations.'); });
               }
 
-              function renderList(rots) {
-                var el = $('rot-list');
-                if (!rots.length) {
-                  el.innerHTML = '<p style="color:#94a3b8">No shift patterns yet. Create one to get started.</p>';
+              function rotsForUser(userId) {
+                return allRots.filter(function (r) {
+                  return (r.assignments || []).some(function (a) { return a.userId === userId; });
+                });
+              }
+
+              function rotSummary(r) {
+                var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
+                var uniq = days.filter(function (d, i) { return days.indexOf(d) === i; }).length;
+                return uniq + ' workday' + (uniq === 1 ? '' : 's') + ' in each ' + r.cycleDays +
+                  '-day cycle \u00b7 repeats from ' + (r.startDate || '\u2014');
+              }
+
+              function renderEmployees() {
+                var el = $('rot-emp-list');
+                if (!members.length) {
+                  el.innerHTML = '<div class="sub-card" style="text-align:center;padding:2rem 1.2rem">' +
+                    '<p style="color:var(--dim);margin:0 0 1rem">Add your team members first, then build each person\u2019s repeating schedule.</p>' +
+                    '<button type="button" class="btn" id="rot-goto-team">Go to Team members</button></div>';
+                  $('rot-goto-team').addEventListener('click', function () { window.location.hash = '#settings/team'; });
                   return;
                 }
                 var html = '';
-                rots.forEach(function (r) {
-                  html += '<div class="rot-card"><h3>' + esc(r.name) + '</h3>';
-                  html += '<div class="rot-meta">Repeats every ' + r.cycleDays + ' days · starts ' + esc(r.startDate) +
-                    ' · ' + (r.assignments ? r.assignments.length : 0) + ' assignments</div>';
-                  if (r.assignments && r.assignments.length) {
-                    html += '<div class="assign-grid">';
-                    var seen = {};
-                    r.assignments.forEach(function (a) {
-                      var key = a.userId + '|' + a.shiftTypeId;
-                      if (seen[key]) { seen[key].days.push(a.cycleDay); return; }
-                      seen[key] = { a: a, days: [a.cycleDay] };
-                    });
-                    Object.keys(seen).forEach(function (k) {
-                      var e = seen[k];
-                      var st = stById(e.a.shiftTypeId);
-                      var color = st ? st.color : '#637a8e';
-                      var nm = (e.a.firstName || '') + ' ' + (e.a.lastName || '');
-                      html += '<div class="assign-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' +
-                        esc(nm.trim()) + ' — ' + esc(st ? st.name : '') + '<br><span style="font-weight:400">Days ' + e.days.sort(function(x,y){return x-y;}).join(', ') + '</span></div>';
+                members.forEach(function (m) {
+                  var nm = fullName(m);
+                  var initial = (nm.trim().charAt(0) || '?').toUpperCase();
+                  var roleDept = [m.jobRole, m.department].filter(Boolean).join(' \u00b7 ');
+                  var rots = rotsForUser(m.id);
+                  html += '<div class="employee-rotation-card">' +
+                    '<div class="erc-head">' +
+                    '<span class="erc-avatar" style="background:' + avatarColor(nm) + '">' + esc(initial) + '</span>' +
+                    '<div class="erc-id"><strong>' + esc(nm) + '</strong>' +
+                    (roleDept ? '<span>' + esc(roleDept) + '</span>' : '') + '</div>' +
+                    '<button type="button" class="btn rot-add-btn" data-user="' + m.id + '">+ Add rotation</button>' +
+                    '</div>';
+                  if (!rots.length) {
+                    html += '<p class="erc-empty">No rotations yet.</p>';
+                  } else {
+                    html += '<div class="erc-rots">';
+                    rots.forEach(function (r) {
+                      var stMap = {};
+                      (r.assignments || []).forEach(function (a) { stMap[a.shiftTypeId] = true; });
+                      var sts = Object.keys(stMap).map(stById).filter(Boolean);
+                      var stLabel = sts.length ? sts.map(function (s) { return s.name; }).join(', ') : '\u2014';
+                      var stColor = sts.length ? sts[0].color : '#637a8e';
+                      var times = (sts.length && sts[0].startTime) ? (fmtTime(sts[0].startTime) + '\u2013' + fmtTime(sts[0].endTime)) : '';
+                      html += '<button type="button" class="erc-rot" data-rot="' + r.id + '">' +
+                        '<span class="erc-rot-dot" style="background:' + esc(stColor) + '"></span>' +
+                        '<span class="erc-rot-main"><strong>' + esc(r.name) + '</strong>' +
+                        '<span>' + esc(rotSummary(r)) + '</span>' +
+                        '<span>' + esc(stLabel) + (times ? ' \u00b7 ' + esc(times) : '') + '</span></span>' +
+                        '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' +
+                        (r.isActive ? 'Active' : 'Inactive') + '</span>' +
+                        '</button>';
                     });
                     html += '</div>';
                   }
-                  html += '<div class="rot-actions">' +
-                    '<button type="button" class="btn rot-apply-btn" data-id="' + r.id + '" data-name="' + esc(r.name) + '">Apply to dates…</button>' +
-                    '<button type="button" class="btn-secondary rot-del-btn" data-id="' + r.id + '">Delete</button>' +
-                    '</div></div>';
+                  html += '</div>';
                 });
                 el.innerHTML = html;
-                el.querySelectorAll('.rot-apply-btn').forEach(function (b) {
-                  b.addEventListener('click', function () {
-                    applyRotId = b.getAttribute('data-id');
-                    $('rot-apply-title').textContent = 'Apply "' + b.getAttribute('data-name') + '"';
-                    var t = new Date();
-                    $('rot-apply-from').value = t.toISOString().slice(0, 10);
-                    var t2 = new Date(); t2.setDate(t2.getDate() + 27);
-                    $('rot-apply-to').value = t2.toISOString().slice(0, 10);
-                    hide($('rot-apply-error'));
-                    show($('rot-apply-modal'));
-                  });
+                el.querySelectorAll('.rot-add-btn').forEach(function (b) {
+                  b.addEventListener('click', function () { openNewRotation(b.getAttribute('data-user')); });
                 });
-                el.querySelectorAll('.rot-del-btn').forEach(function (b) {
+                el.querySelectorAll('.erc-rot').forEach(function (b) {
                   b.addEventListener('click', function () {
-                    if (!confirm('Delete this pattern? Existing shifts stay.')) return;
-                    api('/api/schedule/rotations/' + b.getAttribute('data-id'), { method: 'DELETE' })
-                      .then(function (r) { if (r.ok) { pageSuccess('Pattern deleted.'); loadAll(); } });
+                    var r = null;
+                    for (var i = 0; i < allRots.length; i++) {
+                      if (allRots[i].id === b.getAttribute('data-rot')) { r = allRots[i]; break; }
+                    }
+                    if (r) openEditRotation(r);
                   });
                 });
               }
 
-              function renderDayToggles() {
-                var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value) || 7));
+              function renderDayToggles(selected) {
+                var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value, 10) || 7));
+                selected = selected || [];
                 var html = '';
                 for (var d = 1; d <= n; d++) {
-                  html += '<button type="button" class="day-toggle" data-day="' + d + '">Day ' + d + '</button>';
+                  html += '<button type="button" class="day-toggle' + (selected.indexOf(d) >= 0 ? ' on' : '') +
+                    '" data-day="' + d + '">Day ' + d + '</button>';
                 }
                 $('rot-days').innerHTML = html;
                 $('rot-days').querySelectorAll('.day-toggle').forEach(function (b) {
@@ -1138,62 +1195,117 @@
                 });
               }
 
-              $('rot-new-btn').addEventListener('click', function () {
-                $('rot-name').value = '';
-                $('rot-cycle').value = 7;
-                $('rot-start').value = new Date().toISOString().slice(0, 10);
-                var us = $('rot-user'); us.innerHTML = '';
-                members.forEach(function (m) {
-                  var o = document.createElement('option');
-                  o.value = m.id;
-                  o.textContent = fullName(m) + (m.jobRole ? ' (' + m.jobRole + ')' : '');
-                  us.appendChild(o);
-                });
+              function fillShiftTypes(selectedId) {
                 var ts = $('rot-shifttype'); ts.innerHTML = '';
                 shiftTypes.forEach(function (st) {
                   if (!st.isActive) return;
                   var o = document.createElement('option');
                   o.value = st.id; o.textContent = st.name;
+                  if (st.id === selectedId) o.selected = true;
                   ts.appendChild(o);
                 });
-                renderDayToggles();
+              }
+
+              function empDisplayHtml(m) {
+                var nm = m ? fullName(m) : 'Unknown member';
+                var initial = (nm.trim().charAt(0) || '?').toUpperCase();
+                return '<span class="erc-avatar" style="background:' + avatarColor(nm) + ';width:32px;height:32px;font-size:0.95rem">' +
+                  esc(initial) + '</span><span style="font-weight:600">' + esc(nm) + '</span>';
+              }
+
+              function openNewRotation(userId) {
+                var m = memberById(userId);
+                if (!m) return;
+                modalUserId = userId;
+                editingRotId = null;
+                $('rot-modal-title').textContent = 'New rotation';
+                $('rot-emp-display').innerHTML = empDisplayHtml(m);
+                $('rot-name').value = '';
+                $('rot-cycle').value = 7;
+                $('rot-start').value = new Date().toISOString().slice(0, 10);
+                fillShiftTypes(null);
+                renderDayToggles([]);
                 hide($('rot-error'));
+                hide($('rot-del'));
                 show($('rot-modal'));
-              });
-              $('rot-cycle').addEventListener('change', renderDayToggles);
-              $('rot-cancel').addEventListener('click', function () { hide($('rot-modal')); });
-              $('rot-save').addEventListener('click', function () {
+              }
+
+              function openEditRotation(r) {
+                var firstA = (r.assignments || [])[0];
+                var userId = firstA ? firstA.userId : null;
+                modalUserId = userId;
+                editingRotId = r.id;
+                $('rot-modal-title').textContent = 'Edit rotation';
+                $('rot-emp-display').innerHTML = empDisplayHtml(userId ? memberById(userId) : null);
+                $('rot-name').value = r.name || '';
+                $('rot-cycle').value = r.cycleDays || 7;
+                $('rot-start').value = r.startDate || '';
+                fillShiftTypes(firstA ? firstA.shiftTypeId : null);
+                var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
+                renderDayToggles(days);
+                hide($('rot-error'));
+                show($('rot-del'));
+                show($('rot-modal'));
+              }
+
+              function collectDays() {
                 var days = [];
                 $('rot-days').querySelectorAll('.day-toggle.on').forEach(function (b) {
-                  days.push(parseInt(b.getAttribute('data-day')));
+                  days.push(parseInt(b.getAttribute('data-day'), 10));
                 });
+                return days;
+              }
+
+              function doCreate(body, onOk) {
+                api('/api/schedule/rotations', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                  if (r.ok) { onOk(); }
+                  else { var e = $('rot-error'); e.textContent = (r.data && r.data.error) || 'Could not save.'; show(e); }
+                }).catch(function () {
+                  var e2 = $('rot-error'); e2.textContent = 'Network error. Please try again.'; show(e2);
+                });
+              }
+
+              $('rot-cycle').addEventListener('change', function () { renderDayToggles(collectDays()); });
+              $('rot-cancel').addEventListener('click', function () { hide($('rot-modal')); });
+              $('rot-modal').addEventListener('click', function (e) { if (e.target === $('rot-modal')) hide($('rot-modal')); });
+              $('rot-save').addEventListener('click', function () {
+                var days = collectDays();
                 if (!days.length) {
                   var e = $('rot-error'); e.textContent = 'Pick at least one day of the cycle.'; show(e); return;
                 }
+                if (!modalUserId) {
+                  var e2 = $('rot-error'); e2.textContent = 'No team member selected.'; show(e2); return;
+                }
+                if (!$('rot-shifttype').value) {
+                  var e3 = $('rot-error'); e3.textContent = 'Pick a shift type.'; show(e3); return;
+                }
                 var body = {
-                  name: $('rot-name').value.trim() || 'Shift pattern',
-                  cycleDays: parseInt($('rot-cycle').value) || 7,
+                  name: $('rot-name').value.trim() || 'Rotation',
+                  cycleDays: parseInt($('rot-cycle').value, 10) || 7,
                   startDate: $('rot-start').value,
                   assignments: days.map(function (d) {
-                    return { userId: $('rot-user').value, cycleDay: d, shiftTypeId: $('rot-shifttype').value };
+                    return { userId: modalUserId, cycleDay: d, shiftTypeId: $('rot-shifttype').value };
                   }),
                 };
-                api('/api/schedule/rotations', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-                  if (r.ok) { hide($('rot-modal')); pageSuccess('Pattern saved.'); loadAll(); }
-                  else { var e2 = $('rot-error'); e2.textContent = (r.data && r.data.error) || 'Could not save.'; show(e2); }
+                if (editingRotId) {
+                  // No update endpoint: create the replacement first, then delete the old one.
+                  doCreate(body, function () {
+                    api('/api/schedule/rotations/' + editingRotId, { method: 'DELETE' }).then(function () {
+                      hide($('rot-modal')); pageSuccess('Rotation updated.'); loadAll();
+                    });
+                  });
+                } else {
+                  doCreate(body, function () { hide($('rot-modal')); pageSuccess('Rotation saved.'); loadAll(); });
+                }
+              });
+              $('rot-del').addEventListener('click', function () {
+                if (!editingRotId) return;
+                if (!confirm('Delete this rotation?')) return;
+                api('/api/schedule/rotations/' + editingRotId, { method: 'DELETE' }).then(function (r) {
+                  if (r.ok) { hide($('rot-modal')); pageSuccess('Rotation deleted.'); loadAll(); }
+                  else { var e = $('rot-error'); e.textContent = (r.data && r.data.error) || 'Could not delete.'; show(e); }
                 });
               });
-              $('rot-apply-cancel').addEventListener('click', function () { hide($('rot-apply-modal')); });
-              $('rot-apply-go').addEventListener('click', function () {
-                var body = { from: $('rot-apply-from').value, to: $('rot-apply-to').value };
-                api('/api/schedule/rotations/' + applyRotId + '/apply', { method: 'POST', body: JSON.stringify(body) })
-                  .then(function (r) {
-                    if (r.ok) { hide($('rot-apply-modal')); pageSuccess('Created ' + r.data.created + ' shifts.'); }
-                    else { var e = $('rot-apply-error'); e.textContent = (r.data && r.data.error) || 'Could not apply.'; show(e); }
-                  });
-              });
-              $('rot-modal').addEventListener('click', function (e) { if (e.target === $('rot-modal')) hide($('rot-modal')); });
-              $('rot-apply-modal').addEventListener('click', function (e) { if (e.target === $('rot-apply-modal')) hide($('rot-apply-modal')); });
 
               window.addEventListener('hashchange', function () { if (isActive()) loadAll(); });
               if (isActive()) loadAll();
@@ -1201,22 +1313,16 @@
             </script>
           </div>
           <div id="subtab-team" class="sub-panel">
-            <div class="set-head-row">
-              <h3 class="set-h3" style="margin:0">Team members</h3>
-            </div>
-            <div class="sub-card">
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Name</th><th>Email</th><th>Phone</th><th>Department</th>
-                      <th>Job role</th><th>System role</th><th>End date</th><th>Status</th><th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="team-members-body"></tbody>
-                </table>
+            <div class="settings-section-head">
+              <span class="settings-section-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+              </span>
+              <div>
+                <h3>Team members</h3>
+                <p>Add and manage employee profiles used throughout the schedule.</p>
               </div>
             </div>
+            <div class="team-list" id="team-members-list"></div>
 
             <div class="sub-card">
               <h3>Add a team member</h3>
@@ -1323,65 +1429,105 @@
                 return null;
               }
 
+              // Deterministic avatar color from name (demo palette).
+              var AVATAR_COLORS = ['coral', 'sage', 'blue', 'gold', 'plum', 'slate'];
+              function avatarColor(u) {
+                var s = String(u.name || u.email || '?');
+                var h = 0;
+                for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+                return AVATAR_COLORS[h % AVATAR_COLORS.length];
+              }
+              function initialOf(u) {
+                var s = String(u.name || u.email || '?').trim();
+                return s ? s.charAt(0).toUpperCase() : '?';
+              }
+              function memberStatusLabel(u) {
+                if (!u.isActive) return 'Inactive';
+                if (u.inviteStatus === 'not_sent') return 'Invite not sent';
+                if (u.inviteStatus === 'sent') return 'Invite sent';
+                if (u.inviteStatus === 'expired') return 'Invite expired';
+                return 'Active';
+              }
+
               function renderMembers() {
-                var body = $('team-members-body');
-                body.textContent = '';
+                var list = $('team-members-list');
+                list.textContent = '';
                 if (!members.length) {
-                  var r = document.createElement('tr');
-                  var c = document.createElement('td');
-                  c.colSpan = 9; c.textContent = 'No team members yet.';
-                  r.appendChild(c); body.appendChild(r);
+                  var empty = document.createElement('p');
+                  empty.style.color = 'var(--muted)';
+                  empty.textContent = 'No team members yet. Add your first team member below.';
+                  list.appendChild(empty);
                   return;
                 }
                 members.forEach(function (u) {
-                  var row = document.createElement('tr');
-                  function cell(text) { var td = document.createElement('td'); td.textContent = text; return td; }
-                  row.appendChild(cell(displayName(u)));
-                  row.appendChild(cell(u.email || ''));
-                  row.appendChild(cell(u.phone || ''));
-                  row.appendChild(cell(u.department || ''));
-                  row.appendChild(cell(u.jobRole || ''));
-                  var roleCell = document.createElement('td');
-                  var badge = document.createElement('span');
-                  badge.className = roleBadgeClass(u.role);
-                  badge.textContent = u.role || '';
-                  roleCell.appendChild(badge);
-                  row.appendChild(roleCell);
-                  row.appendChild(cell(u.endDate || ''));
-                  var statusCell = document.createElement('td');
-                  statusCell.appendChild(statusBadge(u));
-                  row.appendChild(statusCell);
-                  var actCell = document.createElement('td');
-                  actCell.className = 'row-actions';
-                  var editBtn = document.createElement('button');
-                  editBtn.type = 'button'; editBtn.className = 'btn-secondary'; editBtn.textContent = 'Edit';
-                  editBtn.addEventListener('click', function () { startEdit(u.id); });
-                  actCell.appendChild(editBtn);
+                  var row = document.createElement('div');
+                  row.className = 'team-row' + (u.isActive ? '' : ' inactive');
+
+                  var av = document.createElement('span');
+                  av.className = 'avatar color-' + avatarColor(u);
+                  av.textContent = initialOf(u);
+                  row.appendChild(av);
+
+                  var nameBtn = document.createElement('button');
+                  nameBtn.type = 'button';
+                  nameBtn.className = 'team-name';
+                  nameBtn.setAttribute('aria-label', 'Edit ' + displayName(u));
+                  nameBtn.addEventListener('click', function () { startEdit(u.id); });
+
+                  var nm = document.createElement('strong');
+                  nm.textContent = displayName(u);
+                  nameBtn.appendChild(nm);
+
+                  var roleDept = document.createElement('small');
+                  roleDept.textContent = (u.jobRole || u.role || '') + (u.department ? ' · ' + u.department : '');
+                  nameBtn.appendChild(roleDept);
+
+                  var contact = document.createElement('small');
+                  contact.textContent = (u.email || '') + (u.phone ? ' · ' + u.phone : '');
+                  nameBtn.appendChild(contact);
+
+                  if (u.endDate) {
+                    var ed = document.createElement('small');
+                    ed.className = 'employee-end-date';
+                    ed.textContent = 'Last working day: ' + u.endDate;
+                    nameBtn.appendChild(ed);
+                  }
+
+                  var st = document.createElement('small');
+                  st.textContent = memberStatusLabel(u);
+                  nameBtn.appendChild(st);
+
+                  row.appendChild(nameBtn);
+
+                  var actions = document.createElement('div');
+                  actions.className = 'team-row-actions';
+
                   if (invitePending(u)) {
                     var linkBtn = document.createElement('button');
-                    linkBtn.type = 'button'; linkBtn.className = 'btn-secondary'; linkBtn.textContent = 'Copy invite link';
+                    linkBtn.type = 'button'; linkBtn.className = 'text-button'; linkBtn.textContent = 'Copy invite link';
                     linkBtn.addEventListener('click', function () { fetchInviteLink(u.id); });
-                    actCell.appendChild(linkBtn);
+                    actions.appendChild(linkBtn);
                     var sendBtn = document.createElement('button');
-                    sendBtn.type = 'button'; sendBtn.className = 'btn-secondary'; sendBtn.textContent = 'Send invite';
+                    sendBtn.type = 'button'; sendBtn.className = 'text-button'; sendBtn.textContent = 'Send invite';
                     sendBtn.addEventListener('click', function () { sendInvite(u.id); });
-                    actCell.appendChild(sendBtn);
+                    actions.appendChild(sendBtn);
                     if (u.inviteStatus === 'not_sent') {
                       var sentBtn = document.createElement('button');
-                      sentBtn.type = 'button'; sentBtn.className = 'btn-secondary'; sentBtn.textContent = 'Mark as sent';
+                      sentBtn.type = 'button'; sentBtn.className = 'text-button'; sentBtn.textContent = 'Mark as sent';
                       sentBtn.addEventListener('click', function () { markInviteSent(u.id); });
-                      actCell.appendChild(sentBtn);
+                      actions.appendChild(sentBtn);
                     }
                   }
                   if (u.id !== myUserId) {
                     var toggleBtn = document.createElement('button');
-                    toggleBtn.type = 'button'; toggleBtn.className = 'btn-secondary';
-                    toggleBtn.textContent = u.isActive ? 'Deactivate' : 'Reactivate';
+                    toggleBtn.type = 'button'; toggleBtn.className = 'text-button';
+                    toggleBtn.textContent = u.isActive ? 'Active' : 'Inactive';
+                    toggleBtn.setAttribute('aria-label', (u.isActive ? 'Deactivate ' : 'Reactivate ') + displayName(u));
                     toggleBtn.addEventListener('click', function () { toggleActive(u); });
-                    actCell.appendChild(toggleBtn);
+                    actions.appendChild(toggleBtn);
                   }
-                  row.appendChild(actCell);
-                  body.appendChild(row);
+                  row.appendChild(actions);
+                  list.appendChild(row);
                 });
               }
 
