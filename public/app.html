@@ -265,6 +265,12 @@
         #tab-schedule .shift-cat { border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm { background: #ffffff; border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
         #tab-schedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
+        /* Open shift slots (unfilled staffing targets) */
+        #tab-schedule button.open-slot { border: 0; background: none; padding: 0; width: 100%; cursor: pointer; font: inherit; text-align: left; }
+        #tab-schedule button.open-slot:hover .shift-cat { filter: brightness(0.96); }
+        #tab-schedule button.open-slot:hover .shift-nm { background: #f8fafc; }
+        #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; }
+        #tab-schedule .month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
         #tab-schedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
         #tab-schedule .type-group-h { margin: 0.6rem 0 0.4rem; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; color: var(--text); }
         /* Draft / Published pills */
@@ -388,6 +394,7 @@
           shifts: [],
           days: {},
           comments: [],
+          staffingTargets: [],
           canEdit: false,
           assignDate: null,
           dayModalDate: null,
@@ -486,13 +493,15 @@
             api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/days?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/comments?from=' + r.from + '&to=' + r.to),
+            api('/api/schedule/staffing-targets'),
           ]).then(function (results) {
-            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4];
+            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
             if (sR.ok) sched.shifts = sR.data.shifts || [];
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
+            if (tR.ok) sched.staffingTargets = tR.data.targets || [];
             renderLegend();
             renderView();
             renderPublishBar();
@@ -529,6 +538,43 @@
             '</div>';
         }
 
+        // Staffing target that applies to a shift type on a given date (weekdays + date range).
+        function targetCountFor(dateStr, shiftTypeId) {
+          var targets = sched.staffingTargets || [];
+          for (var i = 0; i < targets.length; i++) {
+            var t = targets[i];
+            if (t.shiftTypeId !== shiftTypeId) continue;
+            var weekdays = t.weekdays || [0, 1, 2, 3, 4, 5, 6];
+            if (weekdays.indexOf(parseDate(dateStr).getDay()) < 0) return 0;
+            if (t.startDate && dateStr < t.startDate) return 0;
+            if (t.endDate && dateStr > t.endDate) return 0;
+            return t.targetCount || 0;
+          }
+          return 0;
+        }
+
+        // Number of unfilled positions for a shift type on a date.
+        function openCountFor(dateStr, shiftTypeId) {
+          var target = targetCountFor(dateStr, shiftTypeId);
+          if (!target) return 0;
+          var filled = 0;
+          for (var i = 0; i < sched.shifts.length; i++) {
+            if (sched.shifts[i].date === dateStr && sched.shifts[i].shiftTypeId === shiftTypeId) filled++;
+          }
+          return Math.max(0, target - filled);
+        }
+
+        // Clickable open-slot placeholder, styled like a shift box but dashed.
+        function openSlotHtml(dateStr, st, n) {
+          var color = st.color || '#637a8e';
+          var label = st.shortName || st.name;
+          return '<button type="button" class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '"' +
+            ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
+            '<span class="shift-cat" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(label) + '</span>' +
+            '<span class="shift-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">+ Open slot</span>' +
+            '</button>';
+        }
+
         function dayRowHtml(dateStr) {
           var d = parseDate(dateStr);
           var shifts = shiftsFor(dateStr);
@@ -542,8 +588,26 @@
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
           html += '<div class="day-row-body">';
-          if (!shifts.length) html += '<div class="empty-day">No shifts assigned.</div>';
-          shifts.forEach(function (s) { html += shiftBoxHtml(s); });
+          var byType = {};
+          shifts.forEach(function (s) {
+            (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
+          });
+          var renderedIds = {};
+          var hasContent = false;
+          sched.shiftTypes.forEach(function (st) {
+            if (!st.isActive) return;
+            var list = byType[st.id] || [];
+            var open = openCountFor(dateStr, st.id);
+            if (!list.length && !open) return;
+            hasContent = true;
+            list.forEach(function (s) { html += shiftBoxHtml(s); renderedIds[s.id] = true; });
+            for (var i = 0; i < open; i++) html += openSlotHtml(dateStr, st, i + 1);
+          });
+          // Shifts whose type is inactive or unknown still render.
+          shifts.forEach(function (s) {
+            if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
+          });
+          if (!hasContent) html += '<div class="empty-day">No shifts assigned.</div>';
           html += '</div></article>';
           return html;
         }
@@ -587,14 +651,23 @@
           shifts.forEach(function (s) {
             (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
           });
+          var renderedIds = {};
+          var hasContent = false;
           sched.shiftTypes.forEach(function (st) {
+            if (!st.isActive) return;
             var list = byType[st.id] || [];
-            if (!list.length) return;
+            var open = openCountFor(ds, st.id);
+            if (!list.length && !open) return;
+            hasContent = true;
             html += '<h4 class="type-group-h"><span class="legend-swatch" style="background:' +
-              esc(st.color) + '"></span> ' + esc(st.name) + ' (' + list.length + ')</h4>';
-            list.forEach(function (s) { html += shiftBoxHtml(s); });
+              esc(st.color) + '"></span> ' + esc(st.name) + ' (' + list.length + (open ? ' + ' + open + ' open' : '') + ')</h4>';
+            list.forEach(function (s) { html += shiftBoxHtml(s); renderedIds[s.id] = true; });
+            for (var i = 0; i < open; i++) html += openSlotHtml(ds, st, i + 1);
           });
-          if (!shifts.length) html += '<div class="empty-day">No shifts assigned for this day.</div>';
+          shifts.forEach(function (s) {
+            if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
+          });
+          if (!hasContent) html += '<div class="empty-day">No shifts assigned for this day.</div>';
           if (comments.length) {
             html += '<h4 class="type-group-h">Notes</h4>';
             comments.forEach(function (c) {
@@ -635,6 +708,12 @@
             html += '<div class="' + cls + '" data-date="' + ds + '">';
             html += '<div class="day-num"><span>' + d.getDate() + '</span>' + statusPillHtml(ds) + '</div>';
             shiftsFor(ds).forEach(function (s) { html += monthChipHtml(s); });
+            var openTotal = 0;
+            sched.shiftTypes.forEach(function (st) {
+              if (!st.isActive) return;
+              openTotal += openCountFor(ds, st.id);
+            });
+            if (openTotal) html += '<div class="month-open" title="' + openTotal + ' open position' + (openTotal === 1 ? '' : 's') + '">+' + openTotal + ' open</div>';
             html += '</div>';
           }
           html += '</div>';
@@ -672,6 +751,12 @@
               openAssignModal(b.getAttribute('data-date'));
             });
           });
+          scope.querySelectorAll('.open-slot').forEach(function (b) {
+            b.addEventListener('click', function (e) {
+              e.stopPropagation();
+              openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
+            });
+          });
           scope.querySelectorAll('.day-row-date').forEach(function (t) {
             t.addEventListener('click', function () { openDayModal(t.getAttribute('data-date')); });
           });
@@ -705,7 +790,7 @@
           });
         }
 
-        function openAssignModal(dateStr) {
+        function openAssignModal(dateStr, shiftTypeId) {
           if (!sched.canEdit) return;
           sched.assignDate = dateStr;
           $('sched-assign-title').textContent = 'Assign shift \u2014 ' + fmtLong(dateStr);
@@ -727,6 +812,7 @@
             o.value = st.id; o.textContent = st.name;
             tSel.appendChild(o);
           });
+          if (shiftTypeId) tSel.value = shiftTypeId;
           show($('sched-assign-modal'));
         }
 
@@ -756,6 +842,24 @@
               (sched.canEdit ? '<button type="button" class="btn-secondary shift-del-m" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
           });
           $('sched-day-shifts').innerHTML = html;
+          // Open slots for unfilled staffing targets.
+          var openHtml = '';
+          if (sched.canEdit) {
+            sched.shiftTypes.forEach(function (st) {
+              if (!st.isActive) return;
+              var open = openCountFor(ds, st.id);
+              for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
+            });
+          }
+          if (openHtml) {
+            $('sched-day-shifts').innerHTML += '<h4 class="type-group-h" style="margin-top:0.6rem">Open positions</h4>' + openHtml;
+            $('sched-day-shifts').querySelectorAll('.open-slot').forEach(function (b) {
+              b.addEventListener('click', function () {
+                hide($('sched-day-modal'));
+                openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
+              });
+            });
+          }
           var ch = '';
           comments.forEach(function (c) {
             var about = c.firstName ? ' <strong>' + esc((c.firstName + ' ' + (c.lastName || '')).trim()) + ':</strong>' : '';
