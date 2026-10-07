@@ -661,14 +661,14 @@
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
             // Highlight button (cycles through colors)
             var hlBg = highlightColorFor(s.userId) || '#fff';
-            cBtn += '<button type="button" class="shift-hl-btn" data-user-id="' + s.userId + '" data-shift-id="' + s.id + '"' +
+            cBtn += '<button type="button" class="shift-hl-btn" onclick="event.stopPropagation();window.qsHighlightShift(\'' + s.userId + '\')"' +
               ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
             // Replace and delete buttons (show on all shifts)
-            cBtn += '<button type="button" class="shift-replace-btn" data-shift-id="' + s.id + '"' +
+            cBtn += '<button type="button" class="shift-replace-btn" onclick="event.stopPropagation();window.qsReplaceShift(\'' + s.id + '\')"' +
               ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
-            cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '"' +
+            cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\')"' +
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
           }
@@ -992,37 +992,66 @@
               });
             });
           });
-          // Delete button
-          scope.querySelectorAll('.shift-delete-btn').forEach(function (b) {
-            b.addEventListener('click', function (e) {
-              e.stopPropagation();
-              var sid = b.getAttribute('data-shift-id');
-              var s = shiftById(sid);
-              var isRot = sid && sid.indexOf('rot-') === 0;
-              showDialog('Delete shift', '<p>Delete this shift?</p>', [
-                { label: 'Cancel' },
-                { label: 'Delete', danger: true, onClick: function () {
-                  if (isRot && s) {
-                    // Rotation shift: create an exclusion
-                    api('/api/schedule/rotation-shifts/delete', {
-                      method: 'POST',
-                      body: JSON.stringify({
-                        rotationId: s.rotationId,
-                        userId: s.userId,
-                        date: s.date,
-                        shiftTypeId: s.shiftTypeId
-                      })
-                    }).then(function (r) {
-                      if (r.ok) { pageSuccess('Shift removed.'); loadAll(); }
-                      else pageError((r.data && r.data.error) || 'Could not remove shift.');
-                    });
-                  } else {
-                    deleteShift(sid);
-                  }
-                } }
-              ]);
-            });
+          // Global highlight function (simple, reliable)
+        window.qsHighlightShift = function(userId) {
+          var cur = sched.highlights[userId];
+          var curHue = (cur && typeof cur === 'object' && cur.hue != null) ? cur.hue : cur;
+          var idx = -1;
+          for (var i = 0; i < HIGHLIGHT_COLORS.length; i++) {
+            if (HIGHLIGHT_COLORS[i].hue === curHue) { idx = i; break; }
+          }
+          if (idx === -1) {
+            sched.highlights[userId] = HIGHLIGHT_COLORS[0];
+          } else if (idx === HIGHLIGHT_COLORS.length - 1) {
+            delete sched.highlights[userId];
+          } else {
+            sched.highlights[userId] = HIGHLIGHT_COLORS[idx + 1];
+          }
+          try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
+          renderSchedule();
+        };
+        // Global replace function (simple, reliable)
+        window.qsReplaceShift = function(sid) {
+          var s = shiftById(sid);
+          if (!s) return;
+          // Anybody can swap - just exclude the current person
+          var candidates = sched.members.filter(function (c) {
+            return String(c.id) !== String(s.userId);
           });
+          if (!candidates.length) {
+            showInfo('No other team members to swap with.');
+            return;
+          }
+          var listHtml = candidates.map(function (c, i) {
+            var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
+            return '<button type="button" class="sp-item" onclick="window.qsDoReplace(\'' + sid + '\',\'' + c.id + '\')"><span class="sp-ic" style="background:#e3f0fa">👤</span>' + esc(cn) + '</button>';
+          }).join('');
+          showDialog('Replace with', '<p style="color:var(--dim);font-size:13px;margin-bottom:8px">Choose a team member:</p>' + listHtml, [
+            { label: 'Cancel' }
+          ]);
+        };
+        window.qsDoReplace = function(sid, newUserId) {
+          hide($('action-dialog'));
+          var s = shiftById(sid);
+          if (!s) return;
+          var isRot = s.id && s.id.indexOf('rot-') === 0;
+          if (isRot && s.rotationId) {
+            api('/api/schedule/rotation-shifts/delete', {
+              method: 'POST',
+              body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
+            }).then(function () {
+              return api('/api/schedule/shifts', {
+                method: 'POST',
+                body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
+              });
+            }).then(function (r) {
+              if (r && r.ok) { loadAll(); }
+              else { showInfo('Could not replace shift.'); }
+            }).catch(function() { showInfo('Could not replace shift.'); });
+          } else {
+            replaceShift(s, newUserId);
+          }
+        };
           // Person actions sidebar: click a shift box to open (entire grid, not just name)
           scope.querySelectorAll('.shift-grid[data-shift-id]').forEach(function (grid) {
             grid.style.cursor = 'pointer';
