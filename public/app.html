@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick Scheduling</title>
+  <style>
+    /* Design tokens from demo */
+    :root {
+      --bg: #edf4f8;
+      --surface: #ffffff;
+      --surface-alt: #f3f8fb;
+      --text: #102d47;
+      --dim: #5c7185;
+      --border: #cbdbe5;
+      --accent: #0878d1;
+      --navy: #082f4f;
+      --teal: #00a9a4;
+      --success: #137f72;
+      --danger: #bd3d4a;
+      --box-ink: #0a0a0a;
+      --radius: 22px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .app-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem 0;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.8rem;
+    }
+    .brand {
+      font-size: 1.3rem;
+      font-weight: 800;
+      color: var(--navy);
+    }
+    .brand span { font-weight: 400; color: var(--dim); font-size: 1rem; }
+    .user-chip {
+      font-size: 0.85rem;
+      color: var(--dim);
+    }
+    .main-tabs {
+      display: flex;
+      gap: 0.25rem;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      padding: 0.7rem 1.1rem;
+      border: none;
+      background: none;
+      color: var(--dim);
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-bottom: 3px solid transparent;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .app-content {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      padding: 1.5rem;
+      margin-bottom: 1.2rem;
+    }
+    .card h2 { margin: 0 0 1rem; font-size: 1.4rem; }
+    .sub-tabs {
+      display: flex;
+      gap: 0.4rem;
+      margin-bottom: 1.2rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.6rem;
+      overflow-x: auto;
+    }
+    .subtab-btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      color: var(--dim);
+      font-weight: 600;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+    .subtab-btn.active {
+      background: #eaf3fb;
+      color: var(--accent);
+    }
+    .sub-panel { display: none; }
+    .sub-panel.active { display: block; }
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(0.95); }
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 1.2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-danger {
+      background: var(--danger);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .hidden { display: none !important; }
+    .alert {
+      padding: 0.8rem 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+    }
+    .alert-error { background: #fde8e8; color: #9b1c1c; border: 1px solid #f5c6c6; }
+    .alert-success { background: #e6f7f0; color: #137f72; border: 1px solid #b8e6d4; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-row">
+      <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
+      <div>
+        <span class="user-chip" id="user-chip"></span>
+        <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
+      </div>
+    </div>
+    <nav class="main-tabs" role="tablist">
+      <button class="tab-btn active" data-tab="schedule">Schedule</button>
+      <button class="tab-btn" data-tab="ask">Ask Schedule</button>
+      <button class="tab-btn" data-tab="settings">Settings</button>
+      <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
+      <button class="tab-btn" data-tab="link">Employee Link</button>
+      <button class="tab-btn" data-tab="help">Help</button>
+    </nav>
+  </header>
+
+  <main class="app-content">
+    <div id="page-error" class="alert alert-error hidden" role="alert"></div>
+    <div id="page-success" class="alert alert-success hidden" role="status"></div>
+
+    <!-- Schedule tab -->
+    <section id="tab-schedule" class="tab-panel active">
+      <div class="card">
+        <h2 id="schedule-title">Schedule</h2>
+        <div id="schedule-content">
+          <p style="color:var(--dim)">Schedule views coming — Day, Week, Month, Range with boxed day layouts.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Ask Schedule tab -->
+    <section id="tab-ask" class="tab-panel">
+      <div class="card">
+        <h2>Ask about the schedule</h2>
+        <p style="color:var(--dim)">AI schedule assistant — coming in Phase 5.</p>
+      </div>
+    </section>
+
+    <!-- Settings tab -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="card">
+        <h2>Settings</h2>
+        <nav class="sub-tabs" role="tablist">
+          <button class="subtab-btn active" data-subtab="rotations">Rotations</button>
+          <button class="subtab-btn" data-subtab="team">Team members</button>
+          <button class="subtab-btn" data-subtab="staffing">Staffing</button>
+          <button class="subtab-btn" data-subtab="shifts">Shifts</button>
+          <button class="subtab-btn" data-subtab="candidates">Candidates</button>
+        </nav>
+        <div class="subpanel-container">
+          <div id="subtab-rotations" class="sub-panel active">
+            <p style="color:var(--dim)">Shift patterns — coming.</p>
+          </div>
+          <div id="subtab-team" class="sub-panel">
+            <p style="color:var(--dim)">Team members — coming.</p>
+          </div>
+          <div id="subtab-staffing" class="sub-panel">
+            <p style="color:var(--dim)">Staffing targets — coming.</p>
+          </div>
+          <div id="subtab-shifts" class="sub-panel">
+            <p style="color:var(--dim)">Shift settings — coming.</p>
+          </div>
+          <div id="subtab-candidates" class="sub-panel">
+            <p style="color:var(--dim)">Candidates — coming.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bulk Actions tab -->
+    <section id="tab-bulk" class="tab-panel">
+      <div class="card">
+        <h2>Bulk Actions</h2>
+        <p style="color:var(--dim)">Publish ranges, remove shifts in bulk — coming.</p>
+      </div>
+    </section>
+
+    <!-- Employee Link tab -->
+    <section id="tab-link" class="tab-panel">
+      <div class="card">
+        <h2>Employee Link</h2>
+        <p style="color:var(--dim)">Share the schedule with your team — coming.</p>
+      </div>
+    </section>
+
+    <!-- Help tab -->
+    <section id="tab-help" class="tab-panel">
+      <div class="card">
+        <h2>Help & How-to</h2>
+        <p style="color:var(--dim)">Guides — coming.</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function $(id) { return document.getElementById(id); }
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+    function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      return fetch(path, opts).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+      });
+    }
+    function pageError(m) { var e = $('page-error'); e.textContent = m; show(e); }
+    function pageSuccess(m) { var e = $('page-success'); e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); }
+
+    var routes = {
+      'schedule': function() { activateTab('schedule'); },
+      'ask': function() { activateTab('ask'); },
+      'settings': function(sub) { activateTab('settings', sub || 'rotations'); },
+      'bulk': function() { activateTab('bulk'); },
+      'link': function() { activateTab('link'); },
+      'help': function() { activateTab('help'); },
+    };
+
+    function activateTab(tabId, subtabId) {
+      document.querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
+      });
+      document.querySelectorAll('.tab-panel').forEach(function (panel) {
+        panel.classList.toggle('active', panel.id === 'tab-' + tabId);
+      });
+      var titles = { schedule: 'Schedule', ask: 'Ask about the schedule', settings: 'Settings', bulk: 'Bulk Actions', link: 'Employee Link', help: 'Help & How-to' };
+      if (subtabId) {
+        document.querySelectorAll('.subtab-btn').forEach(function (btn) {
+          btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
+        });
+        document.querySelectorAll('.sub-panel').forEach(function (panel) {
+          panel.classList.toggle('active', panel.id === 'subtab-' + subtabId);
+        });
+      }
+    }
+
+    function handleHash() {
+      var hash = window.location.hash.replace('#', '') || 'schedule';
+      var parts = hash.split('/');
+      var tab = parts[0], sub = parts[1];
+      if (routes[tab]) routes[tab](sub);
+      else routes['schedule']();
+    }
+
+    document.querySelector('.main-tabs').addEventListener('click', function (e) {
+      var btn = e.target.closest('.tab-btn');
+      if (btn) window.location.hash = btn.getAttribute('data-tab');
+    });
+    document.querySelector('.sub-tabs').addEventListener('click', function (e) {
+      var btn = e.target.closest('.subtab-btn');
+      if (btn) window.location.hash = 'settings/' + btn.getAttribute('data-subtab');
+    });
+    window.addEventListener('hashchange', handleHash);
+
+    $('logout').addEventListener('click', function () {
+      api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
+    });
+
+    // Init
+    api('/api/auth/me').then(function (r) {
+      if (!r.ok) { window.location.href = '/login.html'; return; }
+      var role = r.data.user.role;
+      if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
+      $('company-name').textContent = r.data.company.name;
+      $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
+      document.title = r.data.company.name + ' · employee schedule';
+      handleHash();
+    });
+  </script>
+</body>
+</html>
