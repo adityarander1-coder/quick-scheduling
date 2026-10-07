@@ -512,6 +512,16 @@
           var fn = ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
           return fn || u.name || u.email || '';
         }
+        // Demo format: "LastName FirstInitial." (e.g. "Rander Adv.") to disambiguate.
+        function displayName(s) {
+          if (s.nickname) return s.nickname;
+          var last = (s.lastName || '').trim();
+          var first = (s.firstName || '').trim();
+          if (last && first) return last + ' ' + first.slice(0, 3) + '.';
+          if (last) return last;
+          if (first) return first;
+          return 'Team member';
+        }
         function shiftTypeById(id) {
           for (var i = 0; i < sched.shiftTypes.length; i++)
             if (sched.shiftTypes[i].id === id) return sched.shiftTypes[i];
@@ -615,7 +625,7 @@
           var st = shiftTypeById(s.shiftTypeId);
           var color = st ? st.color : '#637a8e';
           var label = st ? st.name : 'Shift';
-          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+          var nm = displayName(s);
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return c.userId === s.userId; });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
@@ -776,7 +786,7 @@
         function monthChipHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
           var color = st ? st.color : '#637a8e';
-          var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+          var nm = displayName(s);
           return '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
             '" title="' + esc(nm + ' \u2014 ' + (st ? st.name : '')) + '">' +
             '<span class="dot" style="background:' + esc(color) + '"></span><span>' + esc(nm) + '</span></div>';
@@ -948,7 +958,7 @@
           if (!shifts.length) html += '<p style="color:#94a3b8">No shifts assigned.</p>';
           shifts.forEach(function (s) {
             var st = shiftTypeById(s.shiftTypeId);
-            var nm = s.nickname || ((s.firstName || '') + ' ' + (s.lastName || '')).trim();
+            var nm = displayName(s);
             html += '<div class="dm-shift-row"><span class="shift-color-bar" style="background:' +
               esc(st ? st.color : '#64748b') + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + '</span>' +
