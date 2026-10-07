@@ -590,4 +590,32 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+// DELETE /api/schedule/shift-types/:id — delete (owner/scheduler).
+// Shifts using this type are kept; the type is deactivated instead if in use.
+router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT id FROM shifts WHERE shift_type_id = $1 AND company_id = $2 LIMIT 1',
+      [req.params.id, companyId]
+    );
+    if (rows.length) {
+      await query(
+        'UPDATE shift_types SET is_active = false WHERE id = $1 AND company_id = $2',
+        [req.params.id, companyId]
+      );
+    } else {
+      const { rowCount } = await query(
+        'DELETE FROM shift_types WHERE id = $1 AND company_id = $2',
+        [req.params.id, companyId]
+      );
+      if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete shift type failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;

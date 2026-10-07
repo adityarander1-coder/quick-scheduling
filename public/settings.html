@@ -54,9 +54,31 @@
     </div>
 
     <div class="settings-card">
-      <h3>Shift settings</h3>
-      <p style="color:#5c7185;margin-top:0">Default start and end times for each shift type.</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem">
+        <h3 style="margin:0">Shift settings</h3>
+        <button type="button" id="add-shift-btn" class="btn-secondary">+ Add shift type</button>
+      </div>
+      <p style="color:#5c7185">Define your own shift types — any roles, any company. Set default start and end times for each.</p>
       <div id="shifts-list"></div>
+    </div>
+
+    <div id="shift-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
+      <div class="modal" style="background:#fff;border-radius:10px;padding:1.5rem;width:min(440px,94vw)">
+        <h3 style="margin-top:0">New shift type</h3>
+        <div id="shift-modal-error" class="alert alert-error hidden"></div>
+        <div class="form-row">
+          <label>Name</label>
+          <input type="text" id="new-shift-name" placeholder="e.g. Morning Cashier" style="width:100%;padding:0.5rem;font-size:1rem">
+        </div>
+        <div class="form-row">
+          <label>Color</label>
+          <input type="color" id="new-shift-color" value="#3b82f6" style="width:60px;height:40px">
+        </div>
+        <div style="display:flex;gap:0.6rem;justify-content:flex-end;margin-top:1rem">
+          <button type="button" id="shift-modal-cancel" class="btn-secondary">Cancel</button>
+          <button type="button" id="shift-modal-save">Add</button>
+        </div>
+      </div>
     </div>
 
     <div class="save-bar">
@@ -121,9 +143,21 @@
             '<span>to</span>' +
             '<input type="time" id="end-' + i + '" value="' + esc(st.endTime || '20:00') + '">' +
           '</div>' +
+          '<button type="button" class="btn-secondary del-shift-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Delete</button>' +
           '</div>';
       });
       $('shifts-list').innerHTML = html;
+      $('shifts-list').querySelectorAll('.del-shift-btn').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var name = b.getAttribute('data-name');
+          if (!confirm('Delete "' + name + '"? Existing shifts stay, but it will be hidden.')) return;
+          api('/api/schedule/shift-types/' + b.getAttribute('data-id'), { method: 'DELETE' })
+            .then(function (r) {
+              if (r.ok) { pageSuccess('Shift type deleted.'); loadAll(); }
+              else { pageError((r.data && r.data.error) || 'Could not delete.'); }
+            });
+        });
+      });
     }
 
     function loadAll() {
@@ -174,6 +208,28 @@
 
     $('logout').addEventListener('click', function () {
       api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
+    });
+
+    $('add-shift-btn').addEventListener('click', function () {
+      $('new-shift-name').value = '';
+      $('new-shift-color').value = '#3b82f6';
+      hide($('shift-modal-error'));
+      show($('shift-modal'));
+    });
+    $('shift-modal-cancel').addEventListener('click', function () { hide($('shift-modal')); });
+    $('shift-modal').addEventListener('click', function (e) { if (e.target === $('shift-modal')) hide($('shift-modal')); });
+    $('shift-modal-save').addEventListener('click', function () {
+      var name = $('new-shift-name').value.trim();
+      if (!name) {
+        var e = $('shift-modal-error'); e.textContent = 'Enter a name.'; show(e); return;
+      }
+      api('/api/schedule/shift-types', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, color: $('new-shift-color').value }),
+      }).then(function (r) {
+        if (r.ok) { hide($('shift-modal')); pageSuccess('Shift type added.'); loadAll(); }
+        else { var e = $('shift-modal-error'); e.textContent = (r.data && r.data.error) || 'Could not add.'; show(e); }
+      });
     });
 
     loadAll();
