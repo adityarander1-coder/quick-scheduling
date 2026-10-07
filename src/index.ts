@@ -68,7 +68,7 @@ app.use('/api/schedule', scheduleRouter);
 
 // GET / → /home.html when signed in, else /login.html.
 app.get('/', (req: Request, res: Response) => {
-  if (req.session?.userId) res.redirect('/home.html');
+  if (req.session?.userId) res.redirect('/app.html');
   else res.redirect('/login.html');
 });
 

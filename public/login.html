@@ -66,7 +66,7 @@
         }).then(function (result) {
           submitBtn.disabled = false;
           if (result.ok) {
-            window.location.href = '/home.html';
+            window.location.href = '/app.html';
           } else {
             showError(result.data && result.data.error ? result.data.error : 'Login failed. Please try again.');
           }
