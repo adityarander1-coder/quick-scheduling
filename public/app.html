@@ -482,6 +482,14 @@
         <div class="shift-popup-header"><span id="sp-name">Team member</span><span id="sp-date"></span></div>
         <div id="sp-list"></div>
       </div>
+      <!-- Generic action dialog (replaces alert/confirm/prompt on mobile) -->
+      <div id="action-dialog" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:340px">
+          <h3 id="ad-title">Confirm</h3>
+          <div id="ad-body" style="margin:12px 0;font-size:14px"></div>
+          <div class="modal-actions" id="ad-actions"></div>
+        </div>
+      </div>
 
       <script>
       (function () {
@@ -928,7 +936,7 @@
               if (!s) return;
               var isRot = s.id && s.id.indexOf('rot-') === 0;
               if (isRot) {
-                alert('This is a rotation shift. To replace it, edit the rotation itself.');
+                showInfo('This is a rotation shift. To replace it, edit the rotation itself.');
                 return;
               }
               var m = memberById(s.userId);
@@ -946,18 +954,24 @@
                 return true;
               });
               if (!candidates.length) {
-                alert('No available team member with the same title on this day.');
+                showInfo('No available team member with the same title on this day.');
                 return;
               }
-              var names = candidates.map(function (c, i) {
+              // Candidate picker dialog
+              var listHtml = candidates.map(function (c, i) {
                 var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
-                return (i + 1) + '. ' + cn;
-              }).join('\n');
-              var choice = prompt('Replace with (not working that day):\n' + names + '\n\nEnter number:');
-              var n = parseInt(choice, 10);
-              if (n >= 1 && n <= candidates.length) {
-                replaceShift(s, candidates[n - 1].id);
-              }
+                return '<button type="button" class="sp-item" data-cand="' + i + '"><span class="sp-ic" style="background:#e3f0fa">👤</span>' + esc(cn) + '</button>';
+              }).join('');
+              showDialog('Replace with', '<p style="color:var(--dim);font-size:13px;margin-bottom:8px">Available (not working that day):</p>' + listHtml, [
+                { label: 'Cancel' }
+              ]);
+              $('ad-body').querySelectorAll('[data-cand]').forEach(function (cb) {
+                cb.addEventListener('click', function () {
+                  var idx = parseInt(cb.getAttribute('data-cand'), 10);
+                  hide($('action-dialog'));
+                  replaceShift(s, candidates[idx].id);
+                });
+              });
             });
           });
           // Delete button
@@ -967,12 +981,13 @@
               var sid = b.getAttribute('data-shift-id');
               var isRot = sid && sid.indexOf('rot-') === 0;
               if (isRot) {
-                alert('This is a rotation shift. Edit the rotation to remove it.');
+                showInfo('This is a rotation shift. Edit the rotation to remove it.');
                 return;
               }
-              if (confirm('Delete this shift?')) {
-                deleteShift(sid);
-              }
+              showDialog('Delete shift', '<p>Delete this shift?</p>', [
+                { label: 'Cancel' },
+                { label: 'Delete', danger: true, onClick: function () { deleteShift(sid); } }
+              ]);
             });
           });
           // Person actions sidebar: click a shift box to open (entire grid, not just name)
@@ -1236,6 +1251,29 @@
         function closeShiftPopup() {
           hide($('shift-popup'));
           popupShift = null;
+        }
+        // Custom dialog (mobile-friendly replacement for alert/confirm/prompt)
+        function showDialog(title, bodyHtml, buttons) {
+          $('ad-title').textContent = title;
+          $('ad-body').innerHTML = bodyHtml;
+          var actions = $('ad-actions');
+          actions.innerHTML = '';
+          buttons.forEach(function (btn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = btn.primary ? 'btn' : 'btn-secondary';
+            if (btn.danger) b.className = 'btn-danger';
+            b.textContent = btn.label;
+            b.addEventListener('click', function () {
+              hide($('action-dialog'));
+              if (btn.onClick) btn.onClick();
+            });
+            actions.appendChild(b);
+          });
+          show($('action-dialog'));
+        }
+        function showInfo(msg) {
+          showDialog('Notice', '<p>' + esc(msg) + '</p>', [{ label: 'OK', primary: true }]);
         }
         // Popup item clicks (delegated)
         document.addEventListener('click', function (e) {
