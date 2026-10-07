@@ -128,6 +128,18 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId]
     );
 
+    // Load rotation shift exclusions (deleted rotation instances)
+    const { rows: exclRows } = await query(
+      `SELECT rotation_id AS "rotationId", user_id AS "userId",
+              date::text AS "date", shift_type_id AS "shiftTypeId"
+       FROM rotation_shift_exclusions
+       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+    const exclSet = new Set(exclRows.map((e: any) =>
+      `${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`
+    ));
+
     const rotationShifts: any[] = [];
     for (const rot of rotations) {
       const { rows: assignments } = await query(
@@ -180,6 +192,10 @@ router.get('/shifts', async (req: Request, res: Response) => {
             s.userId === a.userId && s.date === dateStr && s.shiftTypeId === a.shiftTypeId
           );
           if (hasManual) continue;
+
+          // Skip if this rotation instance was deleted (exclusion)
+          const exclKey = `${rot.id}|${a.userId}|${dateStr}|${a.shiftTypeId}`;
+          if (exclSet.has(exclKey)) continue;
 
           rotationShifts.push({
             id: `rot-${rot.id}-${a.userId}-${dateStr}`,
@@ -284,6 +300,29 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete shift failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance
+// Body: { rotationId, userId, date, shiftTypeId }
+router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rotationId, userId, date, shiftTypeId } = req.body ?? {};
+    if (!rotationId || !userId || !date) {
+      res.status(400).json({ error: 'rotationId, userId, and date are required.' });
+      return;
+    }
+    await query(
+      `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+      [companyId, rotationId, userId, date, shiftTypeId || null]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete rotation shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

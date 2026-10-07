@@ -935,10 +935,6 @@
               var s = shiftById(b.getAttribute('data-shift-id'));
               if (!s) return;
               var isRot = s.id && s.id.indexOf('rot-') === 0;
-              if (isRot) {
-                showInfo('This is a rotation shift. To replace it, edit the rotation itself.');
-                return;
-              }
               var m = memberById(s.userId);
               var role = m ? (m.jobRole || m.role || '') : '';
               // People already working this date (any shift type)
@@ -969,7 +965,29 @@
                 cb.addEventListener('click', function () {
                   var idx = parseInt(cb.getAttribute('data-cand'), 10);
                   hide($('action-dialog'));
-                  replaceShift(s, candidates[idx].id);
+                  var newUserId = candidates[idx].id;
+                  if (isRot) {
+                    // Rotation shift: exclude old, create manual for new
+                    api('/api/schedule/rotation-shifts/delete', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        rotationId: s.rotationId,
+                        userId: s.userId,
+                        date: s.date,
+                        shiftTypeId: s.shiftTypeId
+                      })
+                    }).then(function () {
+                      return api('/api/schedule/shifts', {
+                        method: 'POST',
+                        body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
+                      });
+                    }).then(function (r) {
+                      if (r && r.ok) { pageSuccess('Shift replaced.'); loadAll(); }
+                      else pageError('Could not replace shift.');
+                    });
+                  } else {
+                    replaceShift(s, newUserId);
+                  }
                 });
               });
             });
@@ -979,14 +997,29 @@
             b.addEventListener('click', function (e) {
               e.stopPropagation();
               var sid = b.getAttribute('data-shift-id');
+              var s = shiftById(sid);
               var isRot = sid && sid.indexOf('rot-') === 0;
-              if (isRot) {
-                showInfo('This is a rotation shift. Edit the rotation to remove it.');
-                return;
-              }
               showDialog('Delete shift', '<p>Delete this shift?</p>', [
                 { label: 'Cancel' },
-                { label: 'Delete', danger: true, onClick: function () { deleteShift(sid); } }
+                { label: 'Delete', danger: true, onClick: function () {
+                  if (isRot && s) {
+                    // Rotation shift: create an exclusion
+                    api('/api/schedule/rotation-shifts/delete', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        rotationId: s.rotationId,
+                        userId: s.userId,
+                        date: s.date,
+                        shiftTypeId: s.shiftTypeId
+                      })
+                    }).then(function (r) {
+                      if (r.ok) { pageSuccess('Shift removed.'); loadAll(); }
+                      else pageError((r.data && r.data.error) || 'Could not remove shift.');
+                    });
+                  } else {
+                    deleteShift(sid);
+                  }
+                } }
               ]);
             });
           });
