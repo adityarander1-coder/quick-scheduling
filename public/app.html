@@ -3456,14 +3456,13 @@
             <div id="cand-approve-box" class="sub-card hidden">
               <h3>Candidate approved</h3>
               <p id="cand-approve-text"></p>
-              <div class="temp-password">
-                Temporary password (shown once — share it with the new hire):<br>
-                <code id="cand-approve-password"></code>
+              <p><strong>Invite link</strong> — share this with the new team member so they can set their own password:</p>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+                <input type="text" id="cand-invite-link" readonly style="flex:1;min-width:200px;padding:0.5rem;border:1px solid var(--border);border-radius:8px">
+                <button type="button" id="cand-invite-copy" class="btn-secondary">Copy</button>
+                <button type="button" id="cand-invite-send" class="btn">Send invite email</button>
               </div>
-              <div style="margin-top:1rem">
-                <button type="button" id="cand-send-invite" class="btn">Send invite email</button>
-                <span id="cand-invite-note" style="margin-left:0.8rem;font-size:13px"></span>
-              </div>
+              <div id="cand-invite-note" class="alert hidden" role="status" style="margin-top:0.6rem"></div>
             </div>
 
             <div class="sub-card">
@@ -3689,15 +3688,23 @@
                 $('cand-approve-box').classList.add('hidden');
                 api('/api/candidates/' + cd.id + '/approve', { method: 'POST' }).then(function (result) {
                   if (result.ok) {
+                    var newUserId = result.data.user.id;
                     $('cand-approve-text').textContent =
                       result.data.user.name + ' (' + result.data.user.email + ') is now on the team as an employee.';
-                    $('cand-approve-password').textContent = result.data.tempPassword;
-                    $('cand-invite-note').textContent = '';
-                    $('cand-send-invite').onclick = function () {
+                    $('cand-invite-link').value = result.data.inviteLink || '';
+                    $('cand-invite-note').classList.add('hidden');
+                    $('cand-invite-copy').onclick = function () {
+                      $('cand-invite-link').select();
+                      document.execCommand('copy');
+                      $('cand-invite-note').textContent = 'Link copied.';
+                      $('cand-invite-note').classList.remove('hidden');
+                    };
+                    $('cand-invite-send').onclick = function () {
                       $('cand-invite-note').textContent = 'Sending…';
-                      api('/api/users/' + result.data.user.id + '/send-invite', { method: 'POST' }).then(function (r) {
+                      $('cand-invite-note').classList.remove('hidden');
+                      api('/api/users/' + newUserId + '/send-invite', { method: 'POST' }).then(function (r) {
                         if (r.ok) $('cand-invite-note').textContent = 'Invite email sent.';
-                        else if (r.status === 503) $('cand-invite-note').textContent = 'Email not set up — share the temp password above instead.';
+                        else if (r.status === 503) $('cand-invite-note').textContent = 'Email not set up — copy the link manually instead.';
                         else $('cand-invite-note').textContent = (r.data && r.data.error) || 'Could not send.';
                       }).catch(function () { $('cand-invite-note').textContent = 'Network error.'; });
                     };

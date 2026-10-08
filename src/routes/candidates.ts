@@ -13,6 +13,7 @@ import { query } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { findNameWarnings, NameWarning } from '../util/names';
 import { splitName, joinName } from '../util/names';
+import { issueInvite, unusablePasswordHash } from '../util/invites';
 
 const router = Router();
 
@@ -324,7 +325,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/candidates/:id/approve — create an employee user from the candidate.
-// Returns a one-time temporary password the admin must pass to the new hire.
+// Uses the standard invite flow (same as manually added team members).
 router.post('/:id/approve', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -356,6 +357,8 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
     const passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
     const userId = crypto.randomUUID();
     const nameSplit = splitName(cand.name);
+    // Use unusable password hash like manual team member add — invite flow handles setup.
+    const inviteHash = await unusablePasswordHash();
     await query(
       `INSERT INTO users
          (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, avatar_data)
@@ -371,12 +374,15 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
         cand.phone,
         cand.department_id,
         cand.job_role,
-        passwordHash,
+        inviteHash,
         cand.special_instructions,
         cand.avatar_data,
       ]
     );
     await query(`UPDATE candidates SET status = 'approved' WHERE id = $1`, [cand.id]);
+
+    // Issue standard invite (same as manually added team members).
+    const { inviteLink } = await issueInvite(userId, companyId);
 
     res.status(201).json({
       user: {
@@ -391,8 +397,7 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
         jobRole: cand.job_role,
         role: 'employee',
       },
-      // Shown once — the admin must hand it to the new hire; it is never stored in plain text.
-      tempPassword,
+      inviteLink,
     });
   } catch (err) {
     console.error('[candidates] approve failed:', err);
