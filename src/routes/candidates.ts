@@ -19,6 +19,15 @@ const router = Router();
 const BCRYPT_COST = 12;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Validate avatar data URL: must be a small JPEG/PNG/WebP data URL (max ~200KB).
+function validateAvatar(v: any): string | null {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v);
+  if (s.length > 300000) return null;
+  if (!/^data:image\/(jpeg|png|webp);base64,/.test(s)) return null;
+  return s;
+}
 const VALID_STATUS = ['pending', 'approved', 'declined'];
 
 const publicLimit = (max: number) =>
@@ -43,6 +52,8 @@ function publicCandidate(c: any) {
     department: c.department_name ?? null,
     jobRole: c.job_role ?? null,
     notes: c.notes ?? null,
+    specialInstructions: c.special_instructions ?? null,
+    avatarData: c.avatar_data ?? null,
     status: c.status,
     submittedAt: c.submitted_at,
   };
@@ -50,7 +61,8 @@ function publicCandidate(c: any) {
 
 const CANDIDATE_SELECT = `
   SELECT c.id, c.name, c.nickname, c.email, c.phone, c.department_id,
-         d.name AS department_name, c.job_role, c.notes, c.status, c.submitted_at
+         d.name AS department_name, c.job_role, c.notes, c.status, c.submitted_at,
+         c.special_instructions, c.avatar_data
   FROM candidates c LEFT JOIN departments d ON d.id = c.department_id
 `;
 
@@ -128,7 +140,7 @@ router.get('/departments', publicLimit(30), async (req: Request, res: Response) 
 // warnings are returned so the admin queue (and submitter notice) can show them.
 router.post('/', publicLimit(10), async (req: Request, res: Response) => {
   try {
-    const { companyId, name, nickname, email, phone, departmentId, jobRole, notes } = req.body ?? {};
+    const { companyId, name, nickname, email, phone, departmentId, jobRole, notes, specialInstructions, avatarData } = req.body ?? {};
     if (!companyId || !UUID_RE.test(String(companyId))) {
       res.status(400).json({ error: 'This application link is not valid.' });
       return;
@@ -165,8 +177,8 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     await query(
       `INSERT INTO candidates
-         (id, company_id, name, nickname, email, phone, department_id, job_role, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (id, company_id, name, nickname, email, phone, department_id, job_role, notes, special_instructions, avatar_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         id,
         companyId,
@@ -177,6 +189,8 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
         deptId,
         String(jobRole ?? '').trim() || null,
         String(notes ?? '').trim() || null,
+        String(specialInstructions ?? '').trim().slice(0, 500) || null,
+        validateAvatar(avatarData),
       ]
     );
     const { rows } = await query(CANDIDATE_SELECT + ` WHERE c.id = $1`, [id]);
@@ -342,8 +356,8 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
     const nameSplit = splitName(cand.name);
     await query(
       `INSERT INTO users
-         (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'employee')`,
+         (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, avatar_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'employee', $12, $13)`,
       [
         userId,
         companyId,
@@ -356,6 +370,8 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
         cand.department_id,
         cand.job_role,
         passwordHash,
+        cand.special_instructions,
+        cand.avatar_data,
       ]
     );
     await query(`UPDATE candidates SET status = 'approved' WHERE id = $1`, [cand.id]);

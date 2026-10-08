@@ -26,13 +26,21 @@
       <div id="submit-error" class="alert alert-error hidden" role="alert"></div>
       <form id="apply-form" novalidate>
         <div class="grid-2">
-          <label>Full name<input type="text" id="name" autocomplete="off" required></label>
+          <label>First name<input type="text" id="firstname" autocomplete="off" required></label>
+          <label>Last name<input type="text" id="lastname" autocomplete="off"></label>
           <label>Nickname <span class="hint">(optional)</span><input type="text" id="nickname" autocomplete="off"></label>
           <label>Email<input type="email" id="email" autocomplete="off" required></label>
           <label>Phone <span class="hint">(optional)</span><input type="tel" id="phone" autocomplete="off"></label>
           <label>Department<select id="department"><option value="">— None —</option></select></label>
           <label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span><input type="text" id="jobrole" autocomplete="off"></label>
         </div>
+        <label>Special instructions <span class="hint">(optional, e.g. prefers nights, no weekends)</span><textarea id="instructions" rows="2" maxlength="500"></textarea></label>
+        <label>Profile photo <span class="hint">(optional)</span>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+            <img id="avatar-preview" class="hidden" style="width:56px;height:56px;border-radius:50%;object-fit:cover" alt="">
+            <input type="file" id="avatar" accept="image/*" style="font-size:13px">
+          </div>
+        </label>
         <label>Anything we should know? <span class="hint">(optional)</span><textarea id="notes" rows="3"></textarea></label>
         <div style="margin-top:0.8rem"><button type="submit" id="submit">Submit application</button></div>
       </form>
@@ -46,6 +54,30 @@
   <script>
     (function () {
       var companyId = null;
+      var avatarData = null;
+
+      // Profile photo: resize client-side to 200px square JPEG.
+      document.getElementById('avatar').addEventListener('change', function () {
+        var file = this.files && this.files[0];
+        var prev = document.getElementById('avatar-preview');
+        if (!file || !file.type.match(/^image\//)) { avatarData = null; prev.classList.add('hidden'); return; }
+        var img = new Image();
+        var url = URL.createObjectURL(file);
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          var size = 200;
+          var canvas = document.createElement('canvas');
+          canvas.width = size; canvas.height = size;
+          var ctx = canvas.getContext('2d');
+          var s = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+          avatarData = canvas.toDataURL('image/jpeg', 0.8);
+          prev.src = avatarData;
+          prev.classList.remove('hidden');
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); avatarData = null; prev.classList.add('hidden'); };
+        img.src = url;
+      });
 
       function showLinkError(msg) {
         var el = document.getElementById('link-error');
@@ -93,9 +125,9 @@
         var errEl = document.getElementById('submit-error');
         errEl.textContent = '';
         errEl.classList.add('hidden');
-        var name = document.getElementById('name').value.trim();
-        if (!name) {
-          errEl.textContent = 'Please enter your name.';
+        var firstname = document.getElementById('firstname').value.trim();
+        if (!firstname) {
+          errEl.textContent = 'Please enter your first name.';
           errEl.classList.remove('hidden');
           return;
         }
@@ -112,13 +144,15 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             companyId: companyId,
-            name: name,
+            name: firstname + ' ' + document.getElementById('lastname').value.trim(),
             nickname: document.getElementById('nickname').value.trim(),
             email: email,
             phone: document.getElementById('phone').value.trim(),
             departmentId: document.getElementById('department').value,
             jobRole: document.getElementById('jobrole').value.trim(),
-            notes: document.getElementById('notes').value.trim()
+            notes: document.getElementById('notes').value.trim(),
+            specialInstructions: document.getElementById('instructions').value.trim(),
+            avatarData: avatarData
           })
         }).then(function (res) {
           return res.json().then(function (data) { return { ok: res.ok, data: data }; });
