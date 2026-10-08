@@ -338,6 +338,28 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       );
     } catch (err: any) {
       if (err?.code === '23505') {
+        // Tell the user exactly which shift already exists (helps diagnose hidden shifts).
+        try {
+          const { rows: existing } = await query(
+            `SELECT s.date::text AS date, s.published, st.name AS "shiftTypeName",
+                    st.is_active AS "shiftTypeActive", u.is_active AS "userActive"
+             FROM shifts s
+             JOIN shift_types st ON st.id = s.shift_type_id
+             JOIN users u ON u.id = s.user_id
+             WHERE s.company_id = $1 AND s.user_id = $2 AND s.date = $3 AND s.shift_type_id = $4`,
+            [companyId, userId, date, shiftTypeId]
+          );
+          if (existing.length) {
+            const ex = existing[0];
+            res.status(409).json({
+              error: `That team member already has "${ex.shiftTypeName}" on ${ex.date}` +
+                (ex.published === false ? ' (currently in draft)' : '') +
+                (ex.shiftTypeActive === false ? ' [shift type is inactive]' : '') +
+                (ex.userActive === false ? ' [team member is inactive]' : '') + '.',
+            });
+            return;
+          }
+        } catch { /* fall through to generic message */ }
         res.status(409).json({ error: 'That team member already has this shift on that date.' });
         return;
       }
