@@ -104,7 +104,8 @@
           return;
         }
         companyId = result.data.company.id;
-        document.getElementById('company-name').textContent = result.data.company.name;
+        var cnEl = document.getElementById('company-name');
+        if (cnEl) cnEl.textContent = result.data.company.name;
         document.getElementById('form-card').classList.remove('hidden');
         return get('/api/candidates/departments?companyId=' + encodeURIComponent(companyId));
       }).then(function (result) {
