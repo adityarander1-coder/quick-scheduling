@@ -154,9 +154,6 @@
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
     .color-coral { background: #f06e5b; }
-    .color-swatches { display: flex; gap: 8px; }
-    .color-swatch { width: 36px; height: 36px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
-    .color-swatch.selected { border-color: #102d47; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #102d47; }
     .color-sage { background: #4b9a7d; }
     .color-blue { background: #2672d8; }
     .color-gold { background: #c48d2c; }
@@ -2579,7 +2576,13 @@
                   <div class="form-row"><label>Department</label><select id="team-add-dept"><option value="">— None —</option></select></div>
                   <div class="form-row"><label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span></label><input type="text" id="team-add-jobrole" autocomplete="off"></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional, e.g. prefers nights, no weekends)</span></label><textarea id="team-add-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
-                  <div class="form-row" style="grid-column:1/-1"><label>Profile color</label><div id="team-add-colors" class="color-swatches"></div></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Profile photo <span class="hint">(optional)</span></label>
+                    <div style="display:flex;align-items:center;gap:12px">
+                      <img id="team-add-avatar-preview" class="hidden" style="width:56px;height:56px;border-radius:50%;object-fit:cover" alt="">
+                      <input type="file" id="team-add-avatar" accept="image/*" style="font-size:13px">
+                      <button type="button" id="team-add-avatar-clear" class="btn-secondary hidden" style="padding:0.3rem 0.7rem;font-size:12px">Remove</button>
+                    </div>
+                  </div>
                 </div>
                 <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button></div>
               </form>
@@ -2610,7 +2613,13 @@
                   <div class="form-row"><label>End date <span class="hint">Last day on the schedule</span></label><input type="date" id="team-edit-enddate"></div>
                   <div class="form-row" id="team-edit-role-wrap"><label>System role</label><select id="team-edit-role"></select></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="team-edit-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
-                  <div class="form-row" style="grid-column:1/-1"><label>Profile color</label><div id="team-edit-colors" class="color-swatches"></div></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Profile photo <span class="hint">(optional)</span></label>
+                    <div style="display:flex;align-items:center;gap:12px">
+                      <img id="team-edit-avatar-preview" class="hidden" style="width:56px;height:56px;border-radius:50%;object-fit:cover" alt="">
+                      <input type="file" id="team-edit-avatar" accept="image/*" style="font-size:13px">
+                      <button type="button" id="team-edit-avatar-clear" class="btn-secondary hidden" style="padding:0.3rem 0.7rem;font-size:12px">Remove</button>
+                    </div>
+                  </div>
                 </div>
                 <div style="margin-top:0.8rem">
                   <button type="submit" id="team-edit-submit" class="btn">Save changes</button>
@@ -2673,18 +2682,9 @@
                 return null;
               }
 
-              // Deterministic avatar color from name (demo palette), or member's chosen color.
+              // Deterministic avatar color from name (demo palette).
               var AVATAR_COLORS = ['coral', 'sage', 'blue', 'gold', 'plum', 'slate'];
-              var PROFILE_COLORS = [
-                { name: 'coral', hex: '#f06e5b' },
-                { name: 'sage', hex: '#4b9a7d' },
-                { name: 'blue', hex: '#2672d8' },
-                { name: 'gold', hex: '#d98314' },
-                { name: 'plum', hex: '#8a5fb0' },
-                { name: 'slate', hex: '#637a8e' }
-              ];
               function avatarColor(u) {
-                if (u.profileColor && AVATAR_COLORS.indexOf(u.profileColor) >= 0) return u.profileColor;
                 var s = String(u.name || u.email || '?');
                 var h = 0;
                 for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
@@ -2718,7 +2718,21 @@
 
                   var av = document.createElement('span');
                   av.className = 'avatar color-' + avatarColor(u);
-                  av.textContent = initialOf(u);
+                  if (u.avatarData) {
+                    av.textContent = '';
+                    av.style.padding = '0';
+                    av.style.overflow = 'hidden';
+                    var ai = document.createElement('img');
+                    ai.src = u.avatarData;
+                    ai.alt = '';
+                    ai.style.width = '100%';
+                    ai.style.height = '100%';
+                    ai.style.objectFit = 'cover';
+                    ai.style.borderRadius = '50%';
+                    av.appendChild(ai);
+                  } else {
+                    av.textContent = initialOf(u);
+                  }
                   row.appendChild(av);
 
                   var nameBtn = document.createElement('button');
@@ -2874,32 +2888,61 @@
                 });
               }
 
-              // Profile color swatches
-              var addColor = null;
-              var editColor = null;
-              function renderSwatches(elId, selected, onPick) {
-                var el = $(elId);
-                el.innerHTML = '';
-                PROFILE_COLORS.forEach(function (c) {
-                  var b = document.createElement('button');
-                  b.type = 'button';
-                  b.className = 'color-swatch color-' + c.name + (selected === c.name ? ' selected' : '');
-                  b.title = c.name;
-                  b.setAttribute('aria-label', c.name);
-                  b.addEventListener('click', function () { onPick(c.name); });
-                  el.appendChild(b);
+              // Profile photo: resize client-side to 200px square JPEG data URL.
+              var addAvatarData = null;
+              var editAvatarData = null;
+              var editAvatarRemoved = false;
+              function handleAvatarFile(file, cb) {
+                if (!file || !file.type.match(/^image\//)) { cb(null); return; }
+                var img = new Image();
+                var url = URL.createObjectURL(file);
+                img.onload = function () {
+                  URL.revokeObjectURL(url);
+                  var size = 200;
+                  var canvas = document.createElement('canvas');
+                  canvas.width = size; canvas.height = size;
+                  var ctx = canvas.getContext('2d');
+                  var s = Math.min(img.width, img.height);
+                  var sx = (img.width - s) / 2, sy = (img.height - s) / 2;
+                  ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size);
+                  cb(canvas.toDataURL('image/jpeg', 0.8));
+                };
+                img.onerror = function () { URL.revokeObjectURL(url); cb(null); };
+                img.src = url;
+              }
+              function bindAvatarInput(inputId, previewId, clearId, get, set) {
+                $(inputId).addEventListener('change', function () {
+                  var file = this.files && this.files[0];
+                  handleAvatarFile(file, function (dataUrl) {
+                    set(dataUrl);
+                    var prev = $(previewId);
+                    if (dataUrl) { prev.src = dataUrl; prev.classList.remove('hidden'); $(clearId).classList.remove('hidden'); }
+                    else { prev.classList.add('hidden'); $(clearId).classList.add('hidden'); }
+                  });
+                });
+                $(clearId).addEventListener('click', function () {
+                  set(null);
+                  $(inputId).value = '';
+                  $(previewId).classList.add('hidden');
+                  $(clearId).classList.add('hidden');
                 });
               }
-              function refreshAddSwatches() { renderSwatches('team-add-colors', addColor, function (c) { addColor = c; refreshAddSwatches(); }); }
-              function refreshEditSwatches() { renderSwatches('team-edit-colors', editColor, function (c) { editColor = c; refreshEditSwatches(); }); }
-              refreshAddSwatches();
+              bindAvatarInput('team-add-avatar', 'team-add-avatar-preview', 'team-add-avatar-clear',
+                function () { return addAvatarData; }, function (v) { addAvatarData = v; });
+              bindAvatarInput('team-edit-avatar', 'team-edit-avatar-preview', 'team-edit-avatar-clear',
+                function () { return editAvatarData; }, function (v) { editAvatarData = v; editAvatarRemoved = (v === null); });
 
               function startEdit(id) {
                 var u = memberById(id);
                 if (!u) return;
                 editingId = id;
-                editColor = u.profileColor || null;
-                refreshEditSwatches();
+                editAvatarData = u.avatarData || null;
+                editAvatarRemoved = false;
+                var eprev = $('team-edit-avatar-preview');
+                var eclear = $('team-edit-avatar-clear');
+                $('team-edit-avatar').value = '';
+                if (editAvatarData) { eprev.src = editAvatarData; eprev.classList.remove('hidden'); eclear.classList.remove('hidden'); }
+                else { eprev.classList.add('hidden'); eclear.classList.add('hidden'); }
                 hideErr($('team-edit-error'));
                 $('team-edit-success').classList.add('hidden');
                 $('team-edit-firstname').value = u.firstName || '';
@@ -3012,7 +3055,7 @@
                     departmentId: $('team-add-dept').value,
                     jobRole: $('team-add-jobrole').value.trim(),
                     specialInstructions: $('team-add-instructions').value.trim(),
-                    profileColor: addColor
+                    avatarData: addAvatarData
                   };
                   if (!payload.firstName || !payload.email) {
                     showErr(errEl, 'First name and email are required.');
@@ -3027,8 +3070,9 @@
                     $('team-add-submit').disabled = false;
                     if (result.ok) {
                       $('team-add-form').reset();
-                      addColor = null;
-                      refreshAddSwatches();
+                      addAvatarData = null;
+                      $('team-add-avatar-preview').classList.add('hidden');
+                      $('team-add-avatar-clear').classList.add('hidden');
                       okEl.textContent = 'Team member added. Share the invite link below so they can set their password.';
                       okEl.classList.remove('hidden');
                       loadMembers();
@@ -3066,7 +3110,7 @@
                     jobRole: $('team-edit-jobrole').value.trim(),
                     endDate: $('team-edit-enddate').value,
                     specialInstructions: $('team-edit-instructions').value.trim(),
-                    profileColor: editColor
+                    avatarData: editAvatarRemoved ? '' : editAvatarData
                   };
                   var roleWrap = $('team-edit-role-wrap');
                   if (!roleWrap.classList.contains('hidden')) {

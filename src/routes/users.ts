@@ -25,10 +25,19 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_ROLES: Role[] = ['owner', 'scheduler', 'employee'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Validate avatar data URL: must be a small JPEG/PNG/WebP data URL (max ~200KB).
+function validateAvatar(v: any): string | null {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v);
+  if (s.length > 300000) return null;
+  if (!/^data:image\/(jpeg|png|webp);base64,/.test(s)) return null;
+  return s;
+}
+
 const PROFILE_SELECT = `
   SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
          d.name AS department_name, u.job_role, u.role,
-         u.end_date, u.is_active, u.created_at, u.special_instructions, u.profile_color,
+         u.end_date, u.is_active, u.created_at, u.special_instructions, u.profile_color, u.avatar_data,
          inv.used AS inv_used, inv.sent_at AS inv_sent_at, inv.expires_at AS inv_expires_at
   FROM users u LEFT JOIN departments d ON d.id = u.department_id
   LEFT JOIN LATERAL (
@@ -65,6 +74,7 @@ export function publicProfile(u: any) {
     isActive: !!u.is_active,
     specialInstructions: u.special_instructions ?? null,
     profileColor: u.profile_color ?? null,
+    avatarData: u.avatar_data ?? null,
     inviteStatus,
     createdAt: u.created_at,
   };
@@ -112,7 +122,7 @@ router.get('/', async (req: Request, res: Response) => {
 // admin copies/shares manually. Response: 201 {user, inviteLink}.
 router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
-    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, specialInstructions, profileColor } =
+    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, specialInstructions, profileColor, avatarData } =
       req.body ?? {};
     // Prefer explicit firstName/lastName; fall back to splitting a legacy `name`.
     let first = String(firstName ?? '').trim();
@@ -157,8 +167,8 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
     const passwordHash = await unusablePasswordHash();
     const userId = crypto.randomUUID();
     await query(
-      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, profile_color)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, profile_color, avatar_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         userId,
         req.session.companyId,
@@ -174,6 +184,7 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
         role,
         String(specialInstructions ?? '').trim().slice(0, 500) || null,
         String(profileColor ?? '').trim() || null,
+        validateAvatar(avatarData),
       ]
     );
 
@@ -275,6 +286,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (body.jobRole !== undefined) push('job_role', String(body.jobRole).trim() || null);
     if (body.specialInstructions !== undefined) push('special_instructions', String(body.specialInstructions).trim().slice(0, 500) || null);
     if (body.profileColor !== undefined) push('profile_color', String(body.profileColor).trim() || null);
+    if (body.avatarData !== undefined) push('avatar_data', validateAvatar(body.avatarData));
     if (body.endDate !== undefined) {
       const raw = String(body.endDate).trim();
       if (raw && !DATE_RE.test(raw)) {
