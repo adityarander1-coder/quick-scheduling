@@ -28,7 +28,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PROFILE_SELECT = `
   SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
          d.name AS department_name, u.job_role, u.role,
-         u.end_date, u.is_active, u.created_at,
+         u.end_date, u.is_active, u.created_at, u.special_instructions,
          inv.used AS inv_used, inv.sent_at AS inv_sent_at, inv.expires_at AS inv_expires_at
   FROM users u LEFT JOIN departments d ON d.id = u.department_id
   LEFT JOIN LATERAL (
@@ -63,6 +63,7 @@ export function publicProfile(u: any) {
     role: u.role,
     endDate: toDateStr(u.end_date),
     isActive: !!u.is_active,
+    specialInstructions: u.special_instructions ?? null,
     inviteStatus,
     createdAt: u.created_at,
   };
@@ -110,7 +111,7 @@ router.get('/', async (req: Request, res: Response) => {
 // admin copies/shares manually. Response: 201 {user, inviteLink}.
 router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
-    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole } =
+    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, specialInstructions } =
       req.body ?? {};
     // Prefer explicit firstName/lastName; fall back to splitting a legacy `name`.
     let first = String(firstName ?? '').trim();
@@ -155,8 +156,8 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
     const passwordHash = await unusablePasswordHash();
     const userId = crypto.randomUUID();
     await query(
-      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         userId,
         req.session.companyId,
@@ -170,6 +171,7 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
         String(jobRole ?? '').trim() || null,
         passwordHash,
         role,
+        String(specialInstructions ?? '').trim().slice(0, 500) || null,
       ]
     );
 
@@ -269,6 +271,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
       push('department_id', dept.id);
     }
     if (body.jobRole !== undefined) push('job_role', String(body.jobRole).trim() || null);
+    if (body.specialInstructions !== undefined) push('special_instructions', String(body.specialInstructions).trim().slice(0, 500) || null);
     if (body.endDate !== undefined) {
       const raw = String(body.endDate).trim();
       if (raw && !DATE_RE.test(raw)) {

@@ -2575,6 +2575,7 @@
                   <div class="form-row"><label>System role</label><select id="team-add-role"></select></div>
                   <div class="form-row"><label>Department</label><select id="team-add-dept"><option value="">— None —</option></select></div>
                   <div class="form-row"><label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span></label><input type="text" id="team-add-jobrole" autocomplete="off"></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional, e.g. prefers nights, no weekends)</span></label><textarea id="team-add-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
                 </div>
                 <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button></div>
               </form>
@@ -2604,6 +2605,7 @@
                   <div class="form-row"><label>Job role</label><input type="text" id="team-edit-jobrole" autocomplete="off"></div>
                   <div class="form-row"><label>End date <span class="hint">Last day on the schedule</span></label><input type="date" id="team-edit-enddate"></div>
                   <div class="form-row" id="team-edit-role-wrap"><label>System role</label><select id="team-edit-role"></select></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="team-edit-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
                 </div>
                 <div style="margin-top:0.8rem">
                   <button type="submit" id="team-edit-submit" class="btn">Save changes</button>
@@ -2728,6 +2730,14 @@
                     ed.className = 'employee-end-date';
                     ed.textContent = 'Last working day: ' + u.endDate;
                     nameBtn.appendChild(ed);
+                  }
+
+                  if (u.specialInstructions) {
+                    var si = document.createElement('small');
+                    si.className = 'special-instructions';
+                    si.style.fontStyle = 'italic';
+                    si.textContent = '\u201c' + u.specialInstructions + '\u201d';
+                    nameBtn.appendChild(si);
                   }
 
                   var st = document.createElement('small');
@@ -2863,6 +2873,7 @@
                 fillDeptSelect($('team-edit-dept'), u.departmentId);
                 $('team-edit-jobrole').value = u.jobRole || '';
                 $('team-edit-enddate').value = u.endDate || '';
+                $('team-edit-instructions').value = u.specialInstructions || '';
                 var roleWrap = $('team-edit-role-wrap');
                 var roleSelect = $('team-edit-role');
                 if (myRole === 'owner' && u.id !== myUserId) {
@@ -2963,7 +2974,8 @@
                     nickname: $('team-add-nickname').value.trim(),
                     phone: $('team-add-phone').value.trim(),
                     departmentId: $('team-add-dept').value,
-                    jobRole: $('team-add-jobrole').value.trim()
+                    jobRole: $('team-add-jobrole').value.trim(),
+                    specialInstructions: $('team-add-instructions').value.trim()
                   };
                   if (!payload.firstName || !payload.email) {
                     showErr(errEl, 'First name and email are required.');
@@ -3013,7 +3025,8 @@
                     phone: $('team-edit-phone').value.trim(),
                     departmentId: $('team-edit-dept').value,
                     jobRole: $('team-edit-jobrole').value.trim(),
-                    endDate: $('team-edit-enddate').value
+                    endDate: $('team-edit-enddate').value,
+                    specialInstructions: $('team-edit-instructions').value.trim()
                   };
                   var roleWrap = $('team-edit-role-wrap');
                   if (!roleWrap.classList.contains('hidden')) {
