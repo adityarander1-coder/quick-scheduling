@@ -371,6 +371,8 @@
 
       <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
+      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem"></div>
+
       <div class="sched-toolbar">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
           <button type="button" data-view="day" role="tab">Day</button>
@@ -530,6 +532,8 @@
           rangeFrom: null,
           rangeTo: null,
           shiftFilter: null,
+          deptFilter: null,
+          departments: [],
         };
 
         function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -575,8 +579,18 @@
           return sched.shifts.filter(function (s) {
             if (s.date !== dateStr) return false;
             if (sched.shiftFilter && s.shiftTypeId !== sched.shiftFilter) return false;
+            if (sched.deptFilter) {
+              var deptId = memberDeptId(s.userId);
+              if (deptId !== sched.deptFilter) return false;
+            }
             return true;
           });
+        }
+        function memberDeptId(userId) {
+          for (var i = 0; i < sched.members.length; i++) {
+            if (sched.members[i].id === userId) return sched.members[i].departmentId || null;
+          }
+          return null;
         }
         function shiftTypeVisible(st) {
           if (!st.isActive) return false;
@@ -644,14 +658,17 @@
             api('/api/schedule/days?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/comments?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/staffing-targets'),
+            api('/api/departments'),
           ]).then(function (results) {
-            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5];
+            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
             if (sR.ok) sched.shifts = sR.data.shifts || [];
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
+            if (deptR.ok) sched.departments = deptR.data.departments || [];
+            renderDeptFilter();
             renderLegend();
             renderView();
             renderPublishBar();
@@ -671,6 +688,25 @@
             b.addEventListener('click', function () {
               sched.shiftFilter = b.getAttribute('data-shiftfilter') || null;
               renderLegend();
+              renderView();
+            });
+          });
+        }
+
+        function renderDeptFilter() {
+          var el = $('sched-dept-filter');
+          if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+          el.style.display = 'flex';
+          var html = '<button type="button" class="legend-tab' + (!sched.deptFilter ? ' active' : '') + '" data-deptfilter="">All departments</button>';
+          sched.departments.forEach(function (d) {
+            var active = sched.deptFilter === d.id ? ' active' : '';
+            html += '<button type="button" class="legend-tab' + active + '" data-deptfilter="' + d.id + '">' + esc(d.name) + '</button>';
+          });
+          el.innerHTML = html;
+          el.querySelectorAll('.legend-tab').forEach(function (b) {
+            b.addEventListener('click', function () {
+              sched.deptFilter = b.getAttribute('data-deptfilter') || null;
+              renderDeptFilter();
               renderView();
             });
           });
