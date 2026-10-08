@@ -7,6 +7,7 @@ dotenv.config();
 
 import path from 'path';
 import express, { Request, Response, NextFunction } from 'express';
+import compression from 'compression';
 import session from 'express-session';
 import { ensureReady } from './db';
 import { PGliteSessionStore } from './sessionStore';
@@ -25,6 +26,7 @@ const isProd = process.env.NODE_ENV === 'production';
 
 app.set('trust proxy', 1); // Trust Render's reverse proxy so req.secure is true on HTTPS (required for the Secure session cookie).
 app.disable('x-powered-by');
+app.use(compression()); // Shrink pages before sending — faster downloads.
 app.use(express.json());
 
 let sessionSecret = process.env.SESSION_SECRET;
