@@ -519,6 +519,23 @@
 
       <script>
       (function () {
+        function loadMembers() {
+          api('/api/users').then(function (r) {
+            if (!r.ok) return;
+            var users = (r.data.users || []).filter(function (u) { return u.isActive; });
+            var html = users.map(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
+              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
+                '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '" style="margin-right:6px">' + esc(nm) + '</label>';
+            }).join('');
+            $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No team members.</p>';
+          }).catch(function () {});
+        }
+        function selectedMemberIds() {
+          var ids = [];
+          document.querySelectorAll('.bulk-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          return ids;
+        }
         // Schedule tab — ported from schedule.html, restyled to demo tokens.
         // All state/functions are scoped to this IIFE; shared helpers ($, api,
         // show, hide, pageError, pageSuccess) come from the app shell.
@@ -733,9 +750,11 @@
 
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var color = st ? st.color : '#637a8e';
+          var published = isPublished(s.date);
+          var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
+          var draftTag = published ? '' : ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
@@ -758,7 +777,7 @@
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
-            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</div>' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
             '</div>';
         }
@@ -907,7 +926,8 @@
 
         function monthChipHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var color = st ? st.color : '#637a8e';
+          var published = isPublished(s.date);
+          var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
           return '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
@@ -4116,11 +4136,15 @@
             <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
           </div>
           <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
+            <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
+          </div>
+          <div>
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
             <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
               <option value="publish">Publish all dates</option>
               <option value="unpublish">Unpublish all dates</option>
-              <option value="delete-shifts">Delete manual shifts (rotations untouched)</option>
+              <option value="delete-shifts">Delete shifts (manual + rotation)</option>
             </select>
           </div>
           <button type="button" id="bulk-run" class="btn">Run</button>
@@ -4129,6 +4153,27 @@
       </div>
       <script>
       (function () {
+        function isActive() {
+          var h = window.location.hash || '';
+          return h.indexOf('#bulk') === 0;
+        }
+        function loadMembers() {
+          api('/api/users').then(function (r) {
+            if (!r.ok) return;
+            var users = (r.data.users || []).filter(function (u) { return u.isActive; });
+            var html = users.map(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
+              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
+                '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '" style="margin-right:6px">' + esc(nm) + '</label>';
+            }).join('');
+            $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No team members.</p>';
+          }).catch(function () {});
+        }
+        function selectedMemberIds() {
+          var ids = [];
+          document.querySelectorAll('.bulk-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          return ids;
+        }
         function datesInRange(from, to) {
           var out = [];
           var d = new Date(from + 'T12:00:00');
@@ -4155,8 +4200,10 @@
             return;
           }
           var dates = datesInRange(from, to);
-          var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'unpublish' : 'delete all shifts on';
-          if (!confirm('Are you sure you want to ' + actionLabel + ' ' + dates.length + ' date(s)?')) return;
+          var memberIds = selectedMemberIds();
+          var scope = memberIds.length ? memberIds.length + ' team member(s)' : 'all team members';
+          var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'unpublish' : 'delete shifts for';
+          if (!confirm('Are you sure you want to ' + actionLabel + ' ' + scope + ' on ' + dates.length + ' date(s)?')) return;
           showResult('Working…', false);
           var endpoint, body;
           if (action === 'publish') {
@@ -4164,17 +4211,20 @@
           } else if (action === 'unpublish') {
             endpoint = '/api/schedule/days/unpublish'; body = { dates: dates };
           } else {
-            endpoint = '/api/schedule/shifts/bulk-delete'; body = { dates: dates };
+            endpoint = '/api/schedule/shifts/bulk-delete'; body = { dates: dates, userIds: memberIds };
           }
           api(endpoint, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
             if (r.ok) {
               var n = r.data.published || r.data.unpublished || r.data.deleted || dates.length;
-              showResult('Done — ' + n + ' date(s) updated.', false);
+              var extra = r.data.paused ? ' (' + r.data.paused + ' rotation skip(s) added)' : '';
+              showResult('Done — ' + n + ' item(s) updated.' + extra, false);
             } else {
               showResult((r.data && r.data.error) || 'Could not complete.', true);
             }
           }).catch(function () { showResult('Network error.', true); });
         });
+        window.addEventListener('hashchange', function () { if (isActive()) loadMembers(); });
+        if (isActive()) loadMembers();
       })();
       </script>
     </section>

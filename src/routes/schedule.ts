@@ -398,11 +398,12 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
-// POST /api/schedule/shifts/bulk-delete — delete all manual shifts in a date list (owner/scheduler).
+// POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler).
+// Deletes manual shifts; for rotation shifts, adds skip periods so they don't appear.
 router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { dates } = req.body ?? {};
+    const { dates, userIds } = req.body ?? {};
     if (!Array.isArray(dates) || !dates.length || dates.length > 366) {
       res.status(400).json({ error: 'Provide a list of dates (max 366).' });
       return;
@@ -412,11 +413,42 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       res.status(400).json({ error: 'No valid dates provided.' });
       return;
     }
+    const userFilter = Array.isArray(userIds) && userIds.length
+      ? 'AND user_id = ANY($3::uuid[])'
+      : '';
+    const params: any[] = [companyId, valid];
+    if (userFilter) params.push(userIds);
     const { rowCount } = await query(
-      'DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[])',
-      [companyId, valid]
+      `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter}`,
+      params
     );
-    res.json({ deleted: rowCount || 0 });
+    // For rotation shifts: add skip periods covering the range for the affected users' rotations.
+    let paused = 0;
+    const from = valid.slice().sort()[0];
+    const to = valid.slice().sort()[valid.length - 1];
+    const rotParams: any[] = [companyId];
+    const rotUserFilter = Array.isArray(userIds) && userIds.length
+      ? 'AND ra.user_id = ANY($2::uuid[])'
+      : '';
+    if (rotUserFilter) rotParams.push(userIds);
+    const { rows: rots } = await query(
+      `SELECT DISTINCT r.id AS rotation_id, ra.user_id
+       FROM rotations r
+       JOIN rotation_assignments ra ON ra.rotation_id = r.id
+       WHERE r.company_id = $1 AND r.is_active = true ${rotUserFilter}`,
+      rotParams
+    );
+    for (const rt of rots) {
+      try {
+        await query(
+          `INSERT INTO rotation_pauses (id, rotation_id, company_id, start_date, end_date, reason)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [crypto.randomUUID(), rt.rotation_id, companyId, from, to, 'Bulk delete']
+        );
+        paused++;
+      } catch { /* skip duplicates */ }
+    }
+    res.json({ deleted: rowCount || 0, paused });
   } catch (err) {
     console.error('[schedule] bulk delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
