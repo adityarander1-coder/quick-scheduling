@@ -285,7 +285,8 @@
         /* Month grid */
         #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
         @media (max-width: 700px) {
-          #tab-schedule .month-grid { grid-template-columns: repeat(7, minmax(120px, 1fr)); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+          #tab-schedule .month-grid { grid-template-columns: repeat(7, minmax(140px, 1fr)); border-radius: 0; border-left: none; border-right: none; }
+          #tab-schedule .month-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0 1rem; touch-action: pan-x pan-y; }
         }
         #tab-schedule .month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); }
         #tab-schedule .day-box { background: #fff; min-height: 110px; max-height: 160px; overflow-y: auto; padding: 0.5rem; cursor: pointer; -webkit-overflow-scrolling: touch; }
@@ -922,7 +923,7 @@
           var first = parseDate(r.from);
           var gridStart = new Date(first);
           gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
-          var html = '<div class="month-grid">';
+          var html = '<div class="month-scroll-wrap"><div class="month-grid">';
           ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
             html += '<div class="month-dow">' + d + '</div>';
           });
@@ -945,7 +946,7 @@
             if (openTotal) html += '<div class="month-open" title="' + openTotal + ' open position' + (openTotal === 1 ? '' : 's') + '">+' + openTotal + ' open</div>';
             html += '</div>';
           }
-          html += '</div>';
+          html += '</div></div>';
           el.innerHTML = html;
           bindStatusPills(el);
           el.querySelectorAll('.day-box').forEach(function (box) {
