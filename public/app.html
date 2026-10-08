@@ -2310,7 +2310,7 @@
             </div>
             <nav class="sub-tabs" role="tablist" style="margin-bottom:1rem">
               <button class="subtab-btn active" data-rottab="rot-list">Assign rotations</button>
-              <button class="subtab-btn" data-rottab="rot-skip">Skip rotations</button>
+              <button class="subtab-btn" data-rottab="rot-skip">Assign vacation</button>
             </nav>
             <div id="rottab-rot-list">
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
@@ -2318,9 +2318,9 @@
             <div id="rot-emp-list"></div>
             </div>
             <div id="rottab-rot-skip" class="hidden">
-            <p class="set-desc">Pause a rotation for vacation or leave. Add as many date ranges as you need — the rotation automatically resumes after each one. Delete a skip to put the person back on their regular rotation.</p>
+            <p class="set-desc">Assign vacation or leave. Add as many date ranges as you need — the rotation automatically resumes after each one. Delete a vacation to put the person back on their regular rotation.</p>
             <div class="card" style="margin-bottom:1rem">
-              <h4 style="margin:0 0 0.8rem">Add skip period</h4>
+              <h4 style="margin:0 0 0.8rem">Add vacation</h4>
               <div style="display:grid;grid-template-columns:1fr;gap:0.8rem">
                 <label style="font-size:13px">Rotation<br>
                   <select id="skip-rot-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
@@ -2336,7 +2336,7 @@
                 <label style="font-size:13px">Reason (optional)<br>
                   <input type="text" id="skip-reason" placeholder="e.g., Christmas vacation" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
                 </label>
-                <button type="button" class="btn" id="skip-add-btn">Add skip period</button>
+                <button type="button" class="btn" id="skip-add-btn">Add vacation</button>
               </div>
             </div>
             <h4 style="margin:0 0 0.8rem">Scheduled skips</h4>
@@ -2865,7 +2865,7 @@
                         '</div>';
                     });
                   });
-                  listEl.innerHTML = html || '<p style="color:var(--dim);font-size:13px">No skip periods scheduled.</p>';
+                  listEl.innerHTML = html || '<p style="color:var(--dim);font-size:13px">No vacations scheduled.</p>';
                   listEl.querySelectorAll('.skip-del-btn').forEach(function (b) {
                     b.addEventListener('click', function () {
                       api('/api/schedule/rotations/' + b.getAttribute('data-rot') + '/pauses/' + b.getAttribute('data-pause'), { method: 'DELETE' })
@@ -2890,9 +2890,9 @@
                     document.getElementById('skip-reason').value = '';
                     loadSkipRotations();
                     loadAll();
-                    pageSuccess('Skip period added.');
+                    pageSuccess('Vacation added.');
                   } else {
-                    showInfo((r.data && r.data.error) || 'Could not add skip period.');
+                    showInfo((r.data && r.data.error) || 'Could not add vacation.');
                   }
                 });
               });
