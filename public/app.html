@@ -738,7 +738,7 @@
 
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = isPublished(s.date);
+          var published = isPublished(s.date) && s.published !== false;
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
@@ -914,7 +914,7 @@
 
         function monthChipHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = isPublished(s.date);
+          var published = isPublished(s.date) && s.published !== false;
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
@@ -1516,6 +1516,8 @@
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
           // Replace / Delete (not for rotation shifts)
+          var isDraft = s.published === false || !isPublished(s.date);
+          html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:#f0e8fa">' + (isDraft ? '📢' : '📝') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
           if (!isRot) {
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
             html += '<div id="sp-replace-list" class="hidden"></div>';
@@ -1585,6 +1587,21 @@
             if (act === 'comment') {
               closeShiftPopup();
               openEmployeeCommentModal(s.userId, s.date);
+            } else if (act === 'toggle-publish') {
+              closeShiftPopup();
+              var toPublished = !(s.published !== false && isPublished(s.date));
+              var isRot = s.id && s.id.indexOf('rot-') === 0;
+              var ep, body;
+              if (isRot) {
+                ep = '/api/schedule/rotation-shifts/publish-state';
+                body = { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, published: toPublished };
+              } else {
+                ep = '/api/schedule/shifts/' + s.id + '/publish-state';
+                body = { published: toPublished };
+              }
+              api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                if (r.ok) { s.published = toPublished; renderSchedule(); }
+              });
             } else if (act === 'replace') {
               // Show candidate list inline in popup
               var rlist = $('sp-replace-list');
@@ -4155,8 +4172,8 @@
           <div>
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
             <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-              <option value="publish">Publish all dates</option>
-              <option value="unpublish">Unpublish all dates</option>
+              <option value="publish">Publish shifts</option>
+              <option value="unpublish">Move to draft</option>
               <option value="delete-shifts">Delete shifts (manual + rotation)</option>
             </select>
           </div>
@@ -4226,20 +4243,26 @@
           var dates = datesInRange(from, to);
           var memberIds = selectedMemberIds();
           var scope = memberIds.length ? memberIds.length + ' team member(s)' : 'all team members';
-          var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'unpublish' : 'delete shifts for';
+          var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'move to draft' : 'delete shifts for';
           if (!confirm('Are you sure you want to ' + actionLabel + ' ' + scope + ' on ' + dates.length + ' date(s)?')) return;
           showResult('Working…', false);
           var endpoint, body;
-          if (action === 'publish') {
-            endpoint = '/api/schedule/days/publish'; body = { dates: dates };
-          } else if (action === 'unpublish') {
-            endpoint = '/api/schedule/days/unpublish'; body = { dates: dates };
+          if (action === 'publish' || action === 'unpublish') {
+            if (memberIds.length) {
+              // Per-member: publish/draft their shifts only
+              endpoint = '/api/schedule/shifts/bulk-publish-state';
+              body = { dates: dates, userIds: memberIds, published: action === 'publish' };
+            } else {
+              // No members selected: whole date
+              endpoint = action === 'publish' ? '/api/schedule/days/publish' : '/api/schedule/days/unpublish';
+              body = { dates: dates };
+            }
           } else {
             endpoint = '/api/schedule/shifts/bulk-delete'; body = { dates: dates, userIds: memberIds };
           }
           api(endpoint, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
             if (r.ok) {
-              var n = r.data.published || r.data.unpublished || r.data.deleted || dates.length;
+              var n = r.data.published || r.data.unpublished || r.data.deleted || r.data.updated || dates.length;
               var extra = r.data.paused ? ' (' + r.data.paused + ' rotation skip(s) added)' : '';
               showResult('Done — ' + n + ' item(s) updated.' + extra, false);
             } else {

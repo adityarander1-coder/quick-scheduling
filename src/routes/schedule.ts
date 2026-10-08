@@ -9,7 +9,6 @@ import { requireRole } from '../middleware/auth';
 
 const router = Router();
 
-// ---------------------------------------------------------------------------
 // Default shift types (hospital defaults, seeded per company on first use).
 // Colors match the prototype: Day Hospitalist blue, Swing amber, Night dark.
 // ---------------------------------------------------------------------------
@@ -122,7 +121,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       return;
     }
     const { rows } = await query(
-      `SELECT s.id, s.date::text AS date, s.notes,
+      `SELECT s.id, s.date::text AS date, s.notes, s.published,
               s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
               u.nickname, s.shift_type_id AS "shiftTypeId",
               st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
@@ -171,6 +170,18 @@ router.get('/shifts', async (req: Request, res: Response) => {
     );
     const exclSet = new Set(exclRows.map((e: any) =>
       `${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`
+    ));
+
+    // Load per-shift publish overrides for rotation shifts
+    const { rows: pubRows } = await query(
+      `SELECT rotation_id AS "rotationId", user_id AS "userId",
+              date::text AS "date", shift_type_id AS "shiftTypeId", published
+       FROM rotation_shift_publish
+       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+    const pubMap = new Map(pubRows.map((p: any) =>
+      [`${p.rotationId}|${p.userId}|${p.date}|${p.shiftTypeId}`, p.published]
     ));
 
     const rotationShifts: any[] = [];
@@ -238,6 +249,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
             id: `rot-${rot.id}-${a.userId}-${dateStr}`,
             date: dateStr,
             notes: null,
+            published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
             userId: a.userId,
             firstName: a.firstName,
             lastName: a.lastName,
@@ -474,6 +486,50 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
   }
 });
 
+// POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift.
+router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { published } = req.body ?? {};
+    const { rowCount } = await query(
+      'UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
+      [published !== false, req.params.id, companyId]
+    );
+    if (!rowCount) {
+      res.status(404).json({ error: 'Shift not found.' });
+      return;
+    }
+    res.json({ ok: true, published: published !== false });
+  } catch (err) {
+    console.error('[schedule] shift publish-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance.
+// Body: { rotationId, userId, date, shiftTypeId, published }
+router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rotationId, userId, date, shiftTypeId, published } = req.body ?? {};
+    if (!rotationId || !userId || !date || !shiftTypeId) {
+      res.status(400).json({ error: 'rotationId, userId, date, and shiftTypeId are required.' });
+      return;
+    }
+    await query(
+      `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (company_id, rotation_id, user_id, date, shift_type_id)
+       DO UPDATE SET published = EXCLUDED.published`,
+      [companyId, rotationId, userId, date, shiftTypeId, published !== false]
+    );
+    res.json({ ok: true, published: published !== false });
+  } catch (err) {
+    console.error('[schedule] rotation shift publish-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance
 // Body: { rotationId, userId, date, shiftTypeId }
 router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
@@ -575,6 +631,72 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+
+// POST /api/schedule/shifts/bulk-publish-state — publish/unpublish specific members' shifts in a date range.
+// Body: { dates:[...], userIds:[...], published: bool }. Handles manual + rotation shifts.
+router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    const published = req.body?.published !== false;
+    if (!dates.length || !userIds.length) {
+      res.status(400).json({ error: 'Dates and team members are required.' });
+      return;
+    }
+    // Manual shifts
+    const { rowCount } = await query(
+      `UPDATE shifts SET published = $1
+       WHERE company_id = $2 AND date = ANY($3::date[]) AND user_id = ANY($4::uuid[])`,
+      [published, companyId, dates, userIds]
+    );
+    // Rotation shifts: generate instances and upsert publish overrides
+    let rotCount = 0;
+    const { rows: rotations } = await query(
+      `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
+       FROM rotations WHERE company_id = $1 AND is_active = true`,
+      [companyId]
+    );
+    for (const rot of rotations) {
+      const { rows: assignments } = await query(
+        `SELECT user_id AS "userId", cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId"
+         FROM rotation_assignments WHERE rotation_id = $1 AND user_id = ANY($2::uuid[])`,
+        [rot.id, userIds]
+      );
+      if (!assignments.length) continue;
+      const byDay = new Map<number, typeof assignments>();
+      for (const a of assignments) {
+        if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
+        byDay.get(a.cycleDay)!.push(a);
+      }
+      const startDate = new Date(rot.startDate + 'T00:00:00');
+      for (const dateStr of dates) {
+        const d = new Date(dateStr + 'T00:00:00');
+        if (d < startDate) continue;
+        const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / 86400000);
+        const cycleDay = (daysSinceStart % rot.cycleDays) + 1;
+        const dayAssignments = byDay.get(cycleDay);
+        if (!dayAssignments) continue;
+        for (const a of dayAssignments) {
+          await query(
+            `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (company_id, rotation_id, user_id, date, shift_type_id)
+             DO UPDATE SET published = EXCLUDED.published`,
+            [companyId, rot.id, a.userId, dateStr, a.shiftTypeId, published]
+          );
+          rotCount++;
+        }
+      }
+    }
+    res.json({ ok: true, updated: (rowCount || 0) + rotCount });
+  } catch (err) {
+    console.error('[schedule] bulk publish-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Day comments
 // ---------------------------------------------------------------------------
@@ -1132,7 +1254,7 @@ router.get('/public', async (req: Request, res: Response) => {
       return;
     }
     const companyId = shares[0].company_id;
-    // Only published dates.
+    // Only published dates and published shifts.
     const { rows: shifts } = await query(
       `SELECT s.id, s.date::text AS date, s.notes,
               s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
@@ -1144,7 +1266,7 @@ router.get('/public', async (req: Request, res: Response) => {
        JOIN users u ON u.id = s.user_id
        JOIN shift_types st ON st.id = s.shift_type_id
        JOIN schedule_days d ON d.company_id = s.company_id AND d.date = s.date AND d.is_published = true
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
       [companyId, from, to]
     );
