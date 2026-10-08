@@ -398,6 +398,31 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
+// POST /api/schedule/shifts/bulk-delete — delete all manual shifts in a date list (owner/scheduler).
+router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { dates } = req.body ?? {};
+    if (!Array.isArray(dates) || !dates.length || dates.length > 366) {
+      res.status(400).json({ error: 'Provide a list of dates (max 366).' });
+      return;
+    }
+    const valid = dates.filter((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d));
+    if (!valid.length) {
+      res.status(400).json({ error: 'No valid dates provided.' });
+      return;
+    }
+    const { rowCount } = await query(
+      'DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[])',
+      [companyId, valid]
+    );
+    res.json({ deleted: rowCount || 0 });
+  } catch (err) {
+    console.error('[schedule] bulk delete failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // DELETE /api/schedule/shifts/:id — remove a shift (owner/scheduler).
 router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

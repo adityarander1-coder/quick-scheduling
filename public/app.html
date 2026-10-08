@@ -4105,8 +4105,78 @@
     <section id="tab-bulk" class="tab-panel">
       <div class="card">
         <h2>Bulk Actions</h2>
-        <p style="color:var(--dim)">Publish ranges, remove shifts in bulk — coming.</p>
+        <p style="color:var(--dim)">Apply an action to every date in a range.</p>
+        <div style="display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
+            <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To</label>
+            <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
+            <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+              <option value="publish">Publish all dates</option>
+              <option value="unpublish">Unpublish all dates</option>
+              <option value="delete-shifts">Delete all shifts</option>
+            </select>
+          </div>
+          <button type="button" id="bulk-run" class="btn">Run</button>
+        </div>
+        <div id="bulk-result" class="alert hidden" role="status"></div>
       </div>
+      <script>
+      (function () {
+        function datesInRange(from, to) {
+          var out = [];
+          var d = new Date(from + 'T12:00:00');
+          var end = new Date(to + 'T12:00:00');
+          while (d <= end) {
+            out.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+            d.setDate(d.getDate() + 1);
+          }
+          return out;
+        }
+        function showResult(msg, isError) {
+          var el = $('bulk-result');
+          el.textContent = msg;
+          el.classList.remove('hidden');
+          el.classList.toggle('alert-error', !!isError);
+          el.classList.toggle('alert-success', !isError);
+        }
+        $('bulk-run').addEventListener('click', function () {
+          var from = $('bulk-from').value;
+          var to = $('bulk-to').value;
+          var action = $('bulk-action').value;
+          if (!from || !to || from > to) {
+            showResult('Pick a valid date range.', true);
+            return;
+          }
+          var dates = datesInRange(from, to);
+          var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'unpublish' : 'delete all shifts on';
+          if (!confirm('Are you sure you want to ' + actionLabel + ' ' + dates.length + ' date(s)?')) return;
+          showResult('Working…', false);
+          var endpoint, body;
+          if (action === 'publish') {
+            endpoint = '/api/schedule/days/publish'; body = { dates: dates };
+          } else if (action === 'unpublish') {
+            endpoint = '/api/schedule/days/unpublish'; body = { dates: dates };
+          } else {
+            endpoint = '/api/schedule/shifts/bulk-delete'; body = { dates: dates };
+          }
+          api(endpoint, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            if (r.ok) {
+              var n = r.data.published || r.data.unpublished || r.data.deleted || dates.length;
+              showResult('Done — ' + n + ' date(s) updated.', false);
+            } else {
+              showResult((r.data && r.data.error) || 'Could not complete.', true);
+            }
+          }).catch(function () { showResult('Network error.', true); });
+        });
+      })();
+      </script>
     </section>
 
     <!-- Employee Link tab -->
