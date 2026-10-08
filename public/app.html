@@ -285,7 +285,7 @@
         /* Month grid */
         #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
         #tab-schedule .month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); }
-        #tab-schedule .day-box { background: #fff; min-height: 110px; padding: 0.5rem; cursor: pointer; }
+        #tab-schedule .day-box { background: #fff; min-height: 110px; max-height: 160px; overflow-y: auto; padding: 0.5rem; cursor: pointer; -webkit-overflow-scrolling: touch; }
         #tab-schedule .day-box:hover { background: #f8fafc; }
         #tab-schedule .day-box.other-month { background: #f8fafc; color: #94a3b8; }
         #tab-schedule .day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -933,11 +933,7 @@
             html += '<div class="' + cls + '" data-date="' + ds + '">';
             html += '<div class="day-num"><span>' + d.getDate() + '</span>' + statusPillHtml(ds) + '</div>';
             var dayShifts = shiftsFor(ds);
-            var maxChips = 5;
-            dayShifts.slice(0, maxChips).forEach(function (s) { html += monthChipHtml(s); });
-            if (dayShifts.length > maxChips) {
-              html += '<div class="month-more">+' + (dayShifts.length - maxChips) + ' more</div>';
-            }
+            dayShifts.forEach(function (s) { html += monthChipHtml(s); });
             var openTotal = 0;
             sched.shiftTypes.forEach(function (st) {
               if (!shiftTypeVisible(st)) return;
