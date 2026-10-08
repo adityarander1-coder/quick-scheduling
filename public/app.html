@@ -1346,8 +1346,8 @@
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' +
               (sched.canEdit ?
-                '<span style="margin-left:auto;display:flex;gap:6px">' +
-                '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:28px;height:28px;border-radius:50%;border:1px solid ' + (isDraftShift ? '#a7f3d0' : '#e5e7eb') + ';background:#fff;cursor:pointer;font-size:14px" title="' + (isDraftShift ? 'Publish shift' : 'Move to draft') + '">' + (isDraftShift ? '📢' : '📝') + '</button>' +
+                '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
+                '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
                 '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
                 '</span>' : '') + '</div>';
           });
@@ -1540,7 +1540,7 @@
           html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
           // Replace / Delete (not for rotation shifts)
           var isDraft = s.published === false || !isPublished(s.date);
-          html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:#f0e8fa">' + (isDraft ? '📢' : '📝') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+          html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
           if (!isRot) {
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
             html += '<div id="sp-replace-list" class="hidden"></div>';
