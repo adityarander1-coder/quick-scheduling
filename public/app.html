@@ -284,6 +284,9 @@
         #tab-schedule .status-published .pdot { background: #00a9a4; }
         /* Month grid */
         #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+        @media (max-width: 700px) {
+          #tab-schedule .month-grid { grid-template-columns: repeat(7, minmax(120px, 1fr)); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        }
         #tab-schedule .month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); }
         #tab-schedule .day-box { background: #fff; min-height: 110px; max-height: 160px; overflow-y: auto; padding: 0.5rem; cursor: pointer; -webkit-overflow-scrolling: touch; }
         #tab-schedule .day-box:hover { background: #f8fafc; }
