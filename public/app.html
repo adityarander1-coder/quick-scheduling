@@ -154,6 +154,9 @@
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
     .color-coral { background: #f06e5b; }
+    .color-swatches { display: flex; gap: 8px; }
+    .color-swatch { width: 36px; height: 36px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+    .color-swatch.selected { border-color: #102d47; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #102d47; }
     .color-sage { background: #4b9a7d; }
     .color-blue { background: #2672d8; }
     .color-gold { background: #c48d2c; }
@@ -2576,6 +2579,7 @@
                   <div class="form-row"><label>Department</label><select id="team-add-dept"><option value="">— None —</option></select></div>
                   <div class="form-row"><label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span></label><input type="text" id="team-add-jobrole" autocomplete="off"></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional, e.g. prefers nights, no weekends)</span></label><textarea id="team-add-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Profile color</label><div id="team-add-colors" class="color-swatches"></div></div>
                 </div>
                 <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button></div>
               </form>
@@ -2606,6 +2610,7 @@
                   <div class="form-row"><label>End date <span class="hint">Last day on the schedule</span></label><input type="date" id="team-edit-enddate"></div>
                   <div class="form-row" id="team-edit-role-wrap"><label>System role</label><select id="team-edit-role"></select></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="team-edit-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
+                  <div class="form-row" style="grid-column:1/-1"><label>Profile color</label><div id="team-edit-colors" class="color-swatches"></div></div>
                 </div>
                 <div style="margin-top:0.8rem">
                   <button type="submit" id="team-edit-submit" class="btn">Save changes</button>
@@ -2668,9 +2673,18 @@
                 return null;
               }
 
-              // Deterministic avatar color from name (demo palette).
+              // Deterministic avatar color from name (demo palette), or member's chosen color.
               var AVATAR_COLORS = ['coral', 'sage', 'blue', 'gold', 'plum', 'slate'];
+              var PROFILE_COLORS = [
+                { name: 'coral', hex: '#f06e5b' },
+                { name: 'sage', hex: '#4b9a7d' },
+                { name: 'blue', hex: '#2672d8' },
+                { name: 'gold', hex: '#d98314' },
+                { name: 'plum', hex: '#8a5fb0' },
+                { name: 'slate', hex: '#637a8e' }
+              ];
               function avatarColor(u) {
+                if (u.profileColor && AVATAR_COLORS.indexOf(u.profileColor) >= 0) return u.profileColor;
                 var s = String(u.name || u.email || '?');
                 var h = 0;
                 for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
@@ -2860,10 +2874,32 @@
                 });
               }
 
+              // Profile color swatches
+              var addColor = null;
+              var editColor = null;
+              function renderSwatches(elId, selected, onPick) {
+                var el = $(elId);
+                el.innerHTML = '';
+                PROFILE_COLORS.forEach(function (c) {
+                  var b = document.createElement('button');
+                  b.type = 'button';
+                  b.className = 'color-swatch color-' + c.name + (selected === c.name ? ' selected' : '');
+                  b.title = c.name;
+                  b.setAttribute('aria-label', c.name);
+                  b.addEventListener('click', function () { onPick(c.name); });
+                  el.appendChild(b);
+                });
+              }
+              function refreshAddSwatches() { renderSwatches('team-add-colors', addColor, function (c) { addColor = c; refreshAddSwatches(); }); }
+              function refreshEditSwatches() { renderSwatches('team-edit-colors', editColor, function (c) { editColor = c; refreshEditSwatches(); }); }
+              refreshAddSwatches();
+
               function startEdit(id) {
                 var u = memberById(id);
                 if (!u) return;
                 editingId = id;
+                editColor = u.profileColor || null;
+                refreshEditSwatches();
                 hideErr($('team-edit-error'));
                 $('team-edit-success').classList.add('hidden');
                 $('team-edit-firstname').value = u.firstName || '';
@@ -2975,7 +3011,8 @@
                     phone: $('team-add-phone').value.trim(),
                     departmentId: $('team-add-dept').value,
                     jobRole: $('team-add-jobrole').value.trim(),
-                    specialInstructions: $('team-add-instructions').value.trim()
+                    specialInstructions: $('team-add-instructions').value.trim(),
+                    profileColor: addColor
                   };
                   if (!payload.firstName || !payload.email) {
                     showErr(errEl, 'First name and email are required.');
@@ -2990,6 +3027,8 @@
                     $('team-add-submit').disabled = false;
                     if (result.ok) {
                       $('team-add-form').reset();
+                      addColor = null;
+                      refreshAddSwatches();
                       okEl.textContent = 'Team member added. Share the invite link below so they can set their password.';
                       okEl.classList.remove('hidden');
                       loadMembers();
@@ -3026,7 +3065,8 @@
                     departmentId: $('team-edit-dept').value,
                     jobRole: $('team-edit-jobrole').value.trim(),
                     endDate: $('team-edit-enddate').value,
-                    specialInstructions: $('team-edit-instructions').value.trim()
+                    specialInstructions: $('team-edit-instructions').value.trim(),
+                    profileColor: editColor
                   };
                   var roleWrap = $('team-edit-role-wrap');
                   if (!roleWrap.classList.contains('hidden')) {
