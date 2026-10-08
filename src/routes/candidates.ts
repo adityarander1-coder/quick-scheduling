@@ -302,6 +302,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     }
     if (body.jobRole !== undefined) push('job_role', String(body.jobRole).trim() || null);
     if (body.notes !== undefined) push('notes', String(body.notes).trim() || null);
+    if (body.specialInstructions !== undefined) push('special_instructions', String(body.specialInstructions).trim().slice(0, 500) || null);
+    if (body.avatarData !== undefined) push('avatar_data', validateAvatar(body.avatarData));
     if (!sets.length) {
       res.status(400).json({ error: 'Nothing to update.' });
       return;

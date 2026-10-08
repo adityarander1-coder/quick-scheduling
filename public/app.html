@@ -3460,6 +3460,10 @@
                 Temporary password (shown once — share it with the new hire):<br>
                 <code id="cand-approve-password"></code>
               </div>
+              <div style="margin-top:1rem">
+                <button type="button" id="cand-send-invite" class="btn">Send invite email</button>
+                <span id="cand-invite-note" style="margin-left:0.8rem;font-size:13px"></span>
+              </div>
             </div>
 
             <div class="sub-card">
@@ -3491,6 +3495,14 @@
                   <div class="form-row"><label>Job role</label><input type="text" id="cand-edit-jobrole" autocomplete="off"></div>
                 </div>
                 <div class="form-row"><label>Notes</label><textarea id="cand-edit-notes" rows="2"></textarea></div>
+                <div class="form-row"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="cand-edit-instructions" rows="2" maxlength="500"></textarea></div>
+                <div class="form-row"><label>Profile photo <span class="hint">(optional)</span></label>
+                  <div style="display:flex;align-items:center;gap:12px">
+                    <img id="cand-edit-avatar-preview" class="hidden" style="width:56px;height:56px;border-radius:50%;object-fit:cover" alt="">
+                    <input type="file" id="cand-edit-avatar" accept="image/*" style="font-size:13px">
+                    <button type="button" id="cand-edit-avatar-clear" class="btn-secondary hidden" style="padding:0.3rem 0.7rem;font-size:12px">Remove</button>
+                  </div>
+                </div>
                 <div style="margin-top:0.8rem">
                   <button type="submit" id="cand-edit-submit" class="btn">Save changes</button>
                   <button type="button" id="cand-edit-cancel" class="btn-secondary">Cancel</button>
@@ -3626,9 +3638,51 @@
                 fillDeptSelect(cd.departmentId);
                 $('cand-edit-jobrole').value = cd.jobRole || '';
                 $('cand-edit-notes').value = cd.notes || '';
+                $('cand-edit-instructions').value = cd.specialInstructions || '';
+                candEditAvatarData = cd.avatarData || null;
+                candEditAvatarRemoved = false;
+                var cprev = $('cand-edit-avatar-preview');
+                var cclear = $('cand-edit-avatar-clear');
+                $('cand-edit-avatar').value = '';
+                if (candEditAvatarData) { cprev.src = candEditAvatarData; cprev.classList.remove('hidden'); cclear.classList.remove('hidden'); }
+                else { cprev.classList.add('hidden'); cclear.classList.add('hidden'); }
                 $('cand-edit-section').classList.remove('hidden');
                 $('cand-edit-section').scrollIntoView();
               }
+
+              // Candidate edit avatar handling
+              var candEditAvatarData = null;
+              var candEditAvatarRemoved = false;
+              $('cand-edit-avatar').addEventListener('change', function () {
+                var file = this.files && this.files[0];
+                var prev = $('cand-edit-avatar-preview');
+                var clear = $('cand-edit-avatar-clear');
+                if (!file || !file.type.match(/^image\//)) { candEditAvatarData = null; prev.classList.add('hidden'); clear.classList.add('hidden'); return; }
+                var img = new Image();
+                var url = URL.createObjectURL(file);
+                img.onload = function () {
+                  URL.revokeObjectURL(url);
+                  var size = 200;
+                  var canvas = document.createElement('canvas');
+                  canvas.width = size; canvas.height = size;
+                  var ctx = canvas.getContext('2d');
+                  var s = Math.min(img.width, img.height);
+                  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+                  candEditAvatarData = canvas.toDataURL('image/jpeg', 0.8);
+                  prev.src = candEditAvatarData;
+                  prev.classList.remove('hidden');
+                  clear.classList.remove('hidden');
+                };
+                img.onerror = function () { URL.revokeObjectURL(url); candEditAvatarData = null; prev.classList.add('hidden'); clear.classList.add('hidden'); };
+                img.src = url;
+              });
+              $('cand-edit-avatar-clear').addEventListener('click', function () {
+                candEditAvatarData = null;
+                candEditAvatarRemoved = true;
+                $('cand-edit-avatar').value = '';
+                $('cand-edit-avatar-preview').classList.add('hidden');
+                $('cand-edit-avatar-clear').classList.add('hidden');
+              });
 
               function approveCandidate(cd) {
                 if (!window.confirm('Approve ' + cd.name + ' as an employee?')) return;
@@ -3638,6 +3692,15 @@
                     $('cand-approve-text').textContent =
                       result.data.user.name + ' (' + result.data.user.email + ') is now on the team as an employee.';
                     $('cand-approve-password').textContent = result.data.tempPassword;
+                    $('cand-invite-note').textContent = '';
+                    $('cand-send-invite').onclick = function () {
+                      $('cand-invite-note').textContent = 'Sending…';
+                      api('/api/users/' + result.data.user.id + '/send-invite', { method: 'POST' }).then(function (r) {
+                        if (r.ok) $('cand-invite-note').textContent = 'Invite email sent.';
+                        else if (r.status === 503) $('cand-invite-note').textContent = 'Email not set up — share the temp password above instead.';
+                        else $('cand-invite-note').textContent = (r.data && r.data.error) || 'Could not send.';
+                      }).catch(function () { $('cand-invite-note').textContent = 'Network error.'; });
+                    };
                     $('cand-approve-box').classList.remove('hidden');
                     $('cand-approve-box').scrollIntoView();
                     loadQueue();
@@ -3676,7 +3739,9 @@
                     phone: $('cand-edit-phone').value.trim(),
                     departmentId: $('cand-edit-dept').value,
                     jobRole: $('cand-edit-jobrole').value.trim(),
-                    notes: $('cand-edit-notes').value.trim()
+                    notes: $('cand-edit-notes').value.trim(),
+                    specialInstructions: $('cand-edit-instructions').value.trim(),
+                    avatarData: candEditAvatarRemoved ? '' : candEditAvatarData
                   };
                   $('cand-edit-submit').disabled = true;
                   api('/api/candidates/' + editingId, {
