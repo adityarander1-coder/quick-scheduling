@@ -1972,7 +1972,6 @@
         <h2>Settings</h2>
         <nav class="sub-tabs" role="tablist">
           <button class="subtab-btn active" data-subtab="rotations">Rotations</button>
-          <button class="subtab-btn" data-subtab="skip-rotations">Skip rotations</button>
           <button class="subtab-btn" data-subtab="team">Team members</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
           <button class="subtab-btn" data-subtab="shifts">Shifts</button>
@@ -1983,8 +1982,39 @@
             <div class="set-head-row">
               <h3 class="set-h3" style="margin:0">Rotations</h3>
             </div>
+            <nav class="sub-tabs" role="tablist" style="margin-bottom:1rem">
+              <button class="subtab-btn active" data-rottab="rot-list">Rotations</button>
+              <button class="subtab-btn" data-rottab="rot-skip">Skip rotations</button>
+            </nav>
+            <div id="rottab-rot-list">
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
             <div id="rot-emp-list"></div>
+            </div>
+            <div id="rottab-rot-skip" class="hidden">
+            <p class="set-desc">Pause a rotation for vacation or leave. Add as many date ranges as you need — the rotation automatically resumes after each one. Delete a skip to put the person back on their regular rotation.</p>
+            <div class="card" style="margin-bottom:1rem">
+              <h4 style="margin:0 0 0.8rem">Add skip period</h4>
+              <div style="display:grid;grid-template-columns:1fr;gap:0.8rem">
+                <label style="font-size:13px">Rotation<br>
+                  <select id="skip-rot-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                </label>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
+                  <label style="font-size:13px">Start date<br>
+                    <input type="date" id="skip-start" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                  </label>
+                  <label style="font-size:13px">End date<br>
+                    <input type="date" id="skip-end" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                  </label>
+                </div>
+                <label style="font-size:13px">Reason (optional)<br>
+                  <input type="text" id="skip-reason" placeholder="e.g., Christmas vacation" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                </label>
+                <button type="button" class="btn" id="skip-add-btn">Add skip period</button>
+              </div>
+            </div>
+            <h4 style="margin:0 0 0.8rem">Scheduled skips</h4>
+            <div id="skip-list"></div>
+            </div>
 
             <!-- New/Edit rotation modal -->
             <div id="rot-modal" class="modal-backdrop hidden">
@@ -2367,40 +2397,22 @@
 
               window.addEventListener('hashchange', function () { if (isActive()) loadAll(); });
               if (isActive()) loadAll();
-            })();
-            </script>
-          </div>
-          <div id="subtab-skip-rotations" class="sub-panel">
-            <div class="set-head-row">
-              <h3 class="set-h3" style="margin:0">Skip rotations</h3>
-            </div>
-            <p class="set-desc">Pause a rotation for vacation or leave. Add as many date ranges as you need — the rotation automatically resumes after each one. Delete a skip to put the person back on their regular rotation.</p>
-            <div class="card" style="margin-bottom:1rem">
-              <h4 style="margin:0 0 0.8rem">Add skip period</h4>
-              <div style="display:grid;grid-template-columns:1fr;gap:0.8rem">
-                <label style="font-size:13px">Rotation<br>
-                  <select id="skip-rot-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
-                </label>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem">
-                  <label style="font-size:13px">Start date<br>
-                    <input type="date" id="skip-start" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
-                  </label>
-                  <label style="font-size:13px">End date<br>
-                    <input type="date" id="skip-end" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
-                  </label>
-                </div>
-                <label style="font-size:13px">Reason (optional)<br>
-                  <input type="text" id="skip-reason" placeholder="e.g., Christmas vacation" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
-                </label>
-                <button type="button" class="btn" id="skip-add-btn">Add skip period</button>
-              </div>
-            </div>
-            <h4 style="margin:0 0 0.8rem">Scheduled skips</h4>
-            <div id="skip-list"></div>
-            <script>
-            (function () {
-              function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-              function loadSkipRotations() {
+
+              // Nested tabs: Rotations | Skip rotations
+              document.querySelectorAll('[data-rottab]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                  document.querySelectorAll('[data-rottab]').forEach(function (b) { b.classList.remove('active'); });
+                  btn.classList.add('active');
+                  var tab = btn.getAttribute('data-rottab');
+                  document.getElementById('rottab-rot-list').classList.toggle('hidden', tab !== 'rot-list');
+                  document.getElementById('rottab-rot-skip').classList.toggle('hidden', tab !== 'rot-skip');
+                  if (tab === 'rot-skip') loadSkipRotations();
+                });
+              });
+
+              // Skip rotations management
+              function escSkip(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+              window.loadSkipRotations = function () {
                 Promise.all([
                   api('/api/schedule/rotations'),
                   api('/api/team/members')
@@ -2411,13 +2423,14 @@
                   members.forEach(function (m) { mById[m.id] = m; });
                   var sel = document.getElementById('skip-rot-select');
                   sel.innerHTML = rots.map(function (r) {
-                    var m = mById[r.userId] || {};
-                    var nm = (m.firstName || '') + ' ' + (m.lastName || '');
-                    return '<option value="' + r.id + '">' + esc(nm.trim() || 'Unknown') + ' — ' + esc(r.name) + '</option>';
+                    var firstA = (r.assignments || [])[0];
+                    var m = firstA ? mById[firstA.userId] : null;
+                    var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'Unknown';
+                    return '<option value="' + r.id + '">' + escSkip(nm) + ' — ' + escSkip(r.name) + '</option>';
                   }).join('');
                   loadSkipList(rots, mById);
                 });
-              }
+              };
               function loadSkipList(rots, mById) {
                 var listEl = document.getElementById('skip-list');
                 var fetches = rots.map(function (r) {
@@ -2429,21 +2442,22 @@
                   var html = '';
                   all.forEach(function (item) {
                     if (!item.pauses.length) return;
-                    var m = mById[item.rot.userId] || {};
-                    var nm = ((m.firstName || '') + ' ' + (m.lastName || '')).trim() || 'Unknown';
+                    var firstA = (item.rot.assignments || [])[0];
+                    var m = firstA ? mById[firstA.userId] : null;
+                    var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'Unknown';
                     item.pauses.forEach(function (p) {
                       html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--surface)">' +
                         '<div style="flex:1">' +
-                        '<strong style="font-size:14px">' + esc(nm) + '</strong> <span style="color:var(--dim);font-size:13px">— ' + esc(item.rot.name) + '</span><br>' +
-                        '<span style="font-size:13px">' + esc(p.startDate) + ' → ' + esc(p.endDate) + '</span>' +
-                        (p.reason ? ' <span style="color:var(--dim);font-size:12px">(' + esc(p.reason) + ')</span>' : '') +
+                        '<strong style="font-size:14px">' + escSkip(nm) + '</strong> <span style="color:var(--dim);font-size:13px">— ' + escSkip(item.rot.name) + '</span><br>' +
+                        '<span style="font-size:13px">' + escSkip(p.startDate) + ' → ' + escSkip(p.endDate) + '</span>' +
+                        (p.reason ? ' <span style="color:var(--dim);font-size:12px">(' + escSkip(p.reason) + ')</span>' : '') +
                         '</div>' +
-                        '<button type="button" class="btn-secondary" data-rot="' + item.rot.id + '" data-pause="' + p.id + '" style="padding:0.4rem 0.8rem">Delete</button>' +
+                        '<button type="button" class="btn-secondary skip-del-btn" data-rot="' + item.rot.id + '" data-pause="' + p.id + '" style="padding:0.4rem 0.8rem">Delete</button>' +
                         '</div>';
                     });
                   });
                   listEl.innerHTML = html || '<p style="color:var(--dim);font-size:13px">No skip periods scheduled.</p>';
-                  listEl.querySelectorAll('button[data-pause]').forEach(function (b) {
+                  listEl.querySelectorAll('.skip-del-btn').forEach(function (b) {
                     b.addEventListener('click', function () {
                       api('/api/schedule/rotations/' + b.getAttribute('data-rot') + '/pauses/' + b.getAttribute('data-pause'), { method: 'DELETE' })
                         .then(function (r) { if (r.ok) { loadSkipRotations(); loadAll(); } });
@@ -2472,10 +2486,6 @@
                     showInfo((r.data && r.data.error) || 'Could not add skip period.');
                   }
                 });
-              });
-              // Load when tab is shown
-              document.querySelector('[data-subtab="skip-rotations"]').addEventListener('click', function () {
-                setTimeout(loadSkipRotations, 100);
               });
             })();
             </script>
