@@ -705,20 +705,19 @@
           var el = $('sched-dept-filter');
           if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
           el.style.display = 'flex';
-          var html = '<button type="button" class="legend-tab' + (!sched.deptFilter ? ' active' : '') + '" data-deptfilter="">All departments</button>';
-          sched.departments.forEach(function (d) {
-            var active = sched.deptFilter === d.id ? ' active' : '';
-            html += '<button type="button" class="legend-tab' + active + '" data-deptfilter="' + d.id + '">' + esc(d.name) + '</button>';
-          });
-          el.innerHTML = html;
-          el.querySelectorAll('.legend-tab').forEach(function (b) {
-            b.addEventListener('click', function () {
-              sched.deptFilter = b.getAttribute('data-deptfilter') || null;
-              sched.shiftFilter = null;
-              renderDeptFilter();
-              renderLegend();
-              renderView();
-            });
+          el.innerHTML = '<label style="font-size:0.9rem;font-weight:600;color:var(--muted)">Department</label>' +
+            '<select id="sched-dept-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:200px">' +
+            '<option value="">All departments</option>' +
+            sched.departments.map(function (d) {
+              return '<option value="' + d.id + '"' + (sched.deptFilter === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+            }).join('') +
+            '</select>';
+          $('sched-dept-select').addEventListener('change', function (e) {
+            sched.deptFilter = e.target.value || null;
+            sched.shiftFilter = null;
+            renderDeptFilter();
+            renderLegend();
+            renderView();
           });
         }
 
