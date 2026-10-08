@@ -1011,7 +1011,8 @@
             [{ label: 'Cancel' }]);
         };
         window.qsSetHighlight = function(userId, hue) {
-          hide($('action-dialog'));
+          var dlg = $('action-dialog');
+          if (dlg) dlg.classList.add('hidden');
           if (hue == null) {
             delete sched.highlights[userId];
           } else {
@@ -1022,14 +1023,16 @@
             sched.highlights[userId] = found || { name: 'Custom', hue: hue };
           }
           try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
-          // Fast: update highlight directly without full re-render
-          var hl = sched.highlights[userId];
-          var hueVal = (hl && typeof hl === 'object' && hl.hue != null) ? hl.hue : null;
-          var grids = document.querySelectorAll('.shift-grid');
-          for (var g = 0; g < grids.length; g++) {
-            var grid = grids[g];
-            var btn = grid.querySelector('.shift-hl-btn');
-            if (!btn || btn.getAttribute('onclick').indexOf("'" + userId + "'") === -1) continue;
+          // Fast: update via CSS variable on body, no DOM loop
+          // (highlight styles use per-grid --highlight-hue, so we still need per-grid update
+          // but do it with a single selector)
+          var hueVal = hue;
+          var sel = '.shift-hl-btn[onclick*="\'' + userId + '\'"]';
+          var btns = document.querySelectorAll(sel);
+          for (var b = 0; b < btns.length; b++) {
+            var btn = btns[b];
+            var grid = btn.closest('.shift-grid');
+            if (!grid) continue;
             if (hueVal == null) {
               grid.classList.remove('is-highlighted');
               grid.style.removeProperty('--highlight-hue');
