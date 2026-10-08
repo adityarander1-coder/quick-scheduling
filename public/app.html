@@ -2274,6 +2274,7 @@
             </nav>
             <div id="rottab-rot-list">
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
+            <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
             <div id="rot-emp-list"></div>
             </div>
             <div id="rottab-rot-skip" class="hidden">
@@ -2420,6 +2421,10 @@
                   shiftTypes = rs[1].data.shiftTypes || [];
                   allRots = rs[2].data.rotations || [];
                   renderEmployees();
+                  if (!$('rot-emp-search').dataset.bound) {
+                    $('rot-emp-search').dataset.bound = '1';
+                    $('rot-emp-search').addEventListener('input', renderEmployees);
+                  }
                 }).catch(function () { pageError('Could not load rotations.'); });
               }
 
@@ -2448,8 +2453,17 @@
                   $('rot-goto-team').addEventListener('click', function () { window.location.hash = '#settings/team'; });
                   return;
                 }
+                var q = ($('rot-emp-search') ? $('rot-emp-search').value : '').toLowerCase();
+                var shown = members.filter(function (m) {
+                  if (!q) return true;
+                  return fullName(m).toLowerCase().indexOf(q) >= 0;
+                });
+                if (!shown.length) {
+                  el.innerHTML = '<p style="color:var(--dim)">No team members match your search.</p>';
+                  return;
+                }
                 var html = '';
-                members.forEach(function (m) {
+                shown.forEach(function (m) {
                   var nm = fullName(m);
                   var initial = (nm.trim().charAt(0) || '?').toUpperCase();
                   var roleDept = [m.jobRole, m.department].filter(Boolean).join(' \u00b7 ');
