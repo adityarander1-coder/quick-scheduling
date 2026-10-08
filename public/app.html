@@ -1022,7 +1022,24 @@
             sched.highlights[userId] = found || { name: 'Custom', hue: hue };
           }
           try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
-          renderSchedule();
+          // Fast: update highlight directly without full re-render
+          var hl = sched.highlights[userId];
+          var hueVal = (hl && typeof hl === 'object' && hl.hue != null) ? hl.hue : null;
+          var grids = document.querySelectorAll('.shift-grid');
+          for (var g = 0; g < grids.length; g++) {
+            var grid = grids[g];
+            var btn = grid.querySelector('.shift-hl-btn');
+            if (!btn || btn.getAttribute('onclick').indexOf("'" + userId + "'") === -1) continue;
+            if (hueVal == null) {
+              grid.classList.remove('is-highlighted');
+              grid.style.removeProperty('--highlight-hue');
+              btn.style.background = '#fff';
+            } else {
+              grid.classList.add('is-highlighted');
+              grid.style.setProperty('--highlight-hue', hueVal);
+              btn.style.background = 'hsl(' + hueVal + ' 85% 65%)';
+            }
+          }
         };
         // Global replace function (simple, reliable)
         window.qsReplaceShift = function(sid) {
