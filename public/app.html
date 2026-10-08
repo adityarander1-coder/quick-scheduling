@@ -275,13 +275,10 @@
         #tab-schedule .month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
         #tab-schedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
         #tab-schedule .type-group-h { margin: 0.6rem 0 0.4rem; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; color: var(--text); }
-        /* Draft / Published pills */
-        #tab-schedule .status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 0.25rem 0.75rem; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border: 1px solid; cursor: pointer; background: #ffffff; }
-        #tab-schedule .status-pill .pdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-        #tab-schedule .status-draft { border-color: #cbd5e1; color: #64748b; }
-        #tab-schedule .status-draft .pdot { background: #9aa9b5; }
-        #tab-schedule .status-published { background: rgba(0,169,164,0.1); border-color: rgba(0,169,164,0.4); color: #137f72; }
-        #tab-schedule .status-published .pdot { background: #00a9a4; }
+        /* Draft / Published circle badges */
+        #tab-schedule .status-pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 0.75rem; font-weight: 800; cursor: pointer; flex-shrink: 0; }
+        #tab-schedule .status-draft { background: #e5e7eb; color: #6b7280; }
+        #tab-schedule .status-published { background: #00a9a4; color: #ffffff; }
         /* Month grid */
         #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
         @media (max-width: 700px) {
@@ -732,8 +729,8 @@
 
         function statusPillHtml(dateStr) {
           var pub = isPublished(dateStr);
-          return '<span class="status-pill ' + (pub ? 'status-published' : 'status-draft') + '" data-date="' + dateStr + '" title="Click to toggle">' +
-            '<span class="pdot"></span>' + (pub ? 'Published' : 'Draft') + '</span>';
+          return '<span class="status-pill ' + (pub ? 'status-published' : 'status-draft') + '" data-date="' + dateStr + '" title="' + (pub ? 'Published — click to move to draft' : 'Draft — click to publish') + '">' +
+            (pub ? 'P' : 'D') + '</span>';
         }
 
         function shiftBoxHtml(s) {
