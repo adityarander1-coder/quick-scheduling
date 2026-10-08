@@ -997,6 +997,33 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+// GET /api/schedule/vacation-check?userId=xxx&date=YYYY-MM-DD — is this person on vacation that date?
+router.get('/vacation-check', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = String(req.query.userId || '');
+    const date = String(req.query.date || '');
+    if (!userId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'userId and date are required.' });
+      return;
+    }
+    const { rows } = await query(
+      `SELECT p.start_date::text AS "startDate", p.end_date::text AS "endDate", p.reason,
+              r.name AS "rotationName"
+       FROM rotation_pauses p
+       JOIN rotations r ON r.id = p.rotation_id
+       JOIN rotation_assignments ra ON ra.rotation_id = r.id AND ra.user_id = $2
+       WHERE p.company_id = $1 AND p.start_date <= $3 AND p.end_date >= $3
+       LIMIT 1`,
+      [companyId, userId, date]
+    );
+    res.json({ onVacation: rows.length > 0, vacation: rows[0] || null });
+  } catch (err) {
+    console.error('[schedule] vacation check failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // GET /api/schedule/rotations/:id/pauses — list pause periods
 router.get('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

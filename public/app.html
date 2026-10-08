@@ -2056,6 +2056,30 @@
 
         $('sched-assign-save').addEventListener('click', function () {
           var useRange = $('sched-assign-range-toggle').checked;
+          var userId = $('sched-assign-user').value;
+          var checkDate = useRange ? $('sched-assign-start').value : sched.assignDate;
+          // Warn if the person is on vacation for the date.
+          api('/api/schedule/vacation-check?userId=' + encodeURIComponent(userId) + '&date=' + encodeURIComponent(checkDate || '')).then(function (vr) {
+            if (vr.ok && vr.data.onVacation) {
+              var v = vr.data.vacation || {};
+              var m = memberById(userId);
+              var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'This person';
+              showDialog('On vacation',
+                '<p><strong>' + esc(nm) + '</strong> is on vacation' +
+                (v.startDate ? ' (' + esc(v.startDate) + (v.endDate && v.endDate !== v.startDate ? ' to ' + esc(v.endDate) : '') + ')' : '') +
+                '.' + (v.reason ? ' Reason: ' + esc(v.reason) : '') + '</p>' +
+                '<p>To add them, please adjust their vacation dates first.</p>',
+                [
+                  { label: 'Cancel' },
+                  { label: 'Assign anyway', onClick: function () { doAssign(); } }
+                ]);
+            } else {
+              doAssign();
+            }
+          }).catch(function () { doAssign(); });
+        });
+        function doAssign() {
+          var useRange = $('sched-assign-range-toggle').checked;
           var notes = $('sched-assign-notes').value.trim() || undefined;
           if (useRange) {
             var body = {
@@ -2146,7 +2170,7 @@
               }
             });
           }
-        });
+        }
         $('sched-assign-range-toggle').addEventListener('change', function () {
           $('sched-assign-range-row').classList.toggle('hidden', !this.checked);
         });
