@@ -51,10 +51,12 @@ router.get('/shift-types', async (req: Request, res: Response) => {
     const companyId = req.session.companyId!;
     await ensureShiftTypes(companyId);
     const { rows } = await query(
-      `SELECT id, name, short_name AS "shortName", color, text_color AS "textColor",
-              sort_order AS "sortOrder", is_active AS "isActive",
-              start_time AS "startTime", end_time AS "endTime"
-       FROM shift_types WHERE company_id = $1 ORDER BY sort_order, name`,
+      `SELECT st.id, st.name, st.short_name AS "shortName", st.color, st.text_color AS "textColor",
+              st.sort_order AS "sortOrder", st.is_active AS "isActive",
+              st.start_time AS "startTime", st.end_time AS "endTime",
+              st.department_id AS "departmentId", d.name AS "departmentName"
+       FROM shift_types st LEFT JOIN departments d ON d.id = st.department_id
+       WHERE st.company_id = $1 ORDER BY st.sort_order, st.name`,
       [companyId]
     );
     res.json({ shiftTypes: rows });
@@ -68,17 +70,30 @@ router.get('/shift-types', async (req: Request, res: Response) => {
 router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { name, shortName, color, textColor, sortOrder } = req.body ?? {};
+    const { name, shortName, color, textColor, sortOrder, departmentId } = req.body ?? {};
     if (!name || !String(name).trim()) {
       res.status(400).json({ error: 'A shift type name is required.' });
       return;
     }
+    // Validate department belongs to company (if provided).
+    let deptId: string | null = null;
+    if (departmentId) {
+      const { rows: dept } = await query(
+        'SELECT id FROM departments WHERE id = $1 AND company_id = $2',
+        [departmentId, companyId]
+      );
+      if (!dept.length) {
+        res.status(400).json({ error: 'Department not found.' });
+        return;
+      }
+      deptId = dept[0].id;
+    }
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, department_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [id, companyId, String(name).trim(), String(shortName || '').trim(),
-       String(color || '#3b82f6'), String(textColor || '#ffffff'), Number(sortOrder) || 0]
+       String(color || '#3b82f6'), String(textColor || '#ffffff'), Number(sortOrder) || 0, deptId]
     );
     res.status(201).json({ id });
   } catch (err: any) {
@@ -880,11 +895,11 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
 // Shift settings — default start/end times per shift type.
 // ---------------------------------------------------------------------------
 
-// PUT /api/schedule/shift-types/:id — update times (owner/scheduler).
+// PUT /api/schedule/shift-types/:id — update (owner/scheduler).
 router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { startTime, endTime, name, color } = req.body;
+    const { startTime, endTime, name, color, departmentId } = req.body;
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
     const updates: string[] = [];
     const vals: any[] = [];
@@ -902,6 +917,18 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
     }
     if (color !== undefined && /^#[0-9a-fA-F]{6}$/.test(color)) {
       updates.push(`color = $${i++}`); vals.push(color);
+    }
+    if (departmentId !== undefined) {
+      if (departmentId) {
+        const { rows: dept } = await query(
+          'SELECT id FROM departments WHERE id = $1 AND company_id = $2',
+          [departmentId, companyId]
+        );
+        if (!dept.length) { res.status(400).json({ error: 'Department not found.' }); return; }
+        updates.push(`department_id = $${i++}`); vals.push(dept[0].id);
+      } else {
+        updates.push(`department_id = $${i++}`); vals.push(null);
+      }
     }
     if (!updates.length) { res.status(400).json({ error: 'Nothing to update.' }); return; }
     vals.push(req.params.id, companyId);

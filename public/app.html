@@ -595,6 +595,7 @@
         function shiftTypeVisible(st) {
           if (!st.isActive) return false;
           if (sched.shiftFilter && st.id !== sched.shiftFilter) return false;
+          if (sched.deptFilter && st.departmentId && st.departmentId !== sched.deptFilter) return false;
           return true;
         }
         function commentsFor(dateStr) {
@@ -675,10 +676,17 @@
           }).catch(function () { pageError('Could not load the schedule.'); });
         }
 
+        function visibleShiftTypes() {
+          return sched.shiftTypes.filter(function (st) {
+            if (!st.isActive) return false;
+            if (sched.deptFilter && st.departmentId && st.departmentId !== sched.deptFilter) return false;
+            return true;
+          });
+        }
+
         function renderLegend() {
           var html = '<button type="button" class="legend-tab' + (!sched.shiftFilter ? ' active' : '') + '" data-shiftfilter="">All</button>';
-          sched.shiftTypes.forEach(function (st) {
-            if (!st.isActive) return;
+          visibleShiftTypes().forEach(function (st) {
             var active = sched.shiftFilter === st.id ? ' active' : '';
             html += '<button type="button" class="legend-tab' + active + '" data-shiftfilter="' + st.id + '">' +
               '<span class="legend-swatch" style="background:' + esc(st.color) + '"></span>' + esc(st.name) + '</button>';
@@ -706,7 +714,9 @@
           el.querySelectorAll('.legend-tab').forEach(function (b) {
             b.addEventListener('click', function () {
               sched.deptFilter = b.getAttribute('data-deptfilter') || null;
+              sched.shiftFilter = null;
               renderDeptFilter();
+              renderLegend();
               renderView();
             });
           });
@@ -1256,7 +1266,7 @@
           var tSel = $('sched-assign-shifttype');
           tSel.innerHTML = '';
           sched.shiftTypes.forEach(function (st) {
-            if (!st.isActive) return;
+            if (!shiftTypeVisible(st)) return;
             var o = document.createElement('option');
             o.value = st.id; o.textContent = st.name;
             tSel.appendChild(o);
@@ -3374,6 +3384,10 @@
                   <label>Color</label>
                   <input type="color" id="shift-new-color" value="#3b82f6" style="width:60px;height:40px;padding:0">
                 </div>
+                <div class="form-row">
+                  <label>Department <span class="hint">(optional — leave empty for all departments)</span></label>
+                  <select id="shift-new-dept" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"><option value="">All departments</option></select>
+                </div>
                 <div class="modal-actions">
                   <button type="button" id="shift-modal-cancel" class="btn-secondary">Cancel</button>
                   <button type="button" id="shift-modal-save" class="btn">Add</button>
@@ -3385,6 +3399,19 @@
             (function () {
               // Shifts sub-panel — ported from settings.html shifts section, IDs prefixed shift-.
               var shiftTypes = [];
+              var departments = [];
+
+              function loadDepartments() {
+                return api('/api/departments').then(function (r) {
+                  if (r.ok) {
+                    departments = r.data.departments || [];
+                    var sel = $('shift-new-dept');
+                    sel.innerHTML = '<option value="">All departments</option>' + departments.map(function (d) {
+                      return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
+                    }).join('');
+                  }
+                }).catch(function () {});
+              }
 
               function esc(s) {
                 return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -3398,9 +3425,13 @@
               function renderShifts() {
                 var html = '';
                 shiftTypes.forEach(function (st, i) {
+                  var deptOpts = '<option value="">All departments</option>' + departments.map(function (d) {
+                    return '<option value="' + d.id + '"' + (st.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+                  }).join('');
                   html += '<div class="shift-row">' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
                     '<label>' + esc(st.name) + '</label>' +
+                    '<select id="shift-dept-' + i + '" style="padding:6px;border:1px solid var(--border);border-radius:8px;max-width:160px">' + deptOpts + '</select>' +
                     '<div class="time-inputs">' +
                       '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '">' +
                       '<span>to</span>' +
@@ -3424,7 +3455,11 @@
               }
 
               function loadAll() {
-                api('/api/schedule/shift-types').then(function (r) {
+                Promise.all([
+                  api('/api/schedule/shift-types'),
+                  loadDepartments()
+                ]).then(function (rs) {
+                  var r = rs[0];
                   if (r.ok) { shiftTypes = r.data.shiftTypes || []; renderShifts(); }
                   else pageError((r.data && r.data.error) || 'Could not load shift types.');
                 }).catch(function () { pageError('Network error. Could not load shift types.'); });
@@ -3437,13 +3472,14 @@
                     body: JSON.stringify({
                       startTime: $('shift-start-' + i).value,
                       endTime: $('shift-end-' + i).value,
+                      departmentId: $('shift-dept-' + i).value || null,
                     }),
                   });
                 });
                 Promise.all(updates).then(function (rs) {
                   var failed = rs.filter(function (r) { return !r.ok; });
-                  if (failed.length) pageError('Some shift times could not be saved. Please try again.');
-                  else pageSuccess('Shift times saved.');
+                  if (failed.length) pageError('Some shift types could not be saved. Please try again.');
+                  else pageSuccess('Shift types saved.');
                   loadAll();
                 });
               });
@@ -3463,7 +3499,7 @@
                 }
                 api('/api/schedule/shift-types', {
                   method: 'POST',
-                  body: JSON.stringify({ name: name, color: $('shift-new-color').value }),
+                  body: JSON.stringify({ name: name, color: $('shift-new-color').value, departmentId: $('shift-new-dept').value || null }),
                 }).then(function (r) {
                   if (r.ok) { hide($('shift-modal')); pageSuccess('Shift type added.'); loadAll(); }
                   else { var e2 = $('shift-modal-error'); e2.textContent = (r.data && r.data.error) || 'Could not add.'; show(e2); }
