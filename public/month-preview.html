@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Month View Options — Preview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f1f5f9; color: #1e293b; padding: 24px; }
+  h1 { font-size: 1.5rem; margin-bottom: 8px; }
+  .sub { color: #64748b; margin-bottom: 24px; }
+  .option { background: #fff; border-radius: 16px; padding: 20px; margin-bottom: 32px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .option h2 { font-size: 1.15rem; margin-bottom: 4px; }
+  .option p { color: #64748b; font-size: .9rem; margin-bottom: 16px; }
+  .month-dow { font-size: .72rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; text-align: center; padding: 6px 0; }
+
+  /* --- shared current style --- */
+  .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .day-box { border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px; min-height: 88px; background: #fff; font-size: .72rem; }
+  .day-box.other-month { opacity: .35; }
+  .day-box.today { border-color: #3b82f6; }
+  .day-num { font-weight: 700; font-size: .78rem; margin-bottom: 3px; }
+  .month-chip { display: flex; align-items: center; gap: 4px; border: 1px solid; border-radius: 5px; padding: 1px 4px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .month-chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* --- option 1: shift names on chips --- */
+  .opt1 .month-chip { flex-direction: column; align-items: flex-start; gap: 0; padding: 2px 5px; }
+  .opt1 .shift-lbl { font-size: .62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+  .opt1 .person-lbl { font-size: .72rem; }
+
+  /* --- option 2: more shifts, compact --- */
+  .opt2 .day-box { min-height: 110px; }
+  .opt2 .month-chip { font-size: .66rem; padding: 0 4px; margin-bottom: 1px; }
+  .opt2 .more { font-size: .66rem; color: #64748b; padding: 0 4px; }
+
+  /* --- option 3: bigger boxes --- */
+  .opt3 .month-grid { gap: 8px; }
+  .opt3 .day-box { min-height: 150px; padding: 8px; border-radius: 12px; font-size: .8rem; }
+  .opt3 .day-num { font-size: .95rem; margin-bottom: 6px; }
+  .opt3 .shift-block { border-radius: 8px; padding: 4px 8px; margin-bottom: 4px; color: #fff; font-size: .75rem; }
+  .opt3 .shift-block .nm { font-weight: 700; display: block; }
+  .opt3 .shift-block .tm { opacity: .85; font-size: .68rem; }
+
+  /* --- option 4: strong color coding --- */
+  .opt4 .day-box { min-height: 100px; border-left-width: 0; padding-left: 0; }
+  .opt4 .month-chip { border: none; border-radius: 0 6px 6px 0; border-left: 4px solid; background: #f8fafc !important; padding: 3px 6px; font-size: .72rem; }
+  .opt4 .shift-tag { display: inline-block; font-size: .6rem; font-weight: 800; text-transform: uppercase; padding: 1px 5px; border-radius: 4px; color: #fff; margin-right: 4px; }
+</style>
+</head>
+<body>
+<h1>Month view — 4 design options</h1>
+<p class="sub">Sample data: October 2026 week. Pick the one you like and I'll build it into the app.</p>
+
+<!-- OPTION 1 -->
+<div class="option opt1">
+  <h2>Option 1 — Shift names on chips</h2>
+  <p>Each chip shows the shift type on top and the person's name below.</p>
+  <div class="month-grid">
+    <div class="month-dow">Mon</div><div class="month-dow">Tue</div><div class="month-dow">Wed</div><div class="month-dow">Thu</div><div class="month-dow">Fri</div><div class="month-dow">Sat</div><div class="month-dow">Sun</div>
+    <div class="day-box"><div class="day-num">12</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="shift-lbl" style="color:#1d4ed8">Day Hosp</span><span class="person-lbl">Rander Adv.</span></div>
+      <div class="month-chip" style="background:#e0e7ff;border-color:#a5b4fc"><span class="shift-lbl" style="color:#4338ca">Night Hosp</span><span class="person-lbl">Aditya Rander</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">13</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="shift-lbl" style="color:#1d4ed8">Day Hosp</span><span class="person-lbl">Rander Adv.</span></div>
+      <div class="month-chip" style="background:#fef3c7;border-color:#fcd34d"><span class="shift-lbl" style="color:#92400e">Swing</span><span class="person-lbl">B. Harikrishna</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">14</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="shift-lbl" style="color:#1d4ed8">Day Hosp</span><span class="person-lbl">Rander Adv.</span></div>
+    </div>
+    <div class="day-box today"><div class="day-num">15</div>
+      <div class="month-chip" style="background:#e0e7ff;border-color:#a5b4fc"><span class="shift-lbl" style="color:#4338ca">Night Hosp</span><span class="person-lbl">Aditya Rander</span></div>
+      <div class="month-chip" style="background:#dcfce7;border-color:#86efac"><span class="shift-lbl" style="color:#166534">Day NP</span><span class="person-lbl">B. Harikrishna</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">16</div></div>
+    <div class="day-box other-month"><div class="day-num">17</div></div>
+    <div class="day-box other-month"><div class="day-num">18</div></div>
+  </div>
+</div>
+
+<!-- OPTION 2 -->
+<div class="option opt2">
+  <h2>Option 2 — Compact, shows more shifts</h2>
+  <p>Tighter chips so 5–6 shifts fit per day, with a "+2 more" overflow line.</p>
+  <div class="month-grid">
+    <div class="month-dow">Mon</div><div class="month-dow">Tue</div><div class="month-dow">Wed</div><div class="month-dow">Thu</div><div class="month-dow">Fri</div><div class="month-dow">Sat</div><div class="month-dow">Sun</div>
+    <div class="day-box"><div class="day-num">12</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="dot" style="background:#2563eb"></span><span>Rander Adv. — Day</span></div>
+      <div class="month-chip" style="background:#e0e7ff;border-color:#a5b4fc"><span class="dot" style="background:#4f46e5"></span><span>Aditya Rander — Night</span></div>
+      <div class="month-chip" style="background:#fef3c7;border-color:#fcd34d"><span class="dot" style="background:#d97706"></span><span>B. Harikrishna — Swing</span></div>
+      <div class="month-chip" style="background:#dcfce7;border-color:#86efac"><span class="dot" style="background:#16a34a"></span><span>S. Patel — Day NP</span></div>
+      <div class="more">+2 more</div>
+    </div>
+    <div class="day-box"><div class="day-num">13</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="dot" style="background:#2563eb"></span><span>Rander Adv. — Day</span></div>
+      <div class="month-chip" style="background:#e0e7ff;border-color:#a5b4fc"><span class="dot" style="background:#4f46e5"></span><span>Aditya Rander — Night</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">14</div>
+      <div class="month-chip" style="background:#dbeafe;border-color:#93c5fd"><span class="dot" style="background:#2563eb"></span><span>Rander Adv. — Day</span></div>
+    </div>
+    <div class="day-box today"><div class="day-num">15</div>
+      <div class="month-chip" style="background:#e0e7ff;border-color:#a5b4fc"><span class="dot" style="background:#4f46e5"></span><span>Aditya Rander — Night</span></div>
+      <div class="month-chip" style="background:#dcfce7;border-color:#86efac"><span class="dot" style="background:#16a34a"></span><span>B. Harikrishna — Day NP</span></div>
+      <div class="month-chip" style="background:#fee2e2;border-color:#fca5a5"><span class="dot" style="background:#dc2626"></span><span>K. Rao — Night NP</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">16</div></div>
+    <div class="day-box other-month"><div class="day-num">17</div></div>
+    <div class="day-box other-month"><div class="day-num">18</div></div>
+  </div>
+</div>
+
+<!-- OPTION 3 -->
+<div class="option opt3">
+  <h2>Option 3 — Bigger day boxes</h2>
+  <p>Roomier cards with full shift blocks: name, person, and times.</p>
+  <div class="month-grid">
+    <div class="month-dow">Mon</div><div class="month-dow">Tue</div><div class="month-dow">Wed</div><div class="month-dow">Thu</div><div class="month-dow">Fri</div><div class="month-dow">Sat</div><div class="month-dow">Sun</div>
+    <div class="day-box"><div class="day-num">12</div>
+      <div class="shift-block" style="background:#2563eb"><span class="nm">Day Hospitalist</span><span>Rander Adv.</span> <span class="tm">7a–7p</span></div>
+      <div class="shift-block" style="background:#4f46e5"><span class="nm">Night Hospitalist</span><span>Aditya Rander</span> <span class="tm">7p–7a</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">13</div>
+      <div class="shift-block" style="background:#2563eb"><span class="nm">Day Hospitalist</span><span>Rander Adv.</span> <span class="tm">7a–7p</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">14</div>
+      <div class="shift-block" style="background:#d97706"><span class="nm">Swing</span><span>B. Harikrishna</span> <span class="tm">11a–11p</span></div>
+    </div>
+    <div class="day-box today"><div class="day-num">15</div>
+      <div class="shift-block" style="background:#4f46e5"><span class="nm">Night Hospitalist</span><span>Aditya Rander</span> <span class="tm">7p–7a</span></div>
+      <div class="shift-block" style="background:#16a34a"><span class="nm">Day NP</span><span>B. Harikrishna</span> <span class="tm">7a–7p</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">16</div></div>
+    <div class="day-box other-month"><div class="day-num">17</div></div>
+    <div class="day-box other-month"><div class="day-num">18</div></div>
+  </div>
+</div>
+
+<!-- OPTION 4 -->
+<div class="option opt4">
+  <h2>Option 4 — Strong color coding</h2>
+  <p>Bold shift-type color bars and tags so each shift type pops at a glance.</p>
+  <div class="month-grid">
+    <div class="month-dow">Mon</div><div class="month-dow">Tue</div><div class="month-dow">Wed</div><div class="month-dow">Thu</div><div class="month-dow">Fri</div><div class="month-dow">Sat</div><div class="month-dow">Sun</div>
+    <div class="day-box"><div class="day-num">12</div>
+      <div class="month-chip" style="border-color:#2563eb"><span class="shift-tag" style="background:#2563eb">Day</span><span>Rander Adv.</span></div>
+      <div class="month-chip" style="border-color:#4f46e5"><span class="shift-tag" style="background:#4f46e5">Night</span><span>Aditya Rander</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">13</div>
+      <div class="month-chip" style="border-color:#2563eb"><span class="shift-tag" style="background:#2563eb">Day</span><span>Rander Adv.</span></div>
+      <div class="month-chip" style="border-color:#d97706"><span class="shift-tag" style="background:#d97706">Swing</span><span>B. Harikrishna</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">14</div>
+      <div class="month-chip" style="border-color:#2563eb"><span class="shift-tag" style="background:#2563eb">Day</span><span>Rander Adv.</span></div>
+    </div>
+    <div class="day-box today"><div class="day-num">15</div>
+      <div class="month-chip" style="border-color:#4f46e5"><span class="shift-tag" style="background:#4f46e5">Night</span><span>Aditya Rander</span></div>
+      <div class="month-chip" style="border-color:#16a34a"><span class="shift-tag" style="background:#16a34a">Day NP</span><span>B. Harikrishna</span></div>
+    </div>
+    <div class="day-box"><div class="day-num">16</div></div>
+    <div class="day-box other-month"><div class="day-num">17</div></div>
+    <div class="day-box other-month"><div class="day-num">18</div></div>
+  </div>
+</div>
+
+</body>
+</html>
