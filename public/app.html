@@ -519,18 +519,6 @@
 
       <script>
       (function () {
-        function loadMembers() {
-          api('/api/users').then(function (r) {
-            if (!r.ok) return;
-            var users = (r.data.users || []).filter(function (u) { return u.isActive; });
-            var html = users.map(function (u) {
-              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
-              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
-                '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '" style="margin-right:6px">' + esc(nm) + '</label>';
-            }).join('');
-            $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No team members.</p>';
-          }).catch(function () {});
-        }
         function selectedMemberIds() {
           var ids = [];
           document.querySelectorAll('.bulk-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
@@ -2867,6 +2855,9 @@
                 <p>Add and manage employee profiles used throughout the schedule.</p>
               </div>
             </div>
+            <div style="margin-bottom:0.8rem">
+              <input type="text" id="team-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
+            </div>
             <div class="team-list" id="team-members-list"></div>
 
             <div class="sub-card">
@@ -3012,14 +3003,20 @@
               function renderMembers() {
                 var list = $('team-members-list');
                 list.textContent = '';
-                if (!members.length) {
+                var q = ($('team-search') ? $('team-search').value : '').toLowerCase();
+                var shown = members.filter(function (u) {
+                  if (!q) return true;
+                  var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
+                  return nm.toLowerCase().indexOf(q) >= 0;
+                });
+                if (!shown.length) {
                   var empty = document.createElement('p');
                   empty.style.color = 'var(--muted)';
-                  empty.textContent = 'No team members yet. Add your first team member below.';
+                  empty.textContent = members.length ? 'No team members match your search.' : 'No team members yet. Add your first team member below.';
                   list.appendChild(empty);
                   return;
                 }
-                members.forEach(function (u) {
+                shown.forEach(function (u) {
                   var row = document.createElement('div');
                   row.className = 'team-row' + (u.isActive ? '' : ' inactive');
 
@@ -3453,6 +3450,7 @@
                   setupAdd();
                   setupEdit();
                   setupDeptForm();
+                  $('team-search').addEventListener('input', renderMembers);
                   $('team-invite-send').addEventListener('click', function () { if (inviteUserId) sendInvite(inviteUserId); });
                   $('team-invite-mark-sent').addEventListener('click', function () { if (inviteUserId) markInviteSent(inviteUserId); });
                   loadDepartments();
@@ -4137,6 +4135,7 @@
           </div>
           <div>
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
+            <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
             <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
           </div>
           <div>
@@ -4157,17 +4156,28 @@
           var h = window.location.hash || '';
           return h.indexOf('#bulk') === 0;
         }
+        var bulkAllMembers = [];
         function loadMembers() {
           api('/api/users').then(function (r) {
             if (!r.ok) return;
-            var users = (r.data.users || []).filter(function (u) { return u.isActive; });
-            var html = users.map(function (u) {
-              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
-              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
-                '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '" style="margin-right:6px">' + esc(nm) + '</label>';
-            }).join('');
-            $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No team members.</p>';
+            bulkAllMembers = (r.data.users || []).filter(function (u) { return u.isActive; });
+            renderBulkMembers($('bulk-member-search').value);
           }).catch(function () {});
+        }
+        function renderBulkMembers(q) {
+          q = (q || '').toLowerCase();
+          var html = bulkAllMembers
+            .filter(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
+              return !q || nm.toLowerCase().indexOf(q) >= 0;
+            })
+            .map(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
+              var checked = document.querySelector('.bulk-member-cb[value="' + u.id + '"]:checked') ? ' checked' : '';
+              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
+                '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '"' + checked + ' style="margin-right:6px">' + esc(nm) + '</label>';
+            }).join('');
+          $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No matches.</p>';
         }
         function selectedMemberIds() {
           var ids = [];
@@ -4225,6 +4235,7 @@
         });
         window.addEventListener('hashchange', function () { if (isActive()) loadMembers(); });
         if (isActive()) loadMembers();
+        $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
       })();
       </script>
     </section>
