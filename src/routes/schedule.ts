@@ -128,6 +128,24 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId]
     );
 
+    // Load rotation pause periods (vacations etc.)
+    const { rows: pauseRows } = await query(
+      `SELECT rotation_id AS "rotationId", start_date::text AS "startDate", end_date::text AS "endDate"
+       FROM rotation_pauses
+       WHERE company_id = $1 AND end_date >= $2 AND start_date <= $3`,
+      [companyId, from, to]
+    );
+    const pauseMap = new Map<string, Array<{ start: string; end: string }>>();
+    for (const p of pauseRows) {
+      if (!pauseMap.has(p.rotationId)) pauseMap.set(p.rotationId, []);
+      pauseMap.get(p.rotationId)!.push({ start: p.startDate, end: p.endDate });
+    }
+    const isPaused = (rotationId: string, dateStr: string): boolean => {
+      const periods = pauseMap.get(rotationId);
+      if (!periods) return false;
+      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+    };
+
     // Load rotation shift exclusions (deleted rotation instances)
     const { rows: exclRows } = await query(
       `SELECT rotation_id AS "rotationId", user_id AS "userId",
@@ -192,6 +210,9 @@ router.get('/shifts', async (req: Request, res: Response) => {
             s.userId === a.userId && s.date === dateStr && s.shiftTypeId === a.shiftTypeId
           );
           if (hasManual) continue;
+
+          // Skip if date is within a pause period (vacation etc.)
+          if (isPaused(rot.id, dateStr)) continue;
 
           // Skip if this rotation instance was deleted (exclusion)
           const exclKey = `${rot.id}|${a.userId}|${dateStr}|${a.shiftTypeId}`;
@@ -650,6 +671,75 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
     res.json({ ok: true, rotation: rows[0] });
   } catch (err) {
     console.error('[schedule] toggle rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/rotations/:id/pauses — list pause periods
+router.get('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT id, start_date::text AS "startDate", end_date::text AS "endDate", reason
+       FROM rotation_pauses WHERE rotation_id = $1 AND company_id = $2 ORDER BY start_date`,
+      [req.params.id, companyId]
+    );
+    res.json({ pauses: rows });
+  } catch (err) {
+    console.error('[schedule] list pauses failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/rotations/:id/pauses — add a pause period
+router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { startDate, endDate, reason } = req.body ?? {};
+    if (!startDate || !endDate) {
+      res.status(400).json({ error: 'startDate and endDate are required.' });
+      return;
+    }
+    if (endDate < startDate) {
+      res.status(400).json({ error: 'End date must be on or after start date.' });
+      return;
+    }
+    // Verify rotation belongs to company
+    const { rows: rotRows } = await query(
+      'SELECT id FROM rotations WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rotRows.length) {
+      res.status(404).json({ error: 'Rotation not found.' });
+      return;
+    }
+    const { rows } = await query(
+      `INSERT INTO rotation_pauses (company_id, rotation_id, start_date, end_date, reason)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, start_date::text AS "startDate", end_date::text AS "endDate", reason`,
+      [companyId, req.params.id, startDate, endDate, reason || null]
+    );
+    res.json({ ok: true, pause: rows[0] });
+  } catch (err) {
+    console.error('[schedule] add pause failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/rotations/:id/pauses/:pauseId — remove a pause period
+router.delete('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rowCount } = await query(
+      'DELETE FROM rotation_pauses WHERE id = $1 AND rotation_id = $2 AND company_id = $3',
+      [req.params.pauseId, req.params.id, companyId]
+    );
+    if (!rowCount) {
+      res.status(404).json({ error: 'Pause not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete pause failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

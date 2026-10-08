@@ -2133,9 +2133,8 @@
                         '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' +
                         (r.isActive ? 'Active' : 'Paused') + '</span>' +
                         '</button>' +
-                        '<button type="button" class="btn-secondary rot-toggle-btn" data-rot="' + r.id + '" data-active="' + (r.isActive ? '1' : '0') + '" ' +
-                        'title="' + (r.isActive ? 'Pause rotation' : 'Activate rotation') + '" style="padding:0.4rem 0.6rem;flex-shrink:0">' +
-                        (r.isActive ? '⏸️' : '▶️') + '</button></div>';
+                        '<button type="button" class="btn-secondary rot-toggle-btn" data-rot="' + r.id + '" ' +
+                        'title="Manage pause periods (vacations)" style="padding:0.4rem 0.6rem;flex-shrink:0">📅</button></div>';
                     });
                     html += '</div>';
                   }
@@ -2157,17 +2156,53 @@
                 el.querySelectorAll('.rot-toggle-btn').forEach(function (b) {
                   b.addEventListener('click', function (e) {
                     e.stopPropagation();
-                    var rotId = b.getAttribute('data-rot');
-                    var isActive = b.getAttribute('data-active') === '1';
-                    api('/api/schedule/rotations/' + rotId, {
-                      method: 'PATCH',
-                      body: JSON.stringify({ isActive: !isActive })
-                    }).then(function (r) {
-                      if (r.ok) loadAll();
-                    });
+                    openPauseManager(b.getAttribute('data-rot'));
                   });
                 });
               }
+
+              // Rotation pause manager (multiple vacation periods)
+              window.openPauseManager = function(rotId) {
+                api('/api/schedule/rotations/' + rotId + '/pauses').then(function (r) {
+                  var pauses = (r.ok && r.data.pauses) || [];
+                  var listHtml = pauses.length
+                    ? pauses.map(function (p) {
+                        return '<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">' +
+                          '<span style="flex:1;font-size:13px"><strong>' + esc(p.startDate) + '</strong> → <strong>' + esc(p.endDate) + '</strong>' +
+                          (p.reason ? '<br><span style="color:var(--dim)">' + esc(p.reason) + '</span>' : '') + '</span>' +
+                          '<button type="button" class="btn-secondary" onclick="window.qsDeletePause(\'' + rotId + '\',\'' + p.id + '\')" style="padding:0.3rem 0.6rem">✕</button></div>';
+                      }).join('')
+                    : '<p style="color:var(--dim);font-size:13px">No pause periods. Add vacation dates below.</p>';
+                  var bodyHtml = '<div id="pause-list">' + listHtml + '</div>' +
+                    '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                    '<p style="font-size:13px;font-weight:600;margin-bottom:8px">Add pause period:</p>' +
+                    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
+                    '<label style="font-size:12px">Start<br><input type="date" id="pause-start" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:8px"></label>' +
+                    '<label style="font-size:12px">End<br><input type="date" id="pause-end" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:8px"></label>' +
+                    '</div>' +
+                    '<input type="text" id="pause-reason" placeholder="Reason (e.g., Vacation)" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">' +
+                    '<button type="button" class="btn" onclick="window.qsAddPause(\'' + rotId + '\')" style="width:100%">Add pause</button>' +
+                    '</div>';
+                  showDialog('Pause rotation', bodyHtml, [{ label: 'Done', primary: true }]);
+                });
+              };
+              window.qsAddPause = function(rotId) {
+                var start = $('pause-start').value;
+                var end = $('pause-end').value;
+                var reason = $('pause-reason').value;
+                if (!start || !end) { showInfo('Pick start and end dates.'); return; }
+                api('/api/schedule/rotations/' + rotId + '/pauses', {
+                  method: 'POST',
+                  body: JSON.stringify({ startDate: start, endDate: end, reason: reason })
+                }).then(function (r) {
+                  if (r.ok) { openPauseManager(rotId); loadAll(); }
+                  else { showInfo((r.data && r.data.error) || 'Could not add pause.'); }
+                });
+              };
+              window.qsDeletePause = function(rotId, pauseId) {
+                api('/api/schedule/rotations/' + rotId + '/pauses/' + pauseId, { method: 'DELETE' })
+                  .then(function (r) { if (r.ok) { openPauseManager(rotId); loadAll(); } });
+              };
 
               function renderDayToggles(selected) {
                 var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value, 10) || 7));
