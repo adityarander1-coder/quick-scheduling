@@ -1326,7 +1326,23 @@
           $('sched-day-title').textContent = fmtLong(dateStr);
           hide($('sched-day-error'));
           $('sched-comment-text').value = '';
-          renderDayModal();
+          // Ensure this date's shifts are loaded (main view range may not include it).
+          var hasDate = sched.shifts.some(function (s) { return s.date === dateStr; });
+          var r = viewRange();
+          if (!hasDate || dateStr < r.from || dateStr > r.to) {
+            api('/api/schedule/shifts?from=' + dateStr + '&to=' + dateStr).then(function (sR) {
+              if (sR.ok) {
+                var ids = {};
+                sched.shifts.forEach(function (s) { ids[s.id] = true; });
+                (sR.data.shifts || []).forEach(function (s) {
+                  if (!ids[s.id]) { sched.shifts.push(s); ids[s.id] = true; }
+                });
+              }
+              renderDayModal();
+            });
+          } else {
+            renderDayModal();
+          }
           show($('sched-day-modal'));
           if (!sched.canEdit) hide($('sched-comment-form-row'));
           else show($('sched-comment-form-row'));
@@ -2039,7 +2055,15 @@
         // Lightweight refresh — only reload shifts, not everything.
         function refreshShifts() {
           var r = viewRange();
-          return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
+          // Always include the day modal / assign date so newly assigned shifts aren't wiped
+          // when the main view is on a different range.
+          var extra = [sched.dayModalDate, sched.assignDate].filter(Boolean);
+          var from = r.from, to = r.to;
+          extra.forEach(function (d) {
+            if (d < from) from = d;
+            if (d > to) to = d;
+          });
+          return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
             if (sR.ok) sched.shifts = sR.data.shifts || [];
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
