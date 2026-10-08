@@ -377,7 +377,7 @@
 
       <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
-      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end"></div>
+      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end"></div>
 
       <div class="sched-toolbar">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
@@ -699,15 +699,15 @@
           if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
           el.style.display = 'flex';
           el.innerHTML =
-            '<div><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
-            '<select id="sched-dept-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:180px">' +
+            '<div style="flex:1;min-width:0"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            '<select id="sched-dept-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;width:100%">' +
             '<option value="">All departments</option>' +
             sched.departments.map(function (d) {
               return '<option value="' + d.id + '"' + (sched.deptFilter === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
             }).join('') +
             '</select></div>' +
-            '<div><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
-            '<select id="sched-shift-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:180px">' +
+            '<div style="flex:1;min-width:0"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            '<select id="sched-shift-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;width:100%">' +
             '<option value="">All shifts</option>' +
             visibleShiftTypes().map(function (st) {
               return '<option value="' + st.id + '"' + (sched.shiftFilter === st.id ? ' selected' : '') + '>' + esc(st.name) + '</option>';
