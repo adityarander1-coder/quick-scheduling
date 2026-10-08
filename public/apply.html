@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Apply — Quick Scheduling</title>
+  <title>Team member form — Quick Scheduling</title>
   <link rel="stylesheet" href="/styles.css">
   <style>
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
@@ -15,14 +15,14 @@
     <div class="header-bar">
       <div>
         <h1>Quick Scheduling</h1>
-        <p id="company-line" style="margin:0.3rem 0 0">Job application</p>
+        <p id="company-line" style="margin:0.3rem 0 0">Team member form</p>
       </div>
     </div>
 
     <div id="link-error" class="alert alert-error hidden" role="alert"></div>
 
     <div id="form-card" class="card hidden">
-      <h2>Apply to <span id="company-name"></span></h2>
+      <h2>Fill your details</h2>
       <div id="submit-error" class="alert alert-error hidden" role="alert"></div>
       <form id="apply-form" novalidate>
         <div class="grid-2">
@@ -42,13 +42,13 @@
           </div>
         </label>
         <label>Anything we should know? <span class="hint">(optional)</span><textarea id="notes" rows="3"></textarea></label>
-        <div style="margin-top:0.8rem"><button type="submit" id="submit">Submit application</button></div>
+        <div style="margin-top:0.8rem"><button type="submit" id="submit">Submit details</button></div>
       </form>
     </div>
 
     <div id="done-card" class="card hidden">
-      <h2>Application received</h2>
-      <div class="alert alert-success" role="status">Thanks — your application has been submitted. The hiring team will review it.</div>
+      <h2>Details received</h2>
+      <div class="alert alert-success" role="status">Thanks — your details have been submitted.</div>
     </div>
   </div>
   <script>
