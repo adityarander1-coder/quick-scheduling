@@ -965,10 +965,14 @@
               var ds = p.getAttribute('data-date');
               var pub = isPublished(ds);
               var endpoint = pub ? '/api/schedule/days/unpublish' : '/api/schedule/days/publish';
+              // Optimistic: flip the pill instantly.
+              if (pub) delete sched.days[ds]; else sched.days[ds] = sched.days[ds] || {};
+              renderView();
+              renderPublishBar();
               api(endpoint, { method: 'POST', body: JSON.stringify({ dates: [ds] }) }).then(function (r) {
-                if (r.ok) { pageSuccess(pub ? 'Moved to draft.' : 'Published.'); loadAll(); }
-                else pageError((r.data && r.data.error) || 'Could not update.');
-              });
+                if (r.ok) { pageSuccess(pub ? 'Moved to draft.' : 'Published.'); }
+                else { pageError((r.data && r.data.error) || 'Could not update.'); loadAll(); }
+              }).catch(function () { pageError('Could not update.'); loadAll(); });
             });
           });
         }
@@ -1176,14 +1180,24 @@
           showDialog('Delete shift', '<p>Delete this shift?</p>', [
             { label: 'Cancel' },
             { label: 'Delete', danger: true, onClick: function () {
+              // Optimistic: remove from screen instantly.
+              sched.shifts = sched.shifts.filter(function (x) { return x.id !== sid; });
+              renderView();
+              if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+              pageSuccess('Shift deleted.');
+              var p;
               if (isRot && s && s.rotationId) {
-                api('/api/schedule/rotation-shifts/delete', {
+                p = api('/api/schedule/rotation-shifts/delete', {
                   method: 'POST',
                   body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
-                }).then(function (r) { if (r.ok) loadAll(); });
+                });
               } else {
-                api('/api/schedule/shifts/' + sid, { method: 'DELETE' }).then(function (r) { if (r.ok) loadAll(); });
+                p = api('/api/schedule/shifts/' + sid, { method: 'DELETE' });
               }
+              p.then(function (r) {
+                if (r.ok) refreshShifts();
+                else { pageError('Could not delete. Refreshing.'); refreshShifts(); }
+              }).catch(function () { pageError('Could not delete. Refreshing.'); refreshShifts(); });
             } }
           ]);
         };
@@ -1726,19 +1740,33 @@
           // No PUT endpoint: DELETE old + POST new with same date/shift type
           var payload = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
           if (s.notes) payload.notes = s.notes;
+          // Optimistic: swap the person on screen instantly.
+          var m = memberById(newUserId);
+          var oldShift = null;
+          for (var i = 0; i < sched.shifts.length; i++) {
+            if (sched.shifts[i].id === s.id) {
+              oldShift = sched.shifts[i];
+              sched.shifts[i] = Object.assign({}, oldShift, {
+                userId: newUserId,
+                firstName: m ? m.firstName : oldShift.firstName,
+                lastName: m ? m.lastName : oldShift.lastName,
+                nickname: m ? m.nickname : oldShift.nickname,
+              });
+              break;
+            }
+          }
+          closePersonActions();
+          renderView();
           api('/api/schedule/shifts/' + s.id, { method: 'DELETE' }).then(function (dr) {
-            if (!dr.ok) { paMessage('Couldn\u2019t replace this team member.'); return; }
+            if (!dr.ok) { paMessage('Couldn\u2019t replace this team member.'); refreshShifts(); return null; }
             return api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(payload) });
           }).then(function (r) {
             if (!r) return;
-            if (r.ok) {
-              closePersonActions();
-              loadAll();
-            } else {
-              paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.');
-            }
+            if (r.ok) refreshShifts();
+            else { paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
           }).catch(function () {
             paMessage('Couldn\u2019t replace this team member. Try again.');
+            refreshShifts();
           });
         }
 
@@ -1849,19 +1877,27 @@
         });
         $('sched-publish-btn').addEventListener('click', function () {
           var dates = visibleDates();
+          // Optimistic: mark published instantly.
+          dates.forEach(function (ds) { sched.days[ds] = sched.days[ds] || {}; });
+          renderView();
+          renderPublishBar();
           api('/api/schedule/days/publish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
             .then(function (res) {
-              if (res.ok) { pageSuccess('Published ' + res.data.published + ' dates.'); loadAll(); }
-              else pageError((res.data && res.data.error) || 'Could not publish.');
-            });
+              if (res.ok) { pageSuccess('Published ' + res.data.published + ' dates.'); }
+              else { pageError((res.data && res.data.error) || 'Could not publish.'); loadAll(); }
+            }).catch(function () { pageError('Could not publish.'); loadAll(); });
         });
         $('sched-unpublish-btn').addEventListener('click', function () {
           var dates = visibleDates();
+          // Optimistic: mark unpublished instantly.
+          dates.forEach(function (ds) { delete sched.days[ds]; });
+          renderView();
+          renderPublishBar();
           api('/api/schedule/days/unpublish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
             .then(function (res) {
-              if (res.ok) { pageSuccess('Unpublished ' + res.data.unpublished + ' dates.'); loadAll(); }
-              else pageError((res.data && res.data.error) || 'Could not unpublish.');
-            });
+              if (res.ok) { pageSuccess('Unpublished ' + res.data.unpublished + ' dates.'); }
+              else { pageError((res.data && res.data.error) || 'Could not unpublish.'); loadAll(); }
+            }).catch(function () { pageError('Could not unpublish.'); loadAll(); });
         });
         $('sched-assign-cancel').addEventListener('click', function () { hide($('sched-assign-modal')); });
         $('sched-ec-cancel').addEventListener('click', function () { hide($('sched-ec-modal')); });
@@ -1909,6 +1945,24 @@
           var savedHl = localStorage.getItem('qs-highlights');
           if (savedHl) sched.highlights = JSON.parse(savedHl) || {};
         } catch (e) {}
+        // Lightweight refresh — only reload shifts, not everything.
+        function refreshShifts() {
+          var r = viewRange();
+          return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
+            if (sR.ok) sched.shifts = sR.data.shifts || [];
+            renderView();
+            if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+          });
+        }
+
+        // Find member by ID for building optimistic shift objects.
+        function memberById(id) {
+          for (var i = 0; i < sched.members.length; i++) {
+            if (sched.members[i].id === id) return sched.members[i];
+          }
+          return null;
+        }
+
         $('sched-assign-save').addEventListener('click', function () {
           var useRange = $('sched-assign-range-toggle').checked;
           var notes = $('sched-assign-notes').value.trim() || undefined;
@@ -1923,9 +1977,38 @@
             api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
               if (r.ok) {
                 hide($('sched-assign-modal'));
-                if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
                 pageSuccess('Assigned ' + (r.data.created || 0) + ' shifts.' + (r.data.skipped ? ' (' + r.data.skipped + ' already existed.)' : ''));
-                loadAll();
+                // Optimistic: add one chip per date instantly.
+                var m = memberById(body.userId);
+                var st = shiftTypeById(body.shiftTypeId);
+                var d = parseDate(body.startDate);
+                var end = parseDate(body.endDate);
+                while (d <= end) {
+                  var ds = fmtDate(d);
+                  var exists = sched.shifts.some(function (x) {
+                    return x.date === ds && x.userId === body.userId && x.shiftTypeId === body.shiftTypeId;
+                  });
+                  if (!exists) {
+                    sched.shifts.push({
+                      id: 'temp-' + Date.now() + '-' + ds,
+                      date: ds,
+                      userId: body.userId,
+                      firstName: m ? m.firstName : '',
+                      lastName: m ? m.lastName : '',
+                      nickname: m ? m.nickname : '',
+                      shiftTypeId: body.shiftTypeId,
+                      shiftTypeName: st ? st.name : '',
+                      shiftTypeColor: st ? st.color : '#637a8e',
+                      shiftTypeTextColor: st ? st.textColor : '#ffffff',
+                      notes: body.notes || '',
+                      isRotation: false,
+                    });
+                  }
+                  d.setDate(d.getDate() + 1);
+                }
+                renderView();
+                if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+                refreshShifts();
               } else {
                 var el = $('sched-assign-error');
                 el.textContent = (r.data && r.data.error) || 'Could not assign shifts.';
@@ -1942,9 +2025,29 @@
             api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
               if (r.ok) {
                 hide($('sched-assign-modal'));
+                // Optimistic: show the shift instantly, then sync the real ID in background.
+                var m = memberById(body.userId);
+                var st = shiftTypeById(body.shiftTypeId);
+                var tempShift = {
+                  id: 'temp-' + Date.now(),
+                  date: body.date,
+                  userId: body.userId,
+                  firstName: m ? m.firstName : '',
+                  lastName: m ? m.lastName : '',
+                  nickname: m ? m.nickname : '',
+                  shiftTypeId: body.shiftTypeId,
+                  shiftTypeName: st ? st.name : '',
+                  shiftTypeColor: st ? st.color : '#637a8e',
+                  shiftTypeTextColor: st ? st.textColor : '#ffffff',
+                  notes: body.notes || '',
+                  isRotation: false,
+                };
+                sched.shifts.push(tempShift);
+                renderView();
                 if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
                 pageSuccess('Shift assigned.');
-                loadAll();
+                // Background sync: replace temp with server truth.
+                refreshShifts();
               } else {
                 var el = $('sched-assign-error');
                 el.textContent = (r.data && r.data.error) || 'Could not assign shift.';
