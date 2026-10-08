@@ -4113,8 +4113,76 @@
     <section id="tab-link" class="tab-panel">
       <div class="card">
         <h2>Employee Link</h2>
-        <p style="color:var(--dim)">Share the schedule with your team — coming.</p>
+        <p style="color:var(--dim)">Share a view-only link to the published schedule with your team. No login needed.</p>
+        <div id="share-link-box" style="margin-top:1rem">
+          <div id="share-link-none">
+            <p style="color:var(--dim)">No share link yet.</p>
+            <button type="button" id="share-generate" class="btn">Generate share link</button>
+          </div>
+          <div id="share-link-active" class="hidden">
+            <p><strong>Share this link with your team:</strong></p>
+            <p><code id="share-link-url" style="word-break:break-all;background:var(--bg);padding:0.5rem;border-radius:8px;display:block"></code></p>
+            <div style="display:flex;gap:0.5rem;margin-top:0.8rem;flex-wrap:wrap">
+              <button type="button" id="share-copy" class="btn-secondary">Copy link</button>
+              <button type="button" id="share-regenerate" class="btn-secondary">New link</button>
+              <button type="button" id="share-disable" class="btn-secondary" style="color:var(--danger)">Disable link</button>
+            </div>
+            <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published dates are visible. Generating a new link disables the old one.</p>
+          </div>
+        </div>
       </div>
+      <script>
+      (function () {
+        function isActive() {
+          var h = window.location.hash || '';
+          return h.indexOf('#link') === 0;
+        }
+        function refresh() {
+          api('/api/schedule/share').then(function (r) {
+            if (!r.ok) return;
+            $('share-link-none').classList.toggle('hidden', r.data.hasLink);
+            $('share-link-active').classList.toggle('hidden', !r.data.hasLink);
+          }).catch(function () {});
+        }
+        function showLink(link) {
+          $('share-link-url').textContent = link;
+          $('share-link-none').classList.add('hidden');
+          $('share-link-active').classList.remove('hidden');
+        }
+        $('share-generate').addEventListener('click', function () {
+          api('/api/schedule/share', { method: 'POST' }).then(function (r) {
+            if (r.ok) showLink(r.data.shareLink);
+            else pageError((r.data && r.data.error) || 'Could not generate link.');
+          });
+        });
+        $('share-regenerate').addEventListener('click', function () {
+          if (!confirm('Generate a new link? The old link will stop working.')) return;
+          api('/api/schedule/share', { method: 'POST' }).then(function (r) {
+            if (r.ok) { showLink(r.data.shareLink); pageSuccess('New link generated.'); }
+            else pageError((r.data && r.data.error) || 'Could not generate link.');
+          });
+        });
+        $('share-disable').addEventListener('click', function () {
+          if (!confirm('Disable the share link? Your team will no longer be able to view the schedule.')) return;
+          api('/api/schedule/share', { method: 'DELETE' }).then(function (r) {
+            if (r.ok) {
+              $('share-link-none').classList.remove('hidden');
+              $('share-link-active').classList.add('hidden');
+              pageSuccess('Share link disabled.');
+            } else pageError((r.data && r.data.error) || 'Could not disable link.');
+          });
+        });
+        $('share-copy').addEventListener('click', function () {
+          var t = $('share-link-url').textContent;
+          function done() { pageSuccess('Link copied.'); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(done, done);
+          } else done();
+        });
+        window.addEventListener('hashchange', function () { if (isActive()) refresh(); });
+        if (isActive()) refresh();
+      })();
+      </script>
     </section>
 
     <!-- Help tab -->

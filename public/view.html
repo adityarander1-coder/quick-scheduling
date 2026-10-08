@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Schedule</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f1f5f9; color: #1e293b; }
+  header { background: #1e3a5f; color: #fff; padding: 1rem; text-align: center; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 1.2rem; }
+  header p { font-size: 0.85rem; opacity: 0.8; margin-top: 2px; }
+  .nav { display: flex; justify-content: center; align-items: center; gap: 0.8rem; padding: 0.8rem; background: #fff; border-bottom: 1px solid #e2e8f0; position: sticky; top: 64px; z-index: 9; }
+  .nav button { border: 1px solid #cbd5e1; background: #fff; border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; cursor: pointer; }
+  .nav .week-label { font-weight: 700; min-width: 180px; text-align: center; }
+  .day { background: #fff; margin: 0.8rem; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .day h3 { font-size: 1rem; margin-bottom: 0.6rem; color: #1e3a5f; }
+  .shift { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.7rem; border-radius: 8px; margin-bottom: 0.4rem; font-size: 0.9rem; border: 1px solid; }
+  .shift .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .shift strong { font-weight: 700; }
+  .empty { color: #94a3b8; font-size: 0.85rem; }
+  .error { text-align: center; padding: 3rem 1rem; color: #991b1b; }
+  .loading { text-align: center; padding: 3rem 1rem; color: #64748b; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="company-name">Team Schedule</h1>
+  <p>Published schedule — view only</p>
+</header>
+<div class="nav">
+  <button id="prev-week">&larr; Prev</button>
+  <span class="week-label" id="week-label"></span>
+  <button id="next-week">Next &rarr;</button>
+</div>
+<div id="content"><div class="loading">Loading schedule…</div></div>
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var token = params.get('t');
+  var content = document.getElementById('content');
+  var weekLabel = document.getElementById('week-label');
+  var weekStart = startOfWeek(new Date());
+
+  if (!token) {
+    content.innerHTML = '<div class="error">This link is not valid.</div>';
+    return;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function fmtDate(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function startOfWeek(d) {
+    var x = new Date(d);
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+  function fmtLong(ds) {
+    var d = new Date(ds + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+  function tint(hex, pct) {
+    var n = hex.replace('#', '');
+    if (n.length === 3) n = n.split('').map(function (c) { return c + c; }).join('');
+    var r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+    r = Math.round(r + (255 - r) * pct / 100); g = Math.round(g + (255 - g) * pct / 100); b = Math.round(b + (255 - b) * pct / 100);
+    return '#' + [r, g, b].map(function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  function load() {
+    var from = fmtDate(weekStart);
+    var end = new Date(weekStart); end.setDate(end.getDate() + 6);
+    var to = fmtDate(end);
+    weekLabel.textContent = fmtLong(from) + ' – ' + fmtLong(to);
+    content.innerHTML = '<div class="loading">Loading schedule…</div>';
+    fetch('/api/schedule/public?token=' + encodeURIComponent(token) + '&from=' + from + '&to=' + to)
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          content.innerHTML = '<div class="error">' + esc((res.data && res.data.error) || 'Could not load.') + '</div>';
+          return;
+        }
+        if (res.data.companyName) document.getElementById('company-name').textContent = res.data.companyName + ' — Schedule';
+        var shifts = res.data.shifts || [];
+        var byDate = {};
+        shifts.forEach(function (s) {
+          (byDate[s.date] = byDate[s.date] || []).push(s);
+        });
+        var html = '';
+        for (var i = 0; i < 7; i++) {
+          var d = new Date(weekStart); d.setDate(d.getDate() + i);
+          var ds = fmtDate(d);
+          var dayShifts = byDate[ds] || [];
+          html += '<div class="day"><h3>' + esc(fmtLong(ds)) + '</h3>';
+          if (!dayShifts.length) {
+            html += '<p class="empty">No shifts published.</p>';
+          } else {
+            dayShifts.forEach(function (s) {
+              var color = s.shiftTypeColor || '#637a8e';
+              var nm = ((s.firstName || '') + ' ' + (s.lastName || '')).trim() || s.nickname || '';
+              html += '<div class="shift" style="background:' + tint(color, 80) + ';border-color:' + tint(color, 60) + '">' +
+                '<span class="dot" style="background:' + esc(color) + '"></span>' +
+                '<span><strong>' + esc(s.shiftTypeName || '') + '</strong> — ' + esc(nm) + '</span></div>';
+            });
+          }
+          html += '</div>';
+        }
+        content.innerHTML = html;
+      })
+      .catch(function () {
+        content.innerHTML = '<div class="error">Could not load the schedule. Please try again.</div>';
+      });
+  }
+
+  document.getElementById('prev-week').addEventListener('click', function () {
+    weekStart.setDate(weekStart.getDate() - 7); load();
+  });
+  document.getElementById('next-week').addEventListener('click', function () {
+    weekStart.setDate(weekStart.getDate() + 7); load();
+  });
+  load();
+})();
+</script>
+</body>
+</html>

@@ -1001,4 +1001,111 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
   }
 });
 
+// ---------------------------------------------------------------------------
+// Employee Link — public schedule sharing
+// ---------------------------------------------------------------------------
+
+function hashShareToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+// GET /api/schedule/share — get current share link (owner/scheduler).
+router.get('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT id, created_at FROM schedule_shares WHERE company_id = $1',
+      [companyId]
+    );
+    res.json({ hasLink: rows.length > 0 });
+  } catch (err) {
+    console.error('[schedule] get share failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/share — generate (or regenerate) the share link (owner/scheduler).
+router.post('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashShareToken(token);
+    await query('DELETE FROM schedule_shares WHERE company_id = $1', [companyId]);
+    await query(
+      'INSERT INTO schedule_shares (id, company_id, token_hash) VALUES ($1, $2, $3)',
+      [crypto.randomUUID(), companyId, tokenHash]
+    );
+    const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    res.json({ shareLink: `${base}/view.html?t=${token}` });
+  } catch (err) {
+    console.error('[schedule] create share failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/share — disable the share link (owner/scheduler).
+router.delete('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query('DELETE FROM schedule_shares WHERE company_id = $1', [companyId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete share failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/public?token=xxx&from=YYYY-MM-DD&to=YYYY-MM-DD — public read-only schedule.
+// Returns only published dates.
+router.get('/public', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || '');
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!token || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      res.status(400).json({ error: 'Invalid request.' });
+      return;
+    }
+    const { rows: shares } = await query(
+      'SELECT company_id FROM schedule_shares WHERE token_hash = $1',
+      [hashShareToken(token)]
+    );
+    if (!shares.length) {
+      res.status(404).json({ error: 'This link is not valid.' });
+      return;
+    }
+    const companyId = shares[0].company_id;
+    // Only published dates.
+    const { rows: shifts } = await query(
+      `SELECT s.id, s.date::text AS date, s.notes,
+              s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
+              u.nickname, s.shift_type_id AS "shiftTypeId",
+              st.name AS "shiftTypeName", st.color AS "shiftTypeColor",
+              st.text_color AS "shiftTypeTextColor",
+              false AS "isRotation", NULL AS "rotationId", NULL AS "rotationName"
+       FROM shifts s
+       JOIN users u ON u.id = s.user_id
+       JOIN shift_types st ON st.id = s.shift_type_id
+       JOIN schedule_days d ON d.company_id = s.company_id AND d.date = s.date AND d.is_published = true
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
+       ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
+      [companyId, from, to]
+    );
+    const { rows: types } = await query(
+      `SELECT id, name, color, text_color AS "textColor", sort_order AS "sortOrder"
+       FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name`,
+      [companyId]
+    );
+    const { rows: comp } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
+    res.json({
+      companyName: comp.length ? comp[0].name : '',
+      shifts,
+      shiftTypes: types,
+    });
+  } catch (err) {
+    console.error('[schedule] public schedule failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
