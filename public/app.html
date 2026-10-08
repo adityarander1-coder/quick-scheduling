@@ -2079,6 +2079,11 @@
         }
 
         $('sched-assign-save').addEventListener('click', function () {
+          var saveBtn = $('sched-assign-save');
+          if (saveBtn.disabled) return; // prevent double-submit
+          saveBtn.disabled = true;
+          hide($('sched-assign-error'));
+          var done = function () { saveBtn.disabled = false; };
           var useRange = $('sched-assign-range-toggle').checked;
           var userId = $('sched-assign-user').value;
           var checkDate = useRange ? $('sched-assign-start').value : sched.assignDate;
@@ -2096,25 +2101,26 @@
                 '</div>' +
                 '<p style="font-size:13px;color:var(--dim)">Adjust the dates above, or assign anyway without changing the vacation.</p>',
                 [
-                  { label: 'Cancel' },
-                  { label: 'Assign anyway', onClick: function () { doAssign(); } },
+                  { label: 'Cancel', onClick: function () { done(); } },
+                  { label: 'Assign anyway', onClick: function () { doAssign(done); } },
                   { label: 'Update vacation & Assign', primary: true, onClick: function () {
                     var ns = $('vac-adj-start').value, ne = $('vac-adj-end').value;
-                    if (!ns || !ne || ns > ne) { pageError('Pick a valid vacation date range.'); return; }
+                    if (!ns || !ne || ns > ne) { pageError('Pick a valid vacation date range.'); done(); return; }
                     api('/api/schedule/rotations/' + v.rotationId + '/pauses/' + v.pauseId, {
                       method: 'PUT', body: JSON.stringify({ startDate: ns, endDate: ne, reason: v.reason })
                     }).then(function (ur) {
-                      if (ur.ok) { doAssign(); }
-                      else { pageError((ur.data && ur.data.error) || 'Could not update vacation.'); }
-                    }).catch(function () { pageError('Could not update vacation.'); });
+                      if (ur.ok) { doAssign(done); }
+                      else { pageError((ur.data && ur.data.error) || 'Could not update vacation.'); done(); }
+                    }).catch(function () { pageError('Could not update vacation.'); done(); });
                   } }
                 ]);
             } else {
-              doAssign();
+              doAssign(done);
             }
-          }).catch(function () { doAssign(); });
+          }).catch(function () { doAssign(done); });
         });
-        function doAssign() {
+        function doAssign(onDone) {
+          onDone = onDone || function () {};
           var useRange = $('sched-assign-range-toggle').checked;
           var notes = $('sched-assign-notes').value.trim() || undefined;
           if (useRange) {
@@ -2165,6 +2171,7 @@
                 el.textContent = (r.data && r.data.error) || 'Could not assign shifts.';
                 show(el);
               }
+              onDone();
             });
           } else {
             var body = {
@@ -2204,6 +2211,7 @@
                 el.textContent = (r.data && r.data.error) || 'Could not assign shift.';
                 show(el);
               }
+              onDone();
             });
           }
         }
