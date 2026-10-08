@@ -174,6 +174,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
          WHERE ra.rotation_id = $1 AND u.is_active = true`,
         [rot.id]
       );
+      (rot as any).assignments = assignments;
 
       if (assignments.length === 0) continue;
 
@@ -241,7 +242,23 @@ router.get('/shifts', async (req: Request, res: Response) => {
     }
 
     // Merge and sort
-    const all = [...rows, ...rotationShifts];
+    // Also hide manual shifts for users whose rotation is paused on that date (vacation)
+    const userPauseMap = new Map<string, Array<{ start: string; end: string }>>();
+    for (const rot of rotations) {
+      const periods = pauseMap.get(rot.id);
+      if (!periods || !rot.assignments) continue;
+      for (const a of rot.assignments as any[]) {
+        if (!userPauseMap.has(a.userId)) userPauseMap.set(a.userId, []);
+        userPauseMap.get(a.userId)!.push(...periods);
+      }
+    }
+    const isUserPaused = (userId: string, dateStr: string): boolean => {
+      const periods = userPauseMap.get(userId);
+      if (!periods) return false;
+      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+    };
+    const visibleManual = rows.filter((s: any) => !s.userId || !isUserPaused(s.userId, s.date));
+    const all = [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       const soA = a._sortOrder ?? 999;
