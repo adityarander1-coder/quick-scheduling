@@ -1212,7 +1212,7 @@
             html += '<div class="dm-shift-row"><span class="shift-color-bar" style="background:' +
               esc(st ? st.color : '#64748b') + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + '</span>' +
-              (sched.canEdit ? '<button type="button" class="btn-secondary shift-del-m" data-shift-id="' + s.id + '" style="margin-left:auto;padding:0.2rem 0.5rem">Remove</button>' : '') + '</div>';
+              (sched.canEdit ? '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="margin-left:auto;width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;color:#bd3d4a" title="Delete shift">🗑️</button>' : '') + '</div>';
           });
           $('sched-day-shifts').innerHTML = html;
           // Open slots for unfilled staffing targets.
@@ -1242,11 +1242,7 @@
           });
           if (!comments.length) ch = '<p style="color:#94a3b8;font-size:0.85rem">No notes for this day.</p>';
           $('sched-day-comments').innerHTML = ch;
-          $('sched-day-shifts').querySelectorAll('.shift-del-m').forEach(function (b) {
-            b.addEventListener('click', function () {
-              if (confirm('Remove this shift?')) { deleteShift(b.getAttribute('data-shift-id')); renderDayModal(); }
-            });
-          });
+          // Note: delete buttons use inline onclick (window.qsDeleteShift) - no binding needed
           $('sched-day-comments').querySelectorAll('.del').forEach(function (b) {
             b.addEventListener('click', function () {
               api('/api/schedule/comments/' + b.getAttribute('data-comment-id'), { method: 'DELETE' })
