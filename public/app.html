@@ -1995,6 +1995,12 @@
                   <label>Team member</label>
                   <div id="rot-emp-display" style="display:flex;align-items:center;gap:0.6rem"></div>
                 </div>
+                <div class="form-row" id="rot-copy-row">
+                  <label>Copy from existing rotation (optional)</label>
+                  <select id="rot-copy-from" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                    <option value="">— Start blank —</option>
+                  </select>
+                </div>
                 <div class="form-row">
                   <label>Pattern name</label>
                   <input type="text" id="rot-name" placeholder="e.g. 7 on / 7 off" autocomplete="off">
@@ -2246,6 +2252,19 @@
                 $('rot-start').value = new Date().toISOString().slice(0, 10);
                 fillShiftTypes(null);
                 renderDayToggles([]);
+                // Populate copy-from dropdown with other rotations
+                var copySel = $('rot-copy-from');
+                var opts = '<option value="">— Start blank —</option>';
+                allRots.forEach(function (r) {
+                  var firstA = (r.assignments || [])[0];
+                  var rm = firstA ? memberById(firstA.userId) : null;
+                  if (rm && rm.id !== userId) {
+                    var nm = ((rm.firstName || '') + ' ' + (rm.lastName || '')).trim();
+                    opts += '<option value="' + r.id + '">' + esc(nm) + ' — ' + esc(r.name) + '</option>';
+                  }
+                });
+                copySel.innerHTML = opts;
+                show($('rot-copy-row'));
                 hide($('rot-error'));
                 hide($('rot-del'));
                 show($('rot-modal'));
@@ -2264,10 +2283,28 @@
                 fillShiftTypes(firstA ? firstA.shiftTypeId : null);
                 var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
                 renderDayToggles(days);
+                hide($('rot-copy-row'));
                 hide($('rot-error'));
                 show($('rot-del'));
                 show($('rot-modal'));
               }
+
+              // Copy rotation pattern from another person's rotation
+              $('rot-copy-from').addEventListener('change', function () {
+                var srcId = this.value;
+                if (!srcId) return;
+                var src = null;
+                for (var i = 0; i < allRots.length; i++) {
+                  if (allRots[i].id === srcId) { src = allRots[i]; break; }
+                }
+                if (!src) return;
+                var firstA = (src.assignments || [])[0];
+                $('rot-name').value = src.name || '';
+                $('rot-cycle').value = src.cycleDays || 7;
+                if (firstA) fillShiftTypes(firstA.shiftTypeId);
+                var days = (src.assignments || []).map(function (a) { return a.cycleDay; });
+                renderDayToggles(days);
+              });
 
               function collectDays() {
                 var days = [];
