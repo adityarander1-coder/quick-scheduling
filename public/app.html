@@ -1049,28 +1049,14 @@
         window.qsDeleteShift = function(sid) {
           var s = shiftById(sid);
           var isRot = sid && sid.indexOf('rot-') === 0;
-          showDialog('Delete shift', '<p>Delete this shift?</p>', [
-            { label: 'Cancel' },
-            { label: 'Delete', danger: true, onClick: function () {
-              if (isRot && s && s.rotationId) {
-                // Rotation shift: create an exclusion for this one occurrence
-                api('/api/schedule/rotation-shifts/delete', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    rotationId: s.rotationId,
-                    userId: s.userId,
-                    date: s.date,
-                    shiftTypeId: s.shiftTypeId
-                  })
-                }).then(function (r) {
-                  if (r.ok) { pageSuccess('Shift removed.'); loadAll(); }
-                  else pageError((r.data && r.data.error) || 'Could not remove shift.');
-                });
-              } else {
-                deleteShift(sid);
-              }
-            } }
-          ]);
+          if (isRot && s && s.rotationId) {
+            api('/api/schedule/rotation-shifts/delete', {
+              method: 'POST',
+              body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
+            }).then(function (r) { if (r.ok) loadAll(); });
+          } else {
+            api('/api/schedule/shifts/' + sid, { method: 'DELETE' }).then(function (r) { if (r.ok) loadAll(); });
+          }
         };
         window.qsDoReplace = function(sid, newUserId) {
           hide($('action-dialog'));
