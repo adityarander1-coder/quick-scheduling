@@ -508,51 +508,6 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
   }
 });
 
-// TEMPORARY DEBUG — raw shift dump for a date (owner only). Remove after diagnosing.
-router.get('/debug/date', requireRole('owner'), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.session.companyId!;
-    const date = String(req.query.date || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      res.status(400).send('Provide ?date=YYYY-MM-DD');
-      return;
-    }
-    const { rows: shifts } = await query(
-      `SELECT s.id, s.date::text AS date, s.published, s.notes,
-              s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
-              u.is_active AS "userActive",
-              s.shift_type_id AS "shiftTypeId", st.name AS "shiftTypeName",
-              st.is_active AS "shiftTypeActive", st.sort_order AS "sortOrder"
-       FROM shifts s
-       LEFT JOIN users u ON u.id = s.user_id
-       LEFT JOIN shift_types st ON st.id = s.shift_type_id
-       WHERE s.company_id = $1 AND s.date = $2
-       ORDER BY st.sort_order, u.first_name`,
-      [companyId, date]
-    );
-    const { rows: days } = await query(
-      'SELECT date::text AS date, is_published AS "isPublished" FROM schedule_days WHERE company_id = $1 AND date = $2',
-      [companyId, date]
-    );
-    let html = '<html><body style="font-family:sans-serif;padding:1rem">';
-    html += '<h2>Debug: ' + date + '</h2>';
-    html += '<p>Date published: ' + (days.length ? String(days[0].isPublished) : 'no row (draft)') + '</p>';
-    html += '<h3>Manual shifts (' + shifts.length + ')</h3><table border="1" cellpadding="6" style="border-collapse:collapse">';
-    html += '<tr><th>Person</th><th>User active</th><th>Shift type</th><th>Type active</th><th>Published</th><th>Notes</th><th>Shift ID</th></tr>';
-    for (const s of shifts) {
-      html += '<tr><td>' + (s.firstName || '') + ' ' + (s.lastName || '') +
-        '</td><td>' + s.userActive + '</td><td>' + (s.shiftTypeName || '(missing type)') +
-        '</td><td>' + s.shiftTypeActive + '</td><td>' + s.published +
-        '</td><td>' + (s.notes || '') + '</td><td style="font-size:10px">' + s.id + '</td></tr>';
-    }
-    html += '</table><p>Copy this page URL or take a screenshot and send it.</p></body></html>';
-    res.send(html);
-  } catch (err) {
-    console.error('[schedule] debug date failed:', err);
-    res.status(500).send('Debug failed: ' + String(err));
-  }
-});
-
 // POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift.
 router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
