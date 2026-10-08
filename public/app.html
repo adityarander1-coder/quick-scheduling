@@ -2413,25 +2413,18 @@
               // Skip rotations management
               function escSkip(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
               window.loadSkipRotations = function () {
-                Promise.all([
-                  api('/api/schedule/rotations'),
-                  api('/api/team/members')
-                ]).then(function (results) {
-                  var rots = (results[0].ok && (results[0].data.rotations || results[0].data)) || [];
-                  var members = (results[1].ok && (results[1].data.members || results[1].data)) || [];
-                  var mById = {};
-                  members.forEach(function (m) { mById[m.id] = m; });
+                api('/api/schedule/rotations').then(function (res) {
+                  var rots = (res.ok && (res.data.rotations || res.data)) || [];
                   var sel = document.getElementById('skip-rot-select');
                   sel.innerHTML = rots.map(function (r) {
-                    var firstA = (r.assignments || [])[0];
-                    var m = firstA ? mById[firstA.userId] : null;
-                    var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'Unknown';
+                    var firstA = (r.assignments || [])[0] || {};
+                    var nm = ((firstA.firstName || '') + ' ' + (firstA.lastName || '')).trim() || 'Unknown';
                     return '<option value="' + r.id + '">' + escSkip(nm) + ' — ' + escSkip(r.name) + '</option>';
                   }).join('');
-                  loadSkipList(rots, mById);
+                  loadSkipList(rots);
                 });
               };
-              function loadSkipList(rots, mById) {
+              function loadSkipList(rots) {
                 var listEl = document.getElementById('skip-list');
                 var fetches = rots.map(function (r) {
                   return api('/api/schedule/rotations/' + r.id + '/pauses').then(function (res) {
@@ -2442,9 +2435,8 @@
                   var html = '';
                   all.forEach(function (item) {
                     if (!item.pauses.length) return;
-                    var firstA = (item.rot.assignments || [])[0];
-                    var m = firstA ? mById[firstA.userId] : null;
-                    var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'Unknown';
+                    var firstA = (item.rot.assignments || [])[0] || {};
+                    var nm = ((firstA.firstName || '') + ' ' + (firstA.lastName || '')).trim() || 'Unknown';
                     item.pauses.forEach(function (p) {
                       html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--surface)">' +
                         '<div style="flex:1">' +
