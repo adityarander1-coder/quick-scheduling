@@ -2271,9 +2271,31 @@
                   <label>Shift type</label>
                   <select id="rot-shifttype"></select>
                 </div>
+                <div class="grid-2">
+                  <div class="form-row">
+                    <label>Start time</label>
+                    <input type="time" id="rot-start-time" value="07:00">
+                  </div>
+                  <div class="form-row">
+                    <label>End time</label>
+                    <input type="time" id="rot-end-time" value="19:00">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Notes <span class="hint">(optional)</span></label>
+                  <input type="text" id="rot-notes" placeholder="e.g. Covers ICU call" maxlength="500" autocomplete="off">
+                </div>
                 <div class="form-row">
                   <label>Which days of the cycle?</label>
+                  <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
+                    <button type="button" id="rot-days-weekdays" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">Mon–Fri</button>
+                    <button type="button" id="rot-days-all" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">All</button>
+                    <button type="button" id="rot-days-clear" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">Clear</button>
+                  </div>
                   <div class="day-toggles" id="rot-days"></div>
+                </div>
+                <div class="form-row">
+                  <div id="rot-preview" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem;color:var(--muted)"></div>
                 </div>
                 <div class="modal-actions">
                   <button type="button" id="rot-cancel" class="btn-secondary">Cancel</button>
@@ -2346,8 +2368,11 @@
               function rotSummary(r) {
                 var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
                 var uniq = days.filter(function (d, i) { return days.indexOf(d) === i; }).length;
-                return uniq + ' workday' + (uniq === 1 ? '' : 's') + ' in each ' + r.cycleDays +
+                var s = uniq + ' workday' + (uniq === 1 ? '' : 's') + ' in each ' + r.cycleDays +
                   '-day cycle \u00b7 repeats from ' + (r.startDate || '\u2014');
+                if (r.startTime && r.endTime) s += ' \u00b7 ' + String(r.startTime).slice(0, 5) + '–' + String(r.endTime).slice(0, 5);
+                if (r.notes) s += ' \u00b7 ' + r.notes;
+                return s;
               }
 
               function renderEmployees() {
@@ -2532,6 +2557,9 @@
                 $('rot-name').value = r.name || '';
                 $('rot-cycle').value = r.cycleDays || 7;
                 $('rot-start').value = r.startDate || '';
+                $('rot-start-time').value = r.startTime ? String(r.startTime).slice(0, 5) : '';
+                $('rot-end-time').value = r.endTime ? String(r.endTime).slice(0, 5) : '';
+                $('rot-notes').value = r.notes || '';
                 fillShiftTypes(firstA ? firstA.shiftTypeId : null);
                 var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
                 renderDayToggles(days);
@@ -2539,6 +2567,7 @@
                 hide($('rot-error'));
                 show($('rot-del'));
                 show($('rot-modal'));
+                updateRotPreview();
               }
 
               // Copy rotation pattern from another person's rotation
@@ -2575,9 +2604,54 @@
                 });
               }
 
-              $('rot-cycle').addEventListener('change', function () { renderDayToggles(collectDays()); });
+              $('rot-cycle').addEventListener('change', function () { renderDayToggles(collectDays()); updateRotPreview(); });
               $('rot-cancel').addEventListener('click', function () { hide($('rot-modal')); });
               $('rot-modal').addEventListener('click', function (e) { if (e.target === $('rot-modal')) hide($('rot-modal')); });
+              // Quick day buttons.
+              $('rot-days-weekdays').addEventListener('click', function () {
+                var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value, 10) || 7));
+                var days = [];
+                for (var d = 1; d <= n; d++) { if (d % 7 >= 1 && d % 7 <= 5) days.push(d); }
+                // For cycles not multiple of 7, Mon-Fri means first 5 of every 7.
+                renderDayToggles(days); updateRotPreview();
+              });
+              $('rot-days-all').addEventListener('click', function () {
+                var n = Math.min(84, Math.max(1, parseInt($('rot-cycle').value, 10) || 7));
+                var days = [];
+                for (var d = 1; d <= n; d++) days.push(d);
+                renderDayToggles(days); updateRotPreview();
+              });
+              $('rot-days-clear').addEventListener('click', function () { renderDayToggles([]); updateRotPreview(); });
+              // Preview updates.
+              ['rot-name', 'rot-cycle', 'rot-start', 'rot-shifttype', 'rot-start-time', 'rot-end-time'].forEach(function (id) {
+                $(id).addEventListener('change', updateRotPreview);
+                $(id).addEventListener('input', updateRotPreview);
+              });
+              function updateRotPreview() {
+                var days = collectDays().sort(function (a, b) { return a - b; });
+                var st = $('rot-shifttype');
+                var stName = st.options[st.selectedIndex] ? st.options[st.selectedIndex].text : 'shift';
+                var cycle = parseInt($('rot-cycle').value, 10) || 7;
+                var startDate = $('rot-start').value;
+                var startTime = $('rot-start-time').value || '';
+                var endTime = $('rot-end-time').value || '';
+                var timeStr = (startTime && endTime) ? ' (' + startTime + '–' + endTime + ')' : '';
+                var dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                var dayStr = days.length === cycle ? 'every day' :
+                  days.map(function (d) { return dayNames[(d - 1) % 7]; }).join(', ');
+                var dateStr = startDate ? ' starting ' + startDate : '';
+                $('rot-preview').textContent =
+                  'Works ' + stName + timeStr + ' on ' + dayStr + ', repeating every ' + cycle + ' days' + dateStr + '.';
+              }
+              // Hook day toggle clicks to update preview.
+              var origRenderDayToggles = renderDayToggles;
+              renderDayToggles = function (selected) {
+                origRenderDayToggles(selected);
+                $('rot-days').querySelectorAll('.day-toggle').forEach(function (b) {
+                  b.addEventListener('click', updateRotPreview);
+                });
+                updateRotPreview();
+              };
               $('rot-save').addEventListener('click', function () {
                 var days = collectDays();
                 if (!days.length) {
@@ -2593,6 +2667,9 @@
                   name: $('rot-name').value.trim() || 'Rotation',
                   cycleDays: parseInt($('rot-cycle').value, 10) || 7,
                   startDate: $('rot-start').value,
+                  startTime: $('rot-start-time').value || null,
+                  endTime: $('rot-end-time').value || null,
+                  notes: $('rot-notes').value.trim() || null,
                   assignments: days.map(function (d) {
                     return { userId: modalUserId, cycleDay: d, shiftTypeId: $('rot-shifttype').value };
                   }),

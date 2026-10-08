@@ -609,7 +609,8 @@ router.get('/rotations', async (req: Request, res: Response) => {
     const companyId = req.session.companyId!;
     const { rows: rots } = await query(
       `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
-              is_active AS "isActive"
+              is_active AS "isActive",
+              start_time::text AS "startTime", end_time::text AS "endTime", notes
        FROM rotations WHERE company_id = $1 ORDER BY name`,
       [companyId]
     );
@@ -639,17 +640,21 @@ router.get('/rotations', async (req: Request, res: Response) => {
 router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { name, cycleDays, startDate, assignments } = req.body ?? {};
+    const { name, cycleDays, startDate, assignments, startTime, endTime, notes } = req.body ?? {};
     const cd = Number(cycleDays);
     if (!name || !String(name).trim() || !Number.isInteger(cd) || cd < 1 || cd > 84 || !isValidDate(startDate)) {
       res.status(400).json({ error: 'Name, cycle length (1–84 days), and a valid start date are required.' });
       return;
     }
+    const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const st = startTime && timeRe.test(startTime) ? startTime : null;
+    const et = endTime && timeRe.test(endTime) ? endTime : null;
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, companyId, String(name).trim(), cd, startDate, req.session.userId!]
+      `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [id, companyId, String(name).trim(), cd, startDate, req.session.userId!, st, et,
+       notes ? String(notes).trim().slice(0, 500) : null]
     );
     if (Array.isArray(assignments)) {
       for (const a of assignments) {
