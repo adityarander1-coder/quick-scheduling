@@ -243,8 +243,10 @@
         #tab-schedule .view-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 1rem; padding: 0.6rem 1.1rem; cursor: pointer; }
         #tab-schedule .view-tabs button.active { background: var(--accent); color: #fff; }
         #tab-schedule .date-nav { display: flex; gap: 0.4rem; align-items: center; }
-        #tab-schedule .legend { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.95rem; font-weight: 600; color: #102d47; }
+        #tab-schedule .legend { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.95rem; font-weight: 600; color: #102d47; }
         #tab-schedule .legend-item { display: flex; align-items: center; gap: 0.35rem; }
+        #tab-schedule .legend-tab { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.75rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 0.85rem; font-weight: 600; color: #102d47; cursor: pointer; }
+        #tab-schedule .legend-tab.active { background: #102d47; color: #fff; border-color: #102d47; }
         #tab-schedule .legend-swatch { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
         #tab-schedule .publish-bar { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1rem; padding: 0.6rem 0.8rem; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; font-size: 0.9rem; flex-wrap: wrap; }
         #tab-schedule .range-picker { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
@@ -511,6 +513,7 @@
           dayModalDate: null,
           rangeFrom: null,
           rangeTo: null,
+          shiftFilter: null,
         };
 
         function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -553,7 +556,16 @@
           return null;
         }
         function shiftsFor(dateStr) {
-          return sched.shifts.filter(function (s) { return s.date === dateStr; });
+          return sched.shifts.filter(function (s) {
+            if (s.date !== dateStr) return false;
+            if (sched.shiftFilter && s.shiftTypeId !== sched.shiftFilter) return false;
+            return true;
+          });
+        }
+        function shiftTypeVisible(st) {
+          if (!st.isActive) return false;
+          if (sched.shiftFilter && st.id !== sched.shiftFilter) return false;
+          return true;
         }
         function commentsFor(dateStr) {
           return sched.comments.filter(function (c) { return c.date === dateStr; });
@@ -631,13 +643,21 @@
         }
 
         function renderLegend() {
-          var html = '';
+          var html = '<button type="button" class="legend-tab' + (!sched.shiftFilter ? ' active' : '') + '" data-shiftfilter="">All</button>';
           sched.shiftTypes.forEach(function (st) {
             if (!st.isActive) return;
-            html += '<span class="legend-item"><span class="legend-swatch" style="background:' +
-              esc(st.color) + '"></span>' + esc(st.name) + '</span>';
+            var active = sched.shiftFilter === st.id ? ' active' : '';
+            html += '<button type="button" class="legend-tab' + active + '" data-shiftfilter="' + st.id + '">' +
+              '<span class="legend-swatch" style="background:' + esc(st.color) + '"></span>' + esc(st.name) + '</button>';
           });
           $('sched-legend').innerHTML = html;
+          $('sched-legend').querySelectorAll('.legend-tab').forEach(function (b) {
+            b.addEventListener('click', function () {
+              sched.shiftFilter = b.getAttribute('data-shiftfilter') || null;
+              renderLegend();
+              renderView();
+            });
+          });
         }
 
         function statusPillHtml(dateStr) {
@@ -735,7 +755,7 @@
           var renderedIds = {};
           var hasContent = false;
           sched.shiftTypes.forEach(function (st) {
-            if (!st.isActive) return;
+            if (!shiftTypeVisible(st)) return;
             var list = byType[st.id] || [];
             var open = openCountFor(dateStr, st.id);
             if (!list.length && !open) return;
@@ -794,7 +814,7 @@
           var renderedIds = {};
           var hasContent = false;
           sched.shiftTypes.forEach(function (st) {
-            if (!st.isActive) return;
+            if (!shiftTypeVisible(st)) return;
             var list = byType[st.id] || [];
             var open = openCountFor(ds, st.id);
             if (!list.length && !open) return;
@@ -850,7 +870,7 @@
             shiftsFor(ds).forEach(function (s) { html += monthChipHtml(s); });
             var openTotal = 0;
             sched.shiftTypes.forEach(function (st) {
-              if (!st.isActive) return;
+              if (!shiftTypeVisible(st)) return;
               openTotal += openCountFor(ds, st.id);
             });
             if (openTotal) html += '<div class="month-open" title="' + openTotal + ' open position' + (openTotal === 1 ? '' : 's') + '">+' + openTotal + ' open</div>';
