@@ -2832,7 +2832,7 @@
                 return s;
               }
               function invitePending(u) {
-                return u.isActive && (u.inviteStatus === 'not_sent' || u.inviteStatus === 'sent' || u.inviteStatus === 'expired');
+                return u.isActive && (u.inviteStatus === null || u.inviteStatus === 'not_sent' || u.inviteStatus === 'sent' || u.inviteStatus === 'expired');
               }
               function memberById(id) {
                 for (var i = 0; i < members.length; i++) if (members[i].id === id) return members[i];
@@ -2853,6 +2853,7 @@
               }
               function memberStatusLabel(u) {
                 if (!u.isActive) return 'Inactive';
+                if (u.inviteStatus === null) return 'Not invited';
                 if (u.inviteStatus === 'not_sent') return 'Invite not sent';
                 if (u.inviteStatus === 'sent') return 'Invite sent';
                 if (u.inviteStatus === 'expired') return 'Invite expired';
