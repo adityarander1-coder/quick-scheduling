@@ -1008,7 +1008,8 @@ router.get('/vacation-check', requireRole('owner', 'scheduler'), async (req: Req
       return;
     }
     const { rows } = await query(
-      `SELECT p.start_date::text AS "startDate", p.end_date::text AS "endDate", p.reason,
+      `SELECT p.id AS "pauseId", p.rotation_id AS "rotationId",
+              p.start_date::text AS "startDate", p.end_date::text AS "endDate", p.reason,
               r.name AS "rotationName"
        FROM rotation_pauses p
        JOIN rotations r ON r.id = p.rotation_id
@@ -1089,6 +1090,31 @@ router.delete('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete pause failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/rotations/:id/pauses/:pauseId — update a pause period's dates/reason
+router.put('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { startDate, endDate, reason } = req.body ?? {};
+    if (!isValidDate(startDate) || !isValidDate(endDate) || startDate > endDate) {
+      res.status(400).json({ error: 'Valid start and end dates are required.' });
+      return;
+    }
+    const { rowCount } = await query(
+      `UPDATE rotation_pauses SET start_date = $1, end_date = $2, reason = $3
+       WHERE id = $4 AND rotation_id = $5 AND company_id = $6`,
+      [startDate, endDate, reason != null ? String(reason) : null, req.params.pauseId, req.params.id, companyId]
+    );
+    if (!rowCount) {
+      res.status(404).json({ error: 'Pause not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update pause failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

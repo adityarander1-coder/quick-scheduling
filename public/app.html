@@ -2089,13 +2089,25 @@
               var m = memberById(userId);
               var nm = m ? ((m.firstName || '') + ' ' + (m.lastName || '')).trim() : 'This person';
               showDialog('On vacation',
-                '<p><strong>' + esc(nm) + '</strong> is on vacation' +
-                (v.startDate ? ' (' + esc(v.startDate) + (v.endDate && v.endDate !== v.startDate ? ' to ' + esc(v.endDate) : '') + ')' : '') +
-                '.' + (v.reason ? ' Reason: ' + esc(v.reason) : '') + '</p>' +
-                '<p>To add them, please adjust their vacation dates first.</p>',
+                '<p><strong>' + esc(nm) + '</strong> is on vacation.</p>' +
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0.8rem 0">' +
+                '<label style="font-size:12px">Vacation start<br><input type="date" id="vac-adj-start" value="' + esc(v.startDate || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></label>' +
+                '<label style="font-size:12px">Vacation end<br><input type="date" id="vac-adj-end" value="' + esc(v.endDate || '') + '" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></label>' +
+                '</div>' +
+                '<p style="font-size:13px;color:var(--dim)">Adjust the dates above, or assign anyway without changing the vacation.</p>',
                 [
                   { label: 'Cancel' },
-                  { label: 'Assign anyway', onClick: function () { doAssign(); } }
+                  { label: 'Assign anyway', onClick: function () { doAssign(); } },
+                  { label: 'Update vacation & Assign', primary: true, onClick: function () {
+                    var ns = $('vac-adj-start').value, ne = $('vac-adj-end').value;
+                    if (!ns || !ne || ns > ne) { pageError('Pick a valid vacation date range.'); return; }
+                    api('/api/schedule/rotations/' + v.rotationId + '/pauses/' + v.pauseId, {
+                      method: 'PUT', body: JSON.stringify({ startDate: ns, endDate: ne, reason: v.reason })
+                    }).then(function (ur) {
+                      if (ur.ok) { doAssign(); }
+                      else { pageError((ur.data && ur.data.error) || 'Could not update vacation.'); }
+                    }).catch(function () { pageError('Could not update vacation.'); });
+                  } }
                 ]);
             } else {
               doAssign();
