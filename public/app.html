@@ -1342,18 +1342,63 @@
           var ch = '';
           comments.forEach(function (c) {
             var about = c.firstName ? ' <strong>' + esc((c.firstName + ' ' + (c.lastName || '')).trim()) + ':</strong>' : '';
-            ch += '<div class="comment-item">' +
-              (sched.canEdit ? '<button type="button" class="del" data-comment-id="' + c.id + '">\u2715</button>' : '') +
-              about + ' ' + esc(c.comment) + '</div>';
+            ch += '<div class="comment-item" data-comment-id="' + c.id + '">' +
+              (sched.canEdit ?
+                '<span style="float:right;display:flex;gap:0.3rem">' +
+                '<button type="button" class="edit" data-comment-id="' + c.id + '" style="color:#2563eb;cursor:pointer;border:none;background:none;font-size:0.8rem" title="Edit">\u270e</button>' +
+                '<button type="button" class="del" data-comment-id="' + c.id + '">\u2715</button></span>' : '') +
+              about + ' <span class="comment-text">' + esc(c.comment) + '</span></div>';
           });
           if (!comments.length) ch = '<p style="color:#94a3b8;font-size:0.85rem">No notes for this day.</p>';
           $('sched-day-comments').innerHTML = ch;
-          // Note: delete buttons use inline onclick (window.qsDeleteShift) - no binding needed
           $('sched-day-comments').querySelectorAll('.del').forEach(function (b) {
             b.addEventListener('click', function () {
-              api('/api/schedule/comments/' + b.getAttribute('data-comment-id'), { method: 'DELETE' })
-                .then(function (r) { if (r.ok) loadAll().then(renderDayModal); });
+              var cid = b.getAttribute('data-comment-id');
+              // Optimistic: remove instantly.
+              sched.comments = sched.comments.filter(function (x) { return x.id !== cid; });
+              renderDayModal(); renderView();
+              api('/api/schedule/comments/' + cid, { method: 'DELETE' })
+                .then(function (r) { if (!r.ok) reloadComments(); });
             });
+          });
+          $('sched-day-comments').querySelectorAll('.edit').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var cid = b.getAttribute('data-comment-id');
+              var item = b.closest('.comment-item');
+              var txtEl = item.querySelector('.comment-text');
+              var current = '';
+              for (var i = 0; i < sched.comments.length; i++) {
+                if (sched.comments[i].id === cid) { current = sched.comments[i].comment; break; }
+              }
+              // Inline edit.
+              item.innerHTML = '<textarea class="comment-edit-input" rows="2" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px">' +
+                esc(current) + '</textarea>' +
+                '<div style="margin-top:4px;display:flex;gap:0.4rem">' +
+                '<button type="button" class="btn-secondary comment-save" style="padding:0.3rem 0.7rem;font-size:0.8rem">Save</button>' +
+                '<button type="button" class="btn-secondary comment-cancel" style="padding:0.3rem 0.7rem;font-size:0.8rem">Cancel</button></div>';
+              item.querySelector('.comment-cancel').addEventListener('click', renderDayModal);
+              item.querySelector('.comment-save').addEventListener('click', function () {
+                var newText = item.querySelector('.comment-edit-input').value.trim();
+                if (!newText) return;
+                // Optimistic: update instantly.
+                for (var j = 0; j < sched.comments.length; j++) {
+                  if (sched.comments[j].id === cid) { sched.comments[j].comment = newText; break; }
+                }
+                renderDayModal(); renderView();
+                api('/api/schedule/comments/' + cid, {
+                  method: 'PUT', body: JSON.stringify({ comment: newText }),
+                }).then(function (r) { if (!r.ok) reloadComments(); });
+              });
+            });
+          });
+        }
+
+        function reloadComments() {
+          var r = viewRange();
+          return api('/api/schedule/comments?from=' + r.from + '&to=' + r.to).then(function (res) {
+            if (res.ok) sched.comments = res.data.comments || [];
+            renderView();
+            if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
         }
 
@@ -2065,16 +2110,27 @@
         $('sched-comment-save').addEventListener('click', function () {
           var text = $('sched-comment-text').value.trim();
           if (!text) return;
+          var ds = sched.dayModalDate;
+          // Optimistic: show instantly.
+          var tempC = { id: 'temp-' + Date.now(), date: ds, comment: text, firstName: '', lastName: '' };
+          sched.comments.push(tempC);
+          $('sched-comment-text').value = '';
+          renderDayModal(); renderView();
           api('/api/schedule/comments', {
             method: 'POST',
-            body: JSON.stringify({ date: sched.dayModalDate, comment: text }),
+            body: JSON.stringify({ date: ds, comment: text }),
           }).then(function (r) {
-            if (r.ok) { loadAll().then(renderDayModal); }
+            if (r.ok) { reloadComments(); }
             else {
+              sched.comments = sched.comments.filter(function (x) { return x.id !== tempC.id; });
+              renderDayModal(); renderView();
               var el = $('sched-day-error');
               el.textContent = (r.data && r.data.error) || 'Could not add comment.';
               show(el);
             }
+          }).catch(function () {
+            sched.comments = sched.comments.filter(function (x) { return x.id !== tempC.id; });
+            renderDayModal(); renderView();
           });
         });
         $('sched-assign-modal').addEventListener('click', function (e) {

@@ -599,6 +599,30 @@ router.delete('/comments/:id', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+// PUT /api/schedule/comments/:id — edit a comment (owner/scheduler).
+router.put('/comments/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { comment } = req.body ?? {};
+    if (!comment || !String(comment).trim()) {
+      res.status(400).json({ error: 'Comment text is required.' });
+      return;
+    }
+    const { rowCount } = await query(
+      'UPDATE day_comments SET comment = $1 WHERE id = $2 AND company_id = $3',
+      [String(comment).trim().slice(0, 2000), req.params.id, companyId]
+    );
+    if (!rowCount) {
+      res.status(404).json({ error: 'Comment not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] edit comment failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Rotations
 // ---------------------------------------------------------------------------
