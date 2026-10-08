@@ -2744,10 +2744,8 @@
                 <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button></div>
               </form>
               <div id="team-invite-box" class="hidden" style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem">
-                <p><strong>Invite link</strong> — share this with the new team member so they can set their own password:</p>
+                <p><strong>Send invite</strong> — the invite link will be emailed to the new team member so they can set their own password:</p>
                 <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-                  <input type="text" id="team-invite-link" readonly style="flex:1;min-width:200px;padding:0.5rem;border:1px solid var(--border);border-radius:8px">
-                  <button type="button" id="team-invite-copy" class="btn-secondary">Copy</button>
                   <button type="button" id="team-invite-send" class="btn-secondary">Send invite</button>
                   <button type="button" id="team-invite-mark-sent" class="btn-secondary">Mark as sent</button>
                 </div>
@@ -2936,10 +2934,6 @@
                   actions.className = 'team-row-actions';
 
                   if (invitePending(u)) {
-                    var linkBtn = document.createElement('button');
-                    linkBtn.type = 'button'; linkBtn.className = 'text-button'; linkBtn.textContent = 'Copy invite link';
-                    linkBtn.addEventListener('click', function () { fetchInviteLink(u.id); });
-                    actions.appendChild(linkBtn);
                     var sendBtn = document.createElement('button');
                     sendBtn.type = 'button'; sendBtn.className = 'text-button'; sendBtn.textContent = 'Send invite';
                     sendBtn.addEventListener('click', function () { sendInvite(u.id); });
@@ -3139,27 +3133,11 @@
                 note.classList.toggle('alert-error', !!isError);
                 note.classList.toggle('alert-success', !isError);
               }
-              function showInviteBox(userId, inviteLink) {
+              function showInviteBox(userId) {
                 inviteUserId = userId;
-                $('team-invite-link').value = fullInviteUrl(inviteLink);
                 $('team-invite-box').classList.remove('hidden');
                 $('team-invite-note').classList.add('hidden');
                 $('team-invite-box').scrollIntoView();
-              }
-              function copyInviteLink() {
-                var input = $('team-invite-link');
-                function done() { showInviteNote('Link copied.', false); }
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                  navigator.clipboard.writeText(input.value).then(done, function () {
-                    input.select(); document.execCommand('copy'); done();
-                  });
-                } else { input.select(); document.execCommand('copy'); done(); }
-              }
-              function fetchInviteLink(userId) {
-                api('/api/users/' + userId + '/invite-link', { method: 'POST' }).then(function (result) {
-                  if (result.ok) showInviteBox(userId, result.data.inviteLink);
-                  else pageError((result.data && result.data.error) || 'Could not get invite link.');
-                }).catch(function () { pageError('Network error. Could not get invite link.'); });
               }
               function markInviteSent(userId) {
                 api('/api/users/' + userId + '/invite-sent', { method: 'POST' }).then(function (result) {
@@ -3173,13 +3151,8 @@
                   if (result.ok) {
                     loadMembers();
                     showInviteNote('Invite email sent.', false);
-                    if (result.data && result.data.inviteLink) {
-                      showInviteBox(userId, result.data.inviteLink);
-                      showInviteNote('Invite email sent.', false);
-                    }
                   } else if (result.status === 503) {
-                    fetchInviteLink(userId);
-                    showInviteNote('Email is not set up yet — copy the link manually instead.', true);
+                    showInviteNote('Email is not set up yet. Please configure email to send invites.', true);
                   } else {
                     showInviteNote((result.data && result.data.error) || 'Could not send invite.', true);
                   }
@@ -3234,8 +3207,8 @@
                       okEl.textContent = 'Team member added. Share the invite link below so they can set their password.';
                       okEl.classList.remove('hidden');
                       loadMembers();
-                      if (result.data && result.data.inviteLink) {
-                        showInviteBox(result.data.user.id, result.data.inviteLink);
+                      if (result.data && result.data.user && result.data.user.id) {
+                        showInviteBox(result.data.user.id);
                       }
                     } else {
                       showErr(errEl, (result.data && result.data.error) || 'Could not add team member.');
@@ -3329,7 +3302,6 @@
                   setupAdd();
                   setupEdit();
                   setupDeptForm();
-                  $('team-invite-copy').addEventListener('click', copyInviteLink);
                   $('team-invite-send').addEventListener('click', function () { if (inviteUserId) sendInvite(inviteUserId); });
                   $('team-invite-mark-sent').addEventListener('click', function () { if (inviteUserId) markInviteSent(inviteUserId); });
                   loadDepartments();
@@ -3640,10 +3612,8 @@
             <div id="cand-approve-box" class="sub-card hidden">
               <h3>Candidate approved</h3>
               <p id="cand-approve-text"></p>
-              <p><strong>Invite link</strong> — share this with the new team member so they can set their own password:</p>
+              <p><strong>Send invite</strong> — the invite link will be emailed so they can set their own password:</p>
               <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-                <input type="text" id="cand-invite-link" readonly style="flex:1;min-width:200px;padding:0.5rem;border:1px solid var(--border);border-radius:8px">
-                <button type="button" id="cand-invite-copy" class="btn-secondary">Copy</button>
                 <button type="button" id="cand-invite-send" class="btn">Send invite email</button>
               </div>
               <div id="cand-invite-note" class="alert hidden" role="status" style="margin-top:0.6rem"></div>
@@ -3875,20 +3845,14 @@
                     var newUserId = result.data.user.id;
                     $('cand-approve-text').textContent =
                       result.data.user.name + ' (' + result.data.user.email + ') is now on the team as an employee.';
-                    $('cand-invite-link').value = result.data.inviteLink || '';
                     $('cand-invite-note').classList.add('hidden');
-                    $('cand-invite-copy').onclick = function () {
-                      $('cand-invite-link').select();
-                      document.execCommand('copy');
-                      $('cand-invite-note').textContent = 'Link copied.';
-                      $('cand-invite-note').classList.remove('hidden');
-                    };
+                    $('cand-invite-note').textContent = '';
                     $('cand-invite-send').onclick = function () {
                       $('cand-invite-note').textContent = 'Sending…';
                       $('cand-invite-note').classList.remove('hidden');
                       api('/api/users/' + newUserId + '/send-invite', { method: 'POST' }).then(function (r) {
                         if (r.ok) $('cand-invite-note').textContent = 'Invite email sent.';
-                        else if (r.status === 503) $('cand-invite-note').textContent = 'Email not set up — copy the link manually instead.';
+                        else if (r.status === 503) $('cand-invite-note').textContent = 'Email is not set up yet. Please configure email to send invites.';
                         else $('cand-invite-note').textContent = (r.data && r.data.error) || 'Could not send.';
                       }).catch(function () { $('cand-invite-note').textContent = 'Network error.'; });
                     };
