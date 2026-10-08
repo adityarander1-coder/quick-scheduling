@@ -377,7 +377,7 @@
 
       <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
-      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem"></div>
+      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end"></div>
 
       <div class="sched-toolbar">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
@@ -399,7 +399,7 @@
         <button type="button" id="sched-range-apply" class="btn">Apply</button>
       </div>
 
-      <div class="legend" id="sched-legend"></div>
+      <div class="legend hidden" id="sched-legend"></div>
 
       <div class="publish-bar" id="sched-publish-bar">
         <span id="sched-publish-status"></span>
@@ -691,38 +691,36 @@
         }
 
         function renderLegend() {
-          var html = '<button type="button" class="legend-tab' + (!sched.shiftFilter ? ' active' : '') + '" data-shiftfilter="">All</button>';
-          visibleShiftTypes().forEach(function (st) {
-            var active = sched.shiftFilter === st.id ? ' active' : '';
-            html += '<button type="button" class="legend-tab' + active + '" data-shiftfilter="' + st.id + '">' +
-              '<span class="legend-swatch" style="background:' + esc(st.color) + '"></span>' + esc(st.name) + '</button>';
-          });
-          $('sched-legend').innerHTML = html;
-          $('sched-legend').querySelectorAll('.legend-tab').forEach(function (b) {
-            b.addEventListener('click', function () {
-              sched.shiftFilter = b.getAttribute('data-shiftfilter') || null;
-              renderLegend();
-              renderView();
-            });
-          });
+          // Legend tabs removed — shift filter is now a dropdown in renderDeptFilter.
         }
 
         function renderDeptFilter() {
           var el = $('sched-dept-filter');
           if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
           el.style.display = 'flex';
-          el.innerHTML = '<label style="font-size:0.9rem;font-weight:600;color:var(--muted)">Department</label>' +
-            '<select id="sched-dept-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:200px">' +
+          el.innerHTML =
+            '<div><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            '<select id="sched-dept-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:180px">' +
             '<option value="">All departments</option>' +
             sched.departments.map(function (d) {
               return '<option value="' + d.id + '"' + (sched.deptFilter === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
             }).join('') +
-            '</select>';
+            '</select></div>' +
+            '<div><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            '<select id="sched-shift-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;min-width:180px">' +
+            '<option value="">All shifts</option>' +
+            visibleShiftTypes().map(function (st) {
+              return '<option value="' + st.id + '"' + (sched.shiftFilter === st.id ? ' selected' : '') + '>' + esc(st.name) + '</option>';
+            }).join('') +
+            '</select></div>';
           $('sched-dept-select').addEventListener('change', function (e) {
             sched.deptFilter = e.target.value || null;
             sched.shiftFilter = null;
             renderDeptFilter();
-            renderLegend();
+            renderView();
+          });
+          $('sched-shift-select').addEventListener('change', function (e) {
+            sched.shiftFilter = e.target.value || null;
             renderView();
           });
         }
