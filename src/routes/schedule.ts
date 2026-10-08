@@ -323,6 +323,66 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
   }
 });
 
+// POST /api/schedule/shifts/bulk — assign same shift across a date range (owner/scheduler).
+router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { userId, shiftTypeId, startDate, endDate, notes } = req.body ?? {};
+    if (!userId || !shiftTypeId || !isValidDate(startDate) || !isValidDate(endDate)) {
+      res.status(400).json({ error: 'Team member, shift type, and valid start/end dates are required.' });
+      return;
+    }
+    if (endDate < startDate) {
+      res.status(400).json({ error: 'End date must be on or after start date.' });
+      return;
+    }
+    // Verify member and shift type belong to this company.
+    const { rows: urows } = await query(
+      'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [userId, companyId]
+    );
+    if (!urows.length) {
+      res.status(404).json({ error: 'Team member not found.' });
+      return;
+    }
+    const { rows: trows } = await query(
+      'SELECT id FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [shiftTypeId, companyId]
+    );
+    if (!trows.length) {
+      res.status(404).json({ error: 'Shift type not found.' });
+      return;
+    }
+    // Build date list (cap at 93 days to prevent abuse)
+    const dates: string[] = [];
+    const d = new Date(startDate + 'T00:00:00');
+    const end = new Date(endDate + 'T00:00:00');
+    while (d <= end && dates.length < 93) {
+      dates.push(d.toISOString().slice(0, 10));
+      d.setDate(d.getDate() + 1);
+    }
+    let created = 0;
+    let skipped = 0;
+    for (const date of dates) {
+      try {
+        await query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [crypto.randomUUID(), companyId, userId, shiftTypeId, date, notes ? String(notes) : null, req.session.userId!]
+        );
+        created++;
+      } catch (err: any) {
+        if (err?.code === '23505') { skipped++; continue; } // already has this shift
+        throw err;
+      }
+    }
+    res.status(201).json({ created, skipped });
+  } catch (err) {
+    console.error('[schedule] bulk assign failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // DELETE /api/schedule/shifts/:id — remove a shift (owner/scheduler).
 router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

@@ -415,6 +415,22 @@
             <select id="sched-assign-shifttype"></select>
           </div>
           <div class="form-row">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="sched-assign-range-toggle" style="width:auto">
+              Assign for a date range
+            </label>
+          </div>
+          <div class="form-row hidden" id="sched-assign-range-row">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <label style="font-size:12px">Start date<br>
+                <input type="date" id="sched-assign-start" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+              </label>
+              <label style="font-size:12px">End date<br>
+                <input type="date" id="sched-assign-end" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
             <label>Notes <span style="font-weight:400;color:var(--dim)">(optional)</span></label>
             <input type="text" id="sched-assign-notes" autocomplete="off">
           </div>
@@ -1189,6 +1205,10 @@
           $('sched-assign-title').textContent = 'Assign shift \u2014 ' + fmtLong(dateStr);
           hide($('sched-assign-error'));
           $('sched-assign-notes').value = '';
+          $('sched-assign-range-toggle').checked = false;
+          hide($('sched-assign-range-row'));
+          $('sched-assign-start').value = dateStr;
+          $('sched-assign-end').value = dateStr;
           var uSel = $('sched-assign-user');
           uSel.innerHTML = '';
           sched.members.forEach(function (m) {
@@ -1836,24 +1856,51 @@
           if (savedHl) sched.highlights = JSON.parse(savedHl) || {};
         } catch (e) {}
         $('sched-assign-save').addEventListener('click', function () {
-          var body = {
-            userId: $('sched-assign-user').value,
-            shiftTypeId: $('sched-assign-shifttype').value,
-            date: sched.assignDate,
-            notes: $('sched-assign-notes').value.trim() || undefined,
-          };
-          api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-            if (r.ok) {
-              hide($('sched-assign-modal'));
-              if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
-              pageSuccess('Shift assigned.');
-              loadAll();
-            } else {
-              var el = $('sched-assign-error');
-              el.textContent = (r.data && r.data.error) || 'Could not assign shift.';
-              show(el);
-            }
-          });
+          var useRange = $('sched-assign-range-toggle').checked;
+          var notes = $('sched-assign-notes').value.trim() || undefined;
+          if (useRange) {
+            var body = {
+              userId: $('sched-assign-user').value,
+              shiftTypeId: $('sched-assign-shifttype').value,
+              startDate: $('sched-assign-start').value,
+              endDate: $('sched-assign-end').value,
+              notes: notes,
+            };
+            api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+              if (r.ok) {
+                hide($('sched-assign-modal'));
+                if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+                pageSuccess('Assigned ' + (r.data.created || 0) + ' shifts.' + (r.data.skipped ? ' (' + r.data.skipped + ' already existed.)' : ''));
+                loadAll();
+              } else {
+                var el = $('sched-assign-error');
+                el.textContent = (r.data && r.data.error) || 'Could not assign shifts.';
+                show(el);
+              }
+            });
+          } else {
+            var body = {
+              userId: $('sched-assign-user').value,
+              shiftTypeId: $('sched-assign-shifttype').value,
+              date: sched.assignDate,
+              notes: notes,
+            };
+            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+              if (r.ok) {
+                hide($('sched-assign-modal'));
+                if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+                pageSuccess('Shift assigned.');
+                loadAll();
+              } else {
+                var el = $('sched-assign-error');
+                el.textContent = (r.data && r.data.error) || 'Could not assign shift.';
+                show(el);
+              }
+            });
+          }
+        });
+        $('sched-assign-range-toggle').addEventListener('change', function () {
+          $('sched-assign-range-row').classList.toggle('hidden', !this.checked);
         });
         $('sched-day-close').addEventListener('click', function () { hide($('sched-day-modal')); });
         $('sched-day-assign').addEventListener('click', function () {
