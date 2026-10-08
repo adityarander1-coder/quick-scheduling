@@ -1049,14 +1049,19 @@
         window.qsDeleteShift = function(sid) {
           var s = shiftById(sid);
           var isRot = sid && sid.indexOf('rot-') === 0;
-          if (isRot && s && s.rotationId) {
-            api('/api/schedule/rotation-shifts/delete', {
-              method: 'POST',
-              body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
-            }).then(function (r) { if (r.ok) loadAll(); });
-          } else {
-            api('/api/schedule/shifts/' + sid, { method: 'DELETE' }).then(function (r) { if (r.ok) loadAll(); });
-          }
+          showDialog('Delete shift', '<p>Delete this shift?</p>', [
+            { label: 'Cancel' },
+            { label: 'Delete', danger: true, onClick: function () {
+              if (isRot && s && s.rotationId) {
+                api('/api/schedule/rotation-shifts/delete', {
+                  method: 'POST',
+                  body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
+                }).then(function (r) { if (r.ok) loadAll(); });
+              } else {
+                api('/api/schedule/shifts/' + sid, { method: 'DELETE' }).then(function (r) { if (r.ok) loadAll(); });
+              }
+            } }
+          ]);
         };
         window.qsDoReplace = function(sid, newUserId) {
           hide($('action-dialog'));
@@ -1343,23 +1348,28 @@
           popupShift = null;
         }
         // Custom dialog (mobile-friendly replacement for alert/confirm/prompt)
+        // Dialog button callbacks (global for inline onclick reliability)
+        window._dlgCallbacks = {};
+        window._dlgFire = function(id) {
+          hide($('action-dialog'));
+          var cb = window._dlgCallbacks[id];
+          if (cb) { try { cb(); } catch(e) { console.error(e); } }
+          window._dlgCallbacks = {};
+        };
         function showDialog(title, bodyHtml, buttons) {
           $('ad-title').textContent = title;
           $('ad-body').innerHTML = bodyHtml;
           var actions = $('ad-actions');
-          actions.innerHTML = '';
-          buttons.forEach(function (btn) {
-            var b = document.createElement('button');
-            b.type = 'button';
-            b.className = btn.primary ? 'btn' : 'btn-secondary';
-            if (btn.danger) b.className = 'btn-danger';
-            b.textContent = btn.label;
-            b.addEventListener('click', function () {
-              hide($('action-dialog'));
-              if (btn.onClick) btn.onClick();
-            });
-            actions.appendChild(b);
+          var html = '';
+          window._dlgCallbacks = {};
+          buttons.forEach(function (btn, i) {
+            var cls = btn.primary ? 'btn' : 'btn-secondary';
+            if (btn.danger) cls = 'btn-danger';
+            if (btn.onClick) window._dlgCallbacks['b' + i] = btn.onClick;
+            var oc = btn.onClick ? ' onclick="window._dlgFire(\'b' + i + '\')"' : ' onclick="hide(document.getElementById(\'action-dialog\'))"';
+            html += '<button type="button" class="' + cls + '"' + oc + '>' + esc(btn.label) + '</button>';
           });
+          actions.innerHTML = html;
           show($('action-dialog'));
         }
         function showInfo(msg) {
