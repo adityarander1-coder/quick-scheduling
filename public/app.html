@@ -290,8 +290,11 @@
         #tab-schedule .day-box.other-month { background: #f8fafc; color: #94a3b8; }
         #tab-schedule .day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
         #tab-schedule .day-num { font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; display: flex; justify-content: space-between; align-items: center; color: #102d47; }
-        #tab-schedule .month-chip { display: flex; align-items: center; gap: 0.35rem; border-radius: 6px; padding: 0.3rem 0.45rem; margin-bottom: 0.25rem; font-size: 0.85rem; font-weight: 700; color: #0a0a0a; border: 1px solid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        #tab-schedule .month-chip .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        #tab-schedule .month-chip { display: flex; align-items: center; gap: 0.35rem; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.15rem; font-size: 0.72rem; font-weight: 600; color: #0a0a0a; border: 1px solid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #tab-schedule .month-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        #tab-schedule .month-chip strong { font-weight: 800; }
+        #tab-schedule .month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; margin-bottom: 0.15rem; }
+        #tab-schedule .day-box { min-height: 110px; }
         /* Modals */
         #tab-schedule .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
         #tab-schedule .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
@@ -905,9 +908,11 @@
           var st = shiftTypeById(s.shiftTypeId);
           var color = st ? st.color : '#637a8e';
           var nm = displayName(s);
+          var shiftName = st ? st.name : '';
           return '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
-            '" title="' + esc(nm + ' \u2014 ' + (st ? st.name : '')) + '">' +
-            '<span class="dot" style="background:' + esc(color) + '"></span><span>' + esc(nm) + '</span></div>';
+            '" title="' + esc(nm + ' \u2014 ' + shiftName) + '">' +
+            '<span class="dot" style="background:' + esc(color) + '"></span>' +
+            '<span><strong>' + esc(shiftName) + '</strong> \u2014 ' + esc(nm) + '</span></div>';
         }
 
         function renderMonth(el) {
@@ -928,7 +933,12 @@
             var cls = 'day-box' + (inMonth ? '' : ' other-month') + (today ? ' today' : '');
             html += '<div class="' + cls + '" data-date="' + ds + '">';
             html += '<div class="day-num"><span>' + d.getDate() + '</span>' + statusPillHtml(ds) + '</div>';
-            shiftsFor(ds).forEach(function (s) { html += monthChipHtml(s); });
+            var dayShifts = shiftsFor(ds);
+            var maxChips = 5;
+            dayShifts.slice(0, maxChips).forEach(function (s) { html += monthChipHtml(s); });
+            if (dayShifts.length > maxChips) {
+              html += '<div class="month-more">+' + (dayShifts.length - maxChips) + ' more</div>';
+            }
             var openTotal = 0;
             sched.shiftTypes.forEach(function (st) {
               if (!shiftTypeVisible(st)) return;
