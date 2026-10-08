@@ -630,6 +630,30 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
   }
 });
 
+// PATCH /api/schedule/rotations/:id — toggle active/paused
+router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { isActive } = req.body ?? {};
+    if (typeof isActive !== 'boolean') {
+      res.status(400).json({ error: 'isActive (boolean) is required.' });
+      return;
+    }
+    const { rows } = await query(
+      'UPDATE rotations SET is_active = $1 WHERE id = $2 AND company_id = $3 RETURNING id, is_active AS "isActive"',
+      [isActive, req.params.id, companyId]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: 'Rotation not found.' });
+      return;
+    }
+    res.json({ ok: true, rotation: rows[0] });
+  } catch (err) {
+    console.error('[schedule] toggle rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Staffing targets — how many of each shift type are needed per day.
 // ---------------------------------------------------------------------------

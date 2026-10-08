@@ -2124,14 +2124,18 @@
                       var stLabel = sts.length ? sts.map(function (s) { return s.name; }).join(', ') : '\u2014';
                       var stColor = sts.length ? sts[0].color : '#637a8e';
                       var times = (sts.length && sts[0].startTime) ? (fmtTime(sts[0].startTime) + '\u2013' + fmtTime(sts[0].endTime)) : '';
-                      html += '<button type="button" class="erc-rot" data-rot="' + r.id + '">' +
+                      html += '<div class="erc-rot-wrap" style="display:flex;gap:8px;align-items:center">' +
+                        '<button type="button" class="erc-rot" data-rot="' + r.id + '" style="flex:1">' +
                         '<span class="erc-rot-dot" style="background:' + esc(stColor) + '"></span>' +
                         '<span class="erc-rot-main"><strong>' + esc(r.name) + '</strong>' +
                         '<span>' + esc(rotSummary(r)) + '</span>' +
                         '<span>' + esc(stLabel) + (times ? ' \u00b7 ' + esc(times) : '') + '</span></span>' +
                         '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' +
-                        (r.isActive ? 'Active' : 'Inactive') + '</span>' +
-                        '</button>';
+                        (r.isActive ? 'Active' : 'Paused') + '</span>' +
+                        '</button>' +
+                        '<button type="button" class="btn-secondary rot-toggle-btn" data-rot="' + r.id + '" data-active="' + (r.isActive ? '1' : '0') + '" ' +
+                        'title="' + (r.isActive ? 'Pause rotation' : 'Activate rotation') + '" style="padding:0.4rem 0.6rem;flex-shrink:0">' +
+                        (r.isActive ? '⏸️' : '▶️') + '</button></div>';
                     });
                     html += '</div>';
                   }
@@ -2148,6 +2152,19 @@
                       if (allRots[i].id === b.getAttribute('data-rot')) { r = allRots[i]; break; }
                     }
                     if (r) openEditRotation(r);
+                  });
+                });
+                el.querySelectorAll('.rot-toggle-btn').forEach(function (b) {
+                  b.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    var rotId = b.getAttribute('data-rot');
+                    var isActive = b.getAttribute('data-active') === '1';
+                    api('/api/schedule/rotations/' + rotId, {
+                      method: 'PATCH',
+                      body: JSON.stringify({ isActive: !isActive })
+                    }).then(function (r) {
+                      if (r.ok) loadAll();
+                    });
                   });
                 });
               }
