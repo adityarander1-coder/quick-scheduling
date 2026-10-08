@@ -992,20 +992,34 @@
               });
             });
           });
-          // Global highlight function (simple, reliable)
+          // Global highlight function - shows color picker
         window.qsHighlightShift = function(userId) {
           var cur = sched.highlights[userId];
           var curHue = (cur && typeof cur === 'object' && cur.hue != null) ? cur.hue : cur;
-          var idx = -1;
-          for (var i = 0; i < HIGHLIGHT_COLORS.length; i++) {
-            if (HIGHLIGHT_COLORS[i].hue === curHue) { idx = i; break; }
-          }
-          if (idx === -1) {
-            sched.highlights[userId] = HIGHLIGHT_COLORS[0];
-          } else if (idx === HIGHLIGHT_COLORS.length - 1) {
+          var dotsHtml = HIGHLIGHT_COLORS.map(function(c) {
+            var sel = (c.hue === curHue) ? 'border:3px solid #102d47;' : 'border:2px solid #cbdbe5;';
+            return '<button type="button" onclick="window.qsSetHighlight(\'' + userId + '\',' + c.hue + ')" ' +
+              'style="width:44px;height:44px;border-radius:50%;background:hsl(' + c.hue + ' 85% 65%);' + sel + 'cursor:pointer" ' +
+              'title="' + c.name + '"></button>';
+          }).join('');
+          var clearBtn = (curHue != null)
+            ? '<button type="button" class="btn-secondary" onclick="window.qsSetHighlight(\'' + userId + '\',null)" style="margin-top:12px">Clear highlight</button>'
+            : '';
+          showDialog('Highlight person',
+            '<p style="color:var(--dim);font-size:13px;margin-bottom:12px">Pick a color:</p>' +
+            '<div style="display:flex;gap:10px;flex-wrap:wrap">' + dotsHtml + '</div>' + clearBtn,
+            [{ label: 'Cancel' }]);
+        };
+        window.qsSetHighlight = function(userId, hue) {
+          hide($('action-dialog'));
+          if (hue == null) {
             delete sched.highlights[userId];
           } else {
-            sched.highlights[userId] = HIGHLIGHT_COLORS[idx + 1];
+            var found = null;
+            for (var i = 0; i < HIGHLIGHT_COLORS.length; i++) {
+              if (HIGHLIGHT_COLORS[i].hue === hue) { found = HIGHLIGHT_COLORS[i]; break; }
+            }
+            sched.highlights[userId] = found || { name: 'Custom', hue: hue };
           }
           try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
           renderSchedule();
