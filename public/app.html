@@ -225,7 +225,7 @@
       <button class="tab-btn" data-tab="ask">Ask Schedule</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
-      <button class="tab-btn" data-tab="link">Employee Link</button>
+      <button class="tab-btn" data-tab="link">Share Links</button>
       <button class="tab-btn" data-tab="help">Help</button>
     </nav>
   </header>
@@ -4843,10 +4843,14 @@
       </script>
     </section>
 
-    <!-- Employee Link tab -->
+    <!-- Share Links tab -->
     <section id="tab-link" class="tab-panel">
       <div class="card">
-        <h2>Employee Link</h2>
+        <h2>Share Links</h2>
+        <p style="color:var(--dim)">Generate shareable links for your team. More link types coming.</p>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Schedule link</h3>
         <p style="color:var(--dim)">Share a view-only link to the published schedule with your team. No login needed.</p>
         <div id="share-link-box" style="margin-top:1rem">
           <div id="share-link-none">
@@ -4947,7 +4951,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', ask: 'Ask about the schedule', settings: 'Settings', bulk: 'Bulk Actions', link: 'Employee Link', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', ask: 'Ask about the schedule', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
