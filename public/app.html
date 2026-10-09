@@ -832,8 +832,9 @@
           return '<button type="button" class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '"' +
             ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
             '<span class="shift-cat" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(label) + '</span>' +
-            '<span class="shift-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">+ Open slot</span>' +
-            '</button>';
+            '<span class="shift-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">+ Open slot' +
+            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') +
+            '</span></button>';
         }
 
         function dayRowHtml(dateStr) {
@@ -1022,6 +1023,7 @@
           });
           scope.querySelectorAll('.open-slot').forEach(function (b) {
             b.addEventListener('click', function (e) {
+              if (e.target.closest('.open-slot-x')) return; // handled by delegated remover
               e.stopPropagation();
               openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
             });
@@ -1421,9 +1423,8 @@
                     '<button type="button" data-slot-restore="' + st.id + '" style="font-size:0.8rem;color:#2563eb;background:none;border:none;cursor:pointer">Restore</button></div>';
                 }
                 if (open > 0) {
-                  openHtml += '<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:2px 0 6px;flex-wrap:wrap">' +
-                    '<button type="button" data-slot-minus="' + st.id + '" style="min-height:40px;padding:8px 14px;font-size:0.85rem;color:#bd3d4a;background:#fde8e8;border:1px solid #f0c4bb;border-radius:8px;cursor:pointer;font-weight:600">\u2212 Remove a slot</button>' +
-                    '<button type="button" data-closed-close="' + st.id + '" style="min-height:40px;padding:8px 14px;font-size:0.85rem;color:#6b7280;background:none;border:1px solid var(--border);border-radius:8px;cursor:pointer">Close ' + esc(st.name) + '</button></div>';
+                  openHtml += '<div style="text-align:right;padding:2px 0 6px">' +
+                    '<button type="button" data-closed-close="' + st.id + '" style="font-size:0.8rem;color:#6b7280;background:none;border:none;cursor:pointer">Close ' + esc(st.name) + ' for this date</button></div>';
                 }
               }
             });
@@ -1431,17 +1432,10 @@
           if (openHtml) {
             $('sched-day-shifts').innerHTML += '<h4 class="type-group-h" style="margin-top:0.6rem">Open positions</h4>' + openHtml;
             $('sched-day-shifts').querySelectorAll('.open-slot').forEach(function (b) {
-              b.addEventListener('click', function () {
+              b.addEventListener('click', function (e) {
+                if (e.target.closest('.open-slot-x')) return; // handled by delegated remover
                 hide($('sched-day-modal'));
                 openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
-              });
-            });
-            $('sched-day-shifts').querySelectorAll('[data-slot-minus]').forEach(function (b) {
-              b.addEventListener('click', function () {
-                var stId = b.getAttribute('data-slot-minus');
-                api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [ds], shiftTypeId: stId, count: -1 }) }).then(function (r) {
-                  if (r.ok) { loadShifts(); pageSuccess('Open slot removed.'); }
-                });
               });
             });
             $('sched-day-shifts').querySelectorAll('[data-slot-restore]').forEach(function (b) {
@@ -1704,6 +1698,21 @@
         function showInfo(msg) {
           showDialog('Notice', '<p>' + esc(msg) + '</p>', [{ label: 'OK', primary: true }]);
         }
+        // Remove a single open slot — works in every view (delegated).
+        document.addEventListener('click', function (e) {
+          var x = e.target.closest ? e.target.closest('.open-slot-x') : null;
+          if (!x) return;
+          e.stopPropagation();
+          e.preventDefault();
+          var stId = x.getAttribute('data-remove-slot');
+          var slotBtn = x.closest('.open-slot');
+          var d = slotBtn ? slotBtn.getAttribute('data-date') : null;
+          if (!d || !stId) return;
+          if (!confirm('Remove this open slot?')) return;
+          api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [d], shiftTypeId: stId, count: -1 }) }).then(function (r) {
+            if (r.ok) { loadShifts(); pageSuccess('Open slot removed.'); }
+          });
+        });
         // Popup item clicks (delegated)
         document.addEventListener('click', function (e) {
           var drGo = e.target.closest ? e.target.closest('#sp-dr-go') : null;
