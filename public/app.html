@@ -412,6 +412,19 @@
           <h3 id="sched-assign-title">Assign shift</h3>
           <div id="sched-assign-error" class="alert alert-error hidden"></div>
           <div class="form-row">
+            <label>Status</label>
+            <div style="display:flex;gap:8px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
+                <input type="radio" name="sched-assign-pub" value="published" checked style="width:auto">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#00a9a4;color:#fff;font-size:11px;font-weight:800">P</span> Publish
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
+                <input type="radio" name="sched-assign-pub" value="draft" style="width:auto">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#9ca3af;color:#fff;font-size:11px;font-weight:800">D</span> Draft
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
             <label>Team member</label>
             <select id="sched-assign-user"></select>
           </div>
@@ -438,19 +451,6 @@
           <div class="form-row">
             <label>Notes <span style="font-weight:400;color:var(--dim)">(optional)</span></label>
             <input type="text" id="sched-assign-notes" autocomplete="off">
-          </div>
-          <div class="form-row">
-            <label>Status</label>
-            <div style="display:flex;gap:8px">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
-                <input type="radio" name="sched-assign-pub" value="published" checked style="width:auto">
-                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#00a9a4;color:#fff;font-size:11px;font-weight:800">P</span> Publish
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
-                <input type="radio" name="sched-assign-pub" value="draft" style="width:auto">
-                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#9ca3af;color:#fff;font-size:11px;font-weight:800">D</span> Draft
-              </label>
-            </div>
           </div>
           <div class="modal-actions">
             <button type="button" id="sched-assign-cancel" class="btn-secondary">Cancel</button>
