@@ -4854,6 +4854,7 @@
         <p style="color:var(--dim)">Share view-only links to the published schedule. No login needed. Good for temps and non-team members.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>Department <select id="share-dept"><option value="">All departments</option></select></label>
+          <label>Shift <select id="share-shift"><option value="">All shifts</option></select></label>
           <label>Label (optional) <input type="text" id="share-label" placeholder="e.g. Night team" style="min-width:140px"></label>
           <button type="button" id="share-generate" class="btn">Generate link</button>
         </div>
@@ -4924,7 +4925,19 @@
           var h = window.location.hash || '';
           return h.indexOf('#link') === 0;
         }
-        function refresh() { loadShareLinks(); loadShareDepts(); }
+        function refresh() { loadShareLinks(); loadShareDepts(); loadShareShifts(); }
+        function loadShareShifts() {
+          api('/api/schedule/shift-types').then(function (r) {
+            if (!r.ok || !r.data.shiftTypes) return;
+            var sel = $('share-shift');
+            sel.innerHTML = '<option value="">All shifts</option>';
+            r.data.shiftTypes.forEach(function (t) {
+              var o = document.createElement('option');
+              o.value = t.id; o.textContent = t.name;
+              sel.appendChild(o);
+            });
+          }).catch(function () {});
+        }
         function loadShareDepts() {
           api('/api/departments').then(function (r) {
             if (!r.ok || !r.data.departments) return;
@@ -4949,7 +4962,7 @@
             r.data.links.forEach(function (l) {
               var div = document.createElement('div');
               div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
-              var name = l.label || (l.departmentName ? l.departmentName + ' schedule' : 'Full schedule');
+              var name = l.label || ([l.departmentName, l.shiftTypeName].filter(Boolean).join(' — ') || 'Full schedule');
               var dt = new Date(l.createdAt).toLocaleDateString();
               div.innerHTML = '<strong>' + esc(name) + '</strong><br>' +
                 '<span style="color:var(--dim);font-size:0.85rem">Created ' + dt + ' — link was shown when generated</span>' +
@@ -4967,10 +4980,11 @@
         }
         $('share-generate').addEventListener('click', function () {
           var deptId = $('share-dept').value || null;
+          var shiftId = $('share-shift').value || null;
           var label = $('share-label').value.trim() || null;
           api('/api/schedule/share', {
             method: 'POST',
-            body: JSON.stringify({ departmentId: deptId, label: label }),
+            body: JSON.stringify({ departmentId: deptId, shiftTypeId: shiftId, label: label }),
           }).then(function (r) {
             if (r.ok) {
               loadShareLinks();

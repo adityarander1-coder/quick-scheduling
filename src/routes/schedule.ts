@@ -1473,8 +1473,11 @@ router.get('/share', requireRole('owner', 'scheduler'), async (req: Request, res
     const companyId = req.session.companyId!;
     const { rows } = await query(
       `SELECT s.id, s.label, s.created_at AS "createdAt",
-              s.department_id AS "departmentId", d.name AS "departmentName"
-       FROM schedule_shares s LEFT JOIN departments d ON d.id = s.department_id
+              s.department_id AS "departmentId", d.name AS "departmentName",
+              s.shift_type_id AS "shiftTypeId", st.name AS "shiftTypeName"
+       FROM schedule_shares s
+       LEFT JOIN departments d ON d.id = s.department_id
+       LEFT JOIN shift_types st ON st.id = s.shift_type_id
        WHERE s.company_id = $1 ORDER BY s.created_at DESC`,
       [companyId]
     );
@@ -1486,22 +1489,28 @@ router.get('/share', requireRole('owner', 'scheduler'), async (req: Request, res
 });
 
 // POST /api/schedule/share — generate a share link (owner/scheduler).
-// Body: { departmentId?: uuid | null, label?: string }
+// Body: { departmentId?: uuid | null, shiftTypeId?: uuid | null, label?: string }
 router.post('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { departmentId, label } = req.body ?? {};
+    const { departmentId, shiftTypeId, label } = req.body ?? {};
     let deptId: string | null = null;
     if (departmentId) {
       const { rows: drows } = await query('SELECT id, name FROM departments WHERE id = $1 AND company_id = $2', [departmentId, companyId]);
       if (!drows.length) { res.status(404).json({ error: 'Department not found.' }); return; }
       deptId = drows[0].id;
     }
+    let stId: string | null = null;
+    if (shiftTypeId) {
+      const { rows: srows } = await query('SELECT id, name FROM shift_types WHERE id = $1 AND company_id = $2 AND active = true', [shiftTypeId, companyId]);
+      if (!srows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+      stId = srows[0].id;
+    }
     const token = crypto.randomBytes(32).toString('hex');
     const tokenHash = hashShareToken(token);
     const { rows } = await query(
-      'INSERT INTO schedule_shares (id, company_id, token_hash, department_id, label) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [crypto.randomUUID(), companyId, tokenHash, deptId, label ? String(label).slice(0, 120) : null]
+      'INSERT INTO schedule_shares (id, company_id, token_hash, department_id, shift_type_id, label) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [crypto.randomUUID(), companyId, tokenHash, deptId, stId, label ? String(label).slice(0, 120) : null]
     );
     const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     res.status(201).json({ id: rows[0].id, shareLink: `${base}/view.html?t=${token}` });
@@ -1547,7 +1556,7 @@ router.get('/public', async (req: Request, res: Response) => {
       return;
     }
     const { rows: shares } = await query(
-      'SELECT company_id, department_id FROM schedule_shares WHERE token_hash = $1',
+      'SELECT company_id, department_id, shift_type_id FROM schedule_shares WHERE token_hash = $1',
       [hashShareToken(token)]
     );
     if (!shares.length) {
@@ -1556,10 +1565,12 @@ router.get('/public', async (req: Request, res: Response) => {
     }
     const companyId = shares[0].company_id;
     const deptId = shares[0].department_id;
-    // Only published dates and published shifts. Optionally scoped to a department.
-    const deptFilter = deptId ? 'AND (u.department_id = $4 OR st.department_id = $4)' : '';
+    const shiftTypeId = shares[0].shift_type_id;
+    // Only published dates and published shifts. Optionally scoped to a department and/or shift type.
     const shiftParams: any[] = [companyId, from, to];
-    if (deptId) shiftParams.push(deptId);
+    let extraFilter = '';
+    if (deptId) { shiftParams.push(deptId); extraFilter += ` AND (u.department_id = $${shiftParams.length} OR st.department_id = $${shiftParams.length})`; }
+    if (shiftTypeId) { shiftParams.push(shiftTypeId); extraFilter += ` AND s.shift_type_id = $${shiftParams.length}`; }
     const { rows: shifts } = await query(
       `SELECT s.id, s.date::text AS date, s.notes,
               s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
@@ -1571,7 +1582,7 @@ router.get('/public', async (req: Request, res: Response) => {
        JOIN users u ON u.id = s.user_id
        JOIN shift_types st ON st.id = s.shift_type_id
        JOIN schedule_days d ON d.company_id = s.company_id AND d.date = s.date AND d.is_published = true
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true ${deptFilter}
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true ${extraFilter}
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
       shiftParams
     );
