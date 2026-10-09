@@ -780,7 +780,8 @@
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
           }
-          return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
+          return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) +
+            ' onclick="window.qsEditShift(\'' + s.id + '\')"' + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
             '</div>';
@@ -1213,6 +1214,15 @@
             { label: 'Cancel' }
           ]);
         };
+        // Global edit function: tap a shift box → open assign popup in edit mode.
+        window.qsEditShift = function (sid) {
+          // Don't trigger if the tap was on an inner button (delete/replace/etc).
+          if (window.event && window.event.target && window.event.target.closest && window.event.target.closest('button')) return;
+          var s = shiftById(sid);
+          if (!s) return;
+          var opened = openAssignModal(s.date, s.shiftTypeId, s);
+          if (opened === false) openPersonActions(sid);
+        };
         // Global delete function (simple, reliable): restores the delete path
         // that the inline-handler rewrite wired to this name but never defined.
         window.qsDeleteShift = function(sid) {
@@ -1421,7 +1431,7 @@
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
             var isDraftShift = s.published === false || !isPublished(s.date);
-            html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"><span class="shift-color-bar" style="background:' +
+            html += '<div class="dm-shift-row" data-shift-id="' + s.id + '" onclick="window.qsEditShift(\'' + s.id + '\')"><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' +
               (sched.canEdit ?
