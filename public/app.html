@@ -1011,11 +1011,6 @@
             if (target) target.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'auto' });
           } catch (e) {}
         }
-              if (e.target.closest('.status-pill')) return;
-              openDayModal(box.getAttribute('data-date'));
-            });
-          });
-        }
 
         function bindStatusPills(scope) {
           scope.querySelectorAll('.status-pill').forEach(function (p) {
