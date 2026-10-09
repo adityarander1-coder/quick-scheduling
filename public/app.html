@@ -2337,28 +2337,31 @@
                 } else {
                   convDates = [rd.date];
                 }
-                var convBody = {
-                  userId: $('sched-assign-user').value,
-                  shiftTypeId: $('sched-assign-shifttype').value,
-                  startDate: convDates[0],
-                  endDate: convDates[convDates.length - 1],
-                  notes: notes,
-                  published: wantPublished,
-                };
-                api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(convBody) }).then(function (r) {
-                  onDone();
-                  if (r.ok) {
+                // Create manual shifts one by one using the single-shift endpoint.
+                var createNext = function (idx) {
+                  if (idx >= convDates.length) {
+                    onDone();
                     hide($('sched-assign-modal'));
                     sched.editShiftId = null; sched.editIsRotation = false; sched.editRotationData = null;
                     pageSuccess('Shift updated.');
                     loadShifts();
-                  } else {
-                    var errDetail = 'Status: ' + r.status + '. ';
-                    try { errDetail += JSON.stringify(r.data); } catch (e) { errDetail += 'No data'; }
-                    $('sched-assign-error').textContent = 'Bulk create failed: ' + errDetail;
-                    show($('sched-assign-error'));
+                    return;
                   }
-                }).catch(function (err) { onDone(); $('sched-assign-error').textContent = 'Network error: ' + err; show($('sched-assign-error')); });
+                  api('/api/schedule/shifts', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      userId: $('sched-assign-user').value,
+                      shiftTypeId: $('sched-assign-shifttype').value,
+                      date: convDates[idx],
+                      notes: notes,
+                      published: wantPublished,
+                    })
+                  }).then(function (r2) {
+                    // Continue even if one fails (e.g. duplicate).
+                    createNext(idx + 1);
+                  }).catch(function () { createNext(idx + 1); });
+                };
+                createNext(0);
               }).catch(function () { onDone(); pageError('Could not remove rotation shift.'); });
               return;
             }
