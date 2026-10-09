@@ -4894,6 +4894,26 @@
           <button type="button" id="msg-copy" class="btn-secondary" style="margin-top:0.5rem">Copy message</button>
         </div>
       </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Availability link</h3>
+        <p style="color:var(--dim)">Ask staff to tap the dates they're available. Share the link in group chats.</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <label>From <input type="date" id="av-from"></label>
+          <label>To <input type="date" id="av-to"></label>
+          <label>Title (optional) <input type="text" id="av-title" placeholder="e.g. November availability" style="min-width:160px"></label>
+          <button type="button" id="av-generate" class="btn">Generate link</button>
+        </div>
+        <div id="av-list" style="margin-top:0.5rem"></div>
+      </div>
+      <div id="av-resp-modal" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:560px">
+          <h3 id="av-resp-title" style="margin-top:0">Responses</h3>
+          <div id="av-resp-body" style="max-height:60vh;overflow-y:auto"></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+            <button type="button" class="btn-secondary" id="av-resp-close">Close</button>
+          </div>
+        </div>
+      </div>
       <script>
       (function () {
         function isActive() {
@@ -4985,8 +5005,83 @@
             navigator.clipboard.writeText(t).then(done, done);
           } else done();
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); } });
-        if (isActive()) { refresh(); loadMsgTypes(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); } });
+        if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); }
+        $('av-resp-close').addEventListener('click', function () { hide($('av-resp-modal')); });
+        // --- Availability links ---
+        function loadAvList() {
+          api('/api/schedule/availability').then(function (r) {
+            if (!r.ok) return;
+            var box = $('av-list');
+            box.innerHTML = '';
+            if (!r.data.requests.length) {
+              box.innerHTML = '<p style="color:var(--dim)">No availability links yet.</p>';
+              return;
+            }
+            r.data.requests.forEach(function (q) {
+              var div = document.createElement('div');
+              div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
+              var title = q.title || ('Availability ' + q.fromDate + ' to ' + q.toDate);
+              div.innerHTML = '<strong>' + esc(title) + '</strong><br>' +
+                '<span style="color:var(--dim);font-size:0.85rem">' + q.fromDate + ' to ' + q.toDate + ' — ' + q.responseCount + ' response' + (q.responseCount == 1 ? '' : 's') + '</span>' +
+                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap">' +
+                '<button type="button" class="btn-secondary btn-sm" data-av="view">View responses</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-av="del" style="color:var(--danger)">Delete</button></div>';
+              div.querySelector('[data-av="view"]').addEventListener('click', function () { showAvResponses(q.id, title); });
+              div.querySelector('[data-av="del"]').addEventListener('click', function () {
+                if (!confirm('Delete this availability link?')) return;
+                api('/api/schedule/availability/' + q.id, { method: 'DELETE' }).then(function (dr) {
+                  if (dr.ok) { pageSuccess('Deleted.'); loadAvList(); }
+                  else pageError('Could not delete.');
+                });
+              });
+              box.appendChild(div);
+            });
+          }).catch(function () {});
+        }
+        $('av-generate').addEventListener('click', function () {
+          var f = $('av-from').value, t = $('av-to').value;
+          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          api('/api/schedule/availability', {
+            method: 'POST',
+            body: JSON.stringify({ fromDate: f, toDate: t, title: $('av-title').value.trim() }),
+          }).then(function (r) {
+            if (r.ok) {
+              loadAvList();
+              var link = r.data.link;
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(link).then(function () {
+                  pageSuccess('Link generated and copied — share it in your group chat.');
+                }, function () { prompt('Copy this link:', link); });
+              } else { prompt('Copy this link:', link); }
+            } else pageError((r.data && r.data.error) || 'Could not generate link.');
+          }).catch(function () { pageError('Could not generate link.'); });
+        });
+        function showAvResponses(id, title) {
+          api('/api/schedule/availability/' + id + '/responses').then(function (r) {
+            if (!r.ok) { pageError('Could not load responses.'); return; }
+            $('av-resp-title').textContent = title + ' — responses';
+            var body = $('av-resp-body');
+            var byName = {};
+            r.data.responses.forEach(function (x) {
+              (byName[x.name] = byName[x.name] || []).push(x);
+            });
+            var names = Object.keys(byName).sort();
+            if (!names.length) { body.innerHTML = '<p style="color:var(--dim)">No responses yet.</p>'; }
+            else {
+              var html = '';
+              names.forEach(function (n) {
+                var avail = byName[n].filter(function (x) { return x.available; }).map(function (x) { return x.date.slice(5); });
+                var unav = byName[n].filter(function (x) { return !x.available; }).map(function (x) { return x.date.slice(5); });
+                html += '<div style="margin-bottom:0.75rem"><strong>' + esc(n) + '</strong><br>' +
+                  '<span style="color:#00a9a4;font-size:0.85rem">Available: ' + (avail.join(', ') || '—') + '</span><br>' +
+                  '<span style="color:#94a3b8;font-size:0.85rem">Unavailable: ' + (unav.join(', ') || '—') + '</span></div>';
+              });
+              body.innerHTML = html;
+            }
+            show($('av-resp-modal'));
+          });
+        }
       })();
       </script>
     </section>

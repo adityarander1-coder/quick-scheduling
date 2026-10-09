@@ -1692,4 +1692,133 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
   }
 });
 
+// ---------------------------------------------------------------------------
+// Availability links — staff submit availability via shareable link (no login)
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/availability — list availability requests (owner/scheduler).
+router.get('/availability', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT id, title, note, from_date::text AS "fromDate", to_date::text AS "toDate",
+              created_at AS "createdAt",
+              (SELECT COUNT(DISTINCT name) FROM availability_responses r WHERE r.request_id = availability_requests.id) AS "responseCount"
+       FROM availability_requests WHERE company_id = $1 ORDER BY created_at DESC`,
+      [companyId]
+    );
+    res.json({ requests: rows });
+  } catch (err) {
+    console.error('[schedule] list availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/availability — create an availability request (owner/scheduler).
+router.post('/availability', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { fromDate, toDate, title, note } = req.body ?? {};
+    if (!isValidDate(fromDate) || !isValidDate(toDate) || fromDate > toDate) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashShareToken(token);
+    const { rows } = await query(
+      `INSERT INTO availability_requests (company_id, token_hash, title, note, from_date, to_date, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [companyId, tokenHash, title ? String(title).slice(0, 120) : null, note ? String(note).slice(0, 500) : null, fromDate, toDate, req.session.userId!]
+    );
+    const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    res.status(201).json({ id: rows[0].id, link: `${base}/availability.html?t=${token}` });
+  } catch (err) {
+    console.error('[schedule] create availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/availability/:id — delete a request (owner/scheduler).
+router.delete('/availability/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query('DELETE FROM availability_requests WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/availability/:id/responses — view responses (owner/scheduler).
+router.get('/availability/:id/responses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: reqs } = await query(
+      'SELECT id, title, from_date::text AS "fromDate", to_date::text AS "toDate" FROM availability_requests WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!reqs.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const { rows: responses } = await query(
+      `SELECT name, date::text AS date, available FROM availability_responses
+       WHERE request_id = $1 ORDER BY name, date`,
+      [req.params.id]
+    );
+    res.json({ request: reqs[0], responses });
+  } catch (err) {
+    console.error('[schedule] availability responses failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/availability/public?token=xxx — public request details (no auth).
+router.get('/availability/public', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) { res.status(400).json({ error: 'Invalid link.' }); return; }
+    const { rows } = await query(
+      `SELECT ar.id, ar.title, ar.note, ar.from_date::text AS "fromDate", ar.to_date::text AS "toDate",
+              c.name AS "companyName"
+       FROM availability_requests ar JOIN companies c ON c.id = ar.company_id
+       WHERE ar.token_hash = $1`,
+      [hashShareToken(token)]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    res.json({ request: rows[0] });
+  } catch (err) {
+    console.error('[schedule] public availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/availability/public/respond — submit availability (no auth).
+router.post('/availability/public/respond', async (req: Request, res: Response) => {
+  try {
+    const { token, name, dates } = req.body ?? {};
+    if (!token || !name || typeof name !== 'string' || !name.trim() || !dates || typeof dates !== 'object') {
+      res.status(400).json({ error: 'Name and availability are required.' });
+      return;
+    }
+    const { rows } = await query('SELECT id, from_date::text AS "fromDate", to_date::text AS "toDate" FROM availability_requests WHERE token_hash = $1', [hashShareToken(String(token))]);
+    if (!rows.length) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    const reqId = rows[0].id;
+    const cleanName = String(name).trim().slice(0, 80);
+    const entries = Object.entries(dates as Record<string, boolean>);
+    if (!entries.length || entries.length > 93) { res.status(400).json({ error: 'Invalid dates.' }); return; }
+    for (const [ds, avail] of entries) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(ds) || ds < rows[0].fromDate || ds > rows[0].toDate) continue;
+      await query(
+        `INSERT INTO availability_responses (request_id, name, date, available)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (request_id, name, date) DO UPDATE SET available = EXCLUDED.available`,
+        [reqId, cleanName, ds, !!avail]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] availability respond failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
