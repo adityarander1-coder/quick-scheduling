@@ -1219,7 +1219,7 @@
           // Don't trigger if the tap was on an inner button (delete/replace/etc).
           if (window.event && window.event.target && window.event.target.closest && window.event.target.closest('button')) return;
           var s = shiftById(sid);
-          if (!s) return;
+          if (!s) { alert('Debug: shift not found in data (id=' + sid + ')'); return; }
           var opened = openAssignModal(s.date, s.shiftTypeId, s);
           if (opened === false) openPersonActions(sid);
         };
