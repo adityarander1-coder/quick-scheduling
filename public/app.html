@@ -2694,12 +2694,63 @@
     <!-- Ask Schedule tab -->
     <section id="tab-ask" class="tab-panel">
       <div class="card">
-        <h2>Ask about the schedule</h2>
-        <p style="color:var(--dim)">AI schedule assistant — coming in Phase 5.</p>
+        <h2>Ask Schedule</h2>
+        <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
+        <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
+          <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
+          <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
+          <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
+        </div>
+        <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
+        <div style="display:flex;gap:0.5rem">
+          <input type="text" id="ask-input" placeholder='Try "who&#39;s on Friday night?"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+          <button type="button" id="ask-send" class="btn">Ask</button>
+        </div>
       </div>
       <div style="margin-top:1.5rem;text-align:center">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
+      <script>
+      (function () {
+        var chat = $('ask-chat');
+        function addMsg(text, who) {
+          var div = document.createElement('div');
+          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;' +
+            (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+          div.textContent = text;
+          chat.appendChild(div);
+          chat.scrollTop = chat.scrollHeight;
+        }
+        function send(q) {
+          q = (q || '').trim();
+          if (!q) return;
+          addMsg(q, 'you');
+          $('ask-input').value = '';
+          var thinking = document.createElement('div');
+          thinking.style.cssText = 'margin-bottom:0.75rem;color:var(--dim);font-style:italic';
+          thinking.textContent = 'Thinking…';
+          chat.appendChild(thinking);
+          chat.scrollTop = chat.scrollHeight;
+          api('/api/schedule/ask', {
+            method: 'POST',
+            body: JSON.stringify({ question: q }),
+          }).then(function (r) {
+            thinking.remove();
+            if (r.ok) addMsg(r.data.answer, 'ai');
+            else addMsg((r.data && r.data.error) || 'Sorry, something went wrong.', 'ai');
+          }).catch(function () {
+            thinking.remove();
+            addMsg('Sorry, something went wrong.', 'ai');
+          });
+        }
+        $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
+        $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
+        document.querySelectorAll('.ask-ex').forEach(function (b) {
+          b.addEventListener('click', function () { send(b.textContent); });
+        });
+        addMsg("Hi! Ask me about the schedule — who's on, who's short, anyone's shifts.", 'ai');
+      })();
+      </script>
     </section>
 
     <!-- Settings tab -->

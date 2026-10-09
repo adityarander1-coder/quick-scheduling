@@ -2312,4 +2312,36 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
   }
 });
 
+// POST /api/schedule/ask — rule-based natural language Q&A (owner/scheduler).
+// Body: { question: string }
+router.post('/ask', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const question = String(req.body?.question || '').slice(0, 500);
+    if (!question.trim()) {
+      res.status(400).json({ error: 'Ask a question.' });
+      return;
+    }
+    const { answerQuestion } = await import('../util/askEngine.js');
+    const { rows: stRows } = await query(
+      'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+      [companyId]
+    );
+    const { rows: uRows } = await query(
+      `SELECT id, first_name AS "firstName", last_name AS "lastName", nickname
+       FROM users WHERE company_id = $1 AND is_active = true`,
+      [companyId]
+    );
+    const answer = await answerQuestion(question, {
+      companyId,
+      shiftTypes: stRows,
+      members: uRows,
+    });
+    res.json({ answer });
+  } catch (err) {
+    console.error('[schedule] ask failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
