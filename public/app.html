@@ -2324,6 +2324,12 @@
                   shiftTypeId: rd.shiftTypeId
                 })
               }).then(function (delR) {
+                if (!delR.ok) {
+                  onDone();
+                  $('sched-assign-error').textContent = 'Could not remove rotation shift: ' + ((delR.data && delR.data.error) || 'unknown error');
+                  show($('sched-assign-error'));
+                  return;
+                }
                 // Now create as manual via the range endpoint.
                 var convDates = [];
                 if (editUseRange) {
