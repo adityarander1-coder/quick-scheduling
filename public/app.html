@@ -1295,20 +1295,8 @@
             replaceShift(s, newUserId);
           }
         };
-          // Person actions sidebar: click a shift box to open (entire grid, not just name)
-          scope.querySelectorAll('.shift-grid[data-shift-id]').forEach(function (grid) {
-            grid.style.cursor = 'pointer';
-            grid.addEventListener('click', function (e) {
-              // Don't trigger if clicking the comment button or open slot inside
-              if (e.target.closest('.shift-comment-btn')) return;
-              if (e.target.closest('.open-slot')) return;
-              try {
-                openPersonActions(grid.getAttribute('data-shift-id'));
-              } catch (err) {
-                console.error('PersonActions open failed:', err);
-              }
-            });
-          });
+          // Person actions sidebar: click handling is now done via window.qsEditShift
+          // (inline onclick on shift boxes) — no separate listener needed here.
         }
 
         function renderPublishBar() {
