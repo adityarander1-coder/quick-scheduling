@@ -13,11 +13,11 @@ async function runPoll(): Promise<void> {
   }
   try {
     // Use configured company, or fall back to the first company
-    let companyId = process.env.GMAIL_COMPANY_ID;
+    let companyId = process.env.GMAIL_COMPANY_ID as string;
     if (!companyId) {
       const { rows } = await query(`SELECT id FROM companies ORDER BY created_at LIMIT 1`);
       if (rows.length === 0) return;
-      companyId = rows[0].id;
+      companyId = rows[0].id as string;
     }
     const result = await pollInbox(query, companyId);
     if (result.newPlans > 0) {
