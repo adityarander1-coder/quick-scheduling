@@ -1642,7 +1642,53 @@
           paShift = null;
         }
 
-        // Shift actions popup (simpler replacement for sidebar)
+        // Simple dialog for rotation shifts: publish/draft toggle and delete.
+        function openRotationShiftDialog(s) {
+          var nm = displayName(s);
+          var st = shiftTypeById(s.shiftTypeId);
+          var isDraft = s.published === false;
+          showDialog(nm + ' \u2014 ' + fmtLong(s.date),
+            '<p style="color:var(--dim);font-size:13px">This shift comes from a rotation' + (st ? ' (' + esc(st.name) + ')' : '') + '. You can publish/draft it or remove this occurrence.</p>',
+            [
+              { label: 'Cancel' },
+              {
+                label: isDraft ? 'Publish' : 'Move to draft',
+                onClick: function () {
+                  api('/api/schedule/rotation-shifts/publish-state', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      rotationId: s.rotationId,
+                      userId: s.userId,
+                      date: s.date,
+                      shiftTypeId: s.shiftTypeId,
+                      published: isDraft
+                    })
+                  }).then(function (r) {
+                    if (r.ok) { pageSuccess(isDraft ? 'Published.' : 'Moved to draft.'); loadShifts(); }
+                    else pageError('Could not update.');
+                  });
+                }
+              },
+              {
+                label: 'Delete', danger: true,
+                onClick: function () {
+                  if (!confirm('Remove this rotation shift on ' + fmtLong(s.date) + '?')) return;
+                  api('/api/schedule/rotation-shifts/delete', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      rotationId: s.rotationId,
+                      userId: s.userId,
+                      date: s.date,
+                      shiftTypeId: s.shiftTypeId
+                    })
+                  }).then(function (r) {
+                    if (r.ok) { pageSuccess('Shift removed.'); loadShifts(); }
+                    else pageError('Could not delete.');
+                  });
+                }
+              }
+            ]);
+        }
         var popupShift = null;
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
@@ -2173,8 +2219,8 @@
               // Click an assigned shift → open the assign popup in edit mode.
               var opened = openAssignModal(sh.date, sh.shiftTypeId, sh);
               if (opened === false) {
-                // Rotation shift — fall back to the popup menu.
-                openPersonActions(sid);
+                // Rotation shift — show a simple dialog with publish/draft and delete.
+                openRotationShiftDialog(sh);
               }
             } else {
               openPersonActions(sid);
