@@ -279,11 +279,18 @@
         #tab-schedule .status-pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 0.75rem; font-weight: 800; cursor: pointer; flex-shrink: 0; }
         #tab-schedule .status-draft { background: #e5e7eb; color: #6b7280; }
         #tab-schedule .status-published { background: #00a9a4; color: #ffffff; }
-        /* Month grid */
-        #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+        /* Month strip: horizontal sliding days, side by side */
+        #tab-schedule .month-strip-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0.5rem 1rem 1rem; touch-action: pan-x pan-y; scroll-snap-type: x proximity; }
+        #tab-schedule .month-strip { display: flex; gap: 0.75rem; }
+        #tab-schedule .month-strip-day { flex: 0 0 280px; max-width: 280px; background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 0.75rem; cursor: pointer; scroll-snap-align: start; min-height: 200px; }
+        #tab-schedule .month-strip-day:hover { background: #f8fafc; }
+        #tab-schedule .month-strip-day.today { outline: 2px solid var(--accent); outline-offset: -2px; }
+        #tab-schedule .strip-day-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+        #tab-schedule .strip-dow { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: #64748b; }
+        #tab-schedule .strip-day-num { font-size: 1.1rem; font-weight: 700; color: #102d47; }
+        #tab-schedule .strip-day-head .status-pill { margin-left: auto; }
         @media (max-width: 700px) {
-          #tab-schedule .month-grid { grid-template-columns: repeat(7, minmax(140px, 1fr)); border-radius: 0; border-left: none; border-right: none; }
-          #tab-schedule .month-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0 1rem; touch-action: pan-x pan-y; }
+          #tab-schedule .month-strip-day { flex-basis: 78vw; max-width: 78vw; min-height: 160px; }
         }
         #tab-schedule .month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); }
         #tab-schedule .day-box { background: #fff; min-height: 140px; padding: 0.6rem; cursor: pointer; }
@@ -963,21 +970,21 @@
         function renderMonth(el) {
           var r = viewRange();
           var first = parseDate(r.from);
-          var gridStart = new Date(first);
-          gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
-          var html = '<div class="month-scroll-wrap"><div class="month-grid">';
-          ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
-            html += '<div class="month-dow">' + d + '</div>';
-          });
-          for (var i = 0; i < 42; i++) {
-            var d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+          var last = parseDate(r.to);
+          // Horizontal sliding strip: days side by side, swipe/scroll left-right.
+          // Each day column is sized so at least 2-3 days are always visible.
+          var html = '<div class="month-strip-wrap"><div class="month-strip">';
+          var d = new Date(first);
+          var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          while (d <= last) {
             var ds = fmtDate(d);
-            if (i >= 35 && d.getMonth() !== first.getMonth()) break;
-            var inMonth = d.getMonth() === first.getMonth();
             var today = fmtDate(new Date()) === ds;
-            var cls = 'day-box' + (inMonth ? '' : ' other-month') + (today ? ' today' : '');
+            var cls = 'month-strip-day' + (today ? ' today' : '');
             html += '<div class="' + cls + '" data-date="' + ds + '">';
-            html += '<div class="day-num"><span>' + d.getDate() + '</span>' + statusPillHtml(ds) + '</div>';
+            html += '<div class="strip-day-head"><span class="strip-dow">' + dayNames[d.getDay()] + '</span>' +
+              '<span class="strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span>' +
+              statusPillHtml(ds) + '</div>';
             var dayShifts = shiftsFor(ds);
             dayShifts.forEach(function (s) { html += monthChipHtml(s); });
             var openTotal = 0;
@@ -987,12 +994,23 @@
             });
             if (openTotal) html += '<div class="month-open" title="' + openTotal + ' open position' + (openTotal === 1 ? '' : 's') + '">+' + openTotal + ' open</div>';
             html += '</div>';
+            d.setDate(d.getDate() + 1);
           }
           html += '</div></div>';
           el.innerHTML = html;
           bindStatusPills(el);
-          el.querySelectorAll('.day-box').forEach(function (box) {
+          el.querySelectorAll('.month-strip-day').forEach(function (box) {
             box.addEventListener('click', function (e) {
+              if (e.target.closest('.status-pill')) return;
+              openDayModal(box.getAttribute('data-date'));
+            });
+          });
+          // Scroll to today (or the anchor date) on render.
+          try {
+            var target = el.querySelector('.month-strip-day.today') || el.querySelector('.month-strip-day');
+            if (target) target.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'auto' });
+          } catch (e) {}
+        }
               if (e.target.closest('.status-pill')) return;
               openDayModal(box.getAttribute('data-date'));
             });
