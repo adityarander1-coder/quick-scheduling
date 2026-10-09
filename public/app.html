@@ -4850,24 +4850,15 @@
         <p style="color:var(--dim)">Generate shareable links for your team. More link types coming.</p>
       </div>
       <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Schedule link</h3>
-        <p style="color:var(--dim)">Share a view-only link to the published schedule with your team. No login needed.</p>
-        <div id="share-link-box" style="margin-top:1rem">
-          <div id="share-link-none">
-            <p style="color:var(--dim)">No share link yet.</p>
-            <button type="button" id="share-generate" class="btn">Generate share link</button>
-          </div>
-          <div id="share-link-active" class="hidden">
-            <p><strong>Share this link with your team:</strong></p>
-            <p><code id="share-link-url" style="word-break:break-all;background:var(--bg);padding:0.5rem;border-radius:8px;display:block"></code></p>
-            <div style="display:flex;gap:0.5rem;margin-top:0.8rem;flex-wrap:wrap">
-              <button type="button" id="share-copy" class="btn-secondary">Copy link</button>
-              <button type="button" id="share-regenerate" class="btn-secondary">New link</button>
-              <button type="button" id="share-disable" class="btn-secondary" style="color:var(--danger)">Disable link</button>
-            </div>
-            <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published dates are visible. Generating a new link disables the old one.</p>
-          </div>
+        <h3 style="margin-top:0">Schedule links</h3>
+        <p style="color:var(--dim)">Share view-only links to the published schedule. No login needed. Good for temps and non-team members.</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <label>Department <select id="share-dept"><option value="">All departments</option></select></label>
+          <label>Label (optional) <input type="text" id="share-label" placeholder="e.g. Night team" style="min-width:140px"></label>
+          <button type="button" id="share-generate" class="btn">Generate link</button>
         </div>
+        <div id="share-link-list" style="margin-top:0.5rem"></div>
+        <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published dates are visible. Copy the link right after generating — it can't be shown again later.</p>
       </div>
       <div class="card" style="margin-top:1rem">
         <h3 style="margin-top:0">Open slots message</h3>
@@ -4914,53 +4905,84 @@
           </div>
         </div>
       </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Payroll hours</h3>
+        <p style="color:var(--dim)">Hours worked per person for a date range. Copy and send to payroll.</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <label>From <input type="date" id="pay-from"></label>
+          <label>To <input type="date" id="pay-to"></label>
+          <button type="button" id="pay-generate" class="btn">Generate report</button>
+        </div>
+        <div id="pay-output-wrap" class="hidden">
+          <pre id="pay-output" style="background:var(--bg);padding:1rem;border-radius:12px;white-space:pre-wrap;font-family:inherit"></pre>
+          <button type="button" id="pay-copy" class="btn-secondary" style="margin-top:0.5rem">Copy report</button>
+        </div>
+      </div>
       <script>
       (function () {
         function isActive() {
           var h = window.location.hash || '';
           return h.indexOf('#link') === 0;
         }
-        function refresh() {
-          api('/api/schedule/share').then(function (r) {
-            if (!r.ok) return;
-            $('share-link-none').classList.toggle('hidden', r.data.hasLink);
-            $('share-link-active').classList.toggle('hidden', !r.data.hasLink);
+        function refresh() { loadShareLinks(); loadShareDepts(); }
+        function loadShareDepts() {
+          api('/api/departments').then(function (r) {
+            if (!r.ok || !r.data.departments) return;
+            var sel = $('share-dept');
+            sel.innerHTML = '<option value="">All departments</option>';
+            r.data.departments.forEach(function (d) {
+              var o = document.createElement('option');
+              o.value = d.id; o.textContent = d.name;
+              sel.appendChild(o);
+            });
           }).catch(function () {});
         }
-        function showLink(link) {
-          $('share-link-url').textContent = link;
-          $('share-link-none').classList.add('hidden');
-          $('share-link-active').classList.remove('hidden');
+        function loadShareLinks() {
+          api('/api/schedule/share').then(function (r) {
+            if (!r.ok) return;
+            var box = $('share-link-list');
+            box.innerHTML = '';
+            if (!r.data.links.length) {
+              box.innerHTML = '<p style="color:var(--dim)">No schedule links yet.</p>';
+              return;
+            }
+            r.data.links.forEach(function (l) {
+              var div = document.createElement('div');
+              div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
+              var name = l.label || (l.departmentName ? l.departmentName + ' schedule' : 'Full schedule');
+              var dt = new Date(l.createdAt).toLocaleDateString();
+              div.innerHTML = '<strong>' + esc(name) + '</strong><br>' +
+                '<span style="color:var(--dim);font-size:0.85rem">Created ' + dt + ' — link was shown when generated</span>' +
+                '<div style="margin-top:0.5rem"><button type="button" class="btn-secondary btn-sm" style="color:var(--danger)">Disable</button></div>';
+              div.querySelector('button').addEventListener('click', function () {
+                if (!confirm('Disable this link? It will stop working.')) return;
+                api('/api/schedule/share/' + l.id, { method: 'DELETE' }).then(function (dr) {
+                  if (dr.ok) { pageSuccess('Link disabled.'); loadShareLinks(); }
+                  else pageError('Could not disable.');
+                });
+              });
+              box.appendChild(div);
+            });
+          }).catch(function () {});
         }
         $('share-generate').addEventListener('click', function () {
-          api('/api/schedule/share', { method: 'POST' }).then(function (r) {
-            if (r.ok) showLink(r.data.shareLink);
-            else pageError((r.data && r.data.error) || 'Could not generate link.');
-          });
-        });
-        $('share-regenerate').addEventListener('click', function () {
-          if (!confirm('Generate a new link? The old link will stop working.')) return;
-          api('/api/schedule/share', { method: 'POST' }).then(function (r) {
-            if (r.ok) { showLink(r.data.shareLink); pageSuccess('New link generated.'); }
-            else pageError((r.data && r.data.error) || 'Could not generate link.');
-          });
-        });
-        $('share-disable').addEventListener('click', function () {
-          if (!confirm('Disable the share link? Your team will no longer be able to view the schedule.')) return;
-          api('/api/schedule/share', { method: 'DELETE' }).then(function (r) {
+          var deptId = $('share-dept').value || null;
+          var label = $('share-label').value.trim() || null;
+          api('/api/schedule/share', {
+            method: 'POST',
+            body: JSON.stringify({ departmentId: deptId, label: label }),
+          }).then(function (r) {
             if (r.ok) {
-              $('share-link-none').classList.remove('hidden');
-              $('share-link-active').classList.add('hidden');
-              pageSuccess('Share link disabled.');
-            } else pageError((r.data && r.data.error) || 'Could not disable link.');
-          });
-        });
-        $('share-copy').addEventListener('click', function () {
-          var t = $('share-link-url').textContent;
-          function done() { pageSuccess('Link copied.'); }
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(t).then(done, done);
-          } else done();
+              loadShareLinks();
+              $('share-label').value = '';
+              var link = r.data.shareLink;
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(link).then(function () {
+                  pageSuccess('Link generated and copied.');
+                }, function () { prompt('Copy this link:', link); });
+              } else { prompt('Copy this link:', link); }
+            } else pageError((r.data && r.data.error) || 'Could not generate link.');
+          }).catch(function () { pageError('Could not generate link.'); });
         });
         // --- Open slots message generator ---
         function loadMsgTypes() {
@@ -5008,6 +5030,27 @@
         window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); } });
         if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); }
         $('av-resp-close').addEventListener('click', function () { hide($('av-resp-modal')); });
+        // --- Payroll hours ---
+        $('pay-generate').addEventListener('click', function () {
+          var f = $('pay-from').value, t = $('pay-to').value;
+          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          api('/api/schedule/payroll-report', {
+            method: 'POST',
+            body: JSON.stringify({ from: f, to: t }),
+          }).then(function (r) {
+            if (r.ok) {
+              $('pay-output').textContent = r.data.message;
+              $('pay-output-wrap').classList.remove('hidden');
+            } else pageError((r.data && r.data.error) || 'Could not generate report.');
+          }).catch(function () { pageError('Could not generate report.'); });
+        });
+        $('pay-copy').addEventListener('click', function () {
+          var t = $('pay-output').textContent;
+          function done() { pageSuccess('Report copied.'); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(done, done);
+          } else done();
+        });
         // --- Availability links ---
         function loadAvList() {
           api('/api/schedule/availability').then(function (r) {

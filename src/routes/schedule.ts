@@ -1467,41 +1467,63 @@ function hashShareToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-// GET /api/schedule/share — get current share link (owner/scheduler).
+// GET /api/schedule/share — list share links (owner/scheduler).
 router.get('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const { rows } = await query(
-      'SELECT id, created_at FROM schedule_shares WHERE company_id = $1',
+      `SELECT s.id, s.label, s.created_at AS "createdAt",
+              s.department_id AS "departmentId", d.name AS "departmentName"
+       FROM schedule_shares s LEFT JOIN departments d ON d.id = s.department_id
+       WHERE s.company_id = $1 ORDER BY s.created_at DESC`,
       [companyId]
     );
-    res.json({ hasLink: rows.length > 0 });
+    res.json({ links: rows, hasLink: rows.length > 0 });
   } catch (err) {
     console.error('[schedule] get share failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
-// POST /api/schedule/share — generate (or regenerate) the share link (owner/scheduler).
+// POST /api/schedule/share — generate a share link (owner/scheduler).
+// Body: { departmentId?: uuid | null, label?: string }
 router.post('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const { departmentId, label } = req.body ?? {};
+    let deptId: string | null = null;
+    if (departmentId) {
+      const { rows: drows } = await query('SELECT id, name FROM departments WHERE id = $1 AND company_id = $2', [departmentId, companyId]);
+      if (!drows.length) { res.status(404).json({ error: 'Department not found.' }); return; }
+      deptId = drows[0].id;
+    }
     const token = crypto.randomBytes(32).toString('hex');
     const tokenHash = hashShareToken(token);
-    await query('DELETE FROM schedule_shares WHERE company_id = $1', [companyId]);
-    await query(
-      'INSERT INTO schedule_shares (id, company_id, token_hash) VALUES ($1, $2, $3)',
-      [crypto.randomUUID(), companyId, tokenHash]
+    const { rows } = await query(
+      'INSERT INTO schedule_shares (id, company_id, token_hash, department_id, label) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [crypto.randomUUID(), companyId, tokenHash, deptId, label ? String(label).slice(0, 120) : null]
     );
     const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
-    res.json({ shareLink: `${base}/view.html?t=${token}` });
+    res.status(201).json({ id: rows[0].id, shareLink: `${base}/view.html?t=${token}` });
   } catch (err) {
     console.error('[schedule] create share failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
-// DELETE /api/schedule/share — disable the share link (owner/scheduler).
+// DELETE /api/schedule/share/:id — disable a share link (owner/scheduler).
+router.delete('/share/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query('DELETE FROM schedule_shares WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete share failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/share — disable all share links (owner/scheduler). Kept for backwards compat.
 router.delete('/share', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1525,7 +1547,7 @@ router.get('/public', async (req: Request, res: Response) => {
       return;
     }
     const { rows: shares } = await query(
-      'SELECT company_id FROM schedule_shares WHERE token_hash = $1',
+      'SELECT company_id, department_id FROM schedule_shares WHERE token_hash = $1',
       [hashShareToken(token)]
     );
     if (!shares.length) {
@@ -1533,7 +1555,11 @@ router.get('/public', async (req: Request, res: Response) => {
       return;
     }
     const companyId = shares[0].company_id;
-    // Only published dates and published shifts.
+    const deptId = shares[0].department_id;
+    // Only published dates and published shifts. Optionally scoped to a department.
+    const deptFilter = deptId ? 'AND (u.department_id = $4 OR st.department_id = $4)' : '';
+    const shiftParams: any[] = [companyId, from, to];
+    if (deptId) shiftParams.push(deptId);
     const { rows: shifts } = await query(
       `SELECT s.id, s.date::text AS date, s.notes,
               s.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
@@ -1545,9 +1571,9 @@ router.get('/public', async (req: Request, res: Response) => {
        JOIN users u ON u.id = s.user_id
        JOIN shift_types st ON st.id = s.shift_type_id
        JOIN schedule_days d ON d.company_id = s.company_id AND d.date = s.date AND d.is_published = true
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true ${deptFilter}
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
-      [companyId, from, to]
+      shiftParams
     );
     const { rows: types } = await query(
       `SELECT id, name, color, text_color AS "textColor", sort_order AS "sortOrder"
@@ -1817,6 +1843,67 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] availability respond failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/payroll-report — hours worked per person for a date range (owner/scheduler).
+router.post('/payroll-report', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { from, to } = req.body ?? {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    const { rows } = await query(
+      `SELECT u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
+              s.date::text AS date,
+              st.name AS "shiftTypeName",
+              st.start_time::text AS "startTime", st.end_time::text AS "endTime"
+       FROM shifts s
+       JOIN users u ON u.id = s.user_id
+       JOIN shift_types st ON st.id = s.shift_type_id
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
+       ORDER BY u.first_name, u.last_name, s.date`,
+      [companyId, from, to]
+    );
+    // Calculate hours from shift times.
+    function hoursFor(start: string | null, end: string | null): number {
+      if (!start || !end) return 0;
+      const [sh, sm] = start.split(':').map(Number);
+      const [eh, em] = end.split(':').map(Number);
+      let mins = (eh * 60 + em) - (sh * 60 + sm);
+      if (mins <= 0) mins += 24 * 60; // overnight
+      return Math.round((mins / 60) * 100) / 100;
+    }
+    const byPerson = new Map<string, { name: string; shifts: number; hours: number }>();
+    for (const r of rows) {
+      const name = r.nickname || `${r.firstName} ${r.lastName || ''}`.trim();
+      const h = hoursFor(r.startTime, r.endTime);
+      const cur = byPerson.get(name) || { name, shifts: 0, hours: 0 };
+      cur.shifts += 1;
+      cur.hours = Math.round((cur.hours + h) * 100) / 100;
+      byPerson.set(name, cur);
+    }
+    const people = [...byPerson.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const totalHours = Math.round(people.reduce((s, p) => s + p.hours, 0) * 100) / 100;
+    // Build message.
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function fmtDay(ds: string): string {
+      const dt = new Date(ds + 'T00:00:00');
+      return `${dayNames[dt.getDay()]} ${monthNames[dt.getMonth()]} ${dt.getDate()}`;
+    }
+    const lines = [`Payroll hours — ${fmtDay(from)} to ${fmtDay(to)}`, ''];
+    for (const p of people) {
+      lines.push(`${p.name}: ${p.shifts} shift${p.shifts === 1 ? '' : 's'}, ${p.hours} hrs`);
+    }
+    lines.push('');
+    lines.push(`Total: ${totalHours} hrs`);
+    res.json({ message: lines.join('\n'), people, totalHours });
+  } catch (err) {
+    console.error('[schedule] payroll-report failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
