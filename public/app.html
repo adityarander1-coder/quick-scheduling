@@ -1328,11 +1328,9 @@
           if (!sched.canEdit) return;
           sched.assignDate = dateStr;
           sched.editShiftId = editShift ? editShift.id : null;
-          var isRot = editShift && editShift.id && editShift.id.indexOf('rot-') === 0;
-          if (isRot) {
-            // Rotation shifts can't be edited directly — keep the popup menu.
-            return false;
-          }
+          // For rotation shifts, we'll convert to manual on save.
+          sched.editIsRotation = editShift && editShift.id && editShift.id.indexOf('rot-') === 0;
+          sched.editRotationData = sched.editIsRotation ? editShift : null;
           $('sched-assign-title').textContent = 'Assign shift \u2014 ' + fmtLong(editShift ? editShift.date : dateStr);
           $('sched-assign-save').textContent = 'Assign';
           hide($('sched-assign-error'));
@@ -2217,11 +2215,8 @@
             var sh = shiftById(sid);
             if (sh) {
               // Click an assigned shift → open the assign popup in edit mode.
-              var opened = openAssignModal(sh.date, sh.shiftTypeId, sh);
-              if (opened === false) {
-                // Rotation shift — show a simple dialog with publish/draft and delete.
-                openRotationShiftDialog(sh);
-              }
+              // (Rotation shifts convert to manual on save.)
+              openAssignModal(sh.date, sh.shiftTypeId, sh);
             } else {
               openPersonActions(sid);
             }
@@ -2314,6 +2309,45 @@
               $('sched-assign-error').textContent = 'Pick a valid date range.';
               show($('sched-assign-error'));
               onDone();
+              return;
+            }
+            // Rotation shift: convert to manual. First remove the rotation occurrence,
+            // then create manual shift(s).
+            if (sched.editIsRotation && sched.editRotationData) {
+              var rd = sched.editRotationData;
+              api('/api/schedule/rotation-shifts/delete', {
+                method: 'POST',
+                body: JSON.stringify({
+                  rotationId: rd.rotationId,
+                  userId: rd.userId,
+                  date: rd.date,
+                  shiftTypeId: rd.shiftTypeId
+                })
+              }).then(function (delR) {
+                // Now create as manual via the range endpoint.
+                var convDates = editUseRange ?
+                  datesInRange(editStart, editEnd) : [rd.date];
+                var convBody = {
+                  userId: $('sched-assign-user').value,
+                  shiftTypeId: $('sched-assign-shifttype').value,
+                  startDate: convDates[0],
+                  endDate: convDates[convDates.length - 1],
+                  notes: notes,
+                  published: wantPublished,
+                };
+                api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(convBody) }).then(function (r) {
+                  onDone();
+                  if (r.ok) {
+                    hide($('sched-assign-modal'));
+                    sched.editShiftId = null; sched.editIsRotation = false; sched.editRotationData = null;
+                    pageSuccess('Shift updated.');
+                    loadShifts();
+                  } else {
+                    $('sched-assign-error').textContent = (r.data && r.data.error) || 'Could not update.';
+                    show($('sched-assign-error'));
+                  }
+                }).catch(function () { onDone(); pageError('Network error.'); });
+              }).catch(function () { onDone(); pageError('Could not remove rotation shift.'); });
               return;
             }
             var editDates = [];
