@@ -432,10 +432,6 @@
             <label>Shift type</label>
             <select id="sched-assign-shifttype"></select>
           </div>
-          <div class="form-row hidden" id="sched-assign-date-row">
-            <label>Date</label>
-            <input type="date" id="sched-assign-date" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-          </div>
           <div class="form-row">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" id="sched-assign-range-toggle" style="width:auto">
@@ -1338,16 +1334,19 @@
           $('sched-assign-save').textContent = 'Assign';
           hide($('sched-assign-error'));
           $('sched-assign-notes').value = editShift ? (editShift.notes || '') : '';
-          // Hide date-range in edit mode (single shift edit); show single date picker instead.
+          // In edit mode, show date range toggle (to apply changes across dates).
+          // Single date picker is hidden; range toggle handles both cases.
           $('sched-assign-range-toggle').checked = false;
           hide($('sched-assign-range-row'));
           var rangeLabelRow = $('sched-assign-range-toggle').closest('.form-row');
-          if (rangeLabelRow) rangeLabelRow.style.display = editShift ? 'none' : '';
+          if (rangeLabelRow) rangeLabelRow.style.display = '';
+          hide($('sched-assign-date-row'));
           if (editShift) {
-            show($('sched-assign-date-row'));
-            $('sched-assign-date').value = editShift.date;
+            $('sched-assign-start').value = editShift.date;
+            $('sched-assign-end').value = editShift.date;
           } else {
-            hide($('sched-assign-date-row'));
+            $('sched-assign-start').value = dateStr;
+            $('sched-assign-end').value = dateStr;
           }
           $('sched-assign-start').value = editShift ? editShift.date : dateStr;
           $('sched-assign-end').value = editShift ? editShift.date : dateStr;
@@ -2260,17 +2259,35 @@
           var notes = $('sched-assign-notes').value.trim() || undefined;
           var pubRadio = document.querySelector('input[name="sched-assign-pub"]:checked');
           var wantPublished = !pubRadio || pubRadio.value !== 'draft';
-          // Edit mode: update the existing shift.
+          // Edit mode: update the existing shift, optionally across a date range.
           if (sched.editShiftId) {
-            var editDate = $('sched-assign-date').value || sched.assignDate;
+            var editUseRange = $('sched-assign-range-toggle').checked;
+            var editStart = $('sched-assign-start').value;
+            var editEnd = $('sched-assign-end').value;
+            if (editUseRange && (!editStart || !editEnd || editStart > editEnd)) {
+              $('sched-assign-error').textContent = 'Pick a valid date range.';
+              show($('sched-assign-error'));
+              onDone();
+              return;
+            }
+            var editDates = [];
+            if (editUseRange) {
+              var dd = new Date(editStart + 'T12:00:00'), dend = new Date(editEnd + 'T12:00:00');
+              while (dd <= dend) {
+                editDates.push(dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0'));
+                dd.setDate(dd.getDate() + 1);
+              }
+            } else {
+              editDates = [sched.assignDate];
+            }
             var editBody = {
               userId: $('sched-assign-user').value,
               shiftTypeId: $('sched-assign-shifttype').value,
-              date: editDate,
               notes: notes,
               published: wantPublished,
+              dates: editDates,
             };
-            api('/api/schedule/shifts/' + sched.editShiftId, { method: 'PUT', body: JSON.stringify(editBody) }).then(function (r) {
+            api('/api/schedule/shifts/' + sched.editShiftId + '/apply-range', { method: 'POST', body: JSON.stringify(editBody) }).then(function (r) {
               onDone();
               if (r.ok) {
                 hide($('sched-assign-modal'));

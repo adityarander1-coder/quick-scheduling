@@ -620,6 +620,66 @@ router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: R
   }
 });
 
+// POST /api/schedule/shifts/:id/apply-range — apply shift changes across a date range (owner/scheduler).
+// Body: { userId, shiftTypeId, notes, published, dates:[...] }.
+// For the original shift's date: updates it. For other dates: creates or updates that person's shift.
+router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { userId, shiftTypeId, notes, published, dates } = req.body ?? {};
+    const dateList = Array.isArray(dates) ? dates.filter(isValidDate) : [];
+    if (!dateList.length || !userId || !shiftTypeId) {
+      res.status(400).json({ error: 'Dates, team member, and shift type are required.' });
+      return;
+    }
+    // Get the original shift to know its date.
+    const { rows: orig } = await query(
+      'SELECT date::text AS date FROM shifts WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!orig.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    const origDate = orig[0].date;
+    let updated = 0, created = 0;
+    for (const d of dateList) {
+      if (d === origDate) {
+        // Update the original shift.
+        const { rowCount } = await query(
+          `UPDATE shifts SET user_id = $1, shift_type_id = $2, notes = $3,
+            published = COALESCE($4, published), updated_at = now()
+           WHERE id = $5 AND company_id = $6`,
+          [userId, shiftTypeId, notes || null, published, req.params.id, companyId]
+        );
+        updated += rowCount || 0;
+      } else {
+        // Upsert for other dates: update if this person already has this shift type that day, else create.
+        const { rows: existing } = await query(
+          `SELECT id FROM shifts WHERE company_id = $1 AND date = $2 AND user_id = $3 AND shift_type_id = $4 LIMIT 1`,
+          [companyId, d, userId, shiftTypeId]
+        );
+        if (existing.length) {
+          await query(
+            `UPDATE shifts SET notes = $1, published = COALESCE($2, published), updated_at = now()
+             WHERE id = $3 AND company_id = $4`,
+            [notes || null, published, existing[0].id, companyId]
+          );
+          updated++;
+        } else {
+          await query(
+            `INSERT INTO shifts (company_id, date, user_id, shift_type_id, notes, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, COALESCE($6, true), $7)`,
+            [companyId, d, userId, shiftTypeId, notes || null, published, req.session.userId!]
+          );
+          created++;
+        }
+      }
+    }
+    res.json({ ok: true, updated, created });
+  } catch (err) {
+    console.error('[schedule] apply-range failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // PUT /api/schedule/shifts/:id — update one manual shift (owner/scheduler).
 router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
