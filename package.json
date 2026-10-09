@@ -20,7 +20,8 @@
     "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "@types/mailparser": "^3.9.0"
   },
   "description": "Quick Scheduling — multi-company scheduling SaaS (Phase 1: accounts & logins)",
   "engines": {
@@ -35,7 +36,5 @@
     "start": "node dist/index.js"
   },
   "version": "0.1.0",
-  "devDependencies": {
-    "@types/mailparser": "^3.9.0"
-  }
+  "devDependencies": {}
 }
