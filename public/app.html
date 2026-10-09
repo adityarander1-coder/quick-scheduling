@@ -1217,7 +1217,7 @@
         // Global edit function: tap a shift box → open assign popup in edit mode.
         window.qsEditShift = function (sid) {
           var s = shiftById(sid);
-          if (!s) { alert('Debug: shift not found in data (id=' + sid + ')'); return; }
+          if (!s) return;
           var opened = openAssignModal(s.date, s.shiftTypeId, s);
           if (opened === false) openPersonActions(sid);
         };
@@ -1334,8 +1334,8 @@
             // Rotation shifts can't be edited directly — keep the popup menu.
             return false;
           }
-          $('sched-assign-title').textContent = editShift ? 'Edit shift \u2014 ' + fmtLong(editShift.date) : 'Assign shift \u2014 ' + fmtLong(dateStr);
-          $('sched-assign-save').textContent = editShift ? 'Save' : 'Assign';
+          $('sched-assign-title').textContent = 'Assign shift \u2014 ' + fmtLong(editShift ? editShift.date : dateStr);
+          $('sched-assign-save').textContent = 'Assign';
           hide($('sched-assign-error'));
           $('sched-assign-notes').value = editShift ? (editShift.notes || '') : '';
           // Hide date-range in edit mode (single shift edit); show single date picker instead.
