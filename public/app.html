@@ -222,7 +222,7 @@
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
-      <button class="tab-btn" data-tab="ask">Ask Schedule</button>
+      <button class="tab-btn" data-tab="ask">Ask Q-Scheduler</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
       <button class="tab-btn" data-tab="link">Share Links</button>
@@ -2691,10 +2691,10 @@
       </script>
     </section>
 
-    <!-- Ask Schedule tab -->
+    <!-- Ask Q-Scheduler tab -->
     <section id="tab-ask" class="tab-panel">
       <div class="card">
-        <h2>Ask Schedule</h2>
+        <h2>Ask Q-Scheduler</h2>
         <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
         <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
           <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
@@ -5404,7 +5404,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', ask: 'Ask about the schedule', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
