@@ -2710,6 +2710,7 @@
       <div class="card" style="margin-top:1rem">
         <h3 style="margin-top:0">Change plans awaiting approval</h3>
         <p style="color:var(--dim);font-size:0.9rem">Plans proposed from forwarded emails. Review and approve to apply.</p>
+        <button id="check-email-btn" class="btn" style="margin-bottom:0.75rem">Check email now</button>
         <div id="plans-list" style="margin-top:0.75rem"></div>
       </div>
       <div style="margin-top:1.5rem;text-align:center">
@@ -2755,6 +2756,26 @@
         });
         addMsg("Hi! Ask me about the schedule — who's on, who's short, anyone's shifts.", 'ai');
         // --- Change plans ---
+        var checkBtn = $('check-email-btn');
+        if (checkBtn) {
+          checkBtn.onclick = function () {
+            checkBtn.disabled = true;
+            checkBtn.textContent = 'Checking...';
+            api('/api/schedule/poll-inbox', { method: 'POST' }).then(function (r) {
+              checkBtn.disabled = false;
+              checkBtn.textContent = 'Check email now';
+              if (r.ok) {
+                var msg = 'Checked ' + r.data.checked + ' email(s)';
+                if (r.data.newPlans > 0) msg += ', created ' + r.data.newPlans + ' plan(s)';
+                if (r.data.errors && r.data.errors.length) msg += '. Note: ' + r.data.errors.join('; ');
+                addMsg(msg + '.', 'ai');
+                loadPlans();
+              } else {
+                addMsg('Email check failed: ' + (r.data.error || 'unknown error'), 'ai');
+              }
+            });
+          };
+        }
         function loadPlans() {
           api('/api/schedule/plans?status=pending').then(function (r) {
             if (!r.ok) return;
