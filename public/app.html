@@ -543,6 +543,7 @@
           shiftTypes: [],
           members: [],
           shifts: [],
+          closedShifts: [],
           days: {},
           comments: [],
           staffingTargets: [],
@@ -685,7 +686,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) sched.shifts = sR.data.shifts || [];
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -796,7 +797,13 @@
         }
 
         // Number of unfilled positions for a shift type on a date.
+        function isShiftClosed(dateStr, shiftTypeId) {
+          return (sched.closedShifts || []).some(function (c) {
+            return c.date === dateStr && c.shiftTypeId === shiftTypeId;
+          });
+        }
         function openCountFor(dateStr, shiftTypeId) {
+          if (isShiftClosed(dateStr, shiftTypeId)) return 0;
           var target = targetCountFor(dateStr, shiftTypeId);
           if (!target) return 0;
           var filled = 0;
@@ -1386,8 +1393,20 @@
           if (sched.canEdit) {
             sched.shiftTypes.forEach(function (st) {
               if (!st.isActive) return;
+              var closed = isShiftClosed(ds, st.id);
               var open = openCountFor(ds, st.id);
-              for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
+              if (closed) {
+                openHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">' +
+                  '<span class="shift-cat" style="background:#f3f4f6;border-color:#d1d5db;color:#6b7280">' + esc(st.name) + '</span>' +
+                  '<span style="font-size:0.8rem;color:#6b7280">Closed</span>' +
+                  '<button type="button" data-closed-reopen="' + st.id + '" style="margin-left:auto;font-size:0.8rem;color:#2563eb;background:none;border:none;cursor:pointer">Reopen</button></div>';
+              } else {
+                for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
+                if (open > 0) {
+                  openHtml += '<div style="text-align:right;padding:2px 0 6px">' +
+                    '<button type="button" data-closed-close="' + st.id + '" style="font-size:0.8rem;color:#6b7280;background:none;border:none;cursor:pointer">Close ' + esc(st.name) + ' for this date</button></div>';
+                }
+              }
             });
           }
           if (openHtml) {
@@ -1396,6 +1415,28 @@
               b.addEventListener('click', function () {
                 hide($('sched-day-modal'));
                 openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
+              });
+            });
+            $('sched-day-shifts').querySelectorAll('[data-closed-close]').forEach(function (b) {
+              b.addEventListener('click', function () {
+                var stId = b.getAttribute('data-closed-close');
+                api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: ds, shiftTypeId: stId }) }).then(function (r) {
+                  if (r.ok) {
+                    sched.closedShifts.push({ date: ds, shiftTypeId: stId });
+                    renderView(); renderDayModal(); pageSuccess('Shift closed for this date.');
+                  }
+                });
+              });
+            });
+            $('sched-day-shifts').querySelectorAll('[data-closed-reopen]').forEach(function (b) {
+              b.addEventListener('click', function () {
+                var stId = b.getAttribute('data-closed-reopen');
+                api('/api/schedule/closed-shifts', { method: 'DELETE', body: JSON.stringify({ date: ds, shiftTypeId: stId }) }).then(function (r) {
+                  if (r.ok) {
+                    sched.closedShifts = sched.closedShifts.filter(function (c) { return !(c.date === ds && c.shiftTypeId === stId); });
+                    renderView(); renderDayModal(); pageSuccess('Shift reopened.');
+                  }
+                });
               });
             });
           }
@@ -2077,7 +2118,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) sched.shifts = sR.data.shifts || [];
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });

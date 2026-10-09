@@ -285,6 +285,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
       return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
     };
     const visibleManual = rows.filter((s: any) => !s.userId || !isUserPaused(s.userId, s.date));
+
+    // Closed shifts (manually marked unavailable)
+    const { rows: closedShifts } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+
     const all = [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -296,7 +304,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       return nA.localeCompare(nB);
     });
 
-    res.json({ shifts: all });
+    res.json({ shifts: all, closedShifts });
   } catch (err) {
     console.error('[schedule] list shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -504,6 +512,47 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete shift failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/closed-shifts — mark a shift type unavailable for a date (owner/scheduler).
+router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { date, shiftTypeId } = req.body ?? {};
+    if (!isValidDate(date) || !shiftTypeId) {
+      res.status(400).json({ error: 'Date and shift type are required.' });
+      return;
+    }
+    await query(
+      `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
+       VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
+      [companyId, date, shiftTypeId, req.session.userId!]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] close shift failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/closed-shifts — reopen a shift type for a date (owner/scheduler).
+router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { date, shiftTypeId } = req.body ?? {};
+    if (!isValidDate(date) || !shiftTypeId) {
+      res.status(400).json({ error: 'Date and shift type are required.' });
+      return;
+    }
+    await query(
+      'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+      [companyId, date, shiftTypeId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] reopen shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
