@@ -1571,7 +1571,7 @@ router.get('/public', async (req: Request, res: Response) => {
 router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { from, to, shiftTypeIds } = req.body ?? {};
+    const { from, to, shiftTypeIds, note } = req.body ?? {};
     if (!isValidDate(from) || !isValidDate(to) || from > to) {
       res.status(400).json({ error: 'Valid from/to dates are required.' });
       return;
@@ -1641,6 +1641,7 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
     const lines: string[] = [];
     const fromFmt = fmtDay(from), toFmt = fmtDay(to);
     lines.push(`Open shifts — ${fromFmt} to ${toFmt}`);
+    if (note && String(note).trim()) lines.push(`Note: ${String(note).trim()}`);
     lines.push('');
     let hasAny = false;
     for (const t of types) {
