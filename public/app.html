@@ -1216,8 +1216,6 @@
         };
         // Global edit function: tap a shift box → open assign popup in edit mode.
         window.qsEditShift = function (sid) {
-          // Don't trigger if the tap was on an inner button (delete/replace/etc).
-          if (window.event && window.event.target && window.event.target.closest && window.event.target.closest('button')) return;
           var s = shiftById(sid);
           if (!s) { alert('Debug: shift not found in data (id=' + sid + ')'); return; }
           var opened = openAssignModal(s.date, s.shiftTypeId, s);
