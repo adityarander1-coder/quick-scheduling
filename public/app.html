@@ -2315,6 +2315,7 @@
             // then create manual shift(s).
             if (sched.editIsRotation && sched.editRotationData) {
               var rd = sched.editRotationData;
+              // Try to exclude the rotation occurrence, but don't block on failure.
               api('/api/schedule/rotation-shifts/delete', {
                 method: 'POST',
                 body: JSON.stringify({
@@ -2324,12 +2325,7 @@
                   shiftTypeId: rd.shiftTypeId
                 })
               }).then(function (delR) {
-                if (!delR.ok) {
-                  onDone();
-                  $('sched-assign-error').textContent = 'Could not remove rotation shift: ' + ((delR.data && delR.data.error) || 'unknown error');
-                  show($('sched-assign-error'));
-                  return;
-                }
+                // Continue to manual creation regardless of exclusion result.
                 // Now create as manual via the range endpoint.
                 var convDates = [];
                 if (editUseRange) {
