@@ -288,6 +288,8 @@
         #tab-schedule .mini-day.other { color: #cbd5e1; }
         #tab-schedule .mini-day.today { background: #e0f2f1; color: #00796b; }
         #tab-schedule .mini-day.selected { background: var(--accent); color: #fff; }
+        #tab-schedule .mini-day.pub { background: #00a9a4; color: #fff; }
+        #tab-schedule .mini-day.draft { background: #e5e7eb; color: #4b5563; }
         #tab-schedule .mini-day:active { background: #e2e8f0; }
         /* Month strip: horizontal sliding days, side by side */
         #tab-schedule .month-strip-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0.5rem 1rem 1rem; touch-action: pan-x pan-y; scroll-snap-type: x proximity; }
@@ -1045,6 +1047,11 @@
             var mds = fmtDate(md);
             if (mi >= 35 && md.getMonth() !== first.getMonth()) break;
             var mcls = 'mini-day' + (md.getMonth() !== first.getMonth() ? ' other' : '') + (mds === todayStr ? ' today' : '');
+            // Color by publish state: green = published, gray = has schedule but draft, plain = no schedule.
+            if (md.getMonth() === first.getMonth()) {
+              if (isPublished(mds)) mcls += ' pub';
+              else if (shiftsFor(mds).length) mcls += ' draft';
+            }
             html += '<div class="' + mcls + '" data-date="' + mds + '">' + md.getDate() + '</div>';
           }
           html += '</div>';
