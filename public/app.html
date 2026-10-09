@@ -1213,8 +1213,7 @@
         window.qsEditShift = function (sid) {
           try {
             var s = shiftById(sid);
-            if (!s) { alert('Shift not found: ' + sid); return; }
-            alert('DEBUG: isRotation=' + s.isRotation + ', id=' + s.id);
+            if (!s) return;
             var opened = openAssignModal(s.date, s.shiftTypeId, s);
             if (opened === false) openPersonActions(sid);
           } catch (err) {

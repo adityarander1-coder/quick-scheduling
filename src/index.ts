@@ -131,7 +131,14 @@ app.get('/candidates.html', (req: Request, res: Response, next: NextFunction) =>
   next();
 });
 
-app.use(express.static(path.resolve(__dirname, '..', 'public')));
+app.use(express.static(path.resolve(__dirname, '..', 'public'), {
+  setHeaders: (res, filePath) => {
+    // Never cache HTML — always fetch fresh so updates go live immediately.
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    }
+  },
+}));
 
 // JSON 404 for anything under /api not matched above.
 app.use('/api', (_req: Request, res: Response) => {
