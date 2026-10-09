@@ -833,7 +833,7 @@
             ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
             '<span class="shift-cat" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(label) + '</span>' +
             '<span class="shift-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">+ Open slot' +
-            (sched.canEdit ? ' <span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;cursor:pointer;font-weight:700;color:#bd3d4a">\u00d7</span>' : '') +
+            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') +
             '</span></button>';
         }
 
