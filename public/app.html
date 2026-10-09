@@ -217,7 +217,7 @@
       <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
-        <button type="button" id="audit-header-btn" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Change report</button>
+        <button type="button" id="audit-header-btn" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Run report</button>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
@@ -430,7 +430,7 @@
       <div id="sched-view"></div>
 
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" id="audit-report-btn" class="btn-secondary">Schedule change report</button>
+        <button type="button" id="audit-report-btn" class="btn-secondary">Run report</button>
       </div>
 
       <!-- Assign shift modal -->
@@ -5293,7 +5293,7 @@
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
     <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
-      <h3 style="margin-top:0">Schedule change report</h3>
+      <h3 style="margin-top:0">Schedule changes</h3>
       <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule, what changed, and whether it was manual or from a rotation.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
         <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
