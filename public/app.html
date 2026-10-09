@@ -412,11 +412,7 @@
 
       <div class="legend hidden" id="sched-legend"></div>
 
-      <div class="publish-bar" id="sched-publish-bar">
-        <span id="sched-publish-status"></span>
-        <button type="button" id="sched-publish-btn" class="btn-secondary">Publish visible dates</button>
-        <button type="button" id="sched-unpublish-btn" class="btn-secondary">Unpublish visible dates</button>
-      </div>
+      <!-- publish bar removed per Deepika 2026-10-08 -->
 
       <div id="sched-view"></div>
 
@@ -1317,14 +1313,8 @@
         }
 
         function renderPublishBar() {
-          var r = viewRange();
-          var dates = [];
-          for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
-            var d = new Date(ms);
-            dates.push(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
-          }
-          var pubCount = dates.filter(isPublished).length;
-          $('sched-publish-status').textContent = pubCount + ' of ' + dates.length + ' visible dates published.';
+          // Publish bar removed 2026-10-08 — no-op kept for callers.
+          return;
         }
 
         function visibleDates() {
@@ -2215,30 +2205,7 @@
           saveSchedView();
           loadAll();
         });
-        $('sched-publish-btn').addEventListener('click', function () {
-          var dates = visibleDates();
-          // Optimistic: mark published instantly.
-          dates.forEach(function (ds) { sched.days[ds] = sched.days[ds] || {}; });
-          renderView();
-          renderPublishBar();
-          api('/api/schedule/days/publish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
-            .then(function (res) {
-              if (res.ok) { pageSuccess('Published ' + res.data.published + ' dates.'); }
-              else { pageError((res.data && res.data.error) || 'Could not publish.'); loadAll(); }
-            }).catch(function () { pageError('Could not publish.'); loadAll(); });
-        });
-        $('sched-unpublish-btn').addEventListener('click', function () {
-          var dates = visibleDates();
-          // Optimistic: mark unpublished instantly.
-          dates.forEach(function (ds) { delete sched.days[ds]; });
-          renderView();
-          renderPublishBar();
-          api('/api/schedule/days/unpublish', { method: 'POST', body: JSON.stringify({ dates: dates }) })
-            .then(function (res) {
-              if (res.ok) { pageSuccess('Unpublished ' + res.data.unpublished + ' dates.'); }
-              else { pageError((res.data && res.data.error) || 'Could not unpublish.'); loadAll(); }
-            }).catch(function () { pageError('Could not unpublish.'); loadAll(); });
-        });
+        // Publish/unpublish buttons removed 2026-10-08 — publish is per-shift in the Assign popup.
         $('sched-assign-cancel').addEventListener('click', function () { sched.editShiftId = null; hide($('sched-assign-modal')); });
         $('sched-ec-cancel').addEventListener('click', function () { hide($('sched-ec-modal')); });
         $('sched-ec-save').addEventListener('click', saveEmployeeComment);
@@ -2604,7 +2571,7 @@
           if (!r.ok) return; // app shell handles redirect
           var role = r.data.user.role;
           sched.canEdit = (role === 'owner' || role === 'scheduler');
-          if (!sched.canEdit) hide($('sched-publish-bar'));
+          // publish bar removed 2026-10-08
           restoreSchedView();
           loadAll();
         });
