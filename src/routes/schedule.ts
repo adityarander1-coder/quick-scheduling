@@ -523,16 +523,17 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
   }
 });
 
-// POST /api/schedule/extra-slots — add extra open slots for dates (owner/scheduler).
-// Body: { dates:[...], shiftTypeId, count }
+// POST /api/schedule/extra-slots — adjust open slots for dates (owner/scheduler).
+// Body: { dates:[...], shiftTypeId, count } — count can be negative to remove slots.
 router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
-    const { shiftTypeId, count } = req.body ?? {};
-    const n = Math.max(1, Math.min(20, parseInt(count, 10) || 1));
-    if (!dates.length || !shiftTypeId) {
-      res.status(400).json({ error: 'Dates and shift type are required.' });
+    const { shiftTypeId } = req.body ?? {};
+    const n = parseInt(req.body?.count, 10) || 0;
+    const clamped = Math.max(-20, Math.min(20, n));
+    if (!dates.length || !shiftTypeId || !clamped) {
+      res.status(400).json({ error: 'Dates, shift type, and a non-zero count are required.' });
       return;
     }
     for (const d of dates) {
@@ -541,12 +542,17 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (company_id, date, shift_type_id)
          DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
-        [companyId, d, shiftTypeId, n, req.session.userId!]
+        [companyId, d, shiftTypeId, clamped, req.session.userId!]
+      );
+      // Clean up zeroed-out adjustments.
+      await query(
+        'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count = 0',
+        [companyId, d, shiftTypeId]
       );
     }
     res.json({ ok: true, dates: dates.length });
   } catch (err) {
-    console.error('[schedule] add extra slots failed:', err);
+    console.error('[schedule] adjust slots failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
