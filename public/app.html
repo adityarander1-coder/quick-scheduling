@@ -439,6 +439,19 @@
             <label>Notes <span style="font-weight:400;color:var(--dim)">(optional)</span></label>
             <input type="text" id="sched-assign-notes" autocomplete="off">
           </div>
+          <div class="form-row">
+            <label>Status</label>
+            <div style="display:flex;gap:8px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
+                <input type="radio" name="sched-assign-pub" value="published" checked style="width:auto">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#00a9a4;color:#fff;font-size:11px;font-weight:800">P</span> Publish
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
+                <input type="radio" name="sched-assign-pub" value="draft" style="width:auto">
+                <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#9ca3af;color:#fff;font-size:11px;font-weight:800">D</span> Draft
+              </label>
+            </div>
+          </div>
           <div class="modal-actions">
             <button type="button" id="sched-assign-cancel" class="btn-secondary">Cancel</button>
             <button type="button" id="sched-assign-save" class="btn">Assign</button>
@@ -2122,6 +2135,8 @@
           onDone = onDone || function () {};
           var useRange = $('sched-assign-range-toggle').checked;
           var notes = $('sched-assign-notes').value.trim() || undefined;
+          var pubRadio = document.querySelector('input[name="sched-assign-pub"]:checked');
+          var wantPublished = !pubRadio || pubRadio.value !== 'draft';
           if (useRange) {
             var body = {
               userId: $('sched-assign-user').value,
@@ -2129,6 +2144,7 @@
               startDate: $('sched-assign-start').value,
               endDate: $('sched-assign-end').value,
               notes: notes,
+              published: wantPublished,
             };
             api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
               if (r.ok) {
@@ -2157,6 +2173,7 @@
                       shiftTypeColor: st ? st.color : '#637a8e',
                       shiftTypeTextColor: st ? st.textColor : '#ffffff',
                       notes: body.notes || '',
+                      published: body.published !== false,
                       isRotation: false,
                     });
                   }
@@ -2178,6 +2195,7 @@
               shiftTypeId: $('sched-assign-shifttype').value,
               date: sched.assignDate,
               notes: notes,
+              published: wantPublished,
             };
             api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
               if (r.ok) {
@@ -2197,6 +2215,7 @@
                   shiftTypeColor: st ? st.color : '#637a8e',
                   shiftTypeTextColor: st ? st.textColor : '#ffffff',
                   notes: body.notes || '',
+                  published: body.published !== false,
                   isRotation: false,
                 };
                 sched.shifts.push(tempShift);

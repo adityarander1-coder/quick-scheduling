@@ -307,7 +307,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
 router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { userId, shiftTypeId, date, notes } = req.body ?? {};
+    const { userId, shiftTypeId, date, notes, published } = req.body ?? {};
     if (!userId || !shiftTypeId || !isValidDate(date)) {
       res.status(400).json({ error: 'Team member, shift type, and a valid date are required.' });
       return;
@@ -332,9 +332,9 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
     const id = crypto.randomUUID();
     try {
       await query(
-        `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, companyId, userId, shiftTypeId, date, notes ? String(notes) : null, req.session.userId!]
+        `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, companyId, userId, shiftTypeId, date, notes ? String(notes) : null, published !== false, req.session.userId!]
       );
     } catch (err: any) {
       if (err?.code === '23505') {
@@ -376,7 +376,7 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
 router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { userId, shiftTypeId, startDate, endDate, notes } = req.body ?? {};
+    const { userId, shiftTypeId, startDate, endDate, notes, published } = req.body ?? {};
     if (!userId || !shiftTypeId || !isValidDate(startDate) || !isValidDate(endDate)) {
       res.status(400).json({ error: 'Team member, shift type, and valid start/end dates are required.' });
       return;
@@ -415,9 +415,9 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
     for (const date of dates) {
       try {
         await query(
-          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [crypto.randomUUID(), companyId, userId, shiftTypeId, date, notes ? String(notes) : null, req.session.userId!]
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [crypto.randomUUID(), companyId, userId, shiftTypeId, date, notes ? String(notes) : null, published !== false, req.session.userId!]
         );
         created++;
       } catch (err: any) {
