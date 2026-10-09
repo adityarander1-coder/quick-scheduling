@@ -65,11 +65,13 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
     });
 
     const msg: ImapMessage = await new Promise((resolve, reject) => {
+      let resolved = false;
       const f = imap.fetch(uid, { bodies: '' });
       f.on('message', (imapMsg) => {
-        imapMsg.on('body', async (stream: any) => {
-          try {
-            const parsed: any = await simpleParser(stream as any);
+        imapMsg.on('body', (stream: any) => {
+          simpleParser(stream as any).then((parsed: any) => {
+            if (resolved) return;
+            resolved = true;
             resolve({
               uid: String(uid),
               subject: parsed.subject || '',
@@ -77,13 +79,29 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
               date: parsed.date?.toISOString() || '',
               body: (parsed.text || '').substring(0, 10000),
             });
-          } catch (e) {
-            reject(e);
-          }
+          }).catch((e: any) => {
+            if (!resolved) {
+              resolved = true;
+              reject(e);
+            }
+          });
         });
       });
-      f.once('error', reject);
-      f.once('end', () => reject(new Error('No message body received')));
+      f.once('error', (err: any) => {
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
+      f.once('end', () => {
+        // Give body parsing a moment; if still not resolved, reject
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error('No message body received'));
+          }
+        }, 5000);
+      });
     });
     return msg;
   } finally {
