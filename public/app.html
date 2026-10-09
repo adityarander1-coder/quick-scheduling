@@ -2102,7 +2102,6 @@
                 '<p style="font-size:13px;color:var(--dim)">Adjust the dates above, or assign anyway without changing the vacation.</p>',
                 [
                   { label: 'Cancel', onClick: function () { done(); } },
-                  { label: 'Assign anyway', onClick: function () { doAssign(done); } },
                   { label: 'Update vacation & Assign', primary: true, onClick: function () {
                     var ns = $('vac-adj-start').value, ne = $('vac-adj-end').value;
                     if (!ns || !ne || ns > ne) { pageError('Pick a valid vacation date range.'); done(); return; }
