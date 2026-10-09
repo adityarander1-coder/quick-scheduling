@@ -2325,8 +2325,16 @@
                 })
               }).then(function (delR) {
                 // Now create as manual via the range endpoint.
-                var convDates = editUseRange ?
-                  datesInRange(editStart, editEnd) : [rd.date];
+                var convDates = [];
+                if (editUseRange) {
+                  var cd = new Date(editStart + 'T12:00:00'), cdEnd = new Date(editEnd + 'T12:00:00');
+                  while (cd <= cdEnd) {
+                    convDates.push(cd.getFullYear() + '-' + String(cd.getMonth() + 1).padStart(2, '0') + '-' + String(cd.getDate()).padStart(2, '0'));
+                    cd.setDate(cd.getDate() + 1);
+                  }
+                } else {
+                  convDates = [rd.date];
+                }
                 var convBody = {
                   userId: $('sched-assign-user').value,
                   shiftTypeId: $('sched-assign-shifttype').value,
