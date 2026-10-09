@@ -1421,7 +1421,7 @@
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
             var isDraftShift = s.published === false || !isPublished(s.date);
-            html += '<div class="dm-shift-row"><span class="shift-color-bar" style="background:' +
+            html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' +
               (sched.canEdit ?
@@ -2159,16 +2159,16 @@
             }
             return;
           }
-          var grid = e.target.closest ? e.target.closest('.shift-grid[data-shift-id]') : null;
+          var grid = e.target.closest ? (e.target.closest('.shift-grid[data-shift-id]') || e.target.closest('.dm-shift-row[data-shift-id]')) : null;
           if (!grid) return;
-          // Don't trigger for comment button, open slots, or inside modals/sidebar
+          // Don't trigger for comment button, open slots, or inside the assign modal / sidebar
           if (e.target.closest('.shift-comment-btn')) return;
           if (e.target.closest('.open-slot')) return;
-          if (e.target.closest('.modal')) return;
+          if (e.target.closest('#sched-assign-modal')) return;
           if (e.target.closest('.person-actions-sidebar')) return;
-          // Don't trigger for the small action buttons (replace/delete/highlight); they handle themselves.
+          // Don't trigger for the small action buttons (replace/delete/highlight/publish-toggle); they handle themselves.
           if (e.target.closest('button')) return;
-          // Only for schedule tab
+          // Only for schedule tab (main views or day detail popup)
           if (!grid.closest('#tab-schedule')) return;
           e.stopPropagation();
           try {
