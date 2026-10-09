@@ -281,6 +281,14 @@
         #tab-schedule .status-published { background: #00a9a4; color: #ffffff; }
         /* Month grid (desktop): calendar layout, roomy day boxes, scroll up/down */
         #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+        /* Mini date grid for phone month view */
+        #tab-schedule .month-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 0.75rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.5rem; }
+        #tab-schedule .mini-dow { text-align: center; font-size: 0.65rem; font-weight: 700; color: #94a3b8; padding: 0.2rem 0; }
+        #tab-schedule .mini-day { text-align: center; font-size: 0.8rem; font-weight: 600; padding: 0.35rem 0; border-radius: 8px; cursor: pointer; color: #102d47; }
+        #tab-schedule .mini-day.other { color: #cbd5e1; }
+        #tab-schedule .mini-day.today { background: #e0f2f1; color: #00796b; }
+        #tab-schedule .mini-day.selected { background: var(--accent); color: #fff; }
+        #tab-schedule .mini-day:active { background: #e2e8f0; }
         /* Month strip: horizontal sliding days, side by side */
         #tab-schedule .month-strip-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0.5rem 1rem 1rem; touch-action: pan-x pan-y; scroll-snap-type: x proximity; }
         #tab-schedule .month-strip { display: flex; gap: 0.75rem; }
@@ -1024,9 +1032,25 @@
           var r = viewRange();
           var first = parseDate(r.from);
           var last = parseDate(r.to);
+          // Mini date grid: tap a date to jump the strip there.
+          var html = '<div class="month-mini-grid">';
+          var mgStart = new Date(first);
+          mgStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (dow) {
+            html += '<div class="mini-dow">' + dow + '</div>';
+          });
+          var todayStr = fmtDate(new Date());
+          for (var mi = 0; mi < 42; mi++) {
+            var md = new Date(mgStart); md.setDate(mgStart.getDate() + mi);
+            var mds = fmtDate(md);
+            if (mi >= 35 && md.getMonth() !== first.getMonth()) break;
+            var mcls = 'mini-day' + (md.getMonth() !== first.getMonth() ? ' other' : '') + (mds === todayStr ? ' today' : '');
+            html += '<div class="' + mcls + '" data-date="' + mds + '">' + md.getDate() + '</div>';
+          }
+          html += '</div>';
           // Horizontal sliding strip: days side by side, swipe/scroll left-right.
           // Each day column is sized so at least 2 days are always visible.
-          var html = '<div class="month-strip-wrap"><div class="month-strip">';
+          html += '<div class="month-strip-wrap"><div class="month-strip">';
           var d = new Date(first);
           var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
           var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1056,6 +1080,18 @@
             box.addEventListener('click', function (e) {
               if (e.target.closest('.status-pill')) return;
               openDayModal(box.getAttribute('data-date'));
+            });
+          });
+          // Mini grid: tap a date to jump the strip there.
+          el.querySelectorAll('.mini-day').forEach(function (cell) {
+            cell.addEventListener('click', function () {
+              var ds = cell.getAttribute('data-date');
+              var card = el.querySelector('.month-strip-day[data-date="' + ds + '"]');
+              if (card) {
+                try { card.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+              }
+              el.querySelectorAll('.mini-day').forEach(function (c) { c.classList.remove('selected'); });
+              cell.classList.add('selected');
             });
           });
           // Scroll to today (or the anchor date) on render.
