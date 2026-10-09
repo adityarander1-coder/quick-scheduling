@@ -544,6 +544,7 @@
           members: [],
           shifts: [],
           closedShifts: [],
+          extraSlots: [],
           days: {},
           comments: [],
           staffingTargets: [],
@@ -686,7 +687,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -805,12 +806,16 @@
         function openCountFor(dateStr, shiftTypeId) {
           if (isShiftClosed(dateStr, shiftTypeId)) return 0;
           var target = targetCountFor(dateStr, shiftTypeId);
-          if (!target) return 0;
+          var extra = 0;
+          (sched.extraSlots || []).forEach(function (e) {
+            if (e.date === dateStr && e.shiftTypeId === shiftTypeId) extra += (e.count || 0);
+          });
+          if (!target && !extra) return 0;
           var filled = 0;
           for (var i = 0; i < sched.shifts.length; i++) {
             if (sched.shifts[i].date === dateStr && sched.shifts[i].shiftTypeId === shiftTypeId) filled++;
           }
-          return Math.max(0, target - filled);
+          return Math.max(0, target + extra - filled);
         }
 
         // Clickable open-slot placeholder, styled like a shift box but dashed.
@@ -2118,7 +2123,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -4325,7 +4330,19 @@
               <option value="publish">Publish shifts</option>
               <option value="unpublish">Move to draft</option>
               <option value="delete-shifts">Delete shifts (manual + rotation)</option>
+              <option value="open-slots">Open extra slots</option>
+              <option value="close-shifts">Close shifts</option>
             </select>
+          </div>
+          <div id="bulk-slot-options" class="hidden" style="display:flex;gap:1rem;align-items:flex-end">
+            <div>
+              <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
+              <select id="bulk-shifttype" style="padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+            </div>
+            <div id="bulk-count-wrap">
+              <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Slots per date</label>
+              <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
+            </div>
           </div>
           <button type="button" id="bulk-run" class="btn">Run</button>
         </div>
@@ -4365,6 +4382,27 @@
           document.querySelectorAll('.bulk-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
           return ids;
         }
+        function loadBulkShiftTypes() {
+          api('/api/schedule/shift-types').then(function (r) {
+            if (!r.ok) return;
+            var sel = $('bulk-shifttype');
+            sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) { return st.isActive; }).map(function (st) {
+              return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
+            }).join('');
+          }).catch(function () {});
+        }
+        function updateBulkSlotVisibility() {
+          var a = $('bulk-action').value;
+          var isSlotAction = (a === 'open-slots' || a === 'close-shifts');
+          $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
+          $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
+          var memberLabel = $('bulk-member-search');
+          var memberBox = $('bulk-members');
+          if (memberLabel) memberLabel.style.display = isSlotAction ? 'none' : '';
+          if (memberBox) memberBox.style.display = isSlotAction ? 'none' : '';
+          var memberTitle = memberBox ? memberBox.previousElementSibling : null;
+          if (memberTitle && memberTitle.tagName === 'LABEL') memberTitle.style.display = isSlotAction ? 'none' : '';
+        }
         function datesInRange(from, to) {
           var out = [];
           var d = new Date(from + 'T12:00:00');
@@ -4391,6 +4429,36 @@
             return;
           }
           var dates = datesInRange(from, to);
+          // Slot actions (open extra slots / close shifts) work on shift types, not members.
+          if (action === 'open-slots' || action === 'close-shifts') {
+            var stId = $('bulk-shifttype').value;
+            if (!stId) { showResult('Pick a shift type.', true); return; }
+            var stName = $('bulk-shifttype').selectedOptions[0].textContent;
+            if (action === 'open-slots') {
+              var count = Math.max(1, Math.min(20, parseInt($('bulk-slot-count').value, 10) || 1));
+              if (!confirm('Open ' + count + ' extra ' + stName + ' slot(s) per date on ' + dates.length + ' date(s)?')) return;
+              showResult('Working…', false);
+              api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: dates, shiftTypeId: stId, count: count }) }).then(function (r) {
+                showResult(r.ok ? 'Done — extra slots opened on ' + dates.length + ' date(s).' : ((r.data && r.data.error) || 'Could not complete.'), !r.ok);
+              }).catch(function () { showResult('Network error.', true); });
+            } else {
+              if (!confirm('Close ' + stName + ' on ' + dates.length + ' date(s)? No open slots will show.')) return;
+              showResult('Working…', false);
+              var done = 0, failed = 0;
+              var next = function (i) {
+                if (i >= dates.length) {
+                  showResult(failed ? 'Done with ' + failed + ' error(s).' : 'Done — ' + stName + ' closed on ' + dates.length + ' date(s).', !!failed);
+                  return;
+                }
+                api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: dates[i], shiftTypeId: stId }) }).then(function (r) {
+                  if (r.ok) done++; else failed++;
+                  next(i + 1);
+                }).catch(function () { failed++; next(i + 1); });
+              };
+              next(0);
+            }
+            return;
+          }
           var memberIds = selectedMemberIds();
           var scope = memberIds.length ? memberIds.length + ' team member(s)' : 'all team members';
           var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'move to draft' : 'delete shifts for';
@@ -4420,9 +4488,11 @@
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) loadMembers(); });
-        if (isActive()) loadMembers();
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
+        $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        updateBulkSlotVisibility();
       })();
       </script>
     </section>

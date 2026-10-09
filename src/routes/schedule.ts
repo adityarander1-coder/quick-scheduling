@@ -293,6 +293,13 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId, from, to]
     );
 
+    // Extra open slots (manually added beyond targets)
+    const { rows: extraSlots } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+
     const all = [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -304,7 +311,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       return nA.localeCompare(nB);
     });
 
-    res.json({ shifts: all, closedShifts });
+    res.json({ shifts: all, closedShifts, extraSlots });
   } catch (err) {
     console.error('[schedule] list shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -512,6 +519,56 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete shift failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/extra-slots — add extra open slots for dates (owner/scheduler).
+// Body: { dates:[...], shiftTypeId, count }
+router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const { shiftTypeId, count } = req.body ?? {};
+    const n = Math.max(1, Math.min(20, parseInt(count, 10) || 1));
+    if (!dates.length || !shiftTypeId) {
+      res.status(400).json({ error: 'Dates and shift type are required.' });
+      return;
+    }
+    for (const d of dates) {
+      await query(
+        `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (company_id, date, shift_type_id)
+         DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+        [companyId, d, shiftTypeId, n, req.session.userId!]
+      );
+    }
+    res.json({ ok: true, dates: dates.length });
+  } catch (err) {
+    console.error('[schedule] add extra slots failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/extra-slots — remove extra open slots (owner/scheduler).
+// Body: { dates:[...], shiftTypeId } — removes entirely; or { date, shiftTypeId, count } to reduce.
+router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const { shiftTypeId } = req.body ?? {};
+    if (!dates.length || !shiftTypeId) {
+      res.status(400).json({ error: 'Dates and shift type are required.' });
+      return;
+    }
+    await query(
+      'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3',
+      [companyId, dates, shiftTypeId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] remove extra slots failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
