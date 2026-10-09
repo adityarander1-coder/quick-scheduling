@@ -2344,4 +2344,82 @@ router.post('/ask', requireRole('owner', 'scheduler'), async (req: Request, res:
   }
 });
 
+// ---------------------------------------------------------------------------
+// Schedule change plans — AI-proposed changes awaiting approval
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/plans — list plans (owner/scheduler).
+router.get('/plans', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const status = String(req.query.status || 'pending');
+    const { rows } = await query(
+      `SELECT id, source_from AS "from", source_subject AS "subject",
+              plan_summary AS "summary", plan, status,
+              created_at AS "createdAt", decided_at AS "decidedAt"
+       FROM schedule_plans
+       WHERE company_id = $1 AND ($2 = 'all' OR status = $2)
+       ORDER BY created_at DESC LIMIT 50`,
+      [companyId, status]
+    );
+    res.json({ plans: rows });
+  } catch (err) {
+    console.error('[schedule] list plans failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/plans/:id/approve — approve and execute a plan (owner/scheduler).
+router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT * FROM schedule_plans WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Plan not found.' }); return; }
+    const plan = rows[0];
+    if (plan.status !== 'pending') {
+      res.status(400).json({ error: `Plan is already ${plan.status}.` });
+      return;
+    }
+    // Execute the changes.
+    const { executePlan } = await import('../util/planExecutor.js');
+    try {
+      const results = await executePlan(companyId, plan.plan, req.session.userId!);
+      await query(
+        `UPDATE schedule_plans SET status = 'executed', decided_at = now(),
+         decided_by = $2, executed_at = now() WHERE id = $1`,
+        [plan.id, req.session.userId!]
+      );
+      res.json({ ok: true, results });
+    } catch (execErr: any) {
+      await query(
+        'UPDATE schedule_plans SET status = $2, error = $3 WHERE id = $1',
+        [plan.id, 'failed', execErr?.message || 'Execution failed']
+      );
+      throw execErr;
+    }
+  } catch (err) {
+    console.error('[schedule] approve plan failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/plans/:id/reject — reject a plan (owner/scheduler).
+router.post('/plans/:id/reject', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query(
+      `UPDATE schedule_plans SET status = 'rejected', decided_at = now(), decided_by = $3
+       WHERE id = $1 AND company_id = $2 AND status = 'pending'`,
+      [req.params.id, companyId, req.session.userId!]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] reject plan failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;

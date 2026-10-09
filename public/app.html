@@ -2707,6 +2707,11 @@
           <button type="button" id="ask-send" class="btn">Ask</button>
         </div>
       </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Change plans awaiting approval</h3>
+        <p style="color:var(--dim);font-size:0.9rem">Plans proposed from forwarded emails. Review and approve to apply.</p>
+        <div id="plans-list" style="margin-top:0.75rem"></div>
+      </div>
       <div style="margin-top:1.5rem;text-align:center">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
@@ -2749,6 +2754,45 @@
           b.addEventListener('click', function () { send(b.textContent); });
         });
         addMsg("Hi! Ask me about the schedule — who's on, who's short, anyone's shifts.", 'ai');
+        // --- Change plans ---
+        function loadPlans() {
+          api('/api/schedule/plans?status=pending').then(function (r) {
+            if (!r.ok) return;
+            var box = $('plans-list');
+            box.innerHTML = '';
+            if (!r.data.plans.length) {
+              box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No pending plans.</p>';
+              return;
+            }
+            r.data.plans.forEach(function (p) {
+              var div = document.createElement('div');
+              div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
+              var when = new Date(p.createdAt).toLocaleString();
+              div.innerHTML = '<strong>' + esc(p.subject || 'Email plan') + '</strong><br>' +
+                '<span style="font-size:0.9rem">' + esc(p.summary) + '</span><br>' +
+                '<span style="color:var(--dim);font-size:0.8rem">From ' + esc(p.from || '—') + ' · ' + when + '</span>' +
+                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                '<button type="button" class="btn-sm" data-act="approve">Approve & apply</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-act="reject">Reject</button></div>';
+              div.querySelector('[data-act="approve"]').addEventListener('click', function () {
+                if (!confirm('Apply this plan to the schedule?')) return;
+                api('/api/schedule/plans/' + p.id + '/approve', { method: 'POST' }).then(function (ar) {
+                  if (ar.ok) { pageSuccess('Plan applied.'); loadPlans(); }
+                  else pageError((ar.data && ar.data.error) || 'Could not apply.');
+                });
+              });
+              div.querySelector('[data-act="reject"]').addEventListener('click', function () {
+                if (!confirm('Reject this plan?')) return;
+                api('/api/schedule/plans/' + p.id + '/reject', { method: 'POST' }).then(function (rr) {
+                  if (rr.ok) { pageSuccess('Plan rejected.'); loadPlans(); }
+                  else pageError('Could not reject.');
+                });
+              });
+              box.appendChild(div);
+            });
+          }).catch(function () {});
+        }
+        loadPlans();
       })();
       </script>
     </section>
