@@ -620,6 +620,38 @@ router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: R
   }
 });
 
+// PUT /api/schedule/shifts/:id — update one manual shift (owner/scheduler).
+router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { userId, shiftTypeId, date, notes, published } = req.body ?? {};
+    if (!isValidDate(date) || !userId || !shiftTypeId) {
+      res.status(400).json({ error: 'Date, team member, and shift type are required.' });
+      return;
+    }
+    // Prevent duplicates.
+    const { rows: dup } = await query(
+      `SELECT id FROM shifts WHERE company_id = $1 AND date = $2 AND user_id = $3 AND shift_type_id = $4 AND id <> $5 LIMIT 1`,
+      [companyId, date, userId, shiftTypeId, req.params.id]
+    );
+    if (dup.length) {
+      res.status(409).json({ error: 'This person already has this shift on that date.' });
+      return;
+    }
+    const { rowCount } = await query(
+      `UPDATE shifts SET user_id = $1, shift_type_id = $2, date = $3, notes = $4,
+        published = COALESCE($5, published), updated_at = now()
+       WHERE id = $6 AND company_id = $7`,
+      [userId, shiftTypeId, date, notes || null, published, req.params.id, companyId]
+    );
+    if (!rowCount) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update shift failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift.
 router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

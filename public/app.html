@@ -432,6 +432,10 @@
             <label>Shift type</label>
             <select id="sched-assign-shifttype"></select>
           </div>
+          <div class="form-row hidden" id="sched-assign-date-row">
+            <label>Date</label>
+            <input type="date" id="sched-assign-date" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+          </div>
           <div class="form-row">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input type="checkbox" id="sched-assign-range-toggle" style="width:auto">
@@ -1325,16 +1329,32 @@
           });
         }
 
-        function openAssignModal(dateStr, shiftTypeId) {
+        function openAssignModal(dateStr, shiftTypeId, editShift) {
           if (!sched.canEdit) return;
           sched.assignDate = dateStr;
-          $('sched-assign-title').textContent = 'Assign shift \u2014 ' + fmtLong(dateStr);
+          sched.editShiftId = editShift ? editShift.id : null;
+          var isRot = editShift && editShift.id && editShift.id.indexOf('rot-') === 0;
+          if (isRot) {
+            // Rotation shifts can't be edited directly — keep the popup menu.
+            return false;
+          }
+          $('sched-assign-title').textContent = editShift ? 'Edit shift \u2014 ' + fmtLong(editShift.date) : 'Assign shift \u2014 ' + fmtLong(dateStr);
+          $('sched-assign-save').textContent = editShift ? 'Save' : 'Assign';
           hide($('sched-assign-error'));
-          $('sched-assign-notes').value = '';
+          $('sched-assign-notes').value = editShift ? (editShift.notes || '') : '';
+          // Hide date-range in edit mode (single shift edit); show single date picker instead.
           $('sched-assign-range-toggle').checked = false;
           hide($('sched-assign-range-row'));
-          $('sched-assign-start').value = dateStr;
-          $('sched-assign-end').value = dateStr;
+          var rangeLabelRow = $('sched-assign-range-toggle').closest('.form-row');
+          if (rangeLabelRow) rangeLabelRow.style.display = editShift ? 'none' : '';
+          if (editShift) {
+            show($('sched-assign-date-row'));
+            $('sched-assign-date').value = editShift.date;
+          } else {
+            hide($('sched-assign-date-row'));
+          }
+          $('sched-assign-start').value = editShift ? editShift.date : dateStr;
+          $('sched-assign-end').value = editShift ? editShift.date : dateStr;
           var uSel = $('sched-assign-user');
           uSel.innerHTML = '';
           sched.members.forEach(function (m) {
@@ -1351,8 +1371,17 @@
             o.value = st.id; o.textContent = st.name;
             tSel.appendChild(o);
           });
-          if (shiftTypeId) tSel.value = shiftTypeId;
+          if (editShift) {
+            uSel.value = editShift.userId;
+            tSel.value = editShift.shiftTypeId;
+            var pubVal = editShift.published === false ? 'draft' : 'published';
+            var radio = document.querySelector('input[name="sched-assign-pub"][value="' + pubVal + '"]');
+            if (radio) radio.checked = true;
+          } else if (shiftTypeId) {
+            tSel.value = shiftTypeId;
+          }
           show($('sched-assign-modal'));
+          return true;
         }
 
         function openDayModal(dateStr) {
@@ -1641,13 +1670,6 @@
           // Replace / Delete (not for rotation shifts)
           var isDraft = s.published === false || !isPublished(s.date);
           html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
-          html += '<button class="sp-item" data-act="draft-range"><span class="sp-ic" style="background:#e8e4f5">📅</span>Draft for date range…</button>';
-          html += '<div id="sp-draftrange" class="hidden" style="padding:8px 10px">' +
-            '<div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap">' +
-            '<label style="font-size:12px">From <input type="date" id="sp-dr-from" value="' + s.date + '" style="padding:6px;border:1px solid var(--border);border-radius:6px"></label>' +
-            '<label style="font-size:12px">To <input type="date" id="sp-dr-to" value="' + s.date + '" style="padding:6px;border:1px solid var(--border);border-radius:6px"></label>' +
-            '<button type="button" id="sp-dr-go" class="btn" style="padding:8px 12px;font-size:13px">Draft</button>' +
-            '</div></div>';
           if (!isRot) {
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
             html += '<div id="sp-replace-list" class="hidden"></div>';
@@ -1715,26 +1737,6 @@
         });
         // Popup item clicks (delegated)
         document.addEventListener('click', function (e) {
-          var drGo = e.target.closest ? e.target.closest('#sp-dr-go') : null;
-          if (drGo && popupShift) {
-            var s = popupShift;
-            var from = $('sp-dr-from').value, to = $('sp-dr-to').value;
-            if (!from || !to || from > to) { pageError('Pick a valid date range.'); return; }
-            var dates = [];
-            var d = new Date(from + 'T12:00:00'), end = new Date(to + 'T12:00:00');
-            while (d <= end) {
-              dates.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
-              d.setDate(d.getDate() + 1);
-            }
-            var nm = (s.firstName || '') + ' ' + (s.lastName || '');
-            if (!confirm('Move ' + nm.trim() + '\u2019s shifts to draft on ' + dates.length + ' date(s)?')) return;
-            closeShiftPopup();
-            api('/api/schedule/shifts/bulk-publish-state', { method: 'POST', body: JSON.stringify({ dates: dates, userIds: [s.userId], published: false }) }).then(function (r) {
-              if (r.ok) { loadShifts(); pageSuccess('Moved to draft.'); }
-              else pageError((r.data && r.data.error) || 'Could not complete.');
-            });
-            return;
-          }
           var dot = e.target.closest ? e.target.closest('#shift-popup .sp-dot') : null;
           if (dot && popupShift) {
             var color = dot.getAttribute('data-color');
@@ -1752,11 +1754,6 @@
             if (act === 'comment') {
               closeShiftPopup();
               openEmployeeCommentModal(s.userId, s.date);
-            } else if (act === 'draft-range') {
-              // Show date-range picker inline in popup
-              var dr = $('sp-draftrange');
-              dr.classList.toggle('hidden');
-              return;
             } else if (act === 'toggle-publish') {
               closeShiftPopup();
               var toPublished = !(s.published !== false && isPublished(s.date));
@@ -2137,7 +2134,7 @@
               else { pageError((res.data && res.data.error) || 'Could not unpublish.'); loadAll(); }
             }).catch(function () { pageError('Could not unpublish.'); loadAll(); });
         });
-        $('sched-assign-cancel').addEventListener('click', function () { hide($('sched-assign-modal')); });
+        $('sched-assign-cancel').addEventListener('click', function () { sched.editShiftId = null; hide($('sched-assign-modal')); });
         $('sched-ec-cancel').addEventListener('click', function () { hide($('sched-ec-modal')); });
         $('sched-ec-save').addEventListener('click', saveEmployeeComment);
         $('sched-ec-delete').addEventListener('click', deleteEmployeeComment);
@@ -2169,13 +2166,26 @@
           if (e.target.closest('.open-slot')) return;
           if (e.target.closest('.modal')) return;
           if (e.target.closest('.person-actions-sidebar')) return;
+          // Don't trigger for the small action buttons (replace/delete/highlight); they handle themselves.
+          if (e.target.closest('button')) return;
           // Only for schedule tab
           if (!grid.closest('#tab-schedule')) return;
           e.stopPropagation();
           try {
-            openPersonActions(grid.getAttribute('data-shift-id'));
+            var sid = grid.getAttribute('data-shift-id');
+            var sh = shiftById(sid);
+            if (sh) {
+              // Click an assigned shift → open the assign popup in edit mode.
+              var opened = openAssignModal(sh.date, sh.shiftTypeId, sh);
+              if (opened === false) {
+                // Rotation shift — fall back to the popup menu.
+                openPersonActions(sid);
+              }
+            } else {
+              openPersonActions(sid);
+            }
           } catch (err) {
-            console.error('PersonActions failed:', err);
+            console.error('Shift click failed:', err);
           }
         });
         // Load saved highlights
@@ -2251,10 +2261,35 @@
         });
         function doAssign(onDone) {
           onDone = onDone || function () {};
-          var useRange = $('sched-assign-range-toggle').checked;
           var notes = $('sched-assign-notes').value.trim() || undefined;
           var pubRadio = document.querySelector('input[name="sched-assign-pub"]:checked');
           var wantPublished = !pubRadio || pubRadio.value !== 'draft';
+          // Edit mode: update the existing shift.
+          if (sched.editShiftId) {
+            var editDate = $('sched-assign-date').value || sched.assignDate;
+            var editBody = {
+              userId: $('sched-assign-user').value,
+              shiftTypeId: $('sched-assign-shifttype').value,
+              date: editDate,
+              notes: notes,
+              published: wantPublished,
+            };
+            api('/api/schedule/shifts/' + sched.editShiftId, { method: 'PUT', body: JSON.stringify(editBody) }).then(function (r) {
+              onDone();
+              if (r.ok) {
+                hide($('sched-assign-modal'));
+                sched.editShiftId = null;
+                pageSuccess('Shift updated.');
+                loadShifts();
+              } else {
+                var msg = (r.data && r.data.error) || 'Could not update shift.';
+                $('sched-assign-error').textContent = msg;
+                show($('sched-assign-error'));
+              }
+            }).catch(function () { onDone(); pageError('Network error.'); });
+            return;
+          }
+          var useRange = $('sched-assign-range-toggle').checked;
           if (useRange) {
             var body = {
               userId: $('sched-assign-user').value,
