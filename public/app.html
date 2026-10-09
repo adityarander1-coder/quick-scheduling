@@ -776,8 +776,7 @@
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
           }
-          return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) +
-            ' onclick="window.qsEditShift(\'' + s.id + '\')"' + '>' +
+          return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
             '</div>';
@@ -2166,8 +2165,6 @@
           if (e.target.closest('.person-actions-sidebar')) return;
           // Don't trigger for the small action buttons (replace/delete/highlight/publish-toggle); they handle themselves.
           if (e.target.closest('button')) return;
-          // Only for schedule tab (main views or day detail popup)
-          if (!grid.closest('#tab-schedule')) return;
           e.stopPropagation();
           try {
             var sid = grid.getAttribute('data-shift-id');
