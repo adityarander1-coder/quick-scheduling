@@ -2357,10 +2357,12 @@
                     pageSuccess('Shift updated.');
                     loadShifts();
                   } else {
-                    $('sched-assign-error').textContent = (r.data && r.data.error) || 'Could not update.';
+                    var errDetail = 'Status: ' + r.status + '. ';
+                    try { errDetail += JSON.stringify(r.data); } catch (e) { errDetail += 'No data'; }
+                    $('sched-assign-error').textContent = 'Bulk create failed: ' + errDetail;
                     show($('sched-assign-error'));
                   }
-                }).catch(function () { onDone(); pageError('Network error.'); });
+                }).catch(function (err) { onDone(); $('sched-assign-error').textContent = 'Network error: ' + err; show($('sched-assign-error')); });
               }).catch(function () { onDone(); pageError('Could not remove rotation shift.'); });
               return;
             }
