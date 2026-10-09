@@ -44,11 +44,11 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
 
         // Get company context (shift types and team members) for Gemini
         const membersResult = await query(
-          `SELECT name FROM team_members WHERE company_id = $1 AND active = true`,
+          `SELECT COALESCE(nickname, first_name || ' ' || last_name) as name FROM users WHERE company_id = $1 AND is_active = true`,
           [companyId]
         );
         const shiftTypesResult = await query(
-          `SELECT name FROM shift_types WHERE company_id = $1 AND active = true`,
+          `SELECT name FROM shift_types WHERE company_id = $1`,
           [companyId]
         );
         const members = membersResult.rows.map(r => r.name);
