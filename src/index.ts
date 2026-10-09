@@ -153,6 +153,8 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 async function main(): Promise<void> {
   await ensureReady(); // auto-runs pending migrations at boot
+  const { startPayrollScheduler } = await import('./util/payrollScheduler.js');
+  startPayrollScheduler();
   app.listen(PORT, () => {
     console.log(`[app] Quick Scheduling listening on http://localhost:${PORT}`);
   });

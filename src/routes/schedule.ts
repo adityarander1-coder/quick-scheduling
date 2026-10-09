@@ -65,6 +65,49 @@ router.get('/shift-types', async (req: Request, res: Response) => {
   }
 });
 
+// Build a payroll PDF buffer from report data.
+async function buildPayrollPdf(opts: {
+  companyName: string; from: string; to: string;
+  dates: { date: string; entries: { name: string; shift: string; hours: number }[]; totalHours: number }[];
+  people: { name: string; shifts: number; hours: number }[];
+  totalHours: number;
+}): Promise<Buffer> {
+  const PDFDocument = (await import('pdfkit')).default;
+  const doc = new PDFDocument({ margin: 50, size: 'letter' });
+  const chunks: Buffer[] = [];
+  doc.on('data', (c: Buffer) => chunks.push(c));
+  const done = new Promise<Buffer>((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  function fmtDay(ds: string): string {
+    const dt = new Date(ds + 'T00:00:00');
+    return `${dayNames[dt.getDay()]}, ${monthNames[dt.getMonth()]} ${dt.getDate()}, ${dt.getFullYear()}`;
+  }
+  doc.fontSize(20).text('Payroll Hours', { underline: false });
+  doc.fontSize(11).fillColor('#555').text(`${opts.companyName}`);
+  doc.text(`${fmtDay(opts.from)} — ${fmtDay(opts.to)}`);
+  doc.moveDown();
+  doc.fillColor('#000').fontSize(14).text('By date');
+  doc.moveDown(0.5);
+  for (const d of opts.dates) {
+    doc.fontSize(12).fillColor('#000').text(`${fmtDay(d.date)} — ${d.totalHours} hrs`, { underline: true });
+    for (const e of d.entries) {
+      doc.fontSize(10).fillColor('#333').text(`  ${e.name} — ${e.shift}: ${e.hours} hrs`);
+    }
+    doc.moveDown(0.5);
+  }
+  doc.moveDown();
+  doc.fontSize(14).fillColor('#000').text('By person');
+  doc.moveDown(0.5);
+  for (const p of opts.people) {
+    doc.fontSize(10).fillColor('#333').text(`${p.name}: ${p.shifts} shift${p.shifts === 1 ? '' : 's'}, ${p.hours} hrs`);
+  }
+  doc.moveDown();
+  doc.fontSize(12).fillColor('#000').font('Helvetica-Bold').text(`Total: ${opts.totalHours} hrs`);
+  doc.end();
+  return done;
+}
+
 // POST /api/schedule/shift-types — create (owner/scheduler).
 router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -1858,63 +1901,230 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
   }
 });
 
-// POST /api/schedule/payroll-report — hours worked per person for a date range (owner/scheduler).
+// Shared payroll data computation (used by report, PDF, and email).
+async function getPayrollData(companyId: string, from: string, to: string, personId?: string | null) {
+  const params: any[] = [companyId, from, to];
+  let personFilter = '';
+  if (personId) {
+    params.push(personId);
+    personFilter = ` AND u.id = $${params.length}`;
+  }
+  const { rows } = await query(
+    `SELECT u.id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
+            s.date::text AS date,
+            st.name AS "shiftTypeName",
+            st.start_time::text AS "startTime", st.end_time::text AS "endTime"
+     FROM shifts s
+     JOIN users u ON u.id = s.user_id
+     JOIN shift_types st ON st.id = s.shift_type_id
+     WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3${personFilter}
+     ORDER BY s.date, u.first_name, u.last_name`,
+    params
+  );
+  function hoursFor(start: string | null, end: string | null): number {
+    if (!start || !end) return 0;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    let mins = (eh * 60 + em) - (sh * 60 + sm);
+    if (mins <= 0) mins += 24 * 60;
+    return Math.round((mins / 60) * 100) / 100;
+  }
+  const byPerson = new Map<string, { name: string; shifts: number; hours: number }>();
+  const byDate = new Map<string, { date: string; entries: { name: string; shift: string; hours: number }[]; totalHours: number }>();
+  for (const r of rows) {
+    const name = r.nickname || `${r.firstName} ${r.lastName || ''}`.trim();
+    const h = hoursFor(r.startTime, r.endTime);
+    const cur = byPerson.get(name) || { name, shifts: 0, hours: 0 };
+    cur.shifts += 1;
+    cur.hours = Math.round((cur.hours + h) * 100) / 100;
+    byPerson.set(name, cur);
+    const d: { date: string; entries: { name: string; shift: string; hours: number }[]; totalHours: number } =
+      byDate.get(r.date) || { date: r.date, entries: [], totalHours: 0 };
+    d.entries.push({ name, shift: r.shiftTypeName, hours: h });
+    d.totalHours = Math.round((d.totalHours + h) * 100) / 100;
+    byDate.set(r.date, d);
+  }
+  const people = [...byPerson.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const dates = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const totalHours = Math.round(people.reduce((s, p) => s + p.hours, 0) * 100) / 100;
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function fmtDay(ds: string): string {
+    const dt = new Date(ds + 'T00:00:00');
+    return `${dayNames[dt.getDay()]} ${monthNames[dt.getMonth()]} ${dt.getDate()}`;
+  }
+  const lines = [`Payroll hours — ${fmtDay(from)} to ${fmtDay(to)}`, ''];
+  for (const d of dates) {
+    lines.push(`${fmtDay(d.date)} (${d.totalHours} hrs)`);
+    for (const e of d.entries) {
+      lines.push(`  ${e.name} — ${e.shift} (${e.hours} hrs)`);
+    }
+    lines.push('');
+  }
+  lines.push('By person:');
+  for (const p of people) {
+    lines.push(`${p.name}: ${p.shifts} shift${p.shifts === 1 ? '' : 's'}, ${p.hours} hrs`);
+  }
+  lines.push('');
+  lines.push(`Total: ${totalHours} hrs`);
+  return { message: lines.join('\n'), people, dates, totalHours };
+}
+
+// POST /api/schedule/payroll-report — hours worked for a date range (owner/scheduler).
+// Body: { from, to, personId?: uuid | null }
 router.post('/payroll-report', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { from, to } = req.body ?? {};
+    const { from, to, personId } = req.body ?? {};
     if (!isValidDate(from) || !isValidDate(to) || from > to) {
       res.status(400).json({ error: 'Valid from/to dates are required.' });
       return;
     }
-    const { rows } = await query(
-      `SELECT u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
-              s.date::text AS date,
-              st.name AS "shiftTypeName",
-              st.start_time::text AS "startTime", st.end_time::text AS "endTime"
-       FROM shifts s
-       JOIN users u ON u.id = s.user_id
-       JOIN shift_types st ON st.id = s.shift_type_id
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
-       ORDER BY u.first_name, u.last_name, s.date`,
-      [companyId, from, to]
-    );
-    // Calculate hours from shift times.
-    function hoursFor(start: string | null, end: string | null): number {
-      if (!start || !end) return 0;
-      const [sh, sm] = start.split(':').map(Number);
-      const [eh, em] = end.split(':').map(Number);
-      let mins = (eh * 60 + em) - (sh * 60 + sm);
-      if (mins <= 0) mins += 24 * 60; // overnight
-      return Math.round((mins / 60) * 100) / 100;
-    }
-    const byPerson = new Map<string, { name: string; shifts: number; hours: number }>();
-    for (const r of rows) {
-      const name = r.nickname || `${r.firstName} ${r.lastName || ''}`.trim();
-      const h = hoursFor(r.startTime, r.endTime);
-      const cur = byPerson.get(name) || { name, shifts: 0, hours: 0 };
-      cur.shifts += 1;
-      cur.hours = Math.round((cur.hours + h) * 100) / 100;
-      byPerson.set(name, cur);
-    }
-    const people = [...byPerson.values()].sort((a, b) => a.name.localeCompare(b.name));
-    const totalHours = Math.round(people.reduce((s, p) => s + p.hours, 0) * 100) / 100;
-    // Build message.
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    function fmtDay(ds: string): string {
-      const dt = new Date(ds + 'T00:00:00');
-      return `${dayNames[dt.getDay()]} ${monthNames[dt.getMonth()]} ${dt.getDate()}`;
-    }
-    const lines = [`Payroll hours — ${fmtDay(from)} to ${fmtDay(to)}`, ''];
-    for (const p of people) {
-      lines.push(`${p.name}: ${p.shifts} shift${p.shifts === 1 ? '' : 's'}, ${p.hours} hrs`);
-    }
-    lines.push('');
-    lines.push(`Total: ${totalHours} hrs`);
-    res.json({ message: lines.join('\n'), people, totalHours });
+    const data = await getPayrollData(companyId, from, to, personId || null);
+    res.json(data);
   } catch (err) {
     console.error('[schedule] payroll-report failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/payroll-report.pdf — download PDF (owner/scheduler).
+router.post('/payroll-report.pdf', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { from, to, personId } = req.body ?? {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    const { rows: crows } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
+    const companyName = crows[0]?.name || 'Company';
+    const data = await getPayrollData(companyId, from, to, personId || null);
+    const pdf = await buildPayrollPdf({ companyName, from, to, ...data });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    console.error('[schedule] payroll pdf failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/payroll-email — email the payroll report now (owner/scheduler).
+// Body: { from, to, personId?: uuid | null, email: string }
+router.post('/payroll-email', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { from, to, personId, email } = req.body ?? {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+    const { rows: crows } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
+    const companyName = crows[0]?.name || 'Company';
+    const data = await getPayrollData(companyId, from, to, personId || null);
+    const pdf = await buildPayrollPdf({ companyName, from, to, ...data });
+    const { sendMailWithAttachment } = await import('../util/mailer.js');
+    await sendMailWithAttachment({
+      to: String(email),
+      subject: `Payroll hours ${from} to ${to} — ${companyName}`,
+      text: data.message,
+      html: `<pre>${data.message.replace(/</g, '&lt;')}</pre>`,
+      attachments: [{ filename: `payroll-${from}-to-${to}.pdf`, content: pdf }],
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('[schedule] payroll email failed:', err);
+    res.status(500).json({ error: err?.message || 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/payroll-schedules — list automatic report schedules (owner/scheduler).
+router.get('/payroll-schedules', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT ps.id, ps.email, ps.frequency, ps.day_of_week AS "dayOfWeek", ps.day_of_month AS "dayOfMonth",
+              ps.range_days AS "rangeDays", ps.last_sent_at AS "lastSentAt", ps.next_run_at AS "nextRunAt",
+              ps.person_id AS "personId", u.first_name AS "personFirst", u.last_name AS "personLast", u.nickname AS "personNick"
+       FROM payroll_schedules ps LEFT JOIN users u ON u.id = ps.person_id
+       WHERE ps.company_id = $1 ORDER BY ps.created_at DESC`,
+      [companyId]
+    );
+    res.json({ schedules: rows });
+  } catch (err) {
+    console.error('[schedule] list payroll schedules failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/payroll-schedules — create automatic schedule (owner/scheduler).
+// Body: { email, frequency: 'weekly'|'monthly', dayOfWeek?: 0-6, dayOfMonth?: 1-28, personId?: uuid|null, rangeDays?: 1-62 }
+router.post('/payroll-schedules', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { email, frequency, dayOfWeek, dayOfMonth, personId, rangeDays } = req.body ?? {};
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+      res.status(400).json({ error: 'A valid email address is required.' });
+      return;
+    }
+    if (frequency !== 'weekly' && frequency !== 'monthly') {
+      res.status(400).json({ error: 'Frequency must be weekly or monthly.' });
+      return;
+    }
+    if (frequency === 'weekly' && (dayOfWeek == null || dayOfWeek < 0 || dayOfWeek > 6)) {
+      res.status(400).json({ error: 'Pick a day of the week.' });
+      return;
+    }
+    if (frequency === 'monthly' && (dayOfMonth == null || dayOfMonth < 1 || dayOfMonth > 28)) {
+      res.status(400).json({ error: 'Pick a day of the month (1-28).' });
+      return;
+    }
+    const rd = Math.min(62, Math.max(1, parseInt(String(rangeDays)) || 7));
+    let pid: string | null = null;
+    if (personId) {
+      const { rows: urows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND active = true', [personId, companyId]);
+      if (!urows.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+      pid = urows[0].id;
+    }
+    // Compute next run: next occurrence of the chosen day.
+    const now = new Date();
+    let next = new Date(now);
+    if (frequency === 'weekly') {
+      const diff = ((dayOfWeek - now.getDay()) + 7) % 7;
+      next.setDate(now.getDate() + (diff === 0 ? 7 : diff));
+    } else {
+      next.setDate(dayOfMonth);
+      if (next <= now) next.setMonth(next.getMonth() + 1);
+    }
+    next.setHours(6, 0, 0, 0); // 6 AM server time
+    const { rows } = await query(
+      `INSERT INTO payroll_schedules (company_id, email, frequency, day_of_week, day_of_month, person_id, range_days, next_run_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [companyId, String(email), frequency,
+       frequency === 'weekly' ? dayOfWeek : null,
+       frequency === 'monthly' ? dayOfMonth : null,
+       pid, rd, next.toISOString(), req.session.userId!]
+    );
+    res.status(201).json({ id: rows[0].id });
+  } catch (err) {
+    console.error('[schedule] create payroll schedule failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/payroll-schedules/:id — delete schedule (owner/scheduler).
+router.delete('/payroll-schedules/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query('DELETE FROM payroll_schedules WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete payroll schedule failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

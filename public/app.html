@@ -4908,15 +4908,37 @@
       </div>
       <div class="card" style="margin-top:1rem">
         <h3 style="margin-top:0">Payroll hours</h3>
-        <p style="color:var(--dim)">Hours worked per person for a date range. Copy and send to payroll.</p>
+        <p style="color:var(--dim)">Hours worked for a date range, by date and by person. Download as PDF or email it.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>From <input type="date" id="pay-from"></label>
           <label>To <input type="date" id="pay-to"></label>
+          <label>Person <select id="pay-person"><option value="">Everyone</option></select></label>
           <button type="button" id="pay-generate" class="btn">Generate report</button>
         </div>
         <div id="pay-output-wrap" class="hidden">
           <pre id="pay-output" style="background:var(--bg);padding:1rem;border-radius:12px;white-space:pre-wrap;font-family:inherit"></pre>
-          <button type="button" id="pay-copy" class="btn-secondary" style="margin-top:0.5rem">Copy report</button>
+          <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap">
+            <button type="button" id="pay-copy" class="btn-secondary">Copy report</button>
+            <button type="button" id="pay-pdf" class="btn-secondary">Download PDF</button>
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;align-items:flex-end">
+            <label>Email <input type="email" id="pay-email" placeholder="payroll@company.com" style="min-width:180px"></label>
+            <button type="button" id="pay-send" class="btn-secondary">Email report</button>
+          </div>
+        </div>
+        <div style="margin-top:1.5rem;border-top:1px solid var(--border);padding-top:1rem">
+          <h4 style="margin:0 0 0.5rem">Automatic email reports</h4>
+          <p style="color:var(--dim);font-size:0.9rem">Set it once — the report emails itself on schedule.</p>
+          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:0.75rem 0;align-items:flex-end">
+            <label>Email <input type="email" id="sched-email" placeholder="payroll@company.com" style="min-width:180px"></label>
+            <label>Every <select id="sched-freq"><option value="weekly">Week</option><option value="monthly">Month</option></select></label>
+            <label id="sched-dow-wrap">On <select id="sched-dow"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label>
+            <label id="sched-dom-wrap" class="hidden">On day <input type="number" id="sched-dom" min="1" max="28" value="1" style="width:70px"></label>
+            <label>Person <select id="sched-person"><option value="">Everyone</option></select></label>
+            <label>Cover last <select id="sched-range"><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label>
+            <button type="button" id="sched-add" class="btn">Set automatic report</button>
+          </div>
+          <div id="sched-list"></div>
         </div>
       </div>
       <script>
@@ -4925,7 +4947,7 @@
           var h = window.location.hash || '';
           return h.indexOf('#link') === 0;
         }
-        function refresh() { loadShareLinks(); loadShareDepts(); loadShareShifts(); }
+        function refresh() { loadShareLinks(); loadShareDepts(); loadShareShifts(); loadPayPeople(); loadSchedList(); }
         function loadShareShifts() {
           api('/api/schedule/shift-types').then(function (r) {
             if (!r.ok || !r.data.shiftTypes) return;
@@ -5045,12 +5067,34 @@
         if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); }
         $('av-resp-close').addEventListener('click', function () { hide($('av-resp-modal')); });
         // --- Payroll hours ---
+        function loadPayPeople() {
+          api('/api/users').then(function (r) {
+            if (!r.ok || !r.data.users) return;
+            ['pay-person', 'sched-person'].forEach(function (id) {
+              var sel = $(id);
+              sel.innerHTML = '<option value="">Everyone</option>';
+              r.data.users.forEach(function (u) {
+                var o = document.createElement('option');
+                o.value = u.id;
+                o.textContent = u.nickname || ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
+                sel.appendChild(o);
+              });
+            });
+          }).catch(function () {});
+        }
+        function payParams() {
+          return {
+            from: $('pay-from').value,
+            to: $('pay-to').value,
+            personId: $('pay-person').value || null,
+          };
+        }
         $('pay-generate').addEventListener('click', function () {
-          var f = $('pay-from').value, t = $('pay-to').value;
-          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          var p = payParams();
+          if (!p.from || !p.to || p.from > p.to) { pageError('Pick a valid from/to range.'); return; }
           api('/api/schedule/payroll-report', {
             method: 'POST',
-            body: JSON.stringify({ from: f, to: t }),
+            body: JSON.stringify(p),
           }).then(function (r) {
             if (r.ok) {
               $('pay-output').textContent = r.data.message;
@@ -5065,6 +5109,95 @@
             navigator.clipboard.writeText(t).then(done, done);
           } else done();
         });
+        $('pay-pdf').addEventListener('click', function () {
+          var p = payParams();
+          if (!p.from || !p.to || p.from > p.to) { pageError('Pick a valid from/to range.'); return; }
+          fetch('/api/schedule/payroll-report.pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(p),
+          }).then(function (r) {
+            if (!r.ok) { pageError('Could not generate PDF.'); return; }
+            return r.blob().then(function (b) {
+              var a = document.createElement('a');
+              a.href = URL.createObjectURL(b);
+              a.download = 'payroll-' + p.from + '-to-' + p.to + '.pdf';
+              document.body.appendChild(a); a.click(); a.remove();
+            });
+          }).catch(function () { pageError('Could not generate PDF.'); });
+        });
+        $('pay-send').addEventListener('click', function () {
+          var p = payParams();
+          var email = $('pay-email').value.trim();
+          if (!p.from || !p.to || p.from > p.to) { pageError('Pick a valid from/to range.'); return; }
+          if (!email) { pageError('Enter an email address.'); return; }
+          p.email = email;
+          api('/api/schedule/payroll-email', {
+            method: 'POST',
+            body: JSON.stringify(p),
+          }).then(function (r) {
+            if (r.ok) pageSuccess('Report emailed.');
+            else pageError((r.data && r.data.error) || 'Could not send email.');
+          }).catch(function () { pageError('Could not send email.'); });
+        });
+        // --- Automatic payroll schedules ---
+        $('sched-freq').addEventListener('change', function () {
+          var weekly = $('sched-freq').value === 'weekly';
+          $('sched-dow-wrap').classList.toggle('hidden', !weekly);
+          $('sched-dom-wrap').classList.toggle('hidden', weekly);
+        });
+        function loadSchedList() {
+          api('/api/schedule/payroll-schedules').then(function (r) {
+            if (!r.ok) return;
+            var box = $('sched-list');
+            box.innerHTML = '';
+            if (!r.data.schedules.length) {
+              box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No automatic reports set up.</p>';
+              return;
+            }
+            var dows = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            r.data.schedules.forEach(function (s) {
+              var div = document.createElement('div');
+              div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
+              var when = s.frequency === 'weekly' ? ('Weekly on ' + dows[s.dayOfWeek]) : ('Monthly on day ' + s.dayOfMonth);
+              var who = s.personId ? ((s.personNick || ((s.personFirst || '') + ' ' + (s.personLast || '')).trim())) : 'Everyone';
+              var next = new Date(s.nextRunAt).toLocaleDateString();
+              div.innerHTML = '<strong>' + esc(when) + '</strong> → ' + esc(s.email) + '<br>' +
+                '<span style="color:var(--dim);font-size:0.85rem">' + esc(who) + ', last ' + s.rangeDays + ' days, next ' + next + '</span>' +
+                '<div style="margin-top:0.5rem"><button type="button" class="btn-secondary btn-sm" style="color:var(--danger)">Remove</button></div>';
+              div.querySelector('button').addEventListener('click', function () {
+                if (!confirm('Remove this automatic report?')) return;
+                api('/api/schedule/payroll-schedules/' + s.id, { method: 'DELETE' }).then(function (dr) {
+                  if (dr.ok) { pageSuccess('Removed.'); loadSchedList(); }
+                  else pageError('Could not remove.');
+                });
+              });
+              box.appendChild(div);
+            });
+          }).catch(function () {});
+        }
+        $('sched-add').addEventListener('click', function () {
+          var email = $('sched-email').value.trim();
+          if (!email) { pageError('Enter an email address.'); return; }
+          var freq = $('sched-freq').value;
+          var body = {
+            email: email,
+            frequency: freq,
+            dayOfWeek: freq === 'weekly' ? parseInt($('sched-dow').value, 10) : null,
+            dayOfMonth: freq === 'monthly' ? parseInt($('sched-dom').value, 10) : null,
+            personId: $('sched-person').value || null,
+            rangeDays: parseInt($('sched-range').value, 10),
+          };
+          api('/api/schedule/payroll-schedules', {
+            method: 'POST',
+            body: JSON.stringify(body),
+          }).then(function (r) {
+            if (r.ok) { pageSuccess('Automatic report set.'); $('sched-email').value = ''; loadSchedList(); }
+            else pageError((r.data && r.data.error) || 'Could not set up.');
+          }).catch(function () { pageError('Could not set up.'); });
+        });
+        // Load payroll people + schedules when tab opens.
         // --- Availability links ---
         function loadAvList() {
           api('/api/schedule/availability').then(function (r) {

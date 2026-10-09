@@ -7,6 +7,9 @@
 // When RESEND_API_KEY is unset, email is unavailable and callers must
 // degrade gracefully (see POST /api/users/:id/send-invite's 503 path).
 
+/** Alias for sendMail — attachments are part of MailOptions. */
+export const sendMailWithAttachment = sendMail;
+
 /** True when the Resend API key is present. */
 export function isMailConfigured(): boolean {
   return !!process.env.RESEND_API_KEY;
@@ -22,6 +25,7 @@ export interface MailOptions {
   subject: string;
   text: string;
   html: string;
+  attachments?: { filename: string; content: Buffer }[];
 }
 
 interface ResendError {
@@ -45,6 +49,10 @@ export async function sendMail(opts: MailOptions): Promise<void> {
       subject: opts.subject,
       text: opts.text,
       html: opts.html,
+      attachments: (opts.attachments || []).map(a => ({
+        filename: a.filename,
+        content: a.content.toString('base64'),
+      })),
     }),
   });
   if (!res.ok) {
