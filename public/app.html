@@ -4876,6 +4876,16 @@
           <label>From <input type="date" id="msg-from"></label>
           <label>To <input type="date" id="msg-to"></label>
           <label>Note (optional) <input type="text" id="msg-note" placeholder="e.g. overtime pay" style="min-width:160px"></label>
+        </div>
+        <div style="margin-bottom:1rem">
+          <label style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem;cursor:pointer">
+            <input type="radio" name="msg-template" value="group" checked> Group — "Can someone work the following shifts?"
+          </label>
+          <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer">
+            <input type="radio" name="msg-template" value="personal" > Personal — "Hello, can you work the following dates?"
+          </label>
+        </div>
+        <div style="margin-bottom:1rem">
           <button type="button" id="msg-generate" class="btn">Generate message</button>
         </div>
         <div id="msg-types" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem"></div>
@@ -4955,9 +4965,12 @@
           if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
           var ids = [];
           document.querySelectorAll('.msg-type-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          var tmpl = 'group';
+          var checked = document.querySelector('input[name="msg-template"]:checked');
+          if (checked) tmpl = checked.value;
           api('/api/schedule/open-slots-message', {
             method: 'POST',
-            body: JSON.stringify({ from: f, to: t, shiftTypeIds: ids, note: $('msg-note').value.trim() }),
+            body: JSON.stringify({ from: f, to: t, shiftTypeIds: ids, note: $('msg-note').value.trim(), template: tmpl }),
           }).then(function (r) {
             if (r.ok) {
               $('msg-output').textContent = r.data.message;
