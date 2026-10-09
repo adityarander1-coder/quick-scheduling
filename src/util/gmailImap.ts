@@ -32,7 +32,7 @@ function connect(): Promise<Imap> {
       host: 'imap.gmail.com',
       port: 993,
       tls: true,
-      tlsOptions: { rejectUnauthorized: true },
+      tlsOptions: { rejectUnauthorized: false },
     });
     imap.once('ready', () => resolve(imap));
     imap.once('error', reject);
