@@ -2102,12 +2102,52 @@
           });
         }
 
+        // --- View preference persistence ---
+        // Remember the schedule view (day/week/month/range), anchor date, and
+        // range dates across sessions so the tab reopens where she left it.
+        var SCHED_VIEW_KEY = 'qs-sched-view-pref';
+        function saveSchedView() {
+          try {
+            localStorage.setItem(SCHED_VIEW_KEY, JSON.stringify({
+              view: sched.view,
+              anchorDate: sched.anchorDate ? fmtDate(sched.anchorDate) : null,
+              rangeFrom: sched.rangeFrom,
+              rangeTo: sched.rangeTo,
+            }));
+          } catch (e) { /* storage unavailable */ }
+        }
+        function restoreSchedView() {
+          try {
+            var raw = localStorage.getItem(SCHED_VIEW_KEY);
+            if (!raw) return;
+            var p = JSON.parse(raw);
+            if (p.view && ['day', 'week', 'month', 'range'].indexOf(p.view) !== -1) {
+              sched.view = p.view;
+              document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) {
+                x.classList.toggle('active', x.getAttribute('data-view') === p.view);
+              });
+            }
+            if (p.anchorDate) {
+              var ad = parseDate(p.anchorDate);
+              if (ad && !isNaN(ad.getTime())) sched.anchorDate = ad;
+            }
+            if (p.rangeFrom && p.rangeTo) {
+              sched.rangeFrom = p.rangeFrom;
+              sched.rangeTo = p.rangeTo;
+              var rf = $('sched-range-from'), rt = $('sched-range-to');
+              if (rf) rf.value = p.rangeFrom;
+              if (rt) rt.value = p.rangeTo;
+            }
+          } catch (e) { /* ignore bad stored data */ }
+        }
+
         // --- events (scoped to this tab) ---
         document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
             document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.remove('active'); });
             b.classList.add('active');
             sched.view = b.getAttribute('data-view');
+            saveSchedView();
             loadAll();
           });
         });
@@ -2124,6 +2164,7 @@
             else if (sched.view === 'week') a.setDate(a.getDate() - 7);
             else a.setMonth(a.getMonth() - 1);
           }
+          saveSchedView();
           loadAll();
         });
         $('sched-next').addEventListener('click', function () {
@@ -2139,16 +2180,19 @@
             else if (sched.view === 'week') a.setDate(a.getDate() + 7);
             else a.setMonth(a.getMonth() + 1);
           }
+          saveSchedView();
           loadAll();
         });
         $('sched-today').addEventListener('click', function () {
           sched.anchorDate = new Date();
+          saveSchedView();
           loadAll();
         });
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
           if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
           sched.rangeFrom = f; sched.rangeTo = t;
+          saveSchedView();
           loadAll();
         });
         $('sched-publish-btn').addEventListener('click', function () {
@@ -2541,6 +2585,7 @@
           var role = r.data.user.role;
           sched.canEdit = (role === 'owner' || role === 'scheduler');
           if (!sched.canEdit) hide($('sched-publish-bar'));
+          restoreSchedView();
           loadAll();
         });
         window.addEventListener('hashchange', function () {
