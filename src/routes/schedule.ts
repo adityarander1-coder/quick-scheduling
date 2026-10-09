@@ -1260,6 +1260,14 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
       }
     }
     res.status(201).json({ id });
+    // Audit: rotation created.
+    auditLog({
+      companyId, date: new Date().toISOString().slice(0, 10), action: 'created',
+      shiftTypeName: `Rotation "${String(name).trim()}"`,
+      source: 'rotation', rotationName: String(name).trim(),
+      changedBy: req.session.userId!,
+      details: { rotationId: id, kind: 'rotation' },
+    });
   } catch (err) {
     console.error('[schedule] create rotation failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1323,6 +1331,10 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const { rows: rrows } = await query(
+      'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
     const { rowCount } = await query(
       'DELETE FROM rotations WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
@@ -1332,6 +1344,13 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
       return;
     }
     res.json({ ok: true });
+    auditLog({
+      companyId, date: new Date().toISOString().slice(0, 10), action: 'deleted',
+      shiftTypeName: rrows[0] ? `Rotation "${rrows[0].name}"` : 'Rotation',
+      source: 'rotation', rotationName: rrows[0]?.name || null,
+      changedBy: req.session.userId!,
+      details: { rotationId: req.params.id, kind: 'rotation' },
+    });
   } catch (err) {
     console.error('[schedule] delete rotation failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1586,6 +1605,13 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
     );
     if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
     res.json({ ok: true });
+    const { rows: strows } = await query('SELECT name FROM shift_types WHERE id = $1', [req.params.id]);
+    auditLog({
+      companyId, date: new Date().toISOString().slice(0, 10), action: 'updated',
+      shiftTypeName: strows[0] ? `Shift type "${strows[0].name}"` : 'Shift type',
+      source: 'manual', changedBy: req.session.userId!,
+      details: { shiftTypeId: req.params.id, kind: 'shift_type' },
+    });
   } catch (err) {
     console.error('[schedule] update shift type failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

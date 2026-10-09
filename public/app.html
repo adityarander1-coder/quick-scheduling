@@ -217,6 +217,7 @@
       <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
+        <button type="button" id="audit-header-btn" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Change report</button>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
@@ -432,29 +433,6 @@
         <button type="button" id="audit-report-btn" class="btn-secondary">Schedule change report</button>
       </div>
 
-      <div id="audit-modal" class="modal-backdrop hidden">
-        <div class="modal" style="max-width:600px">
-          <h3 style="margin-top:0">Schedule change report</h3>
-          <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule, what changed, and whether it was manual or from a rotation.</p>
-          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
-            <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
-            <label><input type="radio" name="audit-mode" value="range"> Date range</label>
-          </div>
-          <div id="audit-date-wrap" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end">
-            <label>Date <input type="date" id="audit-date"></label>
-          </div>
-          <div id="audit-range-wrap" class="hidden" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end">
-            <label>From <input type="date" id="audit-from"></label>
-            <label>To <input type="date" id="audit-to"></label>
-          </div>
-          <button type="button" id="audit-run" class="btn">Run report</button>
-          <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow-y:auto"></div>
-          <div style="display:flex;justify-content:flex-end;margin-top:1rem">
-            <button type="button" class="btn-secondary" id="audit-close">Close</button>
-          </div>
-        </div>
-      </div>
-
       <!-- Assign shift modal -->
       <div id="sched-assign-modal" class="modal-backdrop hidden">
         <div class="modal">
@@ -578,57 +556,6 @@
 
       <script>
       (function () {
-        // --- Schedule change report (audit) ---
-        (function () {
-          var modal = $('audit-modal');
-          $('audit-report-btn').addEventListener('click', function () { show(modal); });
-          $('audit-close').addEventListener('click', function () { hide(modal); });
-          document.querySelectorAll('input[name="audit-mode"]').forEach(function (r) {
-            r.addEventListener('change', function () {
-              var isDate = document.querySelector('input[name="audit-mode"]:checked').value === 'date';
-              $('audit-date-wrap').classList.toggle('hidden', !isDate);
-              $('audit-range-wrap').classList.toggle('hidden', isDate);
-            });
-          });
-          $('audit-run').addEventListener('click', function () {
-            var mode = document.querySelector('input[name="audit-mode"]:checked').value;
-            var qs = '';
-            if (mode === 'date') {
-              var d = $('audit-date').value;
-              if (!d) { pageError('Pick a date.'); return; }
-              qs = '?date=' + d;
-            } else {
-              var f = $('audit-from').value, t = $('audit-to').value;
-              if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
-              qs = '?from=' + f + '&to=' + t;
-            }
-            api('/api/schedule/audit' + qs).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not run report.'); return; }
-              var box = $('audit-results');
-              if (!r.data.entries.length) {
-                box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started today — past changes are not available.</p>';
-                return;
-              }
-              var actionWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
-              var html = '';
-              var lastDate = '';
-              r.data.entries.forEach(function (e) {
-                if (e.date !== lastDate) {
-                  html += '<h4 style="margin:0.75rem 0 0.25rem">' + e.date + '</h4>';
-                  lastDate = e.date;
-                }
-                var what = e.personName ? (e.personName + (e.shiftTypeName ? ' — ' + e.shiftTypeName : '')) : 'Schedule';
-                var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '') : 'manual';
-                var when = new Date(e.changedAt).toLocaleString();
-                html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
-                  '<strong>' + (actionWords[e.action] || e.action) + '</strong>: ' + esc(what) +
-                  ' <span style="color:var(--dim)">(' + via + ')</span><br>' +
-                  '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' on ' + when + '</span></div>';
-              });
-              box.innerHTML = html;
-            }).catch(function () { pageError('Could not run report.'); });
-          });
-        })();
         function selectedMemberIds() {
           var ids = [];
           document.querySelectorAll('.bulk-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
@@ -5363,6 +5290,30 @@
     </section>
   </main>
 
+  <!-- Global: Schedule change report modal (available from every tab) -->
+  <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
+    <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
+      <h3 style="margin-top:0">Schedule change report</h3>
+      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule, what changed, and whether it was manual or from a rotation.</p>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
+        <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
+        <label><input type="radio" name="audit-mode" value="range"> Date range</label>
+      </div>
+      <div id="audit-date-wrap" style="margin-bottom:1rem">
+        <label>Date <input type="date" id="audit-date"></label>
+      </div>
+      <div id="audit-range-wrap" class="hidden" style="margin-bottom:1rem">
+        <label>From <input type="date" id="audit-from"></label>
+        <label>To <input type="date" id="audit-to"></label>
+      </div>
+      <button type="button" id="audit-run" class="btn">Run report</button>
+      <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow-y:auto"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+        <button type="button" class="btn-secondary" id="audit-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // (Shared utilities $, show, hide, api, pageError, pageSuccess, esc are defined in <head>.)
 
@@ -5414,6 +5365,62 @@
     $('logout').addEventListener('click', function () {
       api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
     });
+
+    // --- Global: Schedule change report (audit), available from every tab ---
+    (function () {
+      var modal = $('audit-modal');
+      function openAudit() { show(modal); }
+      var hdr = $('audit-header-btn');
+      if (hdr) hdr.addEventListener('click', openAudit);
+      var bottomBtn = $('audit-report-btn');
+      if (bottomBtn) bottomBtn.addEventListener('click', openAudit);
+      $('audit-close').addEventListener('click', function () { hide(modal); });
+      document.querySelectorAll('input[name="audit-mode"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          var isDate = document.querySelector('input[name="audit-mode"]:checked').value === 'date';
+          $('audit-date-wrap').classList.toggle('hidden', !isDate);
+          $('audit-range-wrap').classList.toggle('hidden', isDate);
+        });
+      });
+      $('audit-run').addEventListener('click', function () {
+        var mode = document.querySelector('input[name="audit-mode"]:checked').value;
+        var qs = '';
+        if (mode === 'date') {
+          var d = $('audit-date').value;
+          if (!d) { pageError('Pick a date.'); return; }
+          qs = '?date=' + d;
+        } else {
+          var f = $('audit-from').value, t = $('audit-to').value;
+          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          qs = '?from=' + f + '&to=' + t;
+        }
+        api('/api/schedule/audit' + qs).then(function (r) {
+          if (!r.ok) { pageError((r.data && r.data.error) || 'Could not run report.'); return; }
+          var box = $('audit-results');
+          if (!r.data.entries.length) {
+            box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started today — past changes are not available.</p>';
+            return;
+          }
+          var actionWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
+          var html = '';
+          var lastDate = '';
+          r.data.entries.forEach(function (e) {
+            if (e.date !== lastDate) {
+              html += '<h4 style="margin:0.75rem 0 0.25rem">' + e.date + '</h4>';
+              lastDate = e.date;
+            }
+            var what = e.personName ? (e.personName + (e.shiftTypeName ? ' — ' + e.shiftTypeName : '')) : 'Schedule';
+            var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '') : 'manual';
+            var when = new Date(e.changedAt).toLocaleString();
+            html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
+              '<strong>' + (actionWords[e.action] || e.action) + '</strong>: ' + esc(what) +
+              ' <span style="color:var(--dim)">(' + via + ')</span><br>' +
+              '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' on ' + when + '</span></div>';
+          });
+          box.innerHTML = html;
+        }).catch(function () { pageError('Could not run report.'); });
+      });
+    })();
 
     // Init
     api('/api/auth/me').then(function (r) {
