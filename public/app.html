@@ -217,7 +217,6 @@
       <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
-        <button type="button" id="audit-header-btn" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Run report</button>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
@@ -430,7 +429,7 @@
       <div id="sched-view"></div>
 
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" id="audit-report-btn" class="btn-secondary">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
 
       <!-- Assign shift modal -->
@@ -502,6 +501,7 @@
             <button type="button" id="sched-day-close" class="btn-secondary">Close</button>
             <button type="button" id="sched-comment-save" class="btn">Add comment</button>
             <button type="button" id="sched-day-assign" class="btn-secondary">+ Assign shift</button>
+            <button type="button" id="sched-day-report" class="btn-secondary" style="font-size:0.85rem">Run report</button>
           </div>
         </div>
       </div>
@@ -2637,6 +2637,10 @@
           hide($('sched-day-modal'));
           openAssignModal(sched.dayModalDate);
         });
+        $('sched-day-report').addEventListener('click', function () {
+          hide($('sched-day-modal'));
+          if (window.openAuditReport) window.openAuditReport(sched.dayModalDate);
+        });
         $('sched-comment-save').addEventListener('click', function () {
           var text = $('sched-comment-text').value.trim();
           if (!text) return;
@@ -2692,6 +2696,9 @@
       <div class="card">
         <h2>Ask about the schedule</h2>
         <p style="color:var(--dim)">AI schedule assistant — coming in Phase 5.</p>
+      </div>
+      <div style="margin-top:1.5rem;text-align:center">
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
     </section>
 
@@ -4654,6 +4661,9 @@
           </div>
         </div>
       </div>
+      <div style="margin-top:1.5rem;text-align:center">
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+      </div>
     </section>
 
     <!-- Bulk Actions tab -->
@@ -4846,6 +4856,9 @@
         updateBulkSlotVisibility();
       })();
       </script>
+      <div style="margin-top:1.5rem;text-align:center">
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+      </div>
     </section>
 
     <!-- Share Links tab -->
@@ -5279,13 +5292,20 @@
         }
       })();
       </script>
+      <div style="margin-top:1.5rem;text-align:center">
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+      </div>
     </section>
 
+    <!-- Help tab -->
     <!-- Help tab -->
     <section id="tab-help" class="tab-panel">
       <div class="card">
         <h2>Help & How-to</h2>
         <p style="color:var(--dim)">Guides — coming.</p>
+      </div>
+      <div style="margin-top:1.5rem;text-align:center">
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
     </section>
   </main>
@@ -5369,11 +5389,22 @@
     // --- Global: Schedule change report (audit), available from every tab ---
     (function () {
       var modal = $('audit-modal');
-      function openAudit() { show(modal); }
-      var hdr = $('audit-header-btn');
-      if (hdr) hdr.addEventListener('click', openAudit);
-      var bottomBtn = $('audit-report-btn');
-      if (bottomBtn) bottomBtn.addEventListener('click', openAudit);
+      function openAudit(presetDate) {
+        if (presetDate) {
+          // Pre-select single-date mode with the given date.
+          document.querySelector('input[name="audit-mode"][value="date"]').checked = true;
+          $('audit-date-wrap').classList.remove('hidden');
+          $('audit-range-wrap').classList.add('hidden');
+          $('audit-date').value = presetDate;
+        }
+        show(modal);
+      }
+      // Page-bottom buttons (every tab).
+      document.querySelectorAll('.audit-page-btn').forEach(function (b) {
+        b.addEventListener('click', function () { openAudit(); });
+      });
+      // Expose for the day modal.
+      window.openAuditReport = openAudit;
       $('audit-close').addEventListener('click', function () { hide(modal); });
       document.querySelectorAll('input[name="audit-mode"]').forEach(function (r) {
         r.addEventListener('change', function () {
