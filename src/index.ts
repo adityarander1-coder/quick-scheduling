@@ -155,6 +155,8 @@ async function main(): Promise<void> {
   await ensureReady(); // auto-runs pending migrations at boot
   const { startPayrollScheduler } = await import('./util/payrollScheduler.js');
   startPayrollScheduler();
+  const { startEmailPollScheduler } = await import('./util/emailPollScheduler.js');
+  startEmailPollScheduler();
   app.listen(PORT, () => {
     console.log(`[app] Quick Scheduling listening on http://localhost:${PORT}`);
   });
