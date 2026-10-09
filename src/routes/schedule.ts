@@ -1566,4 +1566,125 @@ router.get('/public', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/schedule/open-slots-message — generate a copy-paste message listing
+// open slots for a date range, grouped by shift type (owner/scheduler).
+router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { from, to, shiftTypeIds } = req.body ?? {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    // Get shift types (all active, or filtered).
+    let typeFilter = '';
+    const typeParams: any[] = [companyId];
+    if (Array.isArray(shiftTypeIds) && shiftTypeIds.length) {
+      typeFilter = 'AND st.id = ANY($2::uuid[])';
+      typeParams.push(shiftTypeIds);
+    }
+    const { rows: types } = await query(
+      `SELECT st.id, st.name, st.sort_order AS "sortOrder" FROM shift_types st
+       WHERE st.company_id = $1 AND st.is_active = true ${typeFilter}
+       ORDER BY st.sort_order, st.name`,
+      typeParams
+    );
+    if (!types.length) {
+      res.json({ message: 'No shift types found.' });
+      return;
+    }
+    // Get staffing targets, slot adjustments, closed shifts, and assigned shifts.
+    const { rows: targets } = await query(
+      `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
+              weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+       FROM staffing_targets WHERE company_id = $1`,
+      [companyId]
+    );
+    const { rows: adjustments } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+    const { rows: closed } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+    const { rows: assigned } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*) AS count
+       FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3
+       GROUP BY date, shift_type_id`,
+      [companyId, from, to]
+    );
+    const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
+    const assignedMap = new Map(assigned.map((a: any) => [a.date + '|' + a.shiftTypeId, parseInt(a.count, 10)]));
+    const adjMap = new Map<string, number>();
+    adjustments.forEach((a: any) => {
+      const k = a.date + '|' + a.shiftTypeId;
+      adjMap.set(k, (adjMap.get(k) || 0) + (a.count || 0));
+    });
+    // Build date list.
+    const dates: string[] = [];
+    const d = new Date(from + 'T00:00:00');
+    const end = new Date(to + 'T00:00:00');
+    while (d <= end && dates.length < 93) {
+      dates.push(d.toISOString().slice(0, 10));
+      d.setDate(d.getDate() + 1);
+    }
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function fmtDay(ds: string): string {
+      const dt = new Date(ds + 'T00:00:00');
+      return `${dayNames[dt.getDay()]} ${monthNames[dt.getMonth()]} ${dt.getDate()}`;
+    }
+    // Calculate open slots per type per date.
+    const lines: string[] = [];
+    const fromFmt = fmtDay(from), toFmt = fmtDay(to);
+    lines.push(`Open shifts — ${fromFmt} to ${toFmt}`);
+    lines.push('');
+    let hasAny = false;
+    for (const t of types) {
+      const typeLines: string[] = [];
+      for (const ds of dates) {
+        const key = ds + '|' + t.id;
+        if (closedSet.has(key)) continue;
+        // Find target for this weekday.
+        let target = 0;
+        const dt = new Date(ds + 'T00:00:00');
+        for (const tg of targets) {
+          if (tg.shiftTypeId !== t.id) continue;
+          const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+          if (!weekdays.includes(dt.getDay())) continue;
+          if (tg.startDate && ds < tg.startDate) continue;
+          if (tg.endDate && ds > tg.endDate) continue;
+          target = tg.targetCount || 0;
+          break;
+        }
+        const extra = adjMap.get(key) || 0;
+        if (!target && !extra) continue;
+        const filled = assignedMap.get(key) || 0;
+        const open = Math.max(0, target + extra - filled);
+        if (open > 0) {
+          typeLines.push(`• ${fmtDay(ds)} — ${open} slot${open === 1 ? '' : 's'}`);
+        }
+      }
+      if (typeLines.length) {
+        hasAny = true;
+        lines.push(`*${t.name}*`);
+        lines.push(...typeLines);
+        lines.push('');
+      }
+    }
+    if (!hasAny) {
+      res.json({ message: `No open shifts from ${fromFmt} to ${toFmt}.` });
+      return;
+    }
+    lines.push('Reply to pick up a shift.');
+    res.json({ message: lines.join('\n') });
+  } catch (err) {
+    console.error('[schedule] open-slots-message failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;

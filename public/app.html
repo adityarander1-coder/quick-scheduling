@@ -4869,6 +4869,20 @@
           </div>
         </div>
       </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Open slots message</h3>
+        <p style="color:var(--dim)">Generate a copy-paste message listing open shifts for a date range. Share it in group chats.</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <label>From <input type="date" id="msg-from"></label>
+          <label>To <input type="date" id="msg-to"></label>
+          <button type="button" id="msg-generate" class="btn">Generate message</button>
+        </div>
+        <div id="msg-types" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem"></div>
+        <div id="msg-output-wrap" class="hidden">
+          <pre id="msg-output" style="background:var(--bg);padding:1rem;border-radius:12px;white-space:pre-wrap;font-family:inherit"></pre>
+          <button type="button" id="msg-copy" class="btn-secondary" style="margin-top:0.5rem">Copy message</button>
+        </div>
+      </div>
       <script>
       (function () {
         function isActive() {
@@ -4917,8 +4931,48 @@
             navigator.clipboard.writeText(t).then(done, done);
           } else done();
         });
-        window.addEventListener('hashchange', function () { if (isActive()) refresh(); });
-        if (isActive()) refresh();
+        // --- Open slots message generator ---
+        function loadMsgTypes() {
+          api('/api/schedule/shift-types').then(function (r) {
+            if (!r.ok || !r.data.shiftTypes) return;
+            var box = $('msg-types');
+            box.innerHTML = '';
+            r.data.shiftTypes.forEach(function (st) {
+              var lbl = document.createElement('label');
+              lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
+              var cb = document.createElement('input');
+              cb.type = 'checkbox'; cb.value = st.id; cb.checked = true;
+              cb.className = 'msg-type-cb';
+              lbl.appendChild(cb);
+              lbl.appendChild(document.createTextNode(st.name));
+              box.appendChild(lbl);
+            });
+          }).catch(function () {});
+        }
+        $('msg-generate').addEventListener('click', function () {
+          var f = $('msg-from').value, t = $('msg-to').value;
+          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          var ids = [];
+          document.querySelectorAll('.msg-type-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          api('/api/schedule/open-slots-message', {
+            method: 'POST',
+            body: JSON.stringify({ from: f, to: t, shiftTypeIds: ids }),
+          }).then(function (r) {
+            if (r.ok) {
+              $('msg-output').textContent = r.data.message;
+              $('msg-output-wrap').classList.remove('hidden');
+            } else pageError((r.data && r.data.error) || 'Could not generate message.');
+          }).catch(function () { pageError('Could not generate message.'); });
+        });
+        $('msg-copy').addEventListener('click', function () {
+          var t = $('msg-output').textContent;
+          function done() { pageSuccess('Message copied.'); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(done, done);
+          } else done();
+        });
+        window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); } });
+        if (isActive()) { refresh(); loadMsgTypes(); }
       })();
       </script>
     </section>
