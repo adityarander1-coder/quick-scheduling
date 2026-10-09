@@ -1212,10 +1212,14 @@
         };
         // Global edit function: tap a shift box → open assign popup in edit mode.
         window.qsEditShift = function (sid) {
-          var s = shiftById(sid);
-          if (!s) return;
-          var opened = openAssignModal(s.date, s.shiftTypeId, s);
-          if (opened === false) openPersonActions(sid);
+          try {
+            var s = shiftById(sid);
+            if (!s) return;
+            var opened = openAssignModal(s.date, s.shiftTypeId, s);
+            if (opened === false) openPersonActions(sid);
+          } catch (err) {
+            alert('Error opening shift: ' + (err && err.message));
+          }
         };
         // Global delete function (simple, reliable): restores the delete path
         // that the inline-handler rewrite wired to this name but never defined.
