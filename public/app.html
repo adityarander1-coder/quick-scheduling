@@ -279,6 +279,8 @@
         #tab-schedule .status-pill { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; font-size: 0.75rem; font-weight: 800; cursor: pointer; flex-shrink: 0; }
         #tab-schedule .status-draft { background: #e5e7eb; color: #6b7280; }
         #tab-schedule .status-published { background: #00a9a4; color: #ffffff; }
+        /* Month grid (desktop): calendar layout, roomy day boxes, scroll up/down */
+        #tab-schedule .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
         /* Month strip: horizontal sliding days, side by side */
         #tab-schedule .month-strip-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -1rem; padding: 0.5rem 1rem 1rem; touch-action: pan-x pan-y; scroll-snap-type: x proximity; }
         #tab-schedule .month-strip { display: flex; gap: 0.75rem; }
@@ -965,11 +967,65 @@
         }
 
         function renderMonth(el) {
+          // Desktop: calendar grid with roomy day boxes, scroll up/down.
+          // Phone: horizontal sliding strip, 2 days visible side by side.
+          if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches) {
+            renderMonthStrip(el);
+          } else {
+            renderMonthGrid(el);
+          }
+        }
+
+        function monthDayInner(ds, d, headHtml) {
+          var html = '<div class="day-num">' + headHtml + statusPillHtml(ds) + '</div>';
+          var dayShifts = shiftsFor(ds);
+          dayShifts.forEach(function (s) { html += monthChipHtml(s); });
+          var openTotal = 0;
+          sched.shiftTypes.forEach(function (st) {
+            if (!shiftTypeVisible(st)) return;
+            openTotal += openCountFor(ds, st.id);
+          });
+          if (openTotal) html += '<div class="month-open" title="' + openTotal + ' open position' + (openTotal === 1 ? '' : 's') + '">+' + openTotal + ' open</div>';
+          return html;
+        }
+
+        function renderMonthGrid(el) {
+          var r = viewRange();
+          var first = parseDate(r.from);
+          var gridStart = new Date(first);
+          gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          var html = '<div class="month-grid">';
+          ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
+            html += '<div class="month-dow">' + d + '</div>';
+          });
+          for (var i = 0; i < 42; i++) {
+            var d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+            var ds = fmtDate(d);
+            if (i >= 35 && d.getMonth() !== first.getMonth()) break;
+            var inMonth = d.getMonth() === first.getMonth();
+            var today = fmtDate(new Date()) === ds;
+            var cls = 'day-box' + (inMonth ? '' : ' other-month') + (today ? ' today' : '');
+            html += '<div class="' + cls + '" data-date="' + ds + '">';
+            html += monthDayInner(ds, d, '<span>' + d.getDate() + '</span>');
+            html += '</div>';
+          }
+          html += '</div>';
+          el.innerHTML = html;
+          bindStatusPills(el);
+          el.querySelectorAll('.day-box').forEach(function (box) {
+            box.addEventListener('click', function (e) {
+              if (e.target.closest('.status-pill')) return;
+              openDayModal(box.getAttribute('data-date'));
+            });
+          });
+        }
+
+        function renderMonthStrip(el) {
           var r = viewRange();
           var first = parseDate(r.from);
           var last = parseDate(r.to);
           // Horizontal sliding strip: days side by side, swipe/scroll left-right.
-          // Each day column is sized so at least 2-3 days are always visible.
+          // Each day column is sized so at least 2 days are always visible.
           var html = '<div class="month-strip-wrap"><div class="month-strip">';
           var d = new Date(first);
           var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
