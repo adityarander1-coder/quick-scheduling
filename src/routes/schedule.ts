@@ -2422,4 +2422,18 @@ router.post('/plans/:id/reject', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
+// POST /api/schedule/poll-inbox — check Gmail for new schedule emails (owner/scheduler).
+// Creates pending plans from unread emails. Never modifies the schedule.
+router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { pollInbox } = await import('../util/emailPoller.js');
+    const result = await pollInbox(query, companyId);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    console.error('[schedule] poll inbox failed:', err);
+    res.status(500).json({ error: err.message || 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
