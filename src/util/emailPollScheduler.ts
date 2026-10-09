@@ -20,9 +20,7 @@ async function runPoll(): Promise<void> {
       companyId = rows[0].id as string;
     }
     const result = await pollInbox(query, companyId);
-    if (result.newPlans > 0) {
-      console.log(`[email-poll] Created ${result.newPlans} new plan(s) from ${result.checked} email(s)`);
-    }
+    console.log(`[email-poll] Checked ${result.checked} email(s), created ${result.newPlans} plan(s)`);
     if (result.errors.length > 0) {
       console.log('[email-poll] Errors:', result.errors.join('; '));
     }
