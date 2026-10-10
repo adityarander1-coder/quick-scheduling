@@ -87,7 +87,8 @@ Rules:
   );
 
   if (!res.ok) {
-    throw new Error(`Gemini API error: ${res.status}`);
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`Gemini API error: ${res.status} - ${errBody.substring(0, 500)}`);
   }
 
   const data = await res.json();
