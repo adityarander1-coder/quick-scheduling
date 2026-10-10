@@ -6,6 +6,35 @@ export function isGeminiConfigured(): boolean {
   return !!process.env.GEMINI_API_KEY;
 }
 
+// Cache the working model name after first successful discovery
+let cachedModel: string | null = null;
+
+/** Discover an available model that supports generateContent */
+async function discoverModel(apiKey: string): Promise<string> {
+  if (cachedModel) return cachedModel;
+  if (process.env.GEMINI_MODEL) {
+    cachedModel = process.env.GEMINI_MODEL;
+    return cachedModel;
+  }
+  // List available models and pick the first flash model supporting generateContent
+  const res = await fetch(`${GEMINI_API_BASE}/models?key=${apiKey}`);
+  if (!res.ok) throw new Error(`Gemini list models failed: ${res.status}`);
+  const data = await res.json() as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> };
+  const models = data.models || [];
+  // Prefer flash models (fast & cheap), fall back to any generateContent model
+  const flash = models.find(m =>
+    m.name.toLowerCase().includes('flash') &&
+    m.supportedGenerationMethods?.includes('generateContent')
+  );
+  const anyModel = models.find(m => m.supportedGenerationMethods?.includes('generateContent'));
+  const picked = flash || anyModel;
+  if (!picked) throw new Error('No Gemini models support generateContent for this API key');
+  // name is like "models/gemini-2.5-flash" — strip the prefix
+  cachedModel = picked.name.replace('models/', '');
+  console.log(`[gemini] using model: ${cachedModel}`);
+  return cachedModel;
+}
+
 interface PlanChange {
   action: 'assign' | 'unassign' | 'move' | 'swap';
   person?: string;          // name for assign/unassign
@@ -73,7 +102,7 @@ Rules:
 - If the email is not about schedule changes, return {"changes": [], "summary": "Not a schedule change request.", "confidence": "high", "needsClarification": null}.
 - If critical info is missing (who, when), set confidence to "low" and ask in needsClarification.`;
 
-  const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  const model = await discoverModel(apiKey);
   const res = await fetch(
     `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
     {
