@@ -4,7 +4,7 @@
 import { query } from '../db.js';
 import { pollInbox } from './emailPoller.js';
 
-const POLL_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function runPoll(): Promise<void> {
   if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {

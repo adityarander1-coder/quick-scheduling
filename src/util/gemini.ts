@@ -111,21 +111,33 @@ Rules:
 - If critical info is missing (who, when), set confidence to "low" and ask in needsClarification.`;
 
   const model = await discoverModel(apiKey);
-  const res = await fetch(
-    `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2000 },
-      }),
-    }
-  );
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`Gemini API error: ${res.status} - ${errBody.substring(0, 500)}`);
+  // Retry on 503 (overloaded) with backoff, up to 3 attempts
+  let res: Response | null = null;
+  let lastErr = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 2000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      console.log(`[gemini] 503 overloaded, retrying in ${attempt * 10}s (attempt ${attempt}/3)`);
+      await new Promise(r => setTimeout(r, attempt * 10000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    throw new Error(`Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 500)}`);
   }
 
   const data = await res.json();
