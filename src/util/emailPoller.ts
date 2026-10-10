@@ -85,6 +85,21 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           ]
         );
 
+        // Notify Deepika that a plan is ready for approval
+        try {
+          const { sendMail } = await import('./mailer.js');
+          const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+          await sendMail({
+            to: notifyEmail,
+            subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
+            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${email.from}\nSubject: ${email.subject}\n\nReview and approve in Quick Scheduling → Ask Q-Scheduler → Change plans.\n\nhttps://quick-scheduling.onrender.com`,
+          });
+          console.log(`[email-poll] Notification sent to ${notifyEmail}`);
+        } catch (notifyErr: any) {
+          console.log(`[email-poll] Notification failed: ${notifyErr.message}`);
+          // Don't fail the plan creation if notification fails
+        }
+
         await markImapAsRead(uid);
         result.newPlans++;
       } catch (err: any) {
