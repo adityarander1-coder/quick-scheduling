@@ -2789,9 +2789,11 @@
               var div = document.createElement('div');
               div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
               var when = new Date(p.createdAt).toLocaleString();
+              var fromDisplay = p.fromName ? esc(p.fromName) + ' &lt;' + esc(p.from || '') + '&gt;' : esc(p.from || '—');
+              var ccDisplay = p.cc ? '<br><span style="color:var(--dim);font-size:0.8rem">Cc: ' + esc(p.cc) + '</span>' : '';
               div.innerHTML = '<strong>' + esc(p.subject || 'Email plan') + '</strong><br>' +
                 '<span style="font-size:0.9rem">' + esc(p.summary) + '</span><br>' +
-                '<span style="color:var(--dim);font-size:0.8rem">From ' + esc(p.from || '—') + ' · ' + when + '</span>' +
+                '<span style="color:var(--dim);font-size:0.8rem">From ' + fromDisplay + ' · ' + when + '</span>' + ccDisplay +
                 '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
                 '<button type="button" class="btn-sm" data-act="approve">Approve & apply</button>' +
                 '<button type="button" class="btn-secondary btn-sm" data-act="reject">Reject</button></div>';

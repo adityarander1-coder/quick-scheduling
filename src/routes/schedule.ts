@@ -2354,7 +2354,8 @@ router.get('/plans', requireRole('owner', 'scheduler'), async (req: Request, res
     const companyId = req.session.companyId!;
     const status = String(req.query.status || 'pending');
     const { rows } = await query(
-      `SELECT id, source_from AS "from", source_subject AS "subject",
+      `SELECT id, source_from AS "from", source_from_name AS "fromName", source_cc AS "cc",
+              source_subject AS "subject",
               plan_summary AS "summary", plan, status,
               created_at AS "createdAt", decided_at AS "decidedAt"
        FROM schedule_plans

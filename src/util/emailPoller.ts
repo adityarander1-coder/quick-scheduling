@@ -74,14 +74,16 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
         const rejectToken = crypto.randomBytes(32).toString('hex');
         await query(
           `INSERT INTO schedule_plans
-           (company_id, source_email_id, source_subject, source_from, source_body,
+           (company_id, source_email_id, source_subject, source_from, source_from_name, source_cc, source_body,
             plan_summary, plan, status, approve_token, reject_token, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, NOW())`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW())`,
           [
             companyId,
             uidStr,
             email.subject,
             email.from,
+            email.fromName || null,
+            email.cc || null,
             email.body,
             plan.summary,
             JSON.stringify(plan),
@@ -97,11 +99,13 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
           const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
           const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
+          const fromLine = email.fromName ? `${email.fromName} <${email.from}>` : email.from;
+          const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
           await sendMail({
             to: notifyEmail,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${email.from}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${email.from}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
           });
           console.log(`[email-poll] Notification sent to ${notifyEmail}`);
         } catch (notifyErr: any) {

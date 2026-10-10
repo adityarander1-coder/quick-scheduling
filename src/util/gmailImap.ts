@@ -10,6 +10,8 @@ export interface ImapMessage {
   uid: string;
   subject: string;
   from: string;
+  fromName: string;
+  cc: string;
   date: string;
   body: string;
 }
@@ -76,6 +78,8 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
               uid: String(uid),
               subject: parsed.subject || '',
               from: parsed.from?.text || '',
+              fromName: parsed.from?.value?.[0]?.name || '',
+              cc: parsed.cc?.text || '',
               date: parsed.date?.toISOString() || '',
               body: (parsed.text || '').substring(0, 10000),
             });
