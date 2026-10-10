@@ -93,6 +93,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             to: notifyEmail,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
             text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${email.from}\nSubject: ${email.subject}\n\nReview and approve in Quick Scheduling → Ask Q-Scheduler → Change plans.\n\nhttps://quick-scheduling.onrender.com`,
+            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${email.from}<br>Subject: ${email.subject}</p><p><a href="https://quick-scheduling.onrender.com">Review in Quick Scheduling → Ask Q-Scheduler → Change plans</a></p>`,
           });
           console.log(`[email-poll] Notification sent to ${notifyEmail}`);
         } catch (notifyErr: any) {
