@@ -73,8 +73,9 @@ Rules:
 - If the email is not about schedule changes, return {"changes": [], "summary": "Not a schedule change request.", "confidence": "high", "needsClarification": null}.
 - If critical info is missing (who, when), set confidence to "low" and ask in needsClarification.`;
 
+  const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
   const res = await fetch(
-    `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
