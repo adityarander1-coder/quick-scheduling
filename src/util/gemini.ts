@@ -16,19 +16,27 @@ async function discoverModel(apiKey: string): Promise<string> {
     cachedModel = process.env.GEMINI_MODEL;
     return cachedModel;
   }
-  // List available models and pick the first flash model supporting generateContent
+  // List available models and pick the best one supporting generateContent.
+  // Prefer newer models (higher version numbers) as older ones get retired.
   const res = await fetch(`${GEMINI_API_BASE}/models?key=${apiKey}`);
   if (!res.ok) throw new Error(`Gemini list models failed: ${res.status}`);
   const data = await res.json() as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> };
-  const models = data.models || [];
-  // Prefer flash models (fast & cheap), fall back to any generateContent model
-  const flash = models.find(m =>
-    m.name.toLowerCase().includes('flash') &&
+  const models = (data.models || []).filter(m =>
     m.supportedGenerationMethods?.includes('generateContent')
   );
-  const anyModel = models.find(m => m.supportedGenerationMethods?.includes('generateContent'));
-  const picked = flash || anyModel;
-  if (!picked) throw new Error('No Gemini models support generateContent for this API key');
+  if (!models.length) throw new Error('No Gemini models support generateContent for this API key');
+  // Sort by version number descending (e.g. 3.8 > 2.5 > 1.5), prefer flash models
+  const versionOf = (name: string) => {
+    const m = name.match(/gemini-(\d+)\.(\d+)/);
+    return m ? parseInt(m[1]) * 100 + parseInt(m[2]) : 0;
+  };
+  models.sort((a, b) => {
+    const aFlash = a.name.toLowerCase().includes('flash') ? 1 : 0;
+    const bFlash = b.name.toLowerCase().includes('flash') ? 1 : 0;
+    if (aFlash !== bFlash) return bFlash - aFlash;
+    return versionOf(b.name) - versionOf(a.name);
+  });
+  const picked = models[0];
   // name is like "models/gemini-2.5-flash" — strip the prefix
   cachedModel = picked.name.replace('models/', '');
   console.log(`[gemini] using model: ${cachedModel}`);
