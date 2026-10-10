@@ -5,6 +5,7 @@
 
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
+import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
@@ -68,12 +69,14 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           continue;
         }
 
-        // Create pending plan
+        // Create pending plan with secure approve/reject tokens
+        const approveToken = crypto.randomBytes(32).toString('hex');
+        const rejectToken = crypto.randomBytes(32).toString('hex');
         await query(
           `INSERT INTO schedule_plans
            (company_id, source_email_id, source_subject, source_from, source_body,
-            plan_summary, plan, status, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())`,
+            plan_summary, plan, status, approve_token, reject_token, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, NOW())`,
           [
             companyId,
             uidStr,
@@ -82,6 +85,8 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             email.body,
             plan.summary,
             JSON.stringify(plan),
+            approveToken,
+            rejectToken,
           ]
         );
 
@@ -89,11 +94,14 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
         try {
           const { sendMail } = await import('./mailer.js');
           const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+          const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+          const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
+          const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
           await sendMail({
             to: notifyEmail,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${email.from}\nSubject: ${email.subject}\n\nReview and approve in Quick Scheduling → Ask Q-Scheduler → Change plans.\n\nhttps://quick-scheduling.onrender.com`,
-            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${email.from}<br>Subject: ${email.subject}</p><p><a href="https://quick-scheduling.onrender.com">Review in Quick Scheduling → Ask Q-Scheduler → Change plans</a></p>`,
+            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${email.from}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${email.from}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
           });
           console.log(`[email-poll] Notification sent to ${notifyEmail}`);
         } catch (notifyErr: any) {
