@@ -74,7 +74,7 @@ Rules:
 - If critical info is missing (who, when), set confidence to "low" and ask in needsClarification.`;
 
   const res = await fetch(
-    `${GEMINI_API_BASE}/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `${GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
