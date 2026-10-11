@@ -70,14 +70,15 @@ export async function querySchedule(
     const personName = byDate[sortedDates[0]][0].personName;
     lines.push(`${personName}'s schedule:`);
     for (const d of sortedDates) {
-      const shiftList = byDate[d].map(s => s.shiftTypeName).join(', ');
+      const shiftList = byDate[d].map(s => `${s.shiftTypeName}${s.published ? '' : ' (draft)'}`).join(', ');
       lines.push(`  • ${fmtDate(d, true)}: ${shiftList}`);
     }
   } else {
     for (const d of sortedDates) {
       lines.push(`${fmtDate(d)}:`);
       for (const s of byDate[d]) {
-        lines.push(`  • ${s.personName} — ${s.shiftTypeName}`);
+        const status = s.published ? '' : ' (draft)';
+        lines.push(`  • ${s.personName} — ${s.shiftTypeName}${status}`);
       }
     }
   }
