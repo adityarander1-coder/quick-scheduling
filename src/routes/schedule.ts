@@ -2438,35 +2438,8 @@ router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Reques
 });
 
 // GET /api/schedule/plans/approve/:token — approve via email link (no login, token is auth).
-// Shows a confirmation page.
+// One-tap: executes immediately.
 router.get('/plans/approve/:token', async (req: Request, res: Response) => {
-  try {
-    const { rows } = await query(
-      `SELECT id, plan_summary, status FROM schedule_plans WHERE approve_token = $1`,
-      [req.params.token]
-    );
-    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
-    const plan = rows[0];
-    if (plan.status !== 'pending') {
-      return res.send(`<h1>Already ${plan.status}</h1><p>This plan was already ${plan.status}.</p>`);
-    }
-    res.send(`
-      <html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;">
-        <h1>Approve schedule change?</h1>
-        <p><strong>${plan.plan_summary}</strong></p>
-        <form method="POST" action="/api/schedule/plans/approve/${req.params.token}">
-          <button type="submit" style="background:#22c55e;color:white;padding:12px 24px;border:none;border-radius:5px;font-size:16px;cursor:pointer;">Approve & Apply</button>
-        </form>
-        <p><a href="/api/schedule/plans/reject/${plan.id}">Reject instead</a></p>
-      </body></html>
-    `);
-  } catch (err) {
-    res.status(500).send('<h1>Error</h1>');
-  }
-});
-
-// POST /api/schedule/plans/approve/:token — execute approval via email link.
-router.post('/plans/approve/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
       `SELECT id, company_id, plan, status FROM schedule_plans WHERE approve_token = $1`,
@@ -2475,7 +2448,7 @@ router.post('/plans/approve/:token', async (req: Request, res: Response) => {
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
     const plan = rows[0];
     if (plan.status !== 'pending') {
-      return res.send(`<h1>Already ${plan.status}</h1>`);
+      return res.send(`<h1>Already ${plan.status}</h1><p>This plan was already ${plan.status}.</p>`);
     }
     // Execute the plan
     const { executePlan } = await import('../util/planExecutor.js');
@@ -2485,7 +2458,7 @@ router.post('/plans/approve/:token', async (req: Request, res: Response) => {
       `UPDATE schedule_plans SET status = 'approved', decided_at = now(), executed_at = now() WHERE id = $1`,
       [plan.id]
     );
-    res.send(`<h1>Approved & Applied</h1><p>${succeeded} of ${results.length} changes applied.</p>`);
+    res.send(`<h1>Approved & Applied</h1><p>${succeeded} of ${results.length} change(s) applied to the schedule.</p>`);
   } catch (err: any) {
     console.error('[schedule] email approve failed:', err);
     res.status(500).send(`<h1>Error</h1><p>${err.message}</p>`);
