@@ -16,9 +16,10 @@ type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 export async function pollInbox(query: QueryFn, companyId: string): Promise<{
   checked: number;
   newPlans: number;
+  questionsAnswered: number;
   errors: string[];
 }> {
-  const result = { checked: 0, newPlans: 0, errors: [] as string[] };
+  const result = { checked: 0, newPlans: 0, questionsAnswered: 0, errors: [] as string[] };
 
   // Check if Gmail IMAP is configured
   if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
@@ -63,8 +64,42 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           today,
         });
 
+        // Handle schedule questions: query and reply directly to sender
+        if (plan.emailType === 'schedule_question' && plan.question) {
+          try {
+            const { querySchedule } = await import('./scheduleQuery.js');
+            const { answer, found } = await querySchedule(query, companyId, plan.question);
+            const { sendMail } = await import('./mailer.js');
+
+            // Extract sender email address (from "Name <email>" or plain email)
+            const senderMatch = email.from.match(/<([^>]+)>/) || [null, email.from.trim()];
+            const senderEmail = (senderMatch[1] || '').trim();
+
+            if (senderEmail && senderEmail.includes('@')) {
+              const dateRange = plan.question.startDate
+                ? (plan.question.startDate === plan.question.endDate
+                    ? plan.question.startDate
+                    : `${plan.question.startDate} to ${plan.question.endDate}`)
+                : 'the requested dates';
+              await sendMail({
+                to: senderEmail,
+                subject: `Re: ${email.subject}`,
+                text: `Hi,\n\nHere's the schedule for ${dateRange}:\n\n${answer}\n\n— Quick Scheduling`,
+                html: `<p>Hi,</p><p>Here's the schedule for <strong>${dateRange}</strong>:</p><pre style="font-family:sans-serif;white-space:pre-wrap;">${answer}</pre><p>— Quick Scheduling</p>`,
+              });
+              console.log(`[email-poll] Schedule answer sent to ${senderEmail}`);
+              result.questionsAnswered++;
+            }
+          } catch (qErr: any) {
+            console.log(`[email-poll] Question answering failed: ${qErr.message}`);
+            result.errors.push(`Message ${uid}: question answering failed: ${qErr.message}`);
+          }
+          await markImapAsRead(uid);
+          continue;
+        }
+
         // Skip if not a schedule change
-        if (!plan.changes || plan.changes.length === 0) {
+        if (plan.emailType !== 'change_request' || !plan.changes || plan.changes.length === 0) {
           await markImapAsRead(uid);
           continue;
         }

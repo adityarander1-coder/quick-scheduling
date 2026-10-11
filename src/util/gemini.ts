@@ -59,10 +59,19 @@ export interface SchedulePlan {
   summary: string;
   confidence: 'high' | 'medium' | 'low';
   needsClarification?: string; // question to ask if ambiguous
+  emailType: 'change_request' | 'schedule_question' | 'other';
+  question?: {
+    kind: 'schedule_for_dates' | 'who_is_on' | 'person_schedule' | 'general';
+    startDate?: string;  // YYYY-MM-DD
+    endDate?: string;    // YYYY-MM-DD
+    person?: string;     // person name if asking about someone
+    shiftType?: string;  // shift type if specified
+  };
 }
 
 /**
- * Ask Gemini to parse an email into a structured schedule change plan.
+ * Ask Gemini to parse an email into a structured schedule change plan,
+ * or classify it as a schedule question or unrelated.
  * Returns the plan, or a clarification request if the email is ambiguous.
  */
 export async function planFromEmail(
@@ -73,7 +82,7 @@ export async function planFromEmail(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('Gemini API key not configured.');
 
-  const prompt = `You are a scheduling assistant. Parse this email into a structured schedule change plan.
+  const prompt = `You are a scheduling assistant. Classify this email and parse it accordingly.
 
 Today's date: ${context.today}
 
@@ -84,8 +93,14 @@ Email subject: ${emailSubject}
 Email body:
 ${emailBody}
 
+First, classify the email into one of:
+- "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts)
+- "schedule_question": the sender is asking about the schedule (who is working when, what is the schedule for certain dates)
+- "other": not related to scheduling
+
 Respond with JSON only, no other text:
 {
+  "emailType": "change_request|schedule_question|other",
   "changes": [
     {
       "action": "assign|unassign|move|swap",
@@ -98,17 +113,22 @@ Respond with JSON only, no other text:
       "shiftType": "Shift type name"
     }
   ],
-  "summary": "Plain-language summary of the proposed changes",
+  "summary": "Plain-language summary of the proposed changes, or the question being asked",
   "confidence": "high|medium|low",
-  "needsClarification": "Question to ask if anything is ambiguous, or null"
+  "needsClarification": "Question to ask if anything is ambiguous, or null",
+  "question": {
+    "kind": "schedule_for_dates|who_is_on|person_schedule|general",
+    "startDate": "YYYY-MM-DD or null",
+    "endDate": "YYYY-MM-DD or null",
+    "person": "Person name or null",
+    "shiftType": "Shift type name or null"
+  }
 }
 
 Rules:
-- Resolve relative dates (Friday, tomorrow, next week) against today's date.
-- Match person names fuzzily against the team member list.
-- Match shift descriptions (night, day) against shift type names.
-- If the email is not about schedule changes, return {"changes": [], "summary": "Not a schedule change request.", "confidence": "high", "needsClarification": null}.
-- If critical info is missing (who, when), set confidence to "low" and ask in needsClarification.`;
+- For "change_request": fill in "changes". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
+- For "schedule_question": set "changes" to []. Fill in "question" with parsed details. Resolve relative dates against today's date. Examples: "who is working Oct 12" → kind "who_is_on", startDate=endDate="2026-10-12". "Schedule for Oct 11-13" → kind "schedule_for_dates" with startDate/endDate. "When is John working" → kind "person_schedule" with person name.
+- For "other": set "changes" to [], "question" to null, summary to "Not schedule related.", confidence to "high".`;
 
   const model = await discoverModel(apiKey);
 
@@ -145,5 +165,10 @@ Rules:
   // Extract JSON from response (may have markdown code fences).
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini did not return valid JSON.');
-  return JSON.parse(jsonMatch[0]) as SchedulePlan;
+  const parsed = JSON.parse(jsonMatch[0]) as SchedulePlan;
+  // Backwards compatibility: default emailType if missing
+  if (!parsed.emailType) {
+    parsed.emailType = (parsed.changes && parsed.changes.length > 0) ? 'change_request' : 'other';
+  }
+  return parsed;
 }
