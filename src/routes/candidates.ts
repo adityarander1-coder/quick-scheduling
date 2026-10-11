@@ -176,10 +176,11 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
     }
 
     const id = crypto.randomUUID();
+    const reviewToken = crypto.randomBytes(32).toString('hex');
     await query(
       `INSERT INTO candidates
-         (id, company_id, name, nickname, email, phone, department_id, job_role, notes, special_instructions, avatar_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         (id, company_id, name, nickname, email, phone, department_id, job_role, notes, special_instructions, avatar_data, review_token)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         id,
         companyId,
@@ -192,10 +193,30 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
         String(notes ?? '').trim() || null,
         String(specialInstructions ?? '').trim().slice(0, 500) || null,
         validateAvatar(avatarData),
+        reviewToken,
       ]
     );
     const { rows } = await query(CANDIDATE_SELECT + ` WHERE c.id = $1`, [id]);
     const warnings = await nameWarningsFor(companyId, cleanName, id);
+
+    // Notify Deepika with review link (approve/reject/edit from email)
+    try {
+      const { sendMail } = await import('../util/mailer.js');
+      const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+      const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+      const reviewUrl = `${baseUrl}/api/candidates/review/${reviewToken}`;
+      const warningLine = warnings.length ? `\nName warnings: ${warnings.map((w: any) => w.message || w).join('; ')}` : '';
+      await sendMail({
+        to: notifyEmail,
+        subject: `New candidate application: ${cleanName}`,
+        text: `A new candidate applied for ${co[0].name}.\n\nName: ${cleanName}\nEmail: ${cleanEmail}\nPhone: ${String(phone ?? '').trim() || '—'}\nRole: ${String(jobRole ?? '').trim() || '—'}${warningLine}\n\nReview, edit, approve or reject:\n${reviewUrl}`,
+        html: `<p>A new candidate applied for <strong>${co[0].name}</strong>.</p><p><strong>${cleanName}</strong><br>Email: ${cleanEmail}<br>Phone: ${String(phone ?? '').trim() || '—'}<br>Role: ${String(jobRole ?? '').trim() || '—'}${warnings.length ? `<br><span style="color:#d97706">Warnings: ${warnings.map((w: any) => w.message || w).join('; ')}</span>` : ''}</p><p><a href="${reviewUrl}" style="background:#3b82f6;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Review Application</a></p>`,
+      });
+      console.log(`[candidates] Review notification sent to ${notifyEmail}`);
+    } catch (notifyErr: any) {
+      console.log(`[candidates] Notification failed: ${notifyErr.message}`);
+    }
+
     res.status(201).json({
       candidate: publicCandidate(rows[0]),
       company: { id: co[0].id, name: co[0].name },
@@ -204,6 +225,121 @@ router.post('/', publicLimit(10), async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[candidates] submit failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Public email review — no login, token is auth. View/edit/approve/reject.
+// ---------------------------------------------------------------------------
+
+// GET /api/candidates/review/:token — review page with edit form.
+router.get('/review/:token', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      `SELECT c.*, co.name AS company_name FROM candidates c
+       JOIN companies co ON co.id = c.company_id
+       WHERE c.review_token = $1`,
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
+    const c = rows[0];
+    if (c.status !== 'pending') {
+      return res.send(`<h1>Already ${c.status}</h1><p>This application was already ${c.status}.</p>`);
+    }
+    const esc = (s: any) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    res.send(`
+      <html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;">
+        <h1>Candidate Application</h1>
+        <p>Applied for <strong>${esc(c.company_name)}</strong> on ${new Date(c.created_at).toLocaleString()}</p>
+        <form method="POST" action="/api/candidates/review/${req.params.token}">
+          <p><label>Name<br><input name="name" value="${esc(c.name)}" style="width:100%;padding:8px" required></label></p>
+          <p><label>Email<br><input name="email" type="email" value="${esc(c.email)}" style="width:100%;padding:8px" required></label></p>
+          <p><label>Phone<br><input name="phone" value="${esc(c.phone)}" style="width:100%;padding:8px"></label></p>
+          <p><label>Job Role<br><input name="job_role" value="${esc(c.job_role)}" style="width:100%;padding:8px"></label></p>
+          <p><label>Notes<br><textarea name="notes" style="width:100%;padding:8px" rows="3">${esc(c.notes)}</textarea></label></p>
+          <div style="display:flex;gap:10px;margin-top:20px;">
+            <button type="submit" name="action" value="approve" style="background:#22c55e;color:white;padding:12px 24px;border:none;border-radius:5px;font-size:16px;cursor:pointer;">Approve</button>
+            <button type="submit" name="action" value="save" style="background:#3b82f6;color:white;padding:12px 24px;border:none;border-radius:5px;font-size:16px;cursor:pointer;">Save Changes</button>
+            <button type="submit" name="action" value="reject" style="background:#ef4444;color:white;padding:12px 24px;border:none;border-radius:5px;font-size:16px;cursor:pointer;" onclick="return confirm('Reject this application?')">Reject</button>
+          </div>
+        </form>
+      </body></html>
+    `);
+  } catch (err) {
+    res.status(500).send('<h1>Error</h1>');
+  }
+});
+
+// POST /api/candidates/review/:token — save edits, approve, or reject.
+router.post('/review/:token', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(`SELECT * FROM candidates WHERE review_token = $1`, [req.params.token]);
+    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
+    const c = rows[0];
+    if (c.status !== 'pending') return res.send(`<h1>Already ${c.status}</h1>`);
+
+    const action = req.body.action;
+    // Save edits first (applies to save and approve)
+    if (action === 'save' || action === 'approve') {
+      const name = String(req.body.name ?? '').trim();
+      const email = String(req.body.email ?? '').trim();
+      if (!name || !EMAIL_RE.test(email)) {
+        return res.send('<h1>Invalid input</h1><p>Name and a valid email are required.</p><p><a href="javascript:history.back()">Go back</a></p>');
+      }
+      await query(
+        `UPDATE candidates SET name = $1, email = $2, phone = $3, job_role = $4, notes = $5 WHERE id = $6`,
+        [name, email, String(req.body.phone ?? '').trim() || null, String(req.body.job_role ?? '').trim() || null, String(req.body.notes ?? '').trim() || null, c.id]
+      );
+    }
+
+    if (action === 'reject') {
+      await query(`UPDATE candidates SET status = 'declined', decided_at = now() WHERE id = $1`, [c.id]);
+      return res.send('<h1>Rejected</h1><p>The application was declined.</p>');
+    }
+    if (action === 'save') {
+      return res.send('<h1>Saved</h1><p>Changes saved. The application is still pending.</p><p><a href="/api/candidates/review/' + req.params.token + '">Back to review</a></p>');
+    }
+    if (action === 'approve') {
+      // Create employee user from candidate (same as admin approve flow)
+      const { rows: updated } = await query(`SELECT * FROM candidates WHERE id = $1`, [c.id]);
+      const cand = updated[0];
+      const email = String(cand.email ?? '').trim();
+      if (!email) return res.send('<h1>Cannot approve</h1><p>Add an email address first.</p>');
+      const taken = await query(`SELECT id FROM users WHERE lower(email) = lower($1)`, [email]);
+      if ((taken.rowCount ?? 0) > 0) return res.send('<h1>Cannot approve</h1><p>An account with that email already exists.</p>');
+
+      const nameSplit = splitName(cand.name);
+      const inviteHash = await unusablePasswordHash();
+      const userId = crypto.randomUUID();
+      await query(
+        `INSERT INTO users
+           (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, avatar_data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'employee', $12, $13)`,
+        [
+          userId,
+          cand.company_id,
+          nameSplit.first,
+          nameSplit.last,
+          joinName(nameSplit.first, nameSplit.last),
+          cand.nickname,
+          email,
+          cand.phone,
+          cand.department_id,
+          cand.job_role,
+          inviteHash,
+          cand.special_instructions,
+          cand.avatar_data,
+        ]
+      );
+      await query(`UPDATE candidates SET status = 'approved', decided_at = now() WHERE id = $1`, [c.id]);
+      const { issueInvite } = await import('../util/invites.js');
+      await issueInvite(userId, cand.company_id);
+      return res.send('<h1>Approved</h1><p>An invitation email was sent to the candidate to set up their account.</p>');
+    }
+    res.send('<h1>Unknown action</h1>');
+  } catch (err: any) {
+    console.error('[candidates] review action failed:', err);
+    res.status(500).send(`<h1>Error</h1><p>${err.message}</p>`);
   }
 });
 
