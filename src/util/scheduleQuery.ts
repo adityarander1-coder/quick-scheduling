@@ -1,5 +1,7 @@
 // util/scheduleQuery.ts — answer schedule questions from emails.
-// Queries published shifts and formats answers.
+// Uses shared shiftRange logic (manual + rotation-generated shifts).
+
+import { getShiftsForRange } from './shiftRange.js';
 
 interface Question {
   kind: 'schedule_for_dates' | 'who_is_on' | 'person_schedule' | 'general';
@@ -7,13 +9,6 @@ interface Question {
   endDate?: string;
   person?: string;
   shiftType?: string;
-}
-
-interface ShiftRow {
-  date: string;
-  person_name: string;
-  shift_type: string;
-  published: boolean;
 }
 
 export async function querySchedule(
@@ -27,42 +22,27 @@ export async function querySchedule(
   let startDate = q.startDate;
   let endDate = q.endDate || q.startDate;
   if (!startDate) {
-    // Default to today + 7 days for general questions
     const today = new Date().toISOString().split('T')[0];
     startDate = today;
     endDate = today;
   }
 
-  // Build the query
-  let sql = `
-    SELECT s.date::text AS date,
-           COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS person_name,
-           st.name AS shift_type,
-           s.published
-    FROM shifts s
-    JOIN users u ON u.id = s.user_id
-    JOIN shift_types st ON st.id = s.shift_type_id
-    WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
-  `;
-  const params: any[] = [companyId, startDate, endDate];
+  // Get all shifts (manual + rotation) for the range
+  let shifts = await getShiftsForRange(query, companyId, startDate!, endDate!);
 
   // Filter by person if specified
   if (q.person) {
-    params.push(`%${q.person}%`);
-    sql += ` AND (u.first_name || ' ' || u.last_name ILIKE $${params.length} OR u.nickname ILIKE $${params.length})`;
+    const needle = q.person.toLowerCase();
+    shifts = shifts.filter(s => s.personName.toLowerCase().includes(needle));
   }
 
   // Filter by shift type if specified
   if (q.shiftType) {
-    params.push(`%${q.shiftType}%`);
-    sql += ` AND st.name ILIKE $${params.length}`;
+    const needle = q.shiftType.toLowerCase();
+    shifts = shifts.filter(s => s.shiftTypeName.toLowerCase().includes(needle));
   }
 
-  sql += ` ORDER BY s.date, st.name, person_name`;
-
-  const { rows } = await query(sql, params) as { rows: ShiftRow[] };
-
-  if (!rows.length) {
+  if (!shifts.length) {
     const dateStr = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
     return {
       answer: `No shifts found for ${dateStr}${q.person ? ` for ${q.person}` : ''}.`,
@@ -70,42 +50,34 @@ export async function querySchedule(
     };
   }
 
-  // Format the answer
-  const byDate: Record<string, ShiftRow[]> = {};
-  for (const r of rows) {
-    if (!byDate[r.date]) byDate[r.date] = [];
-    byDate[r.date].push(r);
+  // Group by date
+  const byDate: Record<string, typeof shifts> = {};
+  for (const s of shifts) {
+    if (!byDate[s.date]) byDate[s.date] = [];
+    byDate[s.date].push(s);
   }
 
   const lines: string[] = [];
   const sortedDates = Object.keys(byDate).sort();
+  const fmtDate = (d: string, short = false) => {
+    const dateObj = new Date(d + 'T12:00:00');
+    return dateObj.toLocaleDateString('en-US', short
+      ? { weekday: 'short', month: 'short', day: 'numeric' }
+      : { weekday: 'long', month: 'short', day: 'numeric' });
+  };
 
-  if (kind === 'who_is_on' || kind === 'schedule_for_dates') {
-    for (const d of sortedDates) {
-      const dateObj = new Date(d + 'T12:00:00');
-      const dateLabel = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-      lines.push(`${dateLabel}:`);
-      for (const s of byDate[d]) {
-        lines.push(`  • ${s.person_name} — ${s.shift_type}`);
-      }
-    }
-  } else if (kind === 'person_schedule') {
-    const personName = byDate[sortedDates[0]][0].person_name;
+  if (kind === 'person_schedule' && sortedDates.length) {
+    const personName = byDate[sortedDates[0]][0].personName;
     lines.push(`${personName}'s schedule:`);
     for (const d of sortedDates) {
-      const dateObj = new Date(d + 'T12:00:00');
-      const dateLabel = dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-      const shifts = byDate[d].map(s => s.shift_type).join(', ');
-      lines.push(`  • ${dateLabel}: ${shifts}`);
+      const shiftList = byDate[d].map(s => s.shiftTypeName).join(', ');
+      lines.push(`  • ${fmtDate(d, true)}: ${shiftList}`);
     }
   } else {
-    // General: list all
     for (const d of sortedDates) {
-      const dateObj = new Date(d + 'T12:00:00');
-      const dateLabel = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-      lines.push(`${dateLabel}:`);
+      lines.push(`${fmtDate(d)}:`);
       for (const s of byDate[d]) {
-        lines.push(`  • ${s.person_name} — ${s.shift_type}`);
+        lines.push(`  • ${s.personName} — ${s.shiftTypeName}`);
       }
     }
   }
