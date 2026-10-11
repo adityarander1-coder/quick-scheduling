@@ -12,12 +12,21 @@ async function runPoll(): Promise<void> {
     return;
   }
   try {
-    // Use configured company, or fall back to the first company
+    // Use configured company, or fall back to the company with the most active users
+    // (the first-created company is often a test company)
     let companyId = process.env.GMAIL_COMPANY_ID as string;
     if (!companyId) {
-      const { rows } = await query(`SELECT id FROM companies ORDER BY created_at LIMIT 1`);
+      const { rows } = await query(`
+        SELECT c.id, c.name, COUNT(u.id) AS user_count
+        FROM companies c
+        LEFT JOIN users u ON u.company_id = c.id AND u.is_active = true
+        GROUP BY c.id, c.name
+        ORDER BY user_count DESC, c.created_at DESC
+        LIMIT 1
+      `);
       if (rows.length === 0) return;
       companyId = rows[0].id as string;
+      console.log(`[email-poll] Using company: ${rows[0].name} (${rows[0].user_count} users)`);
     }
     const result = await pollInbox(query, companyId);
     console.log(`[email-poll] Checked ${result.checked} email(s), created ${result.newPlans} plan(s)`);
