@@ -73,12 +73,20 @@
       margin-bottom: 0.8rem;
     }
     .brand {
-      font-size: 1.45rem;
+      line-height: 1.25;
+    }
+    .brand .product-name {
+      font-size: 1.5rem;
       font-weight: 800;
       color: #fff;
       letter-spacing: 0.01em;
     }
-    .brand span { font-weight: 700; color: #fff; font-size: 1.15rem; }
+    .brand .company-line {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .brand .company-line span:last-child { font-weight: 700; }
     .user-chip {
       font-size: 0.85rem;
       color: rgba(255,255,255,0.75);
@@ -271,7 +279,7 @@
 <body>
   <header class="app-header">
     <div class="brand-row">
-      <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
+      <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
