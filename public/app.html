@@ -4503,19 +4503,32 @@
                 var html = '';
                 shiftTypes.forEach(function (st, i) {
                   var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
-                  html += '<div class="shift-row">' +
+                  var deleted = st.isActive === false;
+                  html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
-                    '<label>' + esc(st.name) + '</label>' +
+                    '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') + '</label>' +
                     '<div style="max-width:200px">' + deptDropdownHTML(deptIds, 'row' + i) + '</div>' +
                     '<div class="time-inputs">' +
-                      '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '">' +
+                      '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '"' + (deleted ? ' disabled' : '') + '>' +
                       '<span>to</span>' +
-                      '<input type="time" id="shift-end-' + i + '" value="' + esc(st.endTime || '20:00') + '">' +
+                      '<input type="time" id="shift-end-' + i + '" value="' + esc(st.endTime || '20:00') + '"' + (deleted ? ' disabled' : '') + '>' +
                     '</div>' +
-                    '<button type="button" class="btn-secondary shift-del-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Delete</button>' +
+                    (deleted
+                      ? '<button type="button" class="btn shift-restore-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Restore</button>'
+                      : '<button type="button" class="btn-secondary shift-del-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Delete</button>') +
                     '</div>';
                 });
                 $('shift-shifts-list').innerHTML = html;
+                $('shift-shifts-list').querySelectorAll('.shift-restore-btn').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var name = b.getAttribute('data-name');
+                    api('/api/schedule/shift-types/' + b.getAttribute('data-id') + '/restore', { method: 'POST' })
+                      .then(function (r) {
+                        if (r.ok) { pageSuccess('"' + name + '" restored.'); loadAll(); }
+                        else pageError((r.data && r.data.error) || 'Could not restore.');
+                      });
+                  });
+                });
                 $('shift-shifts-list').querySelectorAll('.shift-del-btn').forEach(function (b) {
                   b.addEventListener('click', function () {
                     var name = b.getAttribute('data-name');

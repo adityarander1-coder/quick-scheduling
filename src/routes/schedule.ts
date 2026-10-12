@@ -1666,6 +1666,22 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
   }
 });
 
+// POST /api/schedule/shift-types/:id/restore — reactivate a soft-deleted shift type.
+router.post('/shift-types/:id/restore', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rowCount } = await query(
+      'UPDATE shift_types SET is_active = true WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] restore shift type failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Employee Link — public schedule sharing
 // ---------------------------------------------------------------------------
