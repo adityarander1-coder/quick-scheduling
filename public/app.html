@@ -209,6 +209,19 @@
     }
     .alert-error { background: #fde8e8; color: #9b1c1c; border: 1px solid #f5c6c6; }
     .alert-success { background: #e6f7f0; color: #137f72; border: 1px solid #b8e6d4; }
+    /* Help image carousel */
+    .help-carousel { position: relative; margin: 1rem 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: var(--bg); }
+    .help-carousel-track { display: flex; transition: transform 0.3s ease; }
+    .help-carousel-slide { min-width: 100%; box-sizing: border-box; }
+    .help-carousel-slide img { width: 100%; display: block; }
+    .help-carousel-slide .cap { padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--dim); text-align: center; }
+    .help-carousel-btn { position: absolute; top: 40%; transform: translateY(-50%); background: rgba(0,0,0,0.55); color: #fff; border: none; border-radius: 50%; width: 36px; height: 36px; font-size: 1.2rem; cursor: pointer; z-index: 2; }
+    .help-carousel-btn:hover { background: rgba(0,0,0,0.75); }
+    .help-carousel-prev { left: 8px; }
+    .help-carousel-next { right: 8px; }
+    .help-carousel-dots { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; z-index: 2; }
+    .help-carousel-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.5); margin: 0 3px; cursor: pointer; border: none; padding: 0; }
+    .help-carousel-dot.active { background: #fff; }
   </style>
 </head>
 <body>
@@ -5512,6 +5525,63 @@
 
   <script>
     // (Shared utilities $, show, hide, api, pageError, pageSuccess, esc are defined in <head>.)
+
+    // Help image carousels: next/previous buttons + dots for topics with multiple images.
+    // Usage: <div class="help-carousel"><div class="help-carousel-track">
+    //          <div class="help-carousel-slide"><img src="..."><div class="cap">Caption</div></div>
+    //          ... more slides ...
+    //        </div></div>
+    // Buttons and dots are added automatically by initHelpCarousels().
+    function initHelpCarousels() {
+      document.querySelectorAll('.help-carousel').forEach(function(car) {
+        if (car.dataset.init) return;
+        car.dataset.init = '1';
+        var track = car.querySelector('.help-carousel-track');
+        var slides = car.querySelectorAll('.help-carousel-slide');
+        if (!track || slides.length < 2) return;
+        var idx = 0;
+        function go(n) {
+          idx = (n + slides.length) % slides.length;
+          track.style.transform = 'translateX(-' + (idx * 100) + '%)';
+          car.querySelectorAll('.help-carousel-dot').forEach(function(d, i) {
+            d.classList.toggle('active', i === idx);
+          });
+        }
+        var prev = document.createElement('button');
+        prev.type = 'button'; prev.className = 'help-carousel-btn help-carousel-prev';
+        prev.innerHTML = '&#8249;'; prev.setAttribute('aria-label', 'Previous image');
+        prev.onclick = function() { go(idx - 1); };
+        var next = document.createElement('button');
+        next.type = 'button'; next.className = 'help-carousel-btn help-carousel-next';
+        next.innerHTML = '&#8250;'; next.setAttribute('aria-label', 'Next image');
+        next.onclick = function() { go(idx + 1); };
+        car.appendChild(prev); car.appendChild(next);
+        var dots = document.createElement('div');
+        dots.className = 'help-carousel-dots';
+        slides.forEach(function(_, i) {
+          var dot = document.createElement('button');
+          dot.type = 'button'; dot.className = 'help-carousel-dot' + (i === 0 ? ' active' : '');
+          dot.setAttribute('aria-label', 'Go to image ' + (i + 1));
+          dot.onclick = function() { go(i); };
+          dots.appendChild(dot);
+        });
+        car.appendChild(dots);
+        // Touch swipe support
+        var startX = null;
+        car.addEventListener('touchstart', function(e) { startX = e.touches[0].clientX; }, { passive: true });
+        car.addEventListener('touchend', function(e) {
+          if (startX === null) return;
+          var dx = e.changedTouches[0].clientX - startX;
+          if (Math.abs(dx) > 40) go(idx + (dx < 0 ? 1 : -1));
+          startX = null;
+        }, { passive: true });
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initHelpCarousels);
+    } else {
+      initHelpCarousels();
+    }
 
     var routes = {
       'schedule': function() { activateTab('schedule'); },
