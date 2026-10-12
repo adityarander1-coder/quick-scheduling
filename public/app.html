@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quick Scheduling</title>
+
   <script>
     // Shared utilities — defined early so sub-tab scripts can use them.
     function $(id) { return document.getElementById(id); }
@@ -246,7 +247,27 @@
     .help-carousel { position: relative; margin: 1rem 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: var(--bg); }
     .help-carousel-track { display: flex; transition: transform 0.3s ease; }
     .help-carousel-slide { min-width: 100%; box-sizing: border-box; }
-    .help-carousel-slide img { width: 100%; display: block; }
+    .help-carousel-slide img { width: 100%; display: block; cursor: zoom-in; }
+    /* Fullscreen image viewer */
+    #img-viewer {
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,0.92);
+      display: flex; align-items: center; justify-content: center;
+      padding: 1rem; box-sizing: border-box;
+    }
+    #img-viewer.hidden { display: none; }
+    #img-viewer img {
+      max-width: 100%; max-height: 92vh;
+      border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    }
+    #img-viewer .close-btn {
+      position: absolute; top: 12px; right: 16px;
+      background: rgba(255,255,255,0.15); color: #fff;
+      border: none; border-radius: 50%;
+      width: 44px; height: 44px; font-size: 1.5rem;
+      cursor: pointer; line-height: 1;
+    }
+    #img-viewer .close-btn:hover { background: rgba(255,255,255,0.3); }
     .help-carousel-slide .cap { padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--dim); text-align: center; }
     .help-carousel-btn { position: absolute; top: 40%; transform: translateY(-50%); background: rgba(0,0,0,0.55); color: #fff; border: none; border-radius: 50%; width: 36px; height: 36px; font-size: 1.2rem; cursor: pointer; z-index: 2; }
     .help-carousel-btn:hover { background: rgba(0,0,0,0.75); }
@@ -5654,6 +5675,12 @@
     <div>© 2026 Quick Scheduling</div>
   </footer>
 
+  <!-- Fullscreen image viewer for help screenshots -->
+  <div id="img-viewer" class="hidden">
+    <button class="close-btn" id="img-viewer-close" aria-label="Close">×</button>
+    <img id="img-viewer-img" src="" alt="Enlarged view">
+  </div>
+
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
     <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
@@ -5737,6 +5764,37 @@
     } else {
       initHelpCarousels();
     }
+
+    // Fullscreen image viewer: tap any help screenshot to enlarge.
+    (function initImgViewer() {
+      var viewer = document.getElementById('img-viewer');
+      var vimg = document.getElementById('img-viewer-img');
+      var closeBtn = document.getElementById('img-viewer-close');
+      if (!viewer || !vimg || viewer.dataset.init) return;
+      viewer.dataset.init = '1';
+      function open(src) { vimg.src = src; viewer.classList.remove('hidden'); document.body.style.overflow = 'hidden'; }
+      function close() { viewer.classList.add('hidden'); vimg.src = ''; document.body.style.overflow = ''; }
+      // Suppress tap-to-zoom when the user was swiping the carousel.
+      var touchMoved = false, tx0 = 0, ty0 = 0;
+      document.addEventListener('touchstart', function(e) {
+        touchMoved = false;
+        if (e.touches.length) { tx0 = e.touches[0].clientX; ty0 = e.touches[0].clientY; }
+      }, { passive: true });
+      document.addEventListener('touchmove', function(e) {
+        if (e.touches.length && (Math.abs(e.touches[0].clientX - tx0) > 12 || Math.abs(e.touches[0].clientY - ty0) > 12)) touchMoved = true;
+      }, { passive: true });
+      document.addEventListener('click', function(e) {
+        var t = e.target;
+        if (t && t.tagName === 'IMG' && t.closest && t.closest('.help-carousel-slide')) {
+          if (touchMoved) { touchMoved = false; return; }
+          e.preventDefault();
+          open(t.currentSrc || t.src);
+        }
+      });
+      closeBtn.addEventListener('click', close);
+      viewer.addEventListener('click', function(e) { if (e.target === viewer || e.target === vimg) close(); });
+      document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !viewer.classList.contains('hidden')) close(); });
+    })();
 
     // Help role toggle: Admin/Scheduler vs Employee
     function initHelpRoleToggle() {
