@@ -99,6 +99,15 @@
     .billing-banner.info { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
     .billing-banner button { flex-shrink: 0; }
     body.billing-readonly .requires-write { opacity: 0.55; }
+    /* App footer */
+    .app-footer {
+      background: var(--navy);
+      color: rgba(255,255,255,0.65);
+      text-align: center;
+      padding: 1.25rem;
+      font-size: 0.85rem;
+      margin-top: 2rem;
+    }
     .main-tabs {      display: flex;
       gap: 0.25rem;
       overflow-x: auto;
@@ -5671,6 +5680,10 @@
       </div>
     </section>
   </main>
+
+  <footer class="app-footer">
+    <div>© 2026 Quick Scheduling</div>
+  </footer>
 
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
