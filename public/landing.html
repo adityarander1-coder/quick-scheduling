@@ -80,6 +80,20 @@
     .feature ul { list-style: none; }
     .feature li { padding-left: 1.6rem; position: relative; margin-bottom: 0.45rem; color: var(--text); font-size: 0.96rem; }
     .feature li::before { content: "✓"; position: absolute; left: 0; color: var(--teal); font-weight: 800; }
+    .standout-badge {
+      display: inline-block;
+      background: linear-gradient(135deg, #0ea5e9, #14b8a6);
+      color: #fff; font-size: 0.78rem; font-weight: 800;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0.3rem 0.8rem; border-radius: 999px;
+      margin-bottom: 0.6rem;
+    }
+    .feature.standout {
+      background: linear-gradient(180deg, #f0f9ff 0%, #ffffff 100%);
+      border: 1px solid #bae6fd;
+      border-radius: 18px;
+      padding: 2rem;
+    }
 
     /* Steps */
     .steps { background: var(--surface); }
@@ -162,6 +176,33 @@
       <h2 class="sec">Everything a scheduler needs, nothing they don't</h2>
       <p class="lead">Shift types, rotations, and coverage rules that match how your team actually works — whether that's a hospital floor, a restaurant, or a retail store.</p>
 
+      <div class="feature standout">
+        <div class="f-text">
+          <span class="standout-badge">★ What makes us different</span>
+          <h3>Approve schedule changes from your email</h3>
+          <p>Forward a change request to your inbox and Quick Scheduling drafts the plan for you. Approve or reject with one tap — right from the email, no login needed. Schedule questions get answered automatically.</p>
+          <ul>
+            <li>One-tap <strong>Approve &amp; Apply</strong> / Reject — no login needed</li>
+            <li>Plans show who asked, their email, and who's CC'd</li>
+            <li>"Send me the schedule for Oct 11–14" gets an automatic reply</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Inbox</div>
+          <div class="mock-body">
+            <div class="mock-mail">
+              <div class="from">Quick Scheduling</div>
+              <div class="subj">New change plan: assign Maya to the morning shift on Oct 12</div>
+              <div class="mock-btns"><span class="mock-btn go">Approve &amp; Apply</span><span class="mock-btn no">Reject</span></div>
+            </div>
+            <div class="mock-mail">
+              <div class="from">Quick Scheduling</div>
+              <div class="subj">Re: send me the schedule for Oct 11–14 — answered automatically</div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+
       <div class="feature">
         <div class="f-text">
           <h3>See the whole schedule at a glance</h3>
@@ -200,32 +241,6 @@
             <div class="mock-msg q">Who's on tonight?</div>
             <div class="mock-msg a">Tonight: Jordan M. — Evening, Riley P. — Night.</div>
           </div></div>
-        </div></div>
-      </div>
-
-      <div class="feature">
-        <div class="f-text">
-          <h3>Approve schedule changes from your email</h3>
-          <p>Forward a change request to your inbox and Quick Scheduling drafts the plan for you. Approve or reject with one tap — right from the email. Schedule questions get answered automatically.</p>
-          <ul>
-            <li>One-tap <strong>Approve &amp; Apply</strong> / Reject — no login needed</li>
-            <li>Plans show who asked, their email, and who's CC'd</li>
-            <li>"Send me the schedule for Oct 11–14" gets an automatic reply</li>
-          </ul>
-        </div>
-        <div class="f-vis"><div class="mock">
-          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Inbox</div>
-          <div class="mock-body">
-            <div class="mock-mail">
-              <div class="from">Quick Scheduling</div>
-              <div class="subj">New change plan: assign Maya to the morning shift on Oct 12</div>
-              <div class="mock-btns"><span class="mock-btn go">Approve &amp; Apply</span><span class="mock-btn no">Reject</span></div>
-            </div>
-            <div class="mock-mail">
-              <div class="from">Quick Scheduling</div>
-              <div class="subj">Re: send me the schedule for Oct 11–14 — answered automatically</div>
-            </div>
-          </div>
         </div></div>
       </div>
 
