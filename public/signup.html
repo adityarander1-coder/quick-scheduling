@@ -11,6 +11,7 @@
     <div class="brand">
       <h1>Quick Scheduling</h1>
       <p>Create your company account</p>
+      <p style="font-size:0.9rem;opacity:0.85;margin:0.25rem 0 0">14-day free trial. You'll add a card on the next step — nothing is charged until the trial ends.</p>
     </div>
     <div class="card">
       <div id="error" class="alert alert-error hidden" role="alert"></div>
@@ -81,7 +82,20 @@
         }).then(function (result) {
           submitBtn.disabled = false;
           if (result.ok) {
-            window.location.href = '/home.html';
+            // Account created — now collect the card for the 14-day trial via Stripe Checkout.
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Setting up billing…';
+            fetch('/api/billing/checkout', { method: 'POST', credentials: 'same-origin' })
+              .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+              .then(function (co) {
+                if (co.ok && co.data && co.data.url) {
+                  window.location.href = co.data.url;
+                } else {
+                  // Billing not configured (dev) — continue to the app; trial still applies.
+                  window.location.href = '/home.html';
+                }
+              })
+              .catch(function () { window.location.href = '/home.html'; });
           } else {
             showError(result.data && result.data.error ? result.data.error : 'Sign up failed. Please try again.');
           }

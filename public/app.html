@@ -83,8 +83,24 @@
       font-size: 0.85rem;
       color: var(--dim);
     }
-    .main-tabs {
+    /* Billing banner */
+    .billing-banner {
+      max-width: 1200px;
+      margin: 0.75rem auto 0;
+      padding: 0.7rem 1rem;
+      border-radius: 12px;
+      font-size: 0.9rem;
       display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .billing-banner.warn { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+    .billing-banner.error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    .billing-banner.info { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+    .billing-banner button { flex-shrink: 0; }
+    body.billing-readonly .requires-write { opacity: 0.55; }
+    .main-tabs {      display: flex;
       gap: 0.25rem;
       overflow-x: auto;
     }
@@ -249,6 +265,7 @@
       <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
+        <button type="button" id="billing-btn" class="btn-secondary hidden" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Billing</button>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
@@ -261,6 +278,8 @@
       <button class="tab-btn" data-tab="help">Help</button>
     </nav>
   </header>
+
+  <div id="billing-banner" class="billing-banner hidden" role="alert"></div>
 
   <main class="app-content">
     <div id="page-error" class="alert alert-error hidden" role="alert"></div>
@@ -5869,10 +5888,108 @@
       });
     })();
 
+    // --- Billing: status banner, read-only mode, owner billing portal ---
+    (function initBilling() {
+      var banner = $('billing-banner');
+      function fmtDate(iso) {
+        if (!iso) return '';
+        var d = new Date(iso);
+        return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+      function daysLeft(iso) {
+        if (!iso) return null;
+        return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000));
+      }
+      function setBanner(cls, html) {
+        banner.className = 'billing-banner ' + cls;
+        banner.innerHTML = html;
+      }
+      window.refreshBillingBanner = function (b) {
+        window.billingInfo = b;
+        document.body.classList.toggle('billing-readonly', !b.writesAllowed);
+        if (b.needsPaymentMethod) {
+          setBanner('error', '<span><strong>Billing setup incomplete.</strong> Your free trial has no payment method on file — changes are paused until billing is finished.</span>' +
+            (window.isOwner ? '<button type="button" class="btn-secondary" id="billing-fix-btn">Finish setup</button>' : '<span>Ask your workspace owner to finish setup.</span>'));
+        } else if (b.status === 'past_due') {
+          var dl = daysLeft(b.graceEndsAt);
+          setBanner('warn', '<span><strong>Payment failed.</strong> Please update your payment method' +
+            (dl !== null ? ' within <strong>' + dl + ' day' + (dl === 1 ? '' : 's') + '</strong>' : '') +
+            ' to avoid interruption.</span>' +
+            (window.isOwner ? '<button type="button" class="btn-secondary" id="billing-fix-btn">Update payment method</button>' : '<span>Ask your workspace owner to update the payment method.</span>'));
+        } else if (b.status === 'read_only') {
+          setBanner('error', '<span><strong>Billing is past due.</strong> The schedule is read-only until payment is resolved.</span>' +
+            (window.isOwner ? '<button type="button" class="btn-secondary" id="billing-fix-btn">Resolve billing</button>' : '<span>Ask your workspace owner to resolve billing.</span>'));
+        } else if (b.status === 'suspended' || b.status === 'canceled') {
+          setBanner('error', '<span><strong>This workspace is ' + (b.status === 'suspended' ? 'suspended' : 'canceled') + '.</strong> Changes are disabled.</span>' +
+            (window.isOwner ? '<button type="button" class="btn-secondary" id="billing-fix-btn">Manage billing</button>' : '<span>Ask your workspace owner to manage billing.</span>'));
+        } else if (b.status === 'trial' && b.trialEndsAt) {
+          setBanner('info', '<span>Free trial ends <strong>' + fmtDate(b.trialEndsAt) + '</strong>. Your card will be charged automatically after the trial.</span>');
+        } else {
+          banner.className = 'billing-banner hidden';
+          banner.innerHTML = '';
+          return;
+        }
+        var fixBtn = $('billing-fix-btn');
+        if (fixBtn) fixBtn.addEventListener('click', window.openBillingPortal || function () {});
+      };
+      // A blocked write (402) refreshes the banner so the reason is visible.
+      window.showBillingBlocked = function (data) {
+        api('/api/billing/status').then(function (r) {
+          if (r.ok) window.refreshBillingBanner(r.data);
+          else setBanner('error', '<span><strong>Change blocked:</strong> ' + esc(data.error || 'billing needs attention.') + '</span>');
+        });
+      };
+      window.openBillingPortal = function () {
+        var btn = $('billing-fix-btn');
+        if (btn) btn.disabled = true;
+        // No subscription yet -> go through checkout; otherwise the Stripe portal.
+        api('/api/billing/status').then(function (r) {
+          var endpoint = (r.ok && r.data.hasSubscription) ? '/api/billing/portal' : '/api/billing/checkout';
+          return api(endpoint, { method: 'POST' });
+        }).then(function (r2) {
+          if (r2.ok && r2.data.url) window.location.href = r2.data.url;
+          else { pageError(r2.data && r2.data.error ? r2.data.error : 'Could not open billing.'); if (btn) btn.disabled = false; }
+        });
+      };
+      // Stripe Checkout return: show a confirmation.
+      var qs = new URLSearchParams(window.location.search);
+      if (qs.get('billing') === 'success') {
+        pageSuccess('Billing is set up — your 14-day free trial is active.');
+        window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      } else if (qs.get('billing') === 'cancelled') {
+        pageError('Billing setup was cancelled. You can finish it anytime from the billing banner.');
+        window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      }
+      api('/api/billing/status').then(function (r) {
+        if (r.ok) window.refreshBillingBanner(r.data);
+      });
+    })();
+
+    // Intercept blocked-by-billing writes globally so every form explains itself.
+    (function () {
+      var origApi = api;
+      api = function (path, opts) {
+        return origApi(path, opts).then(function (result) {
+          if (result.status === 402 && result.data && result.data.billingStatus && window.showBillingBlocked) {
+            window.showBillingBlocked(result.data);
+          }
+          return result;
+        });
+      };
+    })();
+
     // Init
     api('/api/auth/me').then(function (r) {
       if (!r.ok) { window.location.href = '/login.html'; return; }
       var role = r.data.user.role;
+      window.isOwner = (role === 'owner');
+      // Re-render the billing banner now that we know the role (owner-only buttons).
+      if (window.billingInfo && window.refreshBillingBanner) window.refreshBillingBanner(window.billingInfo);
+      if (window.isOwner) {
+        var billingBtn = $('billing-btn');
+        show(billingBtn);
+        billingBtn.addEventListener('click', function () { window.openBillingPortal(); });
+      }
       if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';

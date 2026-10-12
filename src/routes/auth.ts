@@ -168,7 +168,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const nameSplit = splitName(contactName);
 
     await query(
-      `INSERT INTO companies (id, name) VALUES ($1, $2)`,
+      `INSERT INTO companies (id, name, billing_status, trial_ends_at) VALUES ($1, $2, 'trial', now() + interval '14 days')`,
       [companyId, String(companyName).trim()]
     );
     await query(

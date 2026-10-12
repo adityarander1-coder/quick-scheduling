@@ -18,6 +18,8 @@ import candidatesRouter from './routes/candidates';
 
 import invitesRouter from './routes/invites';
 import scheduleRouter from './routes/schedule';
+import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
+import { billingWriteGate } from './middleware/billing';
 
 const app = express();
 
@@ -27,6 +29,8 @@ const isProd = process.env.NODE_ENV === 'production';
 app.set('trust proxy', 1); // Trust Render's reverse proxy so req.secure is true on HTTPS (required for the Secure session cookie).
 app.disable('x-powered-by');
 app.use(compression()); // Shrink pages before sending — faster downloads.
+// Stripe webhook needs the raw body for signature verification — mount before express.json().
+app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), handleBillingWebhook);
 app.use(express.json());
 
 let sessionSecret = process.env.SESSION_SECRET;
@@ -62,6 +66,10 @@ if (!isProd) {
 }
 
 app.use('/api/auth', authRouter);
+// Billing write gate: blocks POST/PUT/PATCH/DELETE for read_only, suspended,
+// canceled, or trial-expired-without-card companies. Reads always pass.
+app.use('/api', billingWriteGate);
+app.use('/api/billing', billingRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/candidates', candidatesRouter);
@@ -157,6 +165,7 @@ async function main(): Promise<void> {
   startPayrollScheduler();
   const { startEmailPollScheduler } = await import('./util/emailPollScheduler.js');
   startEmailPollScheduler();
+  startBillingSync(); // daily Stripe reconciliation + grace -> read_only -> suspended
   app.listen(PORT, () => {
     console.log(`[app] Quick Scheduling listening on http://localhost:${PORT}`);
   });
