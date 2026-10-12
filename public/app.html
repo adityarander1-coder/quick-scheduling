@@ -222,6 +222,25 @@
     .help-carousel-dots { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; z-index: 2; }
     .help-carousel-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.5); margin: 0 3px; cursor: pointer; border: none; padding: 0; }
     .help-carousel-dot.active { background: #fff; }
+    /* Help view mockup diagrams */
+    .view-mockup { background: #fff; border-radius: 8px; overflow: hidden; font-size: 0.75rem; }
+    .view-mockup .mock-tabs { display: flex; gap: 2px; background: var(--bg); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    .view-mockup .mock-tab { padding: 4px 10px; border-radius: 6px 6px 0 0; color: var(--dim); white-space: nowrap; }
+    .view-mockup .mock-tab.on { background: #fff; color: var(--text); font-weight: 600; }
+    .view-mockup .mock-body { padding: 10px; }
+    .view-mockup .mock-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .view-mockup .mock-day { border: 1px solid var(--border); border-radius: 6px; padding: 6px; min-height: 70px; }
+    .view-mockup .mock-day .d { font-weight: 700; font-size: 0.7rem; margin-bottom: 4px; }
+    .view-mockup .mock-shift { border-radius: 4px; padding: 3px 5px; margin-bottom: 3px; font-size: 0.68rem; line-height: 1.3; }
+    .view-mockup .mock-chat { display: flex; flex-direction: column; gap: 6px; }
+    .view-mockup .mock-msg { border-radius: 8px; padding: 6px 10px; max-width: 85%; font-size: 0.72rem; }
+    .view-mockup .mock-msg.q { background: var(--bg); align-self: flex-start; }
+    .view-mockup .mock-msg.a { background: #e6f7f0; align-self: flex-end; }
+    .view-mockup .mock-phone { max-width: 280px; margin: 0 auto; border: 2px solid var(--border); border-radius: 16px; overflow: hidden; }
+    .view-mockup .mock-phone .ph-head { background: var(--bg); padding: 8px; text-align: center; font-weight: 700; border-bottom: 1px solid var(--border); }
+    .view-mockup .mock-avail-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 0.72rem; }
+    .view-mockup .mock-avail-btns { display: flex; gap: 4px; }
+    .view-mockup .mock-avail-btns span { padding: 3px 8px; border-radius: 10px; font-size: 0.65rem; }
   </style>
 </head>
 <body>
@@ -5442,6 +5461,43 @@
       <div id="help-admin">
 
       <div class="card">
+        <h3>What the admin view looks like</h3>
+        <div class="help-carousel"><div class="help-carousel-track">
+          <div class="help-carousel-slide">
+            <div class="view-mockup">
+              <div class="mock-tabs">
+                <span class="mock-tab on">Schedule</span><span class="mock-tab">Ask Q-Scheduler</span><span class="mock-tab">Settings</span><span class="mock-tab">Share Links</span><span class="mock-tab">Help</span>
+              </div>
+              <div class="mock-body">
+                <div class="mock-grid">
+                  <div class="mock-day"><div class="d">Mon 12</div><div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br>Rander Adv.</div><div class="mock-shift" style="background:#fef3c7">Night Hospitalist<br>Smith J.</div></div>
+                  <div class="mock-day"><div class="d">Tue 13</div><div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br>Khan M.</div><div class="mock-shift" style="background:#e0e7ff">Night NP<br>Lee S.</div></div>
+                  <div class="mock-day"><div class="d">Wed 14</div><div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br>Rander Adv.</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="cap">Admin: Schedule tab with tabs, filters, and shift boxes you can tap to edit</div>
+          </div>
+          <div class="help-carousel-slide">
+            <div class="view-mockup">
+              <div class="mock-tabs">
+                <span class="mock-tab">Schedule</span><span class="mock-tab on">Ask Q-Scheduler</span><span class="mock-tab">Settings</span><span class="mock-tab">Share Links</span><span class="mock-tab">Help</span>
+              </div>
+              <div class="mock-body">
+                <div class="mock-chat">
+                  <div class="mock-msg q">Who is on tonight?</div>
+                  <div class="mock-msg a">Tonight (Oct 12): Smith J. — Night Hospitalist, Lee S. — Night NP.</div>
+                  <div class="mock-msg q">Where are we short next week?</div>
+                  <div class="mock-msg a">Oct 15 is short 1 Day Hospitalist (3 of 4 filled).</div>
+                </div>
+              </div>
+            </div>
+            <div class="cap">Admin: Ask Q-Scheduler — plain-language questions plus Change plans for email approvals</div>
+          </div>
+        </div></div>
+      </div>
+
+      <div class="card">
         <h3>Schedule views</h3>
         <p>The <strong>Schedule</strong> tab has three views: <strong>Day</strong>, <strong>Week</strong>, and <strong>Range</strong>.</p>
         <ul>
@@ -5502,6 +5558,43 @@
       </div><!-- /help-admin -->
 
       <div id="help-employee" style="display:none">
+
+      <div class="card">
+        <h3>What the employee view looks like</h3>
+        <div class="help-carousel"><div class="help-carousel-track">
+          <div class="help-carousel-slide">
+            <div class="view-mockup">
+              <div class="mock-body">
+                <div class="mock-phone">
+                  <div class="ph-head">Team Schedule</div>
+                  <div style="padding:8px">
+                    <div style="font-weight:700;font-size:0.75rem;margin-bottom:6px">Wednesday, Oct 14</div>
+                    <div class="mock-shift" style="background:#dbeafe">Day Hospitalist — Rander Adv.<br>7:00 AM – 7:00 PM</div>
+                    <div class="mock-shift" style="background:#fef3c7">Night Hospitalist — Smith J.<br>7:00 PM – 7:00 AM</div>
+                    <div class="mock-shift" style="background:#e0e7ff">Night NP — Lee S.<br>7:00 PM – 7:00 AM</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="cap">Employee: shared schedule link — clean view-only schedule, no login needed</div>
+          </div>
+          <div class="help-carousel-slide">
+            <div class="view-mockup">
+              <div class="mock-body">
+                <div class="mock-phone">
+                  <div class="ph-head">Mark Availability</div>
+                  <div>
+                    <div class="mock-avail-row"><span>Mon, Oct 19</span><span class="mock-avail-btns"><span style="background:#dcfce7">Available</span><span style="background:#f1f5f9">Unavail.</span></span></div>
+                    <div class="mock-avail-row"><span>Tue, Oct 20</span><span class="mock-avail-btns"><span style="background:#f1f5f9">Available</span><span style="background:#fecaca">Unavail.</span></span></div>
+                    <div class="mock-avail-row"><span>Wed, Oct 21</span><span class="mock-avail-btns"><span style="background:#dcfce7">Available</span><span style="background:#f1f5f9">Unavail.</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="cap">Employee: availability link — tap Available/Unavailable per date, no login needed</div>
+          </div>
+        </div></div>
+      </div>
 
       <div class="card">
         <h3>Viewing your schedule</h3>
