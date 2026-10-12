@@ -734,7 +734,7 @@
         function shiftTypeVisible(st) {
           if (!st.isActive) return false;
           if (sched.shiftFilter && st.id !== sched.shiftFilter) return false;
-          if (sched.deptFilters.length && st.departmentId && sched.deptFilters.indexOf(st.departmentId) === -1) return false;
+          if (sched.deptFilters.length) { var sdepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []); if (sdepts.length && !sdepts.some(function(d){ return sched.deptFilters.indexOf(d) !== -1; })) return false; }
           return true;
         }
         function commentsFor(dateStr) {
@@ -818,7 +818,7 @@
         function visibleShiftTypes() {
           return sched.shiftTypes.filter(function (st) {
             if (!st.isActive) return false;
-            if (sched.deptFilters.length && st.departmentId && sched.deptFilters.indexOf(st.departmentId) === -1) return false;
+            if (sched.deptFilters.length) { var sdepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []); if (sdepts.length && !sdepts.some(function(d){ return sched.deptFilters.indexOf(d) !== -1; })) return false; }
             return true;
           });
         }
@@ -831,15 +831,19 @@
           var el = $('sched-dept-filter');
           if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
           el.style.display = 'flex';
+          var btnLabel = sched.deptFilters.length
+            ? sched.deptFilters.length + ' department' + (sched.deptFilters.length > 1 ? 's' : '')
+            : 'All departments';
           el.innerHTML =
-            '<div style="flex:1;min-width:0"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
-            '<div id="sched-dept-checks" style="display:flex;flex-wrap:wrap;gap:6px">' +
+            '<div style="flex:1;min-width:0;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            '<button type="button" id="sched-dept-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
+            '<div id="sched-dept-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             sched.departments.map(function (d) {
               var on = sched.deptFilters.indexOf(d.id) !== -1;
-              return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:0.88rem;font-weight:500;background:' + (on ? '#dbeafe' : '#f1f5f9') + ';border:1px solid ' + (on ? '#93c5fd' : '#e2e8f0') + ';border-radius:999px;padding:5px 12px;cursor:pointer">' +
-                '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0">' + esc(d.name) + '</label>';
+              return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'">' +
+                '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
             }).join('') +
-            '</div><div style="font-size:0.78rem;color:var(--dim);margin-top:4px">' + (sched.deptFilters.length ? sched.deptFilters.length + ' selected — uncheck all to show everything' : 'Showing all departments — check to filter') + '</div></div>' +
+            '</div></div>' +
             '<div style="flex:1;min-width:0"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
             '<select id="sched-shift-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;width:100%">' +
             '<option value="">All shifts</option>' +
@@ -847,7 +851,15 @@
               return '<option value="' + st.id + '"' + (sched.shiftFilter === st.id ? ' selected' : '') + '>' + esc(st.name) + '</option>';
             }).join('') +
             '</select></div>';
-          el.querySelectorAll('#sched-dept-checks input[type=checkbox]').forEach(function (cb) {
+          var btn = $('sched-dept-btn'), menu = $('sched-dept-menu');
+          btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+          });
+          document.addEventListener('click', function h(e) {
+            if (!menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+          });
+          menu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () {
               var id = cb.getAttribute('data-dept');
               var i = sched.deptFilters.indexOf(id);
@@ -855,6 +867,7 @@
               if (!cb.checked && i !== -1) sched.deptFilters.splice(i, 1);
               sched.shiftFilter = null;
               renderDeptFilter();
+              var m2 = $('sched-dept-menu'); if (m2) m2.style.display = 'block';
               renderView();
             });
           });
@@ -4375,8 +4388,8 @@
                   <input type="color" id="shift-new-color" value="#3b82f6" style="width:60px;height:40px;padding:0">
                 </div>
                 <div class="form-row">
-                  <label>Department <span class="hint">(optional — leave empty for all departments)</span></label>
-                  <select id="shift-new-dept" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"><option value="">All departments</option></select>
+                  <label>Departments <span class="hint">(optional — leave empty for all departments; check multiple for cross-department shifts)</span></label>
+                  <div id="shift-new-depts" style="display:flex;flex-wrap:wrap;gap:6px"></div>
                 </div>
                 <div class="modal-actions">
                   <button type="button" id="shift-modal-cancel" class="btn-secondary">Cancel</button>
@@ -4391,14 +4404,25 @@
               var shiftTypes = [];
               var departments = [];
 
+              function deptChecksHTML(selectedIds, prefix) {
+                selectedIds = selectedIds || [];
+                return departments.map(function (d) {
+                  var on = selectedIds.indexOf(d.id) !== -1;
+                  return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:0.85rem;background:' + (on ? '#dbeafe' : '#f1f5f9') + ';border:1px solid ' + (on ? '#93c5fd' : '#e2e8f0') + ';border-radius:999px;padding:4px 10px;cursor:pointer">' +
+                    '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0">' + esc(d.name) + '</label>';
+                }).join('');
+              }
+              function checkedDeptIds(prefix) {
+                var ids = [];
+                document.querySelectorAll('input[data-deptchk="' + prefix + '"]:checked').forEach(function (cb) { ids.push(cb.value); });
+                return ids;
+              }
+
               function loadDepartments() {
                 return api('/api/departments').then(function (r) {
                   if (r.ok) {
                     departments = r.data.departments || [];
-                    var sel = $('shift-new-dept');
-                    sel.innerHTML = '<option value="">All departments</option>' + departments.map(function (d) {
-                      return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
-                    }).join('');
+                    $('shift-new-depts').innerHTML = deptChecksHTML([], 'new') || '<span style="color:var(--dim);font-size:0.85rem">No departments yet — add them under Settings → Team members.</span>';
                   }
                 }).catch(function () {});
               }
@@ -4415,13 +4439,11 @@
               function renderShifts() {
                 var html = '';
                 shiftTypes.forEach(function (st, i) {
-                  var deptOpts = '<option value="">All departments</option>' + departments.map(function (d) {
-                    return '<option value="' + d.id + '"' + (st.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
-                  }).join('');
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
                   html += '<div class="shift-row">' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
                     '<label>' + esc(st.name) + '</label>' +
-                    '<select id="shift-dept-' + i + '" style="padding:6px;border:1px solid var(--border);border-radius:8px;max-width:160px">' + deptOpts + '</select>' +
+                    '<div class="shift-dept-checks" style="display:flex;flex-wrap:wrap;gap:4px;max-width:220px">' + deptChecksHTML(deptIds, 'row' + i) + '</div>' +
                     '<div class="time-inputs">' +
                       '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '">' +
                       '<span>to</span>' +
@@ -4462,7 +4484,7 @@
                     body: JSON.stringify({
                       startTime: $('shift-start-' + i).value,
                       endTime: $('shift-end-' + i).value,
-                      departmentId: $('shift-dept-' + i).value || null,
+                      departmentIds: checkedDeptIds('row' + i),
                     }),
                   });
                 });
@@ -4489,7 +4511,7 @@
                 }
                 api('/api/schedule/shift-types', {
                   method: 'POST',
-                  body: JSON.stringify({ name: name, color: $('shift-new-color').value, departmentId: $('shift-new-dept').value || null }),
+                  body: JSON.stringify({ name: name, color: $('shift-new-color').value, departmentIds: checkedDeptIds('new') }),
                 }).then(function (r) {
                   if (r.ok) { hide($('shift-modal')); pageSuccess('Shift type added.'); loadAll(); }
                   else { var e2 = $('shift-modal-error'); e2.textContent = (r.data && r.data.error) || 'Could not add.'; show(e2); }
