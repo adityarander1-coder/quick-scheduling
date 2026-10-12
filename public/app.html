@@ -4404,25 +4404,59 @@
               var shiftTypes = [];
               var departments = [];
 
-              function deptChecksHTML(selectedIds, prefix) {
+              function deptDropdownHTML(selectedIds, prefix) {
                 selectedIds = selectedIds || [];
-                return departments.map(function (d) {
-                  var on = selectedIds.indexOf(d.id) !== -1;
-                  return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:0.85rem;background:' + (on ? '#dbeafe' : '#f1f5f9') + ';border:1px solid ' + (on ? '#93c5fd' : '#e2e8f0') + ';border-radius:999px;padding:4px 10px;cursor:pointer">' +
-                    '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0">' + esc(d.name) + '</label>';
-                }).join('');
+                var label = selectedIds.length
+                  ? selectedIds.length + ' department' + (selectedIds.length > 1 ? 's' : '')
+                  : 'All departments';
+                return '<div class="dept-dd" data-dd="' + prefix + '" style="position:relative">' +
+                  '<button type="button" class="dept-dd-btn" data-ddbtn="' + prefix + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.88rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:140px;max-width:200px"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>' +
+                  '<div class="dept-dd-menu" data-ddmenu="' + prefix + '" style="display:none;position:absolute;top:100%;left:0;z-index:70;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;min-width:180px;max-height:200px;overflow-y:auto;padding:6px">' +
+                  departments.map(function (d) {
+                    var on = selectedIds.indexOf(d.id) !== -1;
+                    return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
+                      '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
+                  }).join('') +
+                  '</div></div>';
+              }
+              function refreshDeptDdLabel(prefix) {
+                var btn = document.querySelector('[data-ddbtn="' + prefix + '"] span');
+                if (!btn) return;
+                var n = checkedDeptIds(prefix).length;
+                btn.textContent = n ? n + ' department' + (n > 1 ? 's' : '') : 'All departments';
               }
               function checkedDeptIds(prefix) {
                 var ids = [];
                 document.querySelectorAll('input[data-deptchk="' + prefix + '"]:checked').forEach(function (cb) { ids.push(cb.value); });
                 return ids;
               }
+              // Dropdown open/close (delegated — rows re-render).
+              document.addEventListener('click', function (e) {
+                var btn = e.target.closest ? e.target.closest('[data-ddbtn]') : null;
+                document.querySelectorAll('.dept-dd-menu').forEach(function (m) {
+                  var p = m.getAttribute('data-ddmenu');
+                  if (btn && btn.getAttribute('data-ddbtn') === p) {
+                    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+                  } else {
+                    m.style.display = 'none';
+                  }
+                });
+                if (btn) e.stopPropagation();
+              });
+              document.addEventListener('change', function (e) {
+                var cb = e.target;
+                if (cb && cb.matches && cb.matches('input[data-deptchk]')) {
+                  refreshDeptDdLabel(cb.getAttribute('data-deptchk'));
+                }
+              });
 
               function loadDepartments() {
                 return api('/api/departments').then(function (r) {
                   if (r.ok) {
                     departments = r.data.departments || [];
-                    $('shift-new-depts').innerHTML = deptChecksHTML([], 'new') || '<span style="color:var(--dim);font-size:0.85rem">No departments yet — add them under Settings → Team members.</span>';
+                    $('shift-new-depts').innerHTML = departments.length
+                      ? deptDropdownHTML([], 'new')
+                      : '<span style="color:var(--dim);font-size:0.85rem">No departments yet — add them under Settings → Team members.</span>';
                   }
                 }).catch(function () {});
               }
@@ -4443,7 +4477,7 @@
                   html += '<div class="shift-row">' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
                     '<label>' + esc(st.name) + '</label>' +
-                    '<div class="shift-dept-checks" style="display:flex;flex-wrap:wrap;gap:4px;max-width:220px">' + deptChecksHTML(deptIds, 'row' + i) + '</div>' +
+                    '<div style="max-width:200px">' + deptDropdownHTML(deptIds, 'row' + i) + '</div>' +
                     '<div class="time-inputs">' +
                       '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '">' +
                       '<span>to</span>' +
