@@ -5765,15 +5765,40 @@
       initHelpCarousels();
     }
 
-    // Fullscreen image viewer: tap any help screenshot to enlarge.
+    // Fullscreen image viewer: tap any help screenshot to enlarge, swipe or use arrows to browse.
     (function initImgViewer() {
       var viewer = document.getElementById('img-viewer');
       var vimg = document.getElementById('img-viewer-img');
       var closeBtn = document.getElementById('img-viewer-close');
       if (!viewer || !vimg || viewer.dataset.init) return;
       viewer.dataset.init = '1';
-      function open(src) { vimg.src = src; viewer.classList.remove('hidden'); document.body.style.overflow = 'hidden'; }
-      function close() { viewer.classList.add('hidden'); vimg.src = ''; document.body.style.overflow = ''; }
+      var group = [];   // image srcs for the current topic
+      var gidx = 0;
+      // Prev/next buttons
+      var prevB = document.createElement('button');
+      prevB.className = 'close-btn'; prevB.style.cssText = 'left:16px;right:auto;top:50%;transform:translateY(-50%)';
+      prevB.innerHTML = '&#8249;'; prevB.setAttribute('aria-label', 'Previous image');
+      var nextB = document.createElement('button');
+      nextB.className = 'close-btn'; nextB.style.cssText = 'right:16px;left:auto;top:50%;transform:translateY(-50%)';
+      nextB.innerHTML = '&#8250;'; nextB.setAttribute('aria-label', 'Next image');
+      viewer.appendChild(prevB); viewer.appendChild(nextB);
+      function render() {
+        vimg.src = group[gidx];
+        var multi = group.length > 1;
+        prevB.style.display = multi ? '' : 'none';
+        nextB.style.display = multi ? '' : 'none';
+      }
+      function open(srcs, idx) { group = srcs; gidx = idx || 0; render(); viewer.classList.remove('hidden'); document.body.style.overflow = 'hidden'; }
+      function close() { viewer.classList.add('hidden'); vimg.src = ''; group = []; document.body.style.overflow = ''; }
+      function step(d) { if (!group.length) return; gidx = (gidx + d + group.length) % group.length; render(); }
+      function srcsFrom(img) {
+        var slide = img.closest('.help-carousel-slide');
+        var track = slide && slide.parentElement;
+        var imgs = track ? track.querySelectorAll('.help-carousel-slide img') : [img];
+        var arr = [], at = 0;
+        imgs.forEach(function(im, i) { arr.push(im.currentSrc || im.src); if (im === img) at = i; });
+        return { arr: arr, at: at };
+      }
       // Suppress tap-to-zoom when the user was swiping the carousel.
       var touchMoved = false, tx0 = 0, ty0 = 0;
       document.addEventListener('touchstart', function(e) {
@@ -5788,12 +5813,29 @@
         if (t && t.tagName === 'IMG' && t.closest && t.closest('.help-carousel-slide')) {
           if (touchMoved) { touchMoved = false; return; }
           e.preventDefault();
-          open(t.currentSrc || t.src);
+          var g = srcsFrom(t);
+          open(g.arr, g.at);
         }
       });
-      closeBtn.addEventListener('click', close);
-      viewer.addEventListener('click', function(e) { if (e.target === viewer || e.target === vimg) close(); });
-      document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !viewer.classList.contains('hidden')) close(); });
+      closeBtn.addEventListener('click', function(e) { e.stopPropagation(); close(); });
+      prevB.addEventListener('click', function(e) { e.stopPropagation(); step(-1); });
+      nextB.addEventListener('click', function(e) { e.stopPropagation(); step(1); });
+      viewer.addEventListener('click', function(e) { if (e.target === viewer) close(); });
+      document.addEventListener('keydown', function(e) {
+        if (viewer.classList.contains('hidden')) return;
+        if (e.key === 'Escape') close();
+        else if (e.key === 'ArrowLeft') step(-1);
+        else if (e.key === 'ArrowRight') step(1);
+      });
+      // Swipe inside the viewer to move between images.
+      var vsx = null;
+      viewer.addEventListener('touchstart', function(e) { vsx = e.touches.length ? e.touches[0].clientX : null; }, { passive: true });
+      viewer.addEventListener('touchend', function(e) {
+        if (vsx === null) return;
+        var dx = e.changedTouches[0].clientX - vsx;
+        if (Math.abs(dx) > 40) step(dx < 0 ? 1 : -1);
+        vsx = null;
+      }, { passive: true });
     })();
 
     // Help role toggle: Admin/Scheduler vs Employee
