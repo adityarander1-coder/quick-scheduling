@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick Scheduling — Hospital staff scheduling without the chaos</title>
+  <meta name="description" content="Quick Scheduling is the simple scheduling app for hospital teams: build the schedule in minutes, answer staffing questions in plain language, and approve changes from your email.">
+  <style>
+    :root {
+      --navy: #082f4f; --navy-soft: #123f60; --accent: #0878d1; --accent-hover: #0566b4;
+      --teal: #00a9a4; --bg: #edf4f8; --surface: #ffffff; --text: #102d47; --dim: #5c7185;
+      --border: #cbdbe5; --radius: 22px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--text); background: var(--bg); line-height: 1.6; }
+    a { color: var(--accent); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 0 1.25rem; }
+
+    /* Nav */
+    .nav { background: var(--navy); color: #fff; padding: 0.9rem 0; position: sticky; top: 0; z-index: 10; }
+    .nav .wrap { display: flex; align-items: center; justify-content: space-between; }
+    .brand { font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
+    .brand span { color: var(--teal); font-weight: 400; font-size: 0.95rem; }
+    .nav-cta { display: flex; gap: 0.6rem; align-items: center; }
+    .btn { display: inline-block; padding: 0.65rem 1.4rem; border-radius: 999px; font-weight: 700; text-decoration: none; border: none; cursor: pointer; font-size: 0.95rem; }
+    .btn-primary { background: var(--teal); color: #fff; }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-ghost { color: #fff; border: 1px solid rgba(255,255,255,0.4); }
+    .btn-ghost:hover { background: rgba(255,255,255,0.1); }
+    .btn-outline { border: 1.5px solid var(--accent); color: var(--accent); background: #fff; }
+    .btn-outline:hover { background: #eef6fd; }
+
+    /* Hero */
+    .hero { background: linear-gradient(160deg, var(--navy) 0%, var(--navy-soft) 70%, #0d4a73 100%); color: #fff; padding: 4rem 0 3.5rem; overflow: hidden; }
+    .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; align-items: center; }
+    .hero h1 { font-size: 2.6rem; line-height: 1.15; letter-spacing: -0.02em; margin-bottom: 1rem; }
+    .hero h1 em { color: var(--teal); font-style: normal; }
+    .hero p.sub { font-size: 1.15rem; opacity: 0.88; margin-bottom: 1.75rem; max-width: 30rem; }
+    .hero-ctas { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .hero-note { font-size: 0.85rem; opacity: 0.7; }
+
+    /* Mockups */
+    .mock { background: var(--surface); border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0,0,0,0.25); overflow: hidden; color: var(--text); }
+    .mock-bar { background: var(--navy); color: #fff; padding: 0.6rem 1rem; font-size: 0.8rem; font-weight: 700; display: flex; gap: 0.4rem; align-items: center; }
+    .mock-bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #ffffff44; }
+    .mock-body { padding: 1rem; }
+    .mock-week { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+    .mock-day { background: #f3f8fb; border-radius: 10px; padding: 0.5rem; font-size: 0.7rem; }
+    .mock-day .d { font-weight: 800; margin-bottom: 0.35rem; font-size: 0.72rem; }
+    .mock-shift { border-radius: 7px; padding: 0.3rem 0.45rem; margin-bottom: 0.3rem; font-size: 0.68rem; line-height: 1.35; }
+    .mock-chat { display: flex; flex-direction: column; gap: 0.5rem; }
+    .mock-msg { border-radius: 12px; padding: 0.55rem 0.8rem; font-size: 0.78rem; max-width: 88%; }
+    .mock-msg.q { background: #e8f1fa; align-self: flex-end; }
+    .mock-msg.a { background: #f3f8fb; border: 1px solid var(--border); align-self: flex-start; }
+    .mock-mail { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.85rem; font-size: 0.75rem; margin-bottom: 0.5rem; }
+    .mock-mail .from { font-weight: 700; margin-bottom: 0.15rem; }
+    .mock-mail .subj { color: var(--dim); margin-bottom: 0.35rem; }
+    .mock-btns { display: flex; gap: 0.4rem; }
+    .mock-btn { border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.7rem; font-weight: 700; }
+    .mock-btn.go { background: #dcfce7; color: #166534; }
+    .mock-btn.no { background: #fee2e2; color: #991b1b; }
+    .mock-phone { width: 200px; margin: 0 auto; border: 8px solid #0f2438; border-radius: 26px; overflow: hidden; background: #fff; }
+    .mock-phone .ph-head { background: var(--navy); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.5rem; text-align: center; }
+    .mock-avail { display: flex; justify-content: space-between; align-items: center; font-size: 0.7rem; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eef3f7; }
+    .pill { border-radius: 999px; padding: 0.15rem 0.55rem; font-size: 0.65rem; font-weight: 700; }
+    .pill.yes { background: #dcfce7; color: #166534; }
+    .pill.no { background: #f1f5f9; color: var(--dim); }
+
+    /* Sections */
+    section.block { padding: 4rem 0; }
+    .kicker { color: var(--teal); font-weight: 800; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.08em; margin-bottom: 0.5rem; }
+    h2.sec { font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 0.75rem; }
+    p.lead { font-size: 1.1rem; color: var(--dim); max-width: 42rem; margin-bottom: 2.5rem; }
+    .feature { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; align-items: center; margin-bottom: 3.5rem; }
+    .feature:last-child { margin-bottom: 0; }
+    .feature.flip .f-text { order: 2; }
+    .feature.flip .f-vis { order: 1; }
+    .feature h3 { font-size: 1.45rem; margin-bottom: 0.6rem; letter-spacing: -0.01em; }
+    .feature p { color: var(--dim); margin-bottom: 0.9rem; }
+    .feature ul { list-style: none; }
+    .feature li { padding-left: 1.6rem; position: relative; margin-bottom: 0.45rem; color: var(--text); font-size: 0.96rem; }
+    .feature li::before { content: "✓"; position: absolute; left: 0; color: var(--teal); font-weight: 800; }
+
+    /* Steps */
+    .steps { background: var(--surface); }
+    .steps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
+    .step { background: var(--bg); border-radius: var(--radius); padding: 1.75rem; }
+    .step .n { width: 2.4rem; height: 2.4rem; border-radius: 50%; background: var(--navy); color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; }
+    .step h3 { margin-bottom: 0.5rem; }
+    .step p { color: var(--dim); font-size: 0.95rem; }
+
+    /* Pricing */
+    .pricing-card { background: var(--navy); color: #fff; border-radius: var(--radius); padding: 3rem; text-align: center; max-width: 640px; margin: 0 auto; }
+    .pricing-card h2 { margin-bottom: 0.5rem; }
+    .pricing-card p { opacity: 0.85; margin-bottom: 1.5rem; }
+    .pricing-card .fine { font-size: 0.82rem; opacity: 0.65; margin-top: 1rem; margin-bottom: 0; }
+
+    /* CTA + footer */
+    .final-cta { text-align: center; }
+    .final-cta h2 { margin-bottom: 1rem; }
+    footer { background: var(--navy); color: #ffffffaa; padding: 2rem 0; font-size: 0.85rem; }
+    footer .wrap { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    footer a { color: #fff; text-decoration: none; margin-left: 1.25rem; }
+
+    @media (max-width: 860px) {
+      .hero-grid, .feature { grid-template-columns: 1fr; gap: 1.75rem; }
+      .feature.flip .f-text { order: 1; } .feature.flip .f-vis { order: 2; }
+      .hero h1 { font-size: 2rem; }
+      .steps-grid { grid-template-columns: 1fr; }
+      section.block { padding: 2.75rem 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="wrap">
+      <div class="brand">Quick Scheduling <span>· employee schedule</span></div>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="/login.html">Log in</a>
+        <a class="btn btn-primary" href="/signup.html">Start free trial</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <h1>Hospital scheduling, <em>without the chaos.</em></h1>
+        <p class="sub">Build the schedule in minutes, answer "who's on tonight?" in plain language, and approve changes straight from your email — no spreadsheets, no group-text threads.</p>
+        <div class="hero-ctas">
+          <a class="btn btn-primary" href="/signup.html">Start free trial</a>
+          <a class="btn btn-ghost" href="#features">See how it works</a>
+        </div>
+        <p class="hero-note">14-day free trial · No charge until the trial ends · Cancel anytime</p>
+      </div>
+      <div class="mock">
+        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; This week</div>
+        <div class="mock-body">
+          <div class="mock-week">
+            <div class="mock-day"><div class="d">Mon 12</div>
+              <div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br><b>Rander Adv.</b></div>
+              <div class="mock-shift" style="background:#fef3c7">Night Hospitalist<br><b>Smith J.</b></div>
+            </div>
+            <div class="mock-day"><div class="d">Tue 13</div>
+              <div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br><b>Khan M.</b></div>
+              <div class="mock-shift" style="background:#e0e7ff">Night NP<br><b>Lee S.</b></div>
+            </div>
+            <div class="mock-day"><div class="d">Wed 14</div>
+              <div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br><b>Rander Adv.</b></div>
+              <div class="mock-shift" style="background:#fef3c7">Night Hospitalist<br><b>Patel R.</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="block" id="features">
+    <div class="wrap">
+      <div class="kicker">What you get</div>
+      <h2 class="sec">Everything a scheduler needs, nothing they don't</h2>
+      <p class="lead">Built with hospital schedulers for hospital teams — shift types, rotations, and coverage rules that match how your department actually works.</p>
+
+      <div class="feature">
+        <div class="f-text">
+          <h3>See the whole schedule at a glance</h3>
+          <p>Day, Week, and Range views with full shift names — never cryptic abbreviations. Draft shifts stay hidden until you publish.</p>
+          <ul>
+            <li>Tap any shift to reassign, swap, or remove</li>
+            <li>Filter by department or shift type</li>
+            <li>Publish dates when they're final — staff only see published days</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Week view</div>
+          <div class="mock-body"><div class="mock-week">
+            <div class="mock-day"><div class="d">Thu 15</div><div class="mock-shift" style="background:#dbeafe">Day Hospitalist<br><b>Khan M.</b></div></div>
+            <div class="mock-day"><div class="d">Fri 16</div><div class="mock-shift" style="background:#fef3c7">Night Hospitalist<br><b>Smith J.</b></div><div class="mock-shift" style="background:#e0e7ff">Night NP<br><b>Lee S.</b></div></div>
+            <div class="mock-day"><div class="d">Sat 17</div><div class="mock-shift" style="background:#f1f5f9;color:#94a3b8">Draft — not published</div></div>
+          </div></div>
+        </div></div>
+      </div>
+
+      <div class="feature flip">
+        <div class="f-text">
+          <h3>Ask the schedule anything</h3>
+          <p><strong>Ask Q-Scheduler</strong> answers plain-language questions using your published schedule — no digging through grids.</p>
+          <ul>
+            <li>"Who's on tonight?"</li>
+            <li>"Where are we short next week?"</li>
+            <li>"How many shifts did Priya work in September?"</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Ask Q-Scheduler</div>
+          <div class="mock-body"><div class="mock-chat">
+            <div class="mock-msg q">Where are we short next week?</div>
+            <div class="mock-msg a">Oct 15 is short 1 Day Hospitalist (3 of 4 filled). Everything else meets target.</div>
+            <div class="mock-msg q">Who's on tonight?</div>
+            <div class="mock-msg a">Tonight: Smith J. — Night Hospitalist, Lee S. — Night NP.</div>
+          </div></div>
+        </div></div>
+      </div>
+
+      <div class="feature">
+        <div class="f-text">
+          <h3>Approve schedule changes from your email</h3>
+          <p>Forward a change request to your inbox and Quick Scheduling drafts the plan for you. Approve or reject with one tap — right from the email. Schedule questions get answered automatically.</p>
+          <ul>
+            <li>One-tap <strong>Approve &amp; Apply</strong> / Reject — no login needed</li>
+            <li>Plans show who asked, their email, and who's CC'd</li>
+            <li>"Send me the schedule for Oct 11–14" gets an automatic reply</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Inbox</div>
+          <div class="mock-body">
+            <div class="mock-mail">
+              <div class="from">Quick Scheduling</div>
+              <div class="subj">New change plan: assign Maya to Day Hospitalist on Oct 12</div>
+              <div class="mock-btns"><span class="mock-btn go">Approve &amp; Apply</span><span class="mock-btn no">Reject</span></div>
+            </div>
+            <div class="mock-mail">
+              <div class="from">Quick Scheduling</div>
+              <div class="subj">Re: send me the schedule for Oct 11–14 — answered automatically</div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+
+      <div class="feature flip">
+        <div class="f-text">
+          <h3>Rotations that run themselves</h3>
+          <p>Build repeating patterns from 1 to 84 days. Assign people to cycle days once — the schedule fills itself in. Pause for vacations, exclude one-off swaps.</p>
+          <ul>
+            <li>Manual shifts always win over rotation shifts</li>
+            <li>Convert a rotation to real shifts for any date range</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Rotations</div>
+          <div class="mock-body"><div class="mock-week">
+            <div class="mock-day"><div class="d">Day 1</div><div class="mock-shift" style="background:#dbeafe"><b>Rander Adv.</b></div></div>
+            <div class="mock-day"><div class="d">Day 2</div><div class="mock-shift" style="background:#dbeafe"><b>Khan M.</b></div></div>
+            <div class="mock-day"><div class="d">Day 3</div><div class="mock-shift" style="background:#f1f5f9;color:#94a3b8">Off</div></div>
+          </div>
+          <p style="font-size:0.75rem;color:var(--dim);margin-top:0.5rem">Repeats every 3 days · 2 people cycling</p></div>
+        </div></div>
+      </div>
+
+      <div class="feature">
+        <div class="f-text">
+          <h3>Hiring without the paperwork chase</h3>
+          <p>Share your application link — candidates apply, you get an email with a <strong>Review Application</strong> link. Edit details, approve, or reject without logging in. Approving creates their account and sends the invite.</p>
+          <ul>
+            <li>Team members set their own password from the invite email</li>
+            <li>Per-member special instructions and end dates</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Inbox</div>
+          <div class="mock-body">
+            <div class="mock-mail">
+              <div class="from">Quick Scheduling</div>
+              <div class="subj">New application: Jordan Lee — Night NP</div>
+              <div class="mock-btns"><span class="mock-btn go">Review application</span></div>
+            </div>
+            <p style="font-size:0.75rem;color:var(--dim)">Approve → account created → invite sent automatically.</p>
+          </div>
+        </div></div>
+      </div>
+
+      <div class="feature flip">
+        <div class="f-text">
+          <h3>Reach everyone — even without logins</h3>
+          <p><strong>Share Links</strong> create no-login pages for temps, float staff, and the group chat.</p>
+          <ul>
+            <li>View-only schedule links, filterable by department or shift</li>
+            <li>Availability links — staff tap Available / Unavailable per date</li>
+            <li>Open-slots messages, ready to copy-paste</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock-phone">
+          <div class="ph-head">Mark availability</div>
+          <div class="mock-avail"><span>Mon, Oct 19</span><span class="pill yes">Available</span></div>
+          <div class="mock-avail"><span>Tue, Oct 20</span><span class="pill no">Unavailable</span></div>
+          <div class="mock-avail"><span>Wed, Oct 21</span><span class="pill yes">Available</span></div>
+        </div></div>
+      </div>
+
+      <div class="feature">
+        <div class="f-text">
+          <h3>Payroll hours and a paper trail</h3>
+          <p>Run payroll for any date range — hours by date plus per-person totals, downloadable as PDF or emailed. And <strong>Run report</strong> shows exactly who changed the schedule, when, and whether it was manual or from a rotation.</p>
+          <ul>
+            <li>Automatic weekly / monthly payroll emails</li>
+            <li>Full audit log of every schedule change</li>
+          </ul>
+        </div>
+        <div class="f-vis"><div class="mock">
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Payroll — Oct 5–11</div>
+          <div class="mock-body">
+            <div class="mock-avail"><span><b>Rander Adv.</b> — 5 shifts</span><span class="pill yes">60.0 hrs</span></div>
+            <div class="mock-avail"><span><b>Smith J.</b> — 4 shifts</span><span class="pill yes">48.0 hrs</span></div>
+            <div class="mock-avail"><span><b>Lee S.</b> — 4 shifts</span><span class="pill yes">48.0 hrs</span></div>
+          </div>
+        </div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="block steps">
+    <div class="wrap">
+      <div class="kicker">How it works</div>
+      <h2 class="sec">Live in an afternoon</h2>
+      <p class="lead">No implementation project. No training sessions.</p>
+      <div class="steps-grid">
+        <div class="step"><div class="n">1</div><h3>Create your workspace</h3><p>Sign up with your company name. Your 14-day free trial starts immediately.</p></div>
+        <div class="step"><div class="n">2</div><h3>Invite your team</h3><p>Add members or share your application link. Everyone sets their own password from the invite email.</p></div>
+        <div class="step"><div class="n">3</div><h3>Publish the schedule</h3><p>Assign shifts or set up rotations, then publish. Staff see it instantly — on any device.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <div class="pricing-card">
+        <div class="kicker" style="color:var(--teal)">Pricing</div>
+        <h2>Start free. Pay only if it works for you.</h2>
+        <p>Every workspace starts with a 14-day free trial. Add a card at signup — you're not charged until the trial ends, and you can cancel anytime from your billing page.</p>
+        <a class="btn btn-primary" href="/signup.html">Start free trial</a>
+        <p class="fine">Simple per-workspace pricing. Details at signup.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block final-cta" style="padding-top:0">
+    <div class="wrap">
+      <h2 class="sec">Stop wrestling the schedule.</h2>
+      <p class="lead" style="margin-left:auto;margin-right:auto;text-align:center">Join the schedulers who get their evenings back.</p>
+      <a class="btn btn-primary" href="/signup.html" style="font-size:1.05rem;padding:0.85rem 2.2rem">Start free trial</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <div>© 2026 Quick Scheduling</div>
+      <div><a href="/login.html">Log in</a><a href="/signup.html">Sign up</a></div>
+    </div>
+  </footer>
+
+</body>
+</html>

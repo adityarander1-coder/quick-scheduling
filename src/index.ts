@@ -76,10 +76,10 @@ app.use('/api/candidates', candidatesRouter);
 app.use('/api/invites', invitesRouter);
 app.use('/api/schedule', scheduleRouter);
 
-// GET / → /home.html when signed in, else /login.html.
+// GET / → /app.html when signed in, else the public landing page.
 app.get('/', (req: Request, res: Response) => {
   if (req.session?.userId) res.redirect('/app.html');
-  else res.redirect('/login.html');
+  else res.sendFile(path.resolve(__dirname, '..', 'public', 'landing.html'));
 });
 
 // Guard logged-in pages server-side: anonymous visitors are bounced to /login.html.
