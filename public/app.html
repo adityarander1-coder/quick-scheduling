@@ -670,7 +670,7 @@
           dayModalDate: null,
           rangeFrom: null,
           rangeTo: null,
-          shiftFilter: null,
+          shiftFilters: [],
           deptFilters: [],
           departments: [],
         };
@@ -717,7 +717,7 @@
         function shiftsFor(dateStr) {
           return sched.shifts.filter(function (s) {
             if (s.date !== dateStr) return false;
-            if (sched.shiftFilter && s.shiftTypeId !== sched.shiftFilter) return false;
+            if (sched.shiftFilters.length && sched.shiftFilters.indexOf(s.shiftTypeId) === -1) return false;
             if (sched.deptFilters.length) {
               var deptId = memberDeptId(s.userId);
               if (sched.deptFilters.indexOf(deptId) === -1) return false;
@@ -733,7 +733,7 @@
         }
         function shiftTypeVisible(st) {
           if (!st.isActive) return false;
-          if (sched.shiftFilter && st.id !== sched.shiftFilter) return false;
+          if (sched.shiftFilters.length && sched.shiftFilters.indexOf(st.id) === -1) return false;
           if (sched.deptFilters.length) { var sdepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []); if (sdepts.length && !sdepts.some(function(d){ return sched.deptFilters.indexOf(d) !== -1; })) return false; }
           return true;
         }
@@ -844,20 +844,38 @@
                 '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
             }).join('') +
             '</div></div>' +
-            '<div style="flex:1;min-width:0"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
-            '<select id="sched-shift-select" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;width:100%">' +
-            '<option value="">All shifts</option>' +
-            visibleShiftTypes().map(function (st) {
-              return '<option value="' + st.id + '"' + (sched.shiftFilter === st.id ? ' selected' : '') + '>' + esc(st.name) + '</option>';
-            }).join('') +
-            '</select></div>';
+            '<div style="flex:1;min-width:0;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            (function () {
+              var sts = visibleShiftTypes();
+              var btnLabel = sched.shiftFilters.length
+                ? sched.shiftFilters.length + ' shift' + (sched.shiftFilters.length > 1 ? 's' : '')
+                : 'All shifts';
+              return '<button type="button" id="sched-shift-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
+              '<div id="sched-shift-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
+              '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;font-weight:700;border-radius:6px;cursor:pointer;border-bottom:1px solid var(--border)">' +
+                '<input type="checkbox" data-shift="__all"' + (sched.shiftFilters.length === 0 ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">All shifts</label>' +
+              sts.map(function (st) {
+                var on = sched.shiftFilters.indexOf(st.id) !== -1;
+                return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer">' +
+                  '<input type="checkbox" data-shift="' + st.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(st.name) + '</label>';
+              }).join('') +
+              '</div>';
+            })() + '</div>';
           var btn = $('sched-dept-btn'), menu = $('sched-dept-menu');
+          var sbtn = $('sched-shift-btn'), smenu = $('sched-shift-menu');
           btn.addEventListener('click', function (e) {
             e.stopPropagation();
+            smenu.style.display = 'none';
             menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+          });
+          sbtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            menu.style.display = 'none';
+            smenu.style.display = smenu.style.display === 'none' ? 'block' : 'none';
           });
           document.addEventListener('click', function h(e) {
             if (!menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
+            if (!smenu.contains(e.target) && e.target !== sbtn) smenu.style.display = 'none';
           });
           menu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () {
@@ -865,15 +883,26 @@
               var i = sched.deptFilters.indexOf(id);
               if (cb.checked && i === -1) sched.deptFilters.push(id);
               if (!cb.checked && i !== -1) sched.deptFilters.splice(i, 1);
-              sched.shiftFilter = null;
+              sched.shiftFilters = [];
               renderDeptFilter();
               var m2 = $('sched-dept-menu'); if (m2) m2.style.display = 'block';
               renderView();
             });
           });
-          $('sched-shift-select').addEventListener('change', function (e) {
-            sched.shiftFilter = e.target.value || null;
-            renderView();
+          smenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = cb.getAttribute('data-shift');
+              if (id === '__all') {
+                sched.shiftFilters = [];
+              } else {
+                var i = sched.shiftFilters.indexOf(id);
+                if (cb.checked && i === -1) sched.shiftFilters.push(id);
+                if (!cb.checked && i !== -1) sched.shiftFilters.splice(i, 1);
+              }
+              renderDeptFilter();
+              var m2 = $('sched-shift-menu'); if (m2) m2.style.display = 'block';
+              renderView();
+            });
           });
         }
 
