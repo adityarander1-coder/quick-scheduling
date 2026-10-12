@@ -5432,8 +5432,14 @@
     <section id="tab-help" class="tab-panel">
       <div class="card">
         <h2>Help & How-to</h2>
-        <p style="color:var(--dim)">Everything Quick Scheduling can do, in one place.</p>
+        <p style="color:var(--dim)">Pick your role to see the right guidance.</p>
+        <div class="sub-tabs" style="border-bottom:none;padding-bottom:0;margin-bottom:0">
+          <button type="button" class="subtab-btn active" data-helprole="admin">Admin / Scheduler</button>
+          <button type="button" class="subtab-btn" data-helprole="employee">Employee</button>
+        </div>
       </div>
+
+      <div id="help-admin">
 
       <div class="card">
         <h3>Schedule views</h3>
@@ -5493,7 +5499,41 @@
         <p>The <strong>Run report</strong> button (top of every tab, bottom of the Schedule page, and on each date popup) shows who changed the schedule — what changed, when, who did it, and whether it was manual or from a rotation. Tracking started October 9, 2026.</p>
       </div>
 
-      <div style="margin-top:1.5rem;text-align:center">
+      </div><!-- /help-admin -->
+
+      <div id="help-employee" style="display:none">
+
+      <div class="card">
+        <h3>Viewing your schedule</h3>
+        <p>Your scheduler shares a <strong>schedule link</strong> with you — no login needed. Open it on your phone or computer to see your upcoming shifts. Only published dates are shown, so what you see is final.</p>
+        <p>On phones, swipe sideways to move between days, or tap a date in the mini calendar at the top to jump straight to it.</p>
+      </div>
+
+      <div class="card">
+        <h3>Marking your availability</h3>
+        <p>When your scheduler sends an <strong>availability link</strong>, open it and mark yourself <strong>available</strong> or <strong>unavailable</strong> for each date. Your scheduler sees everyone's responses and builds the schedule from them.</p>
+        <p>Submit early — late responses may miss the scheduling window.</p>
+      </div>
+
+      <div class="card">
+        <h3>Setting up your account</h3>
+        <p>If your scheduler adds you as a team member, you'll get an <strong>invite email</strong>. Click the link to set your own password. Your email is your username.</p>
+      </div>
+
+      <div class="card">
+        <h3>Requesting schedule changes</h3>
+        <p>Need a swap or a day off? <strong>Email your scheduler</strong> — the system reads schedule emails automatically. For swaps, include who you'd like to swap with and the date. You'll be notified once it's approved.</p>
+        <p>You can also email a question like <em>"Am I scheduled next weekend?"</em> and get an automatic reply with your shifts.</p>
+      </div>
+
+      <div class="card">
+        <h3>Applying for a job</h3>
+        <p>Applied through a company's application link? You'll get an email invite if you're approved. Check your spam folder if you don't see it within a few days.</p>
+      </div>
+
+      </div><!-- /help-employee -->
+
+      <div style="margin-top:1.5rem;text-align:center" id="help-audit-btn-wrap">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
     </section>
@@ -5581,6 +5621,31 @@
       document.addEventListener('DOMContentLoaded', initHelpCarousels);
     } else {
       initHelpCarousels();
+    }
+
+    // Help role toggle: Admin/Scheduler vs Employee
+    function initHelpRoleToggle() {
+      var btns = document.querySelectorAll('[data-helprole]');
+      if (!btns.length || btns[0].dataset.init) return;
+      btns[0].dataset.init = '1';
+      btns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          btns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+          var role = btn.getAttribute('data-helprole');
+          var admin = document.getElementById('help-admin');
+          var emp = document.getElementById('help-employee');
+          var auditWrap = document.getElementById('help-audit-btn-wrap');
+          if (admin) admin.style.display = role === 'admin' ? '' : 'none';
+          if (emp) emp.style.display = role === 'employee' ? '' : 'none';
+          if (auditWrap) auditWrap.style.display = role === 'admin' ? '' : 'none';
+          initHelpCarousels();
+        });
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initHelpRoleToggle);
+    } else {
+      initHelpRoleToggle();
     }
 
     var routes = {
