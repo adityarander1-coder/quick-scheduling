@@ -265,7 +265,6 @@
       <div class="brand"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div>
       <div>
         <span class="user-chip" id="user-chip"></span>
-        <button type="button" id="billing-btn" class="btn-secondary hidden" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Billing</button>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
@@ -275,6 +274,7 @@
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
       <button class="tab-btn" data-tab="link">Share Links</button>
+      <button class="tab-btn" data-tab="billing">Billing</button>
       <button class="tab-btn" data-tab="help">Help</button>
     </nav>
   </header>
@@ -5466,6 +5466,16 @@
       </div>
     </section>
 
+    <!-- Billing tab -->
+    <section id="tab-billing" class="tab-panel">
+      <div class="card">
+        <h2>Billing</h2>
+        <div id="billing-tab-body">
+          <p style="color:var(--dim)">Loading billing status…</p>
+        </div>
+      </div>
+    </section>
+
     <!-- Help tab -->
     <section id="tab-help" class="tab-panel">
       <div class="card">
@@ -5778,6 +5788,7 @@
       'settings': function(sub) { activateTab('settings', sub || 'rotations'); },
       'bulk': function() { activateTab('bulk'); },
       'link': function() { activateTab('link'); },
+      'billing': function() { activateTab('billing'); loadBillingTab(); },
       'help': function() { activateTab('help'); },
     };
 
@@ -5788,7 +5799,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
@@ -5978,6 +5989,46 @@
       };
     })();
 
+    // Billing tab content.
+    window.loadBillingTab = function () {
+      var body = $('billing-tab-body');
+      function fmtDate(iso) {
+        if (!iso) return '—';
+        return new Date(iso).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+      }
+      var labels = {
+        trial: 'Free trial', active: 'Active', past_due: 'Past due — grace period',
+        read_only: 'Read-only — billing past due', suspended: 'Suspended', canceled: 'Canceled'
+      };
+      api('/api/billing/status').then(function (r) {
+        if (!r.ok) { body.innerHTML = '<p style="color:var(--danger)">Could not load billing status.</p>'; return; }
+        var b = r.data;
+        var html = '<p><strong>Status:</strong> ' + esc(labels[b.status] || b.status) + '</p>';
+        if (b.status === 'trial' && b.trialEndsAt) {
+          html += '<p style="color:var(--dim)">Your free trial ends on <strong>' + esc(fmtDate(b.trialEndsAt)) + '</strong>. Your card will be charged automatically after the trial.</p>';
+        }
+        if (b.currentPeriodEnd && (b.status === 'active' || b.cancelAtPeriodEnd)) {
+          html += '<p style="color:var(--dim)">Current billing period ends <strong>' + esc(fmtDate(b.currentPeriodEnd)) + '</strong>.' +
+            (b.cancelAtPeriodEnd ? ' Your subscription is set to cancel — access continues until then.' : '') + '</p>';
+        }
+        if (b.status === 'past_due' && b.graceEndsAt) {
+          html += '<p style="color:var(--danger)">Payment failed. Update your payment method by <strong>' + esc(fmtDate(b.graceEndsAt)) + '</strong> to avoid interruption.</p>';
+        }
+        if (b.needsPaymentMethod) {
+          html += '<p style="color:var(--danger)">No payment method on file. Finish billing setup to keep making changes.</p>';
+        }
+        if (window.isOwner) {
+          html += '<p><button type="button" class="btn-primary" id="billing-tab-manage">Manage billing</button></p>' +
+            '<p style="color:var(--dim);font-size:0.85rem">Update your card, view invoices, or cancel — handled securely by Stripe.</p>';
+        } else {
+          html += '<p style="color:var(--dim)">Only the workspace owner can manage billing.</p>';
+        }
+        body.innerHTML = html;
+        var manage = $('billing-tab-manage');
+        if (manage) manage.addEventListener('click', function () { window.openBillingPortal(); });
+      });
+    };
+
     // Init
     api('/api/auth/me').then(function (r) {
       if (!r.ok) { window.location.href = '/login.html'; return; }
@@ -5985,11 +6036,6 @@
       window.isOwner = (role === 'owner');
       // Re-render the billing banner now that we know the role (owner-only buttons).
       if (window.billingInfo && window.refreshBillingBanner) window.refreshBillingBanner(window.billingInfo);
-      if (window.isOwner) {
-        var billingBtn = $('billing-btn');
-        show(billingBtn);
-        billingBtn.addEventListener('click', function () { window.openBillingPortal(); });
-      }
       if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
