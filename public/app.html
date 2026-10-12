@@ -5416,12 +5416,70 @@
     </section>
 
     <!-- Help tab -->
-    <!-- Help tab -->
     <section id="tab-help" class="tab-panel">
       <div class="card">
         <h2>Help & How-to</h2>
-        <p style="color:var(--dim)">Guides — coming.</p>
+        <p style="color:var(--dim)">Everything Quick Scheduling can do, in one place.</p>
       </div>
+
+      <div class="card">
+        <h3>Schedule views</h3>
+        <p>The <strong>Schedule</strong> tab has three views: <strong>Day</strong>, <strong>Week</strong>, and <strong>Range</strong>.</p>
+        <ul>
+          <li><strong>Day view</strong> — see everyone scheduled for one date. Tap a shift box to reassign, swap, or remove someone. The <strong>⋮</strong> button between the shift type and name opens shift actions.</li>
+          <li><strong>Week view</strong> — seven days at a glance with full shift names.</li>
+          <li><strong>Range view</strong> — pick any date range.</li>
+        </ul>
+        <p>Filter by <strong>Department</strong> or <strong>Shift</strong> using the two dropdowns under the heading. Green dates are published, gray are draft, plain are empty.</p>
+        <p><strong>Publishing:</strong> assign shifts as drafts, then publish a date when it's final. Staff only see published dates on shared links.</p>
+      </div>
+
+      <div class="card">
+        <h3>Ask Q-Scheduler</h3>
+        <p>Ask plain-language questions about the schedule, like <em>"Who is on tonight?"</em>, <em>"Where are we short next week?"</em>, or <em>"How many shifts did Priya work in September?"</em> Answers come from published dates.</p>
+        <p><strong>Staffing targets:</strong> set how many people you need per shift type per day (e.g. 4 Day Hospitalists + 1 Night Hospitalist + 1 Night NP). Ask <em>"where are we short?"</em> to find gaps.</p>
+        <h4 style="margin-top:1rem">Change plans (email-to-schedule)</h4>
+        <p>Forward a schedule email to your connected inbox address and the system reads it, builds a proposed change plan, and emails you for approval — you never have to check email yourself.</p>
+        <ul>
+          <li><strong>Change requests</strong> ("assign Maya to Day Hospitalist on Oct 12") → a plan appears under <strong>Change plans</strong> and you get an email with <strong>Approve &amp; Apply</strong> / <strong>Reject</strong> buttons that work right from the email.</li>
+          <li><strong>Schedule questions</strong> ("send me the schedule for Oct 11–14") → the sender gets an automatic reply with the schedule. Draft shifts are labeled <em>(draft)</em>.</li>
+          <li>Plans show who requested the change (name, email, and CC).</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Team members &amp; Candidates</h3>
+        <p><strong>Team members</strong> — add people manually or approve them from the candidate queue. Each member sets their own password via an email invite.</p>
+        <p><strong>Candidates</strong> — people apply through your application link. New applications email you a <strong>Review Application</strong> link where you can edit their details and <strong>Approve</strong> or <strong>Reject</strong> without logging in. Approving creates their team member account and sends them an invite.</p>
+        <p>Set <strong>special instructions</strong> per member and an optional <strong>end date</strong> (stops future shifts, keeps history).</p>
+      </div>
+
+      <div class="card">
+        <h3>Rotations</h3>
+        <p>Build repeating patterns (1–84 days) under <strong>Settings → Rotations</strong>. Assign team members to cycle days and the schedule fills in automatically. Manual shifts always take precedence over rotation-generated ones.</p>
+        <p>You can <strong>pause</strong> a rotation for vacations and <strong>exclude</strong> individual rotation instances (e.g. someone swapped out for one day).</p>
+      </div>
+
+      <div class="card">
+        <h3>Share Links</h3>
+        <p>No-login links for people outside the team:</p>
+        <ul>
+          <li><strong>Schedule link</strong> — view-only schedule for temps or non-team staff. Filter by department or shift type.</li>
+          <li><strong>Open slots</strong> — generate a message listing open shifts for a date range, ready to copy-paste to a group chat.</li>
+          <li><strong>Availability link</strong> — staff mark themselves available/unavailable for dates you choose; you see responses per person.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Payroll</h3>
+        <p>Pick a date range to see hours <strong>by date</strong> plus <strong>per-person totals</strong>. Filter by person, download a PDF, or email the report. Automatic weekly/monthly payroll emails can be scheduled from the payroll tab.</p>
+      </div>
+
+      <div class="card">
+        <h3>Run report (audit log)</h3>
+        <p>The <strong>Run report</strong> button (top of every tab, bottom of the Schedule page, and on each date popup) shows who changed the schedule — what changed, when, who did it, and whether it was manual or from a rotation. Tracking started October 9, 2026.</p>
+      </div>
+
       <div style="margin-top:1.5rem;text-align:center">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
