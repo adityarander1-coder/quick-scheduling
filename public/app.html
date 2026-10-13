@@ -13,6 +13,14 @@
     function api(path, opts) {
       opts = opts || {};
       opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      // Active-department context (2026-10-12): every mutating call from a scoped
+      // scheduler carries X-Active-Department. Owner bypasses; employees don't send
+      // it; auth/billing endpoints excluded.
+      var method = String(opts.method || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && window.currentRole === 'scheduler' && window.qsActiveDeptId &&
+          path.indexOf('/api/auth') !== 0 && path.indexOf('/api/billing') !== 0) {
+        opts.headers['X-Active-Department'] = window.qsActiveDeptId;
+      }
       return fetch(path, opts).then(function (res) {
         return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
       });
@@ -23,6 +31,115 @@
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    // --- Department-scoped permissions + active department (2026-10-12) ---
+    // window.qsDeptAccess = null  -> full access (owner, or backend hasn't sent departmentAccess yet).
+    // window.qsDeptAccess = { edit: [deptId...], view: [deptId...] } -> scoped scheduler.
+    // A scheduler with {edit: [], view: []} sees nothing.
+    // Active department: a scheduler with edit access edits in ONE department context at a
+    // time. Edit affordances are enabled only for content in the active department;
+    // other edit-list departments render read-only. Owner bypasses (no active dept).
+    window.qsDeptAccess = null;
+    window.qsActiveDeptId = null;
+    window.qsCompanyId = null;
+    window.qsShiftTypes = []; // populated by the schedule tab loadAll
+    window.qsDepartments = []; // populated by the schedule tab loadAll
+    window.currentRole = null;
+    window.qsSetDeptAccess = function (da) {
+      if (!da || (!Array.isArray(da.edit) && !Array.isArray(da.view))) { window.qsDeptAccess = null; return; }
+      window.qsDeptAccess = {
+        edit: (da.edit || []).map(String),
+        view: (da.view || []).map(String)
+      };
+    };
+    // Department visible at all? (view or edit access; unassigned -> visible)
+    window.qsCanViewDept = function (deptId) {
+      var a = window.qsDeptAccess;
+      if (!a) return true; // full access fallback
+      if (deptId == null || deptId === '') return true; // unassigned -> visible
+      deptId = String(deptId);
+      return a.edit.indexOf(deptId) !== -1 || a.view.indexOf(deptId) !== -1;
+    };
+    // Department in the edit list (ignores which one is active)?
+    window.qsInEditList = function (deptId) {
+      var a = window.qsDeptAccess;
+      if (!a) return true; // full access fallback
+      if (deptId == null || deptId === '') return true; // unassigned -> in scope
+      return a.edit.indexOf(String(deptId)) !== -1;
+    };
+    // Department editable RIGHT NOW: in edit list AND (full access OR the active department).
+    window.qsCanEditDept = function (deptId) {
+      if (!window.qsInEditList(deptId)) return false;
+      var a = window.qsDeptAccess;
+      if (!a) return true; // full access fallback
+      // Unassigned content: editable only when the scheduler has an active department
+      // (so a scheduler with no edit access anywhere can't change anything).
+      if (deptId == null || deptId === '') return !!window.qsActiveDeptId;
+      return String(deptId) === String(window.qsActiveDeptId);
+    };
+    // Departments a shift type belongs to (migration 032).
+    window.qsStDeptIds = function (st) {
+      if (!st) return [];
+      if (st.departmentIds && st.departmentIds.length) return st.departmentIds.map(String);
+      if (st.departmentId) return [String(st.departmentId)];
+      return [];
+    };
+    // Shift type visible at all? (any of its departments is viewable; unassigned types are visible)
+    window.qsStViewable = function (st) {
+      var ids = window.qsStDeptIds(st);
+      if (!ids.length) return true;
+      return ids.some(window.qsCanViewDept);
+    };
+    // Shift type editable right now? (any of its departments is currently editable)
+    window.qsStEditable = function (st) {
+      var ids = window.qsStDeptIds(st);
+      if (!ids.length) return true;
+      return ids.some(window.qsCanEditDept);
+    };
+    window.qsMemberViewable = function (u) { return window.qsCanViewDept(u && u.departmentId); };
+    window.qsMemberEditable = function (u) { return window.qsCanEditDept(u && u.departmentId); };
+    window.qsDeptName = function (id) {
+      var ds = window.qsDepartments || [];
+      for (var i = 0; i < ds.length; i++) if (String(ds[i].id) === String(id)) return ds[i].name;
+      return '';
+    };
+    // Active department persistence: qs.activeDepartment.<companyId>
+    window.qsActiveDeptKey = function () { return 'qs.activeDepartment.' + (window.qsCompanyId || 'default'); };
+    window.qsSetActiveDept = function (id, persist) {
+      window.qsActiveDeptId = id ? String(id) : null;
+      if (persist !== false) { try { localStorage.setItem(window.qsActiveDeptKey(), window.qsActiveDeptId || ''); } catch (e) {} }
+      if (window.qsRenderActiveDeptSwitcher) window.qsRenderActiveDeptSwitcher();
+      if (window.qsRefreshAdminAffordances) window.qsRefreshAdminAffordances();
+    };
+    // Default: stored value if still in the edit list, else the first edit department.
+    window.qsLoadActiveDept = function () {
+      var a = window.qsDeptAccess;
+      if (!a || !a.edit.length) { window.qsActiveDeptId = null; return; }
+      var saved = null;
+      try { saved = localStorage.getItem(window.qsActiveDeptKey()) || null; } catch (e) {}
+      if (saved && a.edit.indexOf(String(saved)) !== -1) window.qsActiveDeptId = String(saved);
+      else window.qsActiveDeptId = String(a.edit[0]);
+      try { localStorage.setItem(window.qsActiveDeptKey(), window.qsActiveDeptId); } catch (e) {}
+    };
+    // Prompt to pick an active department (used when the backend 403s 'Select an active department').
+    window.qsPromptActiveDept = function () {
+      var a = window.qsDeptAccess;
+      if (!a || !a.edit.length) { pageError('Your account has no department access. Ask your workspace owner.'); return; }
+      var dlg = $('action-dialog'); if (!dlg) return;
+      $('ad-title').textContent = 'Select an active department';
+      var body = '<p style="margin:0 0 10px;font-size:14px">Pick which department you are editing. You can switch anytime from the Schedule page.</p>';
+      window._dlgCallbacks = window._dlgCallbacks || {};
+      var actions = '';
+      a.edit.forEach(function (id, i) {
+        var nm = window.qsDeptName(id) || id;
+        window._dlgCallbacks['ad' + i] = (function (did) {
+          return function () { window.qsSetActiveDept(did); };
+        })(id);
+        actions += '<button type="button" class="btn" style="margin:0 6px 6px 0" onclick="window._dlgFire(\'ad' + i + '\')">' + esc(nm) + '</button>';
+      });
+      $('ad-body').innerHTML = body;
+      $('ad-actions').innerHTML = actions;
+      show(dlg);
+    };
   </script>
   <style>
     /* Design tokens from demo */
@@ -138,6 +255,72 @@
       color: #fff;
       border-bottom-color: var(--teal);
     }
+    /* View switcher: Admin view | My schedule (top-level, above the main tabs) */
+    .view-switcher {
+      display: inline-flex;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 999px;
+      padding: 3px;
+      margin-bottom: 0.6rem;
+    }
+    .view-switcher button {
+      border: none;
+      background: none;
+      color: rgba(255,255,255,0.75);
+      font: inherit;
+      font-size: 0.85rem;
+      font-weight: 700;
+      padding: 0.45rem 1rem;
+      border-radius: 999px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .view-switcher button.active {
+      background: #fff;
+      color: var(--navy);
+    }
+    /* Active-department bar on the Schedule page */
+    .active-dept-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      background: #e8f3fb;
+      border: 1px solid #bcd9ef;
+      border-radius: 10px;
+      padding: 0.55rem 0.9rem;
+      margin-bottom: 1rem;
+      font-size: 0.95rem;
+    }
+    .active-dept-bar select {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font: inherit;
+      font-size: 0.92rem;
+      background: #fff;
+      max-width: 280px;
+    }
+    .read-only-hint { cursor: help; }
+    /* My schedule (shared employee view) — same shift-box look as the schedule */
+    #tab-myschedule .sched-h1 { margin: 0 0 1rem; font-size: 1.5rem; color: var(--text); }
+    #tab-myschedule .view-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
+    #tab-myschedule .view-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 1rem; padding: 0.6rem 1.1rem; cursor: pointer; }
+    #tab-myschedule .view-tabs button.active { background: var(--accent); color: #fff; }
+    #tab-myschedule .day-row { background: #ffffff; border: 1px solid var(--border); border-radius: 20px; margin-bottom: 1rem; overflow: hidden; }
+    #tab-myschedule .day-row-head { padding: 0.6rem 1rem; background: var(--surface-alt); border-bottom: 1px solid var(--border); }
+    #tab-myschedule .dow { font-size: 15px; font-weight: 700; color: var(--text); }
+    #tab-myschedule .dnum { font-size: 11px; color: var(--dim); }
+    #tab-myschedule .day-row-body { padding: 0.8rem 1rem; }
+    #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 4px; min-height: 50px; margin-bottom: 8px; }
+    #tab-myschedule .shift-grid:last-child { margin-bottom: 0; }
+    #tab-myschedule .shift-cat { border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
+    #tab-myschedule .shift-nm { background: #ffffff; border-radius: 8px; padding: 0.5rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
+    #tab-myschedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
+    #tab-myschedule .ms-row { display: flex; align-items: center; gap: 0.8rem; padding: 0.7rem 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    #tab-myschedule .ms-row:last-child { border-bottom: none; }
+    #tab-myschedule .req-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; background: var(--surface); }
+    #tab-myschedule .req-card .req-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
     .app-content {
       max-width: 1100px;
       margin: 0 auto;
@@ -305,6 +488,10 @@
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
+    </div>
+    <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View">
+      <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
+      <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
@@ -488,6 +675,12 @@
       </style>
 
       <h2 id="sched-h1" class="sched-h1">Schedule</h2>
+
+      <div id="sched-active-dept" class="active-dept-bar hidden" aria-label="Active department">
+        <span style="font-weight:700">Editing:</span>
+        <span id="sched-active-dept-ctl"></span>
+        <span style="color:var(--dim);font-size:0.82rem">Edits apply to this department only.</span>
+      </div>
 
       <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end"></div>
 
@@ -731,12 +924,6 @@
           }
           return null;
         }
-        function shiftTypeVisible(st) {
-          if (!st.isActive) return false;
-          if (sched.shiftFilters.length && sched.shiftFilters.indexOf(st.id) === -1) return false;
-          if (sched.deptFilters.length) { var sdepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []); if (sdepts.length && !sdepts.some(function(d){ return sched.deptFilters.indexOf(d) !== -1; })) return false; }
-          return true;
-        }
         function commentsFor(dateStr) {
           return sched.comments.filter(function (c) { return c.date === dateStr; });
         }
@@ -808,6 +995,9 @@
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
             if (deptR.ok) sched.departments = deptR.data.departments || [];
+            window.qsShiftTypes = sched.shiftTypes;
+            window.qsDepartments = sched.departments;
+            renderActiveDeptSwitcher();
             renderDeptFilter();
             renderLegend();
             renderView();
@@ -823,14 +1013,65 @@
           });
         }
 
+        // --- Department-scoped permissions (2026-10-12) ---
+        // View scope stays broad (all view departments); edit affordances are enabled
+        // only for content in the ACTIVE department.
+        function shiftTypeVisible(st) {
+          if (!st.isActive) return false;
+          if (sched.shiftFilters.length && sched.shiftFilters.indexOf(st.id) === -1) return false;
+          if (sched.deptFilters.length) { var sdepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []); if (sdepts.length && !sdepts.some(function(d){ return sched.deptFilters.indexOf(d) !== -1; })) return false; }
+          return window.qsStViewable(st);
+        }
+        function shiftEditable(s) {
+          if (!sched.canEdit) return false;
+          var st = s ? shiftTypeById(s.shiftTypeId) : null;
+          return st ? window.qsStEditable(st) : true;
+        }
+        // Active-department switcher ("Editing: X"). Lists only edit-access departments.
+        function renderActiveDeptSwitcher() {
+          var bar = $('sched-active-dept'), ctl = $('sched-active-dept-ctl');
+          if (!bar || !ctl) return;
+          if (!sched.canEdit || window.isOwner || !window.qsDeptAccess) { hide(bar); return; }
+          var editDepts = sched.departments.filter(function (d) { return window.qsInEditList(d.id); });
+          if (!editDepts.length) { hide(bar); return; }
+          show(bar);
+          // Default the active department if none chosen yet.
+          if (!window.qsActiveDeptId || !editDepts.some(function (d) { return String(d.id) === String(window.qsActiveDeptId); })) {
+            window.qsLoadActiveDept();
+          }
+          if (editDepts.length === 1) {
+            ctl.innerHTML = '<strong>' + esc(editDepts[0].name) + '</strong>';
+          } else {
+            ctl.innerHTML = '<select id="sched-active-dept-select" aria-label="Active department">' +
+              editDepts.map(function (d) {
+                return '<option value="' + d.id + '"' + (String(window.qsActiveDeptId) === String(d.id) ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+              }).join('') + '</select>';
+            $('sched-active-dept-select').addEventListener('change', function () {
+              window.qsSetActiveDept(this.value);
+            });
+          }
+        }
+        window.qsRenderActiveDeptSwitcher = renderActiveDeptSwitcher;
+        // Lightweight re-render of edit affordances (no reload) after switching departments.
+        window.qsRefreshAdminAffordances = function () {
+          try {
+            renderActiveDeptSwitcher();
+            renderView();
+            if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+          } catch (e) {}
+        };
+
         function renderLegend() {
           // Legend tabs removed — shift filter is now a dropdown in renderDeptFilter.
         }
 
         function renderDeptFilter() {
           var el = $('sched-dept-filter');
-          if (!sched.departments.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+          // View scope: only departments the viewer may see (edit + view access).
+          var viewDepts = sched.departments.filter(function (d) { return window.qsCanViewDept(d.id); });
+          if (!viewDepts.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
           el.style.display = 'flex';
+          var depts = viewDepts;
           var btnLabel = sched.deptFilters.length
             ? sched.deptFilters.length + ' department' + (sched.deptFilters.length > 1 ? 's' : '')
             : 'All departments';
@@ -838,7 +1079,7 @@
             '<div style="flex:1;min-width:0;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
             '<button type="button" id="sched-dept-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-dept-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
-            sched.departments.map(function (d) {
+            depts.map(function (d) {
               var on = sched.deptFilters.indexOf(d.id) !== -1;
               return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'">' +
                 '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
@@ -923,7 +1164,8 @@
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
           var cBtn = '';
-          if (sched.canEdit && s.userId) {
+          var editable = s.userId && shiftEditable(s);
+          if (editable) {
             cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
@@ -939,6 +1181,9 @@
             cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\')"' +
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
               ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
+          } else if (sched.canEdit && s.userId) {
+            // Viewable but not in the active department: read-only with a hint.
+            cBtn = '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;font-size:14px">🔒</span>';
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
@@ -1435,7 +1680,7 @@
         // Global replace function (simple, reliable)
         window.qsReplaceShift = function(sid) {
           var s = shiftById(sid);
-          if (!s) return;
+          if (!s || !shiftEditable(s)) return;
           // Anybody can swap - show who's working vs off that day
           var workingIds = {};
           sched.shifts.forEach(function (sh) {
@@ -1470,7 +1715,7 @@
         window.qsEditShift = function (sid) {
           try {
             var s = shiftById(sid);
-            if (!s) return;
+            if (!s || !shiftEditable(s)) return;
             var opened = openAssignModal(s.date, s.shiftTypeId, s);
             if (opened === false) openPersonActions(sid);
           } catch (err) {
@@ -1481,6 +1726,7 @@
         // that the inline-handler rewrite wired to this name but never defined.
         window.qsDeleteShift = function(sid) {
           var s = shiftById(sid);
+          if (s && !shiftEditable(s)) return;
           var isRot = sid && sid.indexOf('rot-') === 0;
           showDialog('Delete shift', '<p>Delete this shift?</p>', [
             { label: 'Cancel' },
@@ -1508,7 +1754,7 @@
         };
         window.qsToggleShiftPublish = function(sid) {
           var s = shiftById(sid);
-          if (!s) return;
+          if (!s || !shiftEditable(s)) return;
           var toPublished = !(s.published !== false && isPublished(s.date));
           // Optimistic: update instantly.
           s.published = toPublished;
@@ -1577,6 +1823,9 @@
 
         function openAssignModal(dateStr, shiftTypeId, editShift) {
           if (!sched.canEdit) return;
+          // Department scope: edits only in the active department.
+          if (editShift && !shiftEditable(editShift)) return false;
+          if (shiftTypeId) { var stPre = shiftTypeById(shiftTypeId); if (stPre && !window.qsStEditable(stPre)) return false; }
           sched.assignDate = dateStr;
           sched.editShiftId = editShift ? editShift.id : null;
           // For rotation shifts, we'll convert to manual on save.
@@ -1604,6 +1853,7 @@
           var uSel = $('sched-assign-user');
           uSel.innerHTML = '';
           sched.members.forEach(function (m) {
+            if (!window.qsMemberViewable(m)) return;
             var o = document.createElement('option');
             o.value = m.id;
             o.textContent = fullName(m) + (m.jobRole ? ' (' + m.jobRole + ')' : '');
@@ -1612,7 +1862,7 @@
           var tSel = $('sched-assign-shifttype');
           tSel.innerHTML = '';
           sched.shiftTypes.forEach(function (st) {
-            if (!shiftTypeVisible(st)) return;
+            if (!shiftTypeVisible(st) || !window.qsStEditable(st)) return;
             var o = document.createElement('option');
             o.value = st.id; o.textContent = st.name;
             tSel.appendChild(o);
@@ -1667,14 +1917,16 @@
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
             var isDraftShift = s.published === false || !isPublished(s.date);
-            html += '<div class="dm-shift-row" data-shift-id="' + s.id + '" onclick="window.qsEditShift(\'' + s.id + '\')"><span class="shift-color-bar" style="background:' +
+            var editable = shiftEditable(s);
+            html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' +
-              (sched.canEdit ?
+              (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
                 '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
                 '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
-                '</span>' : '') + '</div>';
+                '</span>' :
+                (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
           });
           $('sched-day-shifts').innerHTML = html;
           // Open slots for unfilled staffing targets.
@@ -1682,6 +1934,7 @@
           if (sched.canEdit) {
             sched.shiftTypes.forEach(function (st) {
               if (!st.isActive) return;
+              if (!window.qsStEditable(st)) return; // only the active department's types are assignable
               var closed = isShiftClosed(ds, st.id);
               var open = openCountFor(ds, st.id);
               if (closed) {
@@ -1941,7 +2194,7 @@
         var popupShift = null;
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
-          if (!s) return;
+          if (!s || !shiftEditable(s)) return;
           popupShift = s;
           var popup = $('shift-popup');
           var nm = displayName(s);
@@ -2488,7 +2741,8 @@
             if (sh) {
               // Click an assigned shift → open the assign popup in edit mode.
               // (Rotation shifts convert to manual on save.)
-              openAssignModal(sh.date, sh.shiftTypeId, sh);
+              // Read-only outside the active department: no click-to-edit.
+              if (shiftEditable(sh)) openAssignModal(sh.date, sh.shiftTypeId, sh);
             } else {
               openPersonActions(sid);
             }
@@ -2815,6 +3069,7 @@
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
           var role = r.data.user.role;
+          if (role === 'employee') return; // employees use the shared "My schedule" view
           sched.canEdit = (role === 'owner' || role === 'scheduler');
           // publish bar removed 2026-10-08
           restoreSchedView();
@@ -3064,7 +3319,7 @@
             </div>
             <div id="rottab-rot-skip" class="hidden">
             <p class="set-desc">Assign vacation or leave. Add as many date ranges as you need — the rotation automatically resumes after each one. Delete a vacation to put the person back on their regular rotation.</p>
-            <div class="card" style="margin-bottom:1rem">
+            <div class="card" id="skip-add-card" style="margin-bottom:1rem">
               <h4 style="margin:0 0 0.8rem">Add vacation</h4>
               <div style="display:grid;grid-template-columns:1fr;gap:0.8rem">
                 <label style="font-size:13px">Rotation<br>
@@ -3218,6 +3473,22 @@
                   return (r.assignments || []).some(function (a) { return a.userId === userId; });
                 });
               }
+              // Department scope for rotations (derived from their shift types).
+              function rotShiftTypes(r) {
+                var ids = {};
+                (r.assignments || []).forEach(function (a) { ids[a.shiftTypeId] = true; });
+                return Object.keys(ids).map(stById).filter(Boolean);
+              }
+              function rotViewable(r) {
+                var sts = rotShiftTypes(r);
+                if (!sts.length) return true;
+                return sts.some(window.qsStViewable);
+              }
+              function rotEditable(r) {
+                var sts = rotShiftTypes(r);
+                if (!sts.length) return true;
+                return sts.some(window.qsStEditable);
+              }
 
               function rotSummary(r) {
                 var days = (r.assignments || []).map(function (a) { return a.cycleDay; });
@@ -3240,6 +3511,8 @@
                 }
                 var q = ($('rot-emp-search') ? $('rot-emp-search').value : '').toLowerCase();
                 var shown = members.filter(function (m) {
+                  // Department scope: hide people in departments with no view access.
+                  if (!window.qsMemberViewable(m)) return false;
                   if (!q) return true;
                   return fullName(m).toLowerCase().indexOf(q) >= 0;
                 });
@@ -3252,13 +3525,15 @@
                   var nm = fullName(m);
                   var initial = (nm.trim().charAt(0) || '?').toUpperCase();
                   var roleDept = [m.jobRole, m.department].filter(Boolean).join(' \u00b7 ');
-                  var rots = rotsForUser(m.id);
+                  // Department scope: hide rotations outside the view list.
+                  var rots = rotsForUser(m.id).filter(rotViewable);
+                  var mEditable = window.qsMemberEditable(m);
                   html += '<div class="employee-rotation-card">' +
                     '<div class="erc-head">' +
                     '<span class="erc-avatar" style="background:' + avatarColor(nm) + '">' + esc(initial) + '</span>' +
                     '<div class="erc-id"><strong>' + esc(nm) + '</strong>' +
                     (roleDept ? '<span>' + esc(roleDept) + '</span>' : '') + '</div>' +
-                    '<button type="button" class="btn rot-add-btn" data-user="' + m.id + '">+ Add rotation</button>' +
+                    (mEditable ? '<button type="button" class="btn rot-add-btn" data-user="' + m.id + '">+ Add rotation</button>' : '') +
                     '</div>';
                   if (!rots.length) {
                     html += '<p class="erc-empty">No rotations yet.</p>';
@@ -3271,14 +3546,17 @@
                       var stLabel = sts.length ? sts.map(function (s) { return s.name; }).join(', ') : '\u2014';
                       var stColor = sts.length ? sts[0].color : '#637a8e';
                       var times = (sts.length && sts[0].startTime) ? (fmtTime(sts[0].startTime) + '\u2013' + fmtTime(sts[0].endTime)) : '';
-                      html += '<button type="button" class="erc-rot" data-rot="' + r.id + '" style="flex:1">' +
-                        '<span class="erc-rot-dot" style="background:' + esc(stColor) + '"></span>' +
+                      // Department scope: view-only rotations render without edit controls.
+                      var rEditable = rotEditable(r);
+                      var rInner = '<span class="erc-rot-dot" style="background:' + esc(stColor) + '"></span>' +
                         '<span class="erc-rot-main"><strong>' + esc(r.name) + '</strong>' +
                         '<span>' + esc(rotSummary(r)) + '</span>' +
                         '<span>' + esc(stLabel) + (times ? ' \u00b7 ' + esc(times) : '') + '</span></span>' +
                         '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' +
-                        (r.isActive ? 'Active' : 'Paused') + '</span>' +
-                        '</button></div>';
+                        (r.isActive ? 'Active' : 'Paused') + '</span>';
+                      html += rEditable
+                        ? '<button type="button" class="erc-rot" data-rot="' + r.id + '" style="flex:1">' + rInner + '</button></div>'
+                        : '<div class="erc-rot read-only-hint" title="Switch active department to edit" style="flex:1;cursor:default">' + rInner + '</div>';
                     });
                     html += '</div>';
                   }
@@ -3366,6 +3644,10 @@
                 var ts = $('rot-shifttype'); ts.innerHTML = '';
                 shiftTypes.forEach(function (st) {
                   if (!st.isActive) return;
+                  // Department scope: only shift types in the active department are assignable.
+                  if (!window.qsStEditable(st)) {
+                    if (st.id !== selectedId) return;
+                  }
                   var o = document.createElement('option');
                   o.value = st.id; o.textContent = st.name;
                   if (st.id === selectedId) o.selected = true;
@@ -3382,7 +3664,7 @@
 
               function openNewRotation(userId) {
                 var m = memberById(userId);
-                if (!m) return;
+                if (!m || !window.qsMemberEditable(m)) return;
                 modalUserId = userId;
                 editingRotId = null;
                 $('rot-modal-title').textContent = 'New rotation';
@@ -3411,6 +3693,7 @@
               }
 
               function openEditRotation(r) {
+                if (!r || !rotEditable(r)) return;
                 var firstA = (r.assignments || [])[0];
                 var userId = firstA ? firstA.userId : null;
                 modalUserId = userId;
@@ -3577,12 +3860,16 @@
               window.loadSkipRotations = function () {
                 api('/api/schedule/rotations').then(function (res) {
                   var rots = (res.ok && (res.data.rotations || res.data)) || [];
+                  // Department scope: vacations can only be added to rotations in the active department.
+                  var editableRots = rots.filter(rotEditable);
                   var sel = document.getElementById('skip-rot-select');
-                  sel.innerHTML = rots.map(function (r) {
+                  sel.innerHTML = editableRots.map(function (r) {
                     var firstA = (r.assignments || [])[0] || {};
                     var nm = ((firstA.firstName || '') + ' ' + (firstA.lastName || '')).trim() || 'Unknown';
                     return '<option value="' + r.id + '">' + escSkip(nm) + ' — ' + escSkip(r.name) + '</option>';
                   }).join('');
+                  var addCard = document.getElementById('skip-add-card');
+                  if (addCard) addCard.style.display = editableRots.length ? '' : 'none';
                   loadSkipList(rots);
                 });
               };
@@ -3597,6 +3884,9 @@
                   var html = '';
                   all.forEach(function (item) {
                     if (!item.pauses.length) return;
+                    // Department scope: hide pauses for rotations outside the view list.
+                    if (!rotViewable(item.rot)) return;
+                    var rEditable = rotEditable(item.rot);
                     var firstA = (item.rot.assignments || [])[0] || {};
                     var nm = ((firstA.firstName || '') + ' ' + (firstA.lastName || '')).trim() || 'Unknown';
                     item.pauses.forEach(function (p) {
@@ -3606,7 +3896,9 @@
                         '<span style="font-size:13px">' + escSkip(p.startDate) + ' → ' + escSkip(p.endDate) + '</span>' +
                         (p.reason ? ' <span style="color:var(--dim);font-size:12px">(' + escSkip(p.reason) + ')</span>' : '') +
                         '</div>' +
-                        '<button type="button" class="btn-secondary skip-del-btn" data-rot="' + item.rot.id + '" data-pause="' + p.id + '" style="padding:0.4rem 0.8rem">Delete</button>' +
+                        (rEditable
+                          ? '<button type="button" class="btn-secondary skip-del-btn" data-rot="' + item.rot.id + '" data-pause="' + p.id + '" style="padding:0.4rem 0.8rem">Delete</button>'
+                          : '<span class="read-only-hint" title="Switch active department to edit" style="font-size:0.8rem;color:var(--dim)">View only</span>') +
                         '</div>';
                     });
                   });
@@ -3659,7 +3951,7 @@
             </div>
             <div class="team-list" id="team-members-list"></div>
 
-            <div class="sub-card">
+            <div class="sub-card" id="team-add-card">
               <h3>Add a team member</h3>
               <div id="team-add-error" class="alert alert-error hidden" role="alert"></div>
               <div id="team-add-success" class="alert alert-success hidden" role="status"></div>
@@ -3804,6 +4096,8 @@
                 list.textContent = '';
                 var q = ($('team-search') ? $('team-search').value : '').toLowerCase();
                 var shown = members.filter(function (u) {
+                  // Department scope: hide people in departments with no view access.
+                  if (!window.qsMemberViewable(u)) return false;
                   if (!q) return true;
                   var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
                   return nm.toLowerCase().indexOf(q) >= 0;
@@ -3838,11 +4132,17 @@
                   }
                   row.appendChild(av);
 
-                  var nameBtn = document.createElement('button');
-                  nameBtn.type = 'button';
+                  // Department scope: members outside the active department render read-only.
+                  var memberEditable = window.qsMemberEditable(u);
+                  var nameBtn = document.createElement(memberEditable ? 'button' : 'div');
                   nameBtn.className = 'team-name';
-                  nameBtn.setAttribute('aria-label', 'Edit ' + displayName(u));
-                  nameBtn.addEventListener('click', function () { startEdit(u.id); });
+                  if (memberEditable) {
+                    nameBtn.type = 'button';
+                    nameBtn.setAttribute('aria-label', 'Edit ' + displayName(u));
+                    nameBtn.addEventListener('click', function () { startEdit(u.id); });
+                  } else if (window.qsDeptAccess) {
+                    nameBtn.title = 'Switch active department to edit';
+                  }
 
                   var nm = document.createElement('strong');
                   nm.textContent = displayName(u);
@@ -3877,31 +4177,110 @@
 
                   row.appendChild(nameBtn);
 
-                  var actions = document.createElement('div');
-                  actions.className = 'team-row-actions';
+                  if (memberEditable) {
+                    var actions = document.createElement('div');
+                    actions.className = 'team-row-actions';
 
-                  if (invitePending(u)) {
-                    var sendBtn = document.createElement('button');
-                    sendBtn.type = 'button'; sendBtn.className = 'text-button'; sendBtn.textContent = 'Send invite';
-                    sendBtn.addEventListener('click', function () { sendInvite(u.id); });
-                    actions.appendChild(sendBtn);
-                    if (u.inviteStatus === 'not_sent') {
-                      var sentBtn = document.createElement('button');
-                      sentBtn.type = 'button'; sentBtn.className = 'text-button'; sentBtn.textContent = 'Mark as sent';
-                      sentBtn.addEventListener('click', function () { markInviteSent(u.id); });
-                      actions.appendChild(sentBtn);
+                    if (invitePending(u)) {
+                      var sendBtn = document.createElement('button');
+                      sendBtn.type = 'button'; sendBtn.className = 'text-button'; sendBtn.textContent = 'Send invite';
+                      sendBtn.addEventListener('click', function () { sendInvite(u.id); });
+                      actions.appendChild(sendBtn);
+                      if (u.inviteStatus === 'not_sent') {
+                        var sentBtn = document.createElement('button');
+                        sentBtn.type = 'button'; sentBtn.className = 'text-button'; sentBtn.textContent = 'Mark as sent';
+                        sentBtn.addEventListener('click', function () { markInviteSent(u.id); });
+                        actions.appendChild(sentBtn);
+                      }
                     }
+                    if (u.id !== myUserId) {
+                      var toggleBtn = document.createElement('button');
+                      toggleBtn.type = 'button'; toggleBtn.className = 'text-button';
+                      toggleBtn.textContent = u.isActive ? 'Active' : 'Inactive';
+                      toggleBtn.setAttribute('aria-label', (u.isActive ? 'Deactivate ' : 'Reactivate ') + displayName(u));
+                      toggleBtn.addEventListener('click', function () { toggleActive(u); });
+                      actions.appendChild(toggleBtn);
+                    }
+                    row.appendChild(actions);
                   }
-                  if (u.id !== myUserId) {
-                    var toggleBtn = document.createElement('button');
-                    toggleBtn.type = 'button'; toggleBtn.className = 'text-button';
-                    toggleBtn.textContent = u.isActive ? 'Active' : 'Inactive';
-                    toggleBtn.setAttribute('aria-label', (u.isActive ? 'Deactivate ' : 'Reactivate ') + displayName(u));
-                    toggleBtn.addEventListener('click', function () { toggleActive(u); });
-                    actions.appendChild(toggleBtn);
+                  // Department access picker: owner-only, on scheduler rows.
+                  if (window.isOwner && u.role === 'scheduler') {
+                    row.appendChild(deptAccessPicker(u));
                   }
-                  row.appendChild(actions);
                   list.appendChild(row);
+                });
+              }
+
+              function escHtml(s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              }
+
+              // Owner-only per-scheduler department access picker (No access / View / Edit).
+              function deptAccessPicker(u) {
+                var wrap = document.createElement('div');
+                wrap.style.cssText = 'margin-top:0.4rem';
+                var btn = document.createElement('button');
+                btn.type = 'button'; btn.className = 'btn-secondary';
+                btn.style.cssText = 'padding:0.3rem 0.7rem;font-size:0.82rem';
+                btn.textContent = 'Department access';
+                var panel = document.createElement('div');
+                panel.className = 'hidden';
+                panel.style.cssText = 'margin-top:0.5rem;padding:0.6rem 0.8rem;border:1px solid var(--border);border-radius:8px;background:#f8fafc';
+                var loaded = false;
+                btn.addEventListener('click', function () {
+                  if (panel.classList.contains('hidden')) {
+                    show(panel);
+                    if (!loaded) { loaded = true; loadDeptAccess(u.id, panel); }
+                  } else hide(panel);
+                });
+                wrap.appendChild(btn);
+                wrap.appendChild(panel);
+                return wrap;
+              }
+
+              function loadDeptAccess(userId, panel) {
+                panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">Loading…</p>';
+                api('/api/users/' + userId + '/department-access').then(function (r) {
+                  if (!r.ok) {
+                    panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">' +
+                      escHtml((r.data && r.data.error) || 'Department access settings are not available yet.') + '</p>';
+                    return;
+                  }
+                  var current = {};
+                  (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
+                  var html = '<p style="font-size:0.85rem;color:var(--dim);margin:0 0 0.5rem">Choose what this scheduler can do in each department.</p>';
+                  departments.forEach(function (d) {
+                    var val = current[String(d.id)] || 'none';
+                    html += '<div style="display:flex;align-items:center;gap:0.6rem;padding:0.3rem 0">' +
+                      '<span style="flex:1;font-size:0.9rem">' + escHtml(d.name) + '</span>' +
+                      '<select data-acc-dept="' + d.id + '" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:0.85rem">' +
+                      '<option value="none"' + (val === 'none' ? ' selected' : '') + '>No access</option>' +
+                      '<option value="view"' + (val === 'view' ? ' selected' : '') + '>View</option>' +
+                      '<option value="edit"' + (val === 'edit' ? ' selected' : '') + '>Edit</option>' +
+                      '</select></div>';
+                  });
+                  html += '<div style="margin-top:0.5rem"><button type="button" class="btn" data-acc-save style="padding:0.4rem 0.9rem;font-size:0.85rem">Save access</button>' +
+                    '<span data-acc-msg style="font-size:0.85rem;margin-left:0.5rem"></span></div>';
+                  panel.innerHTML = html;
+                  panel.querySelector('[data-acc-save]').addEventListener('click', function () {
+                    var access = [];
+                    panel.querySelectorAll('select[data-acc-dept]').forEach(function (sel) {
+                      if (sel.value === 'view' || sel.value === 'edit') {
+                        access.push({ departmentId: sel.getAttribute('data-acc-dept'), accessLevel: sel.value });
+                      }
+                    });
+                    var msg = panel.querySelector('[data-acc-msg]');
+                    msg.style.color = 'var(--dim)'; msg.textContent = 'Saving…';
+                    api('/api/users/' + userId + '/department-access', {
+                      method: 'PUT', body: JSON.stringify({ access: access })
+                    }).then(function (pr) {
+                      if (pr.ok) { msg.style.color = 'var(--success)'; msg.textContent = 'Saved.'; }
+                      else { msg.style.color = 'var(--danger)'; msg.textContent = (pr.data && pr.data.error) || 'Could not save.'; }
+                    }).catch(function () { msg.style.color = 'var(--danger)'; msg.textContent = 'Network error.'; });
+                  });
+                }).catch(function () {
+                  panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">Could not load department access.</p>';
                 });
               }
 
@@ -3917,7 +4296,7 @@
                 var none = document.createElement('option');
                 none.value = ''; none.textContent = '— None —';
                 selectEl.appendChild(none);
-                departments.forEach(function (d) {
+                departments.filter(function (d) { return window.qsCanViewDept(d.id); }).forEach(function (d) {
                   var opt = document.createElement('option');
                   opt.value = d.id; opt.textContent = d.name;
                   if (d.id === selectedId) opt.selected = true;
@@ -3939,8 +4318,10 @@
               function renderDeptList() {
                 var list = $('team-dept-list');
                 list.textContent = '';
-                if (!departments.length) { list.textContent = 'No departments yet.'; return; }
-                departments.forEach(function (d) {
+                // Department scope: only viewable departments appear; rename/delete only when editable.
+                var viewDepts = departments.filter(function (d) { return window.qsCanViewDept(d.id); });
+                if (!viewDepts.length) { list.textContent = 'No departments yet.'; return; }
+                viewDepts.forEach(function (d) {
                   var div = document.createElement('div');
                   div.style.cssText = 'display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border)';
                   var nameSpan = document.createElement('span');
@@ -3970,7 +4351,15 @@
                       else if (r) showErr($('team-dept-error'), (r.data && r.data.error) || 'Could not delete.');
                     });
                   });
-                  div.appendChild(nameSpan); div.appendChild(renameBtn); div.appendChild(delBtn);
+                  div.appendChild(nameSpan);
+                  if (window.qsCanEditDept(d.id)) { div.appendChild(renameBtn); div.appendChild(delBtn); }
+                  else {
+                    var roTag = document.createElement('span');
+                    roTag.style.cssText = 'font-size:0.8rem;color:var(--dim)';
+                    roTag.textContent = 'View only';
+                    roTag.title = 'Switch active department to edit';
+                    div.appendChild(roTag);
+                  }
                   list.appendChild(div);
                 });
               }
@@ -4246,6 +4635,14 @@
                   if (!r.ok) return; // app shell handles redirect
                   myUserId = r.data.user.id;
                   myRole = r.data.user.role;
+                  window.isOwner = (myRole === 'owner');
+                  if (window.qsSetDeptAccess) window.qsSetDeptAccess(myRole === 'owner' ? null : (r.data.user.departmentAccess || null));
+                  // Department scope: no edit access anywhere -> hide the add forms.
+                  if (window.qsDeptAccess && !window.qsDeptAccess.edit.length) {
+                    ['team-add-card', 'team-dept-form'].forEach(function (id) {
+                      var ae = $(id); if (ae) hide(ae);
+                    });
+                  }
                   setupAdd();
                   setupEdit();
                   setupDeptForm();
@@ -4282,7 +4679,17 @@
             (function () {
               // Staffing sub-panel — ported from settings.html staffing section, IDs prefixed staff-.
               var targets = [];
+              var shiftTypes = [];
+              var shownTargets = []; // viewable targets actually rendered
               var expanded = {};
+              function stById(id) {
+                for (var i = 0; i < shiftTypes.length; i++) if (shiftTypes[i].id === id) return shiftTypes[i];
+                return null;
+              }
+              function targetEditable(t) {
+                var st = stById(t.shiftTypeId);
+                return st ? window.qsStEditable(st) : true;
+              }
 
               function esc(s) {
                 return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -4296,33 +4703,48 @@
               function renderTargets() {
                 var html = '';
                 var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-                targets.forEach(function (t, i) {
+                // Department scope: hide targets for shift types outside the view list.
+                shownTargets = targets.filter(function (t) {
+                  var st = stById(t.shiftTypeId);
+                  return !st || window.qsStViewable(st);
+                });
+                if ($('staff-save-btn')) {
+                  var anyEditable = shownTargets.some(targetEditable);
+                  $('staff-save-btn').style.display = anyEditable ? '' : 'none';
+                }
+                shownTargets.forEach(function (t, i) {
                   var weekdays = t.weekdays || [0,1,2,3,4,5,6];
                   var everyDay = weekdays.length === 7;
+                  var editable = targetEditable(t);
                   html += '<div class="target-row" style="flex-direction:column;align-items:stretch">' +
                     '<div style="display:flex;align-items:center;gap:0.8rem;flex-wrap:wrap">' +
                     '<span class="color-dot" style="background:' + esc(t.color) + '"></span>' +
                     '<span class="target-name">' + esc(t.name) + '</span>' +
-                    '<div class="stepper">' +
-                      '<button type="button" data-i="' + i + '" data-d="-1">−</button>' +
-                      '<span id="staff-count-' + i + '">' + t.targetCount + '</span>' +
-                      '<button type="button" data-i="' + i + '" data-d="1">+</button>' +
-                    '</div>' +
+                    (editable
+                      ? '<div class="stepper">' +
+                        '<button type="button" data-i="' + i + '" data-d="-1">−</button>' +
+                        '<span id="staff-count-' + i + '">' + t.targetCount + '</span>' +
+                        '<button type="button" data-i="' + i + '" data-d="1">+</button>' +
+                        '</div>'
+                      : '<span style="min-width:36px;text-align:center;font-size:1.2rem;font-weight:700">' + t.targetCount + '</span>') +
                     '<span style="color:#5c7185;font-size:0.9rem">per day</span>' +
+                    (editable ? '' : '<span class="read-only-hint" title="Switch active department to edit" style="font-size:0.8rem;color:var(--dim)">View only 🔒</span>') +
                     '<button type="button" class="btn-secondary" data-expand="' + i + '" style="margin-left:auto;padding:0.3rem 0.7rem;font-size:0.85rem">' +
                       (everyDay ? 'Every day' : weekdays.map(function(d){return dayNames[d];}).join(', ')) + ' ▾</button>' +
                     '</div>' +
                     '<div id="staff-expand-' + i + '" class="' + (expanded[i] ? '' : 'hidden') + '" style="margin-top:0.6rem;padding-top:0.6rem;border-top:1px dashed var(--border)">' +
                       '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.6rem">' +
-                        dayNames.map(function (dn, d) {
-                          var on = weekdays.indexOf(d) >= 0;
-                          return '<button type="button" class="day-toggle' + (on ? ' on' : '') + '" data-ti="' + i + '" data-day="' + d + '" ' +
-                            'style="border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;cursor:pointer;font-weight:600;background:' + (on ? 'var(--accent)' : '#fff') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + dn + '</button>';
-                        }).join('') +
+                        (editable
+                          ? dayNames.map(function (dn, d) {
+                              var on = weekdays.indexOf(d) >= 0;
+                              return '<button type="button" class="day-toggle' + (on ? ' on' : '') + '" data-ti="' + i + '" data-day="' + d + '" ' +
+                                'style="border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;cursor:pointer;font-weight:600;background:' + (on ? 'var(--accent)' : '#fff') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + dn + '</button>';
+                            }).join('')
+                          : '<span style="font-size:0.9rem;color:var(--dim)">' + (everyDay ? 'Every day' : weekdays.map(function(d){return dayNames[d];}).join(', ')) + '</span>') +
                       '</div>' +
                       '<div style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap">' +
-                        '<label style="font-size:0.9rem">From <input type="date" id="staff-start-' + i + '" value="' + esc(t.startDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"></label>' +
-                        '<label style="font-size:0.9rem">To <input type="date" id="staff-end-' + i + '" value="' + esc(t.endDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"></label>' +
+                        '<label style="font-size:0.9rem">From <input type="date" id="staff-start-' + i + '" value="' + esc(t.startDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"' + (editable ? '' : ' disabled') + '></label>' +
+                        '<label style="font-size:0.9rem">To <input type="date" id="staff-end-' + i + '" value="' + esc(t.endDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"' + (editable ? '' : ' disabled') + '></label>' +
                       '</div>' +
                     '</div>' +
                     '</div>';
@@ -4332,8 +4754,8 @@
                   b.addEventListener('click', function () {
                     var i = parseInt(b.getAttribute('data-i'));
                     var d = parseInt(b.getAttribute('data-d'));
-                    targets[i].targetCount = Math.min(20, Math.max(0, targets[i].targetCount + d));
-                    $('staff-count-' + i).textContent = targets[i].targetCount;
+                    shownTargets[i].targetCount = Math.min(20, Math.max(0, shownTargets[i].targetCount + d));
+                    $('staff-count-' + i).textContent = shownTargets[i].targetCount;
                   });
                 });
                 $('staff-targets-list').querySelectorAll('[data-expand]').forEach(function (b) {
@@ -4348,26 +4770,33 @@
                   b.addEventListener('click', function () {
                     var ti = parseInt(b.getAttribute('data-ti'));
                     var day = parseInt(b.getAttribute('data-day'));
-                    var wd = targets[ti].weekdays || [0,1,2,3,4,5,6];
+                    var wd = (shownTargets[ti].weekdays || [0,1,2,3,4,5,6]).slice();
                     var idx = wd.indexOf(day);
                     if (idx >= 0) wd.splice(idx, 1);
                     else wd.push(day);
                     wd.sort();
-                    targets[ti].weekdays = wd;
+                    shownTargets[ti].weekdays = wd;
                     renderTargets();
                   });
                 });
               }
 
               function loadAll() {
-                api('/api/schedule/staffing-targets').then(function (r) {
-                  if (r.ok) { targets = r.data.targets || []; renderTargets(); }
+                Promise.all([api('/api/schedule/staffing-targets'), api('/api/schedule/shift-types')]).then(function (rs) {
+                  var r = rs[0];
+                  if (r.ok) {
+                    targets = r.data.targets || [];
+                    if (rs[1].ok) shiftTypes = rs[1].data.shiftTypes || [];
+                    renderTargets();
+                  }
                   else pageError((r.data && r.data.error) || 'Could not load staffing targets.');
                 }).catch(function () { pageError('Network error. Could not load staffing targets.'); });
               }
 
               $('staff-save-btn').addEventListener('click', function () {
-                var payload = targets.map(function (t, i) {
+                // Department scope: only save targets in the active department.
+                var payload = shownTargets.map(function (t, i) {
+                  if (!targetEditable(t)) return null;
                   var startEl = $('staff-start-' + i);
                   var endEl = $('staff-end-' + i);
                   return {
@@ -4377,7 +4806,7 @@
                     startDate: startEl ? startEl.value || null : null,
                     endDate: endEl ? endEl.value || null : null,
                   };
-                });
+                }).filter(Boolean);
                 api('/api/schedule/staffing-targets', { method: 'PUT', body: JSON.stringify({ targets: payload }) })
                   .then(function (r) {
                     if (r.ok) { pageSuccess('Staffing targets saved.'); loadAll(); }
@@ -4441,7 +4870,7 @@
                 return '<div class="dept-dd" data-dd="' + prefix + '" style="position:relative">' +
                   '<button type="button" class="dept-dd-btn" data-ddbtn="' + prefix + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.88rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:140px;max-width:200px"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>' +
                   '<div class="dept-dd-menu" data-ddmenu="' + prefix + '" style="display:none;position:absolute;top:100%;left:0;z-index:70;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;min-width:180px;max-height:200px;overflow-y:auto;padding:6px">' +
-                  departments.map(function (d) {
+                  departments.filter(function (d) { return window.qsCanViewDept(d.id); }).map(function (d) {
                     var on = selectedIds.indexOf(d.id) !== -1;
                     return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
                       '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
@@ -4499,25 +4928,43 @@
                 return h.indexOf('#settings/shifts') === 0;
               }
 
+              function deptNames(ids) {
+                var names = [];
+                (ids || []).forEach(function (id) {
+                  for (var i = 0; i < departments.length; i++) {
+                    if (String(departments[i].id) === String(id)) { names.push(departments[i].name); break; }
+                  }
+                });
+                return names.length ? names.join(', ') : 'All departments';
+              }
               function renderShifts() {
                 var html = '';
+                var anyEditable = false;
                 shiftTypes.forEach(function (st, i) {
+                  // Department scope: view-only rows render without edit controls.
+                  var editable = window.qsStEditable(st);
+                  if (editable) anyEditable = true;
                   var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
                   var deleted = st.isActive === false;
                   html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
-                    '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') + '</label>' +
-                    '<div style="max-width:200px">' + deptDropdownHTML(deptIds, 'row' + i) + '</div>' +
+                    '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
+                    (editable ? '' : ' <span class="read-only-hint" title="Switch active department to edit" style="color:#6b7280;font-size:0.75rem;font-weight:700">View only</span>') + '</label>' +
+                    '<div style="max-width:200px">' + (editable ? deptDropdownHTML(deptIds, 'row' + i) : '<span style="font-size:0.88rem;color:var(--dim)">' + esc(deptNames(deptIds)) + '</span>') + '</div>' +
                     '<div class="time-inputs">' +
-                      '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '"' + (deleted ? ' disabled' : '') + '>' +
+                      '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '"' + ((deleted || !editable) ? ' disabled' : '') + '>' +
                       '<span>to</span>' +
-                      '<input type="time" id="shift-end-' + i + '" value="' + esc(st.endTime || '20:00') + '"' + (deleted ? ' disabled' : '') + '>' +
+                      '<input type="time" id="shift-end-' + i + '" value="' + esc(st.endTime || '20:00') + '"' + ((deleted || !editable) ? ' disabled' : '') + '>' +
                     '</div>' +
-                    (deleted
-                      ? '<button type="button" class="btn shift-restore-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Restore</button>'
-                      : '<button type="button" class="btn-secondary shift-del-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Delete</button>') +
+                    (editable
+                      ? (deleted
+                        ? '<button type="button" class="btn shift-restore-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Restore</button>'
+                        : '<button type="button" class="btn-secondary shift-del-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Delete</button>')
+                      : '') +
                     '</div>';
                 });
+                if ($('shift-add-btn')) $('shift-add-btn').style.display = anyEditable ? '' : 'none';
+                if ($('shift-save-btn')) $('shift-save-btn').style.display = anyEditable ? '' : 'none';
                 $('shift-shifts-list').innerHTML = html;
                 $('shift-shifts-list').querySelectorAll('.shift-restore-btn').forEach(function (b) {
                   b.addEventListener('click', function () {
@@ -4548,21 +4995,25 @@
                   loadDepartments()
                 ]).then(function (rs) {
                   var r = rs[0];
-                  if (r.ok) { shiftTypes = r.data.shiftTypes || []; renderShifts(); }
+                  // Department scope: hide shift types outside the view list.
+                  if (r.ok) { shiftTypes = (r.data.shiftTypes || []).filter(window.qsStViewable); renderShifts(); }
                   else pageError((r.data && r.data.error) || 'Could not load shift types.');
                 }).catch(function () { pageError('Network error. Could not load shift types.'); });
               }
 
               $('shift-save-btn').addEventListener('click', function () {
-                var updates = shiftTypes.map(function (st, i) {
-                  return api('/api/schedule/shift-types/' + st.id, {
+                // Department scope: only save rows in the active department.
+                var updates = [];
+                shiftTypes.forEach(function (st, i) {
+                  if (!window.qsStEditable(st)) return;
+                  updates.push(api('/api/schedule/shift-types/' + st.id, {
                     method: 'PUT',
                     body: JSON.stringify({
                       startTime: $('shift-start-' + i).value,
                       endTime: $('shift-end-' + i).value,
                       departmentIds: checkedDeptIds('row' + i),
                     }),
-                  });
+                  }));
                 });
                 Promise.all(updates).then(function (rs) {
                   var failed = rs.filter(function (r) { return !r.ok; });
@@ -4774,7 +5225,8 @@
                 var none = document.createElement('option');
                 none.value = ''; none.textContent = '— None —';
                 sel.appendChild(none);
-                departments.forEach(function (d) {
+                // Department scope: only viewable departments.
+                departments.filter(function (d) { return window.qsCanViewDept(d.id); }).forEach(function (d) {
                   var opt = document.createElement('option');
                   opt.value = d.id; opt.textContent = d.name;
                   if (d.id === selectedId) opt.selected = true;
@@ -5038,6 +5490,8 @@
           q = (q || '').toLowerCase();
           var html = bulkAllMembers
             .filter(function (u) {
+              // Department scope: only viewable team members.
+              if (!window.qsMemberViewable(u)) return false;
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
               return !q || nm.toLowerCase().indexOf(q) >= 0;
             })
@@ -5058,7 +5512,10 @@
           api('/api/schedule/shift-types').then(function (r) {
             if (!r.ok) return;
             var sel = $('bulk-shifttype');
-            sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) { return st.isActive; }).map(function (st) {
+            // Department scope: bulk writes apply to the active department only.
+            sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) {
+              return st.isActive && window.qsStEditable(st);
+            }).map(function (st) {
               return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
             }).join('');
           }).catch(function () {});
@@ -5282,7 +5739,8 @@
             if (!r.ok || !r.data.shiftTypes) return;
             var sel = $('share-shift');
             sel.innerHTML = '<option value="">All shifts</option>';
-            r.data.shiftTypes.forEach(function (t) {
+            // Department scope: only viewable shift types.
+            r.data.shiftTypes.filter(window.qsStViewable).forEach(function (t) {
               var o = document.createElement('option');
               o.value = t.id; o.textContent = t.name;
               sel.appendChild(o);
@@ -5294,7 +5752,8 @@
             if (!r.ok || !r.data.departments) return;
             var sel = $('share-dept');
             sel.innerHTML = '<option value="">All departments</option>';
-            r.data.departments.forEach(function (d) {
+            // Department scope: only viewable departments.
+            r.data.departments.filter(function (d) { return window.qsCanViewDept(d.id); }).forEach(function (d) {
               var o = document.createElement('option');
               o.value = d.id; o.textContent = d.name;
               sel.appendChild(o);
@@ -5355,7 +5814,8 @@
             if (!r.ok || !r.data.shiftTypes) return;
             var box = $('msg-types');
             box.innerHTML = '';
-            r.data.shiftTypes.forEach(function (st) {
+            // Department scope: only viewable shift types.
+            r.data.shiftTypes.filter(window.qsStViewable).forEach(function (st) {
               var lbl = document.createElement('label');
               lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
               var cb = document.createElement('input');
@@ -5402,7 +5862,8 @@
             ['pay-person', 'sched-person'].forEach(function (id) {
               var sel = $(id);
               sel.innerHTML = '<option value="">Everyone</option>';
-              r.data.users.forEach(function (u) {
+              // Department scope: only viewable team members.
+              r.data.users.filter(window.qsMemberViewable).forEach(function (u) {
                 var o = document.createElement('option');
                 o.value = u.id;
                 o.textContent = u.nickname || ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
@@ -5773,6 +6234,499 @@
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
     </section>
+
+    <!-- My schedule — ONE shared employee view for all roles (2026-10-12).
+         Employees land here directly; owner/scheduler reach it via the view switcher. -->
+    <section id="tab-myschedule" class="tab-panel">
+      <h2 class="sched-h1">My schedule</h2>
+      <div id="ms-error" class="alert alert-error hidden" role="alert"></div>
+      <div id="ms-success" class="alert alert-success hidden" role="status"></div>
+
+      <div class="card" style="margin-bottom:1rem">
+        <h3 style="margin-top:0">My upcoming shifts</h3>
+        <div id="ms-mine"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+
+      <div class="card" style="margin-bottom:1rem">
+        <h3 style="margin-top:0">Shift requests</h3>
+        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
+        <div id="ms-requests"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+
+      <div class="card" style="margin-bottom:1rem">
+        <h3 style="margin-top:0">Open shifts</h3>
+        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Unfilled positions you can pick up.</p>
+        <div id="ms-open"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Team schedule</h3>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+          <div class="view-tabs" role="tablist" aria-label="Team schedule view">
+            <button type="button" data-msview="day" role="tab">Day</button>
+            <button type="button" data-msview="week" role="tab" class="active">Week</button>
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-left:auto">
+            <button type="button" id="ms-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
+            <button type="button" id="ms-today" class="btn-secondary">Today</button>
+            <button type="button" id="ms-next" class="btn-secondary" aria-label="Next">&rarr;</button>
+          </div>
+        </div>
+        <div id="ms-team"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+
+      <script>
+      (function () {
+        // Shared "My schedule" component — read-only team context + self-service actions.
+        // Backend contract (2026-10-12): open-slots/claim, shifts/:id/request-pickup,
+        // shifts/swap-request, shift-requests (+ approve/decline/cancel). Wired defensively.
+        var me = null;
+        var departments = [], shiftTypes = [], members = [], shifts = [];
+        var extraSlots = [], closedShifts = [], requests = [];
+        var msView = 'week';
+        var anchorDate = new Date();
+
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        function fmtDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+        function parseDate(s) { var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]); }
+        function addDays(d, n) { var x = new Date(d); x.setDate(x.getDate() + n); return x; }
+        function esc(s) {
+          return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function tint(hex, pct) {
+          var n = String(hex || '').replace('#', '');
+          if (n.length === 3) n = n[0]+n[0]+n[1]+n[1]+n[2]+n[2];
+          var r = parseInt(n.slice(0,2),16), g = parseInt(n.slice(2,4),16), b = parseInt(n.slice(4,6),16);
+          var t = pct / 100;
+          r = Math.round(r + (255-r)*t); g = Math.round(g + (255-g)*t); b = Math.round(b + (255-b)*t);
+          return 'rgb('+r+','+g+','+b+')';
+        }
+        // Demo format: "LastName FirstInitial." (e.g. "Rander Adv.").
+        function displayName(s) {
+          if (s.nickname) return s.nickname;
+          var last = (s.lastName || '').trim();
+          var first = (s.firstName || '').trim();
+          if (last && first) return last + ' ' + first.slice(0, 3) + '.';
+          if (last) return last;
+          if (first) return first;
+          return 'Team member';
+        }
+        function fmtTime(t) {
+          if (!t) return '';
+          var p = String(t).split(':');
+          var h = parseInt(p[0], 10), m = p[1] || '00';
+          var ap = h >= 12 ? 'PM' : 'AM';
+          h = h % 12; if (h === 0) h = 12;
+          return h + ':' + m + ' ' + ap;
+        }
+        function fmtLong(s) {
+          return parseDate(s).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+        }
+        function stById(id) {
+          for (var i = 0; i < shiftTypes.length; i++) if (String(shiftTypes[i].id) === String(id)) return shiftTypes[i];
+          return null;
+        }
+        function memberById(id) {
+          for (var i = 0; i < members.length; i++) if (String(members[i].id) === String(id)) return members[i];
+          return null;
+        }
+        function msError(m) { var e = $('ms-error'); if (e) { e.textContent = m; show(e); } }
+        function msSuccess(m) { var e = $('ms-success'); if (e) { e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); } }
+        function clearMsg() { hide($('ms-error')); hide($('ms-success')); }
+
+        // Small dialog using the global action-dialog (same pattern as the schedule swap UI).
+        function msDialog(title, bodyHtml, buttons) {
+          window._dlgCallbacks = window._dlgCallbacks || {};
+          $('ad-title').textContent = title;
+          $('ad-body').innerHTML = bodyHtml;
+          var actions = $('ad-actions');
+          var html = '';
+          window._dlgCallbacks = {};
+          buttons.forEach(function (btn, i) {
+            var cls = btn.primary ? 'btn' : 'btn-secondary';
+            if (btn.onClick) window._dlgCallbacks['m' + i] = btn.onClick;
+            var oc = btn.onClick ? ' onclick="window._dlgFire(\'m' + i + '\')"' : ' onclick="hide(document.getElementById(\'action-dialog\'))"';
+            html += '<button type="button" class="' + cls + '"' + oc + '>' + esc(btn.label) + '</button>';
+          });
+          actions.innerHTML = html;
+          show($('action-dialog'));
+        }
+
+        function loadData() {
+          clearMsg();
+          var from = fmtDate(new Date());
+          var to = fmtDate(addDays(new Date(), 13));
+          $('ms-mine').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          $('ms-open').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          $('ms-requests').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          $('ms-team').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          api('/api/auth/me').then(function (mr) {
+            if (!mr.ok) return null;
+            me = mr.data.user;
+            return Promise.all([
+              api('/api/departments'),
+              api('/api/schedule/shift-types'),
+              api('/api/users'),
+              api('/api/schedule/shifts?from=' + from + '&to=' + to),
+              // May 404 until the backend lands — never let it fail the whole view.
+              api('/api/schedule/shift-requests').catch(function () { return { ok: false }; }),
+            ]);
+          }).then(function (rs) {
+            if (!rs) return;
+            if (rs[0].ok) departments = rs[0].data.departments || [];
+            if (rs[1].ok) shiftTypes = rs[1].data.shiftTypes || [];
+            if (rs[2].ok) members = (rs[2].data.users || []).filter(function (u) { return u.isActive; });
+            if (rs[3].ok) {
+              shifts = rs[3].data.shifts || [];
+              extraSlots = rs[3].data.extraSlots || [];
+              closedShifts = rs[3].data.closedShifts || [];
+            }
+            // shift-requests may 404 until the backend lands — treat as empty, not an error.
+            requests = (rs[4].ok && rs[4].data.requests) || [];
+            renderMine();
+            renderRequests();
+            renderOpen();
+            renderTeam();
+          }).catch(function () { msError('Could not load your schedule.'); });
+        }
+        window.qsLoadMySchedule = function () { loadData(); };
+
+        function isMine(s) { return me && String(s.userId) === String(me.id); }
+
+        function shiftLabel(s) {
+          var st = stById(s.shiftTypeId);
+          var nm = st ? st.name : 'Shift';
+          var times = st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '';
+          var draft = (s.published === false) ? ' (draft)' : '';
+          return nm + times + draft;
+        }
+
+        // --- My upcoming shifts ---
+        function renderMine() {
+          var today = fmtDate(new Date());
+          var mine = shifts.filter(function (s) { return isMine(s) && s.date >= today; });
+          mine.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+          if (!mine.length) {
+            $('ms-mine').innerHTML = '<p style="color:var(--dim)">No upcoming shifts. Check the open shifts below to pick one up.</p>';
+            return;
+          }
+          $('ms-mine').innerHTML = mine.map(function (s) {
+            // Rotation-generated shifts (rot-…) have no real shift row — schedulers' territory.
+            var isRot = String(s.id).indexOf('rot-') === 0;
+            var dis = isRot ? ' disabled title="Rotation shifts are managed by your scheduler"' : '';
+            return '<div class="ms-row">' +
+              '<div style="flex:1;min-width:180px"><strong>' + esc(fmtLong(s.date)) + '</strong><br>' +
+              '<span style="color:var(--dim);font-size:0.9rem">' + esc(shiftLabel(s)) + '</span>' +
+              (s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '') + '</div>' +
+              '<button type="button" class="btn-secondary" data-ms-swap="' + s.id + '"' + dis + '>Swap</button>' +
+              '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '"' + dis + '>Ask for cover</button>' +
+              '</div>';
+          }).join('');
+          $('ms-mine').querySelectorAll('[data-ms-swap]').forEach(function (b) {
+            b.addEventListener('click', function () { openSwapDialog(b.getAttribute('data-ms-swap')); });
+          });
+          $('ms-mine').querySelectorAll('[data-ms-cover]').forEach(function (b) {
+            b.addEventListener('click', function () { openCoverDialog(b.getAttribute('data-ms-cover')); });
+          });
+        }
+
+        function shiftById(sid) {
+          for (var i = 0; i < shifts.length; i++) if (String(shifts[i].id) === String(sid)) return shifts[i];
+          return null;
+        }
+
+        // Candidate list — the existing swap UI pattern from the schedule:
+        // anybody on the team, off first, Working/Off badges.
+        function swapCandidateList(dateStr, excludeId) {
+          var workingIds = {};
+          shifts.forEach(function (sh) {
+            if (sh.date === dateStr && sh.userId) workingIds[String(sh.userId)] = true;
+          });
+          var candidates = members.filter(function (c) { return String(c.id) !== String(excludeId); });
+          candidates.sort(function (a, b) {
+            var aOff = workingIds[String(a.id)] ? 1 : 0;
+            var bOff = workingIds[String(b.id)] ? 1 : 0;
+            return aOff - bOff;
+          });
+          return candidates.map(function (c) {
+            var cn = displayName(c);
+            var isWorking = workingIds[String(c.id)];
+            var badge = isWorking
+              ? '<span style="font-size:11px;color:#b45309;background:#fef3c7;border-radius:6px;padding:2px 6px;margin-left:6px">Working</span>'
+              : '<span style="font-size:11px;color:#137f72;background:#d1fae5;border-radius:6px;padding:2px 6px;margin-left:6px">Off</span>';
+            return { id: c.id, html: '<button type="button" class="sp-item" data-ms-cand="' + c.id + '"><span class="sp-ic" style="background:#e3f0fa">👤</span><span>' + esc(cn) + badge + '</span></button>' };
+          });
+        }
+
+        // --- Swap: pick my shift -> pick their shift -> swap request ---
+        function openSwapDialog(myShiftId) {
+          var s = shiftById(myShiftId);
+          if (!s || String(s.id).indexOf('rot-') === 0) return;
+          var cands = swapCandidateList(s.date, s.userId);
+          if (!cands.length) { msError('No other team members to swap with.'); return; }
+          msDialog('Swap ' + fmtLong(s.date),
+            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Choose whose shift you want to swap with:</p>' +
+            cands.map(function (c) { return c.html; }).join(''),
+            [{ label: 'Cancel' }]);
+          $('action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
+            b.addEventListener('click', function () { openTheirShiftsDialog(myShiftId, b.getAttribute('data-ms-cand')); });
+          });
+        }
+
+        function openTheirShiftsDialog(myShiftId, theirId) {
+          var s = shiftById(myShiftId);
+          var them = memberById(theirId);
+          if (!s || !them) return;
+          var today = fmtDate(new Date());
+          var theirs = shifts.filter(function (x) {
+            return String(x.userId) === String(theirId) && x.date >= today && String(x.id).indexOf('rot-') !== 0;
+          });
+          theirs.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+          if (!theirs.length) {
+            msDialog('Swap with ' + displayName(them),
+              '<p style="color:var(--dim);font-size:13px">' + esc(displayName(them)) + ' has no upcoming shifts to swap with.</p>',
+              [{ label: 'Back', onClick: function () { openSwapDialog(myShiftId); } }, { label: 'Cancel' }]);
+            return;
+          }
+          msDialog('Swap with ' + displayName(them),
+            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(fmtLong(s.date) + ' · ' + shiftLabel(s)) + '</strong><br>Pick their shift to request a swap:</p>' +
+            theirs.map(function (x) {
+              return '<button type="button" class="sp-item" data-ms-their="' + x.id + '"><span class="sp-ic" style="background:#e3f0fa">🔄</span><span><strong>' +
+                esc(fmtLong(x.date)) + '</strong> · ' + esc(shiftLabel(x)) + '</span></button>';
+            }).join(''),
+            [{ label: 'Back', onClick: function () { openSwapDialog(myShiftId); } }, { label: 'Cancel' }]);
+          $('action-dialog').querySelectorAll('[data-ms-their]').forEach(function (b) {
+            b.addEventListener('click', function () { sendSwapRequest(myShiftId, b.getAttribute('data-ms-their')); });
+          });
+        }
+
+        function sendSwapRequest(myShiftId, theirShiftId) {
+          hide($('action-dialog'));
+          api('/api/schedule/shifts/swap-request', {
+            method: 'POST', body: JSON.stringify({ myShiftId: myShiftId, theirShiftId: theirShiftId })
+          }).then(function (r) {
+            if (r.ok) { msSuccess('Swap request sent.'); loadData(); }
+            else msError((r.data && r.data.error) || 'Could not send the swap request.');
+          }).catch(function () { msError('Network error. Could not send the swap request.'); });
+        }
+
+        // --- Ask for cover: request pickup of my shift (specific person or anyone) ---
+        function openCoverDialog(myShiftId) {
+          var s = shiftById(myShiftId);
+          if (!s || String(s.id).indexOf('rot-') === 0) return;
+          var cands = swapCandidateList(s.date, s.userId);
+          msDialog('Ask for cover — ' + fmtLong(s.date),
+            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Who should we ask to pick it up? (Needs scheduler approval.)</p>' +
+            '<button type="button" class="sp-item" data-ms-cand=""><span class="sp-ic" style="background:#e8f5e9">📣</span><span><strong>Anyone available</strong></span></button>' +
+            cands.map(function (c) { return c.html; }).join(''),
+            [{ label: 'Cancel' }]);
+          $('action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var tid = b.getAttribute('data-ms-cand') || null;
+              sendPickupRequest(myShiftId, tid);
+            });
+          });
+        }
+
+        function sendPickupRequest(myShiftId, targetUserId) {
+          hide($('action-dialog'));
+          var body = {};
+          if (targetUserId) body.targetUserId = targetUserId;
+          api('/api/schedule/shifts/' + myShiftId + '/request-pickup', {
+            method: 'POST', body: JSON.stringify(body)
+          }).then(function (r) {
+            if (r.ok) { msSuccess('Pickup request sent.'); loadData(); }
+            else msError((r.data && r.data.error) || 'Could not send the pickup request.');
+          }).catch(function () { msError('Network error. Could not send the pickup request.'); });
+        }
+
+        // --- Shift requests: pending for me / mine / history ---
+        function reqGet(r, keys) {
+          for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
+          return '';
+        }
+        function renderRequests() {
+          var box = $('ms-requests');
+          if (!requests.length) {
+            box.innerHTML = '<p style="color:var(--dim)">No requests yet. Swap or cover requests will show up here.</p>';
+            return;
+          }
+          function reqMine(r) {
+            var rid = reqGet(r, ['requesterId', 'requester_id']);
+            return (rid && me && String(rid) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
+          }
+          function reqPending(r) { return String(reqGet(r, ['status'])).toLowerCase() === 'pending'; }
+          var openMine = [], openOthers = [], done = [];
+          requests.forEach(function (r) {
+            if (reqPending(r)) (reqMine(r) ? openMine : openOthers).push(r);
+            else done.push(r);
+          });
+          var html = '';
+          if (openOthers.length) {
+            html += '<h4 style="margin:0 0 0.5rem">Needs your answer</h4>' + openOthers.map(reqCard).join('');
+          } else {
+            html += '<p style="color:var(--dim)">Nothing needs your answer right now.</p>';
+          }
+          if (openMine.length) {
+            html += '<h4 style="margin:1rem 0 0.5rem">Your outgoing requests</h4>' + openMine.map(reqCard).join('');
+          }
+          var doneMine = done.filter(reqMine), doneOthers = done.filter(function (r) { return !reqMine(r); });
+          if (doneMine.length) {
+            html += '<h4 style="margin:1rem 0 0.5rem">Your recent requests</h4>' + doneMine.map(reqCard).join('');
+          }
+          if (doneOthers.length) {
+            html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + doneOthers.map(reqCard).join('');
+          }
+          box.innerHTML = html;
+          box.querySelectorAll('[data-req-approve]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-approve'), 'approve'); });
+          });
+          box.querySelectorAll('[data-req-decline]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-decline'), 'decline'); });
+          });
+          box.querySelectorAll('[data-req-cancel]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-cancel'), 'cancel'); });
+          });
+        }
+        function reqCard(r) {
+          // Backend shape (migration 034): {id, requestType:'pickup'|'swap', shiftId,
+          // theirShiftId, requesterId, requesterName, targetUserId, targetName,
+          // openToAnyone, status, shift:{date, shiftTypeName}, theirShift:{...}|null}
+          var id = reqGet(r, ['id']);
+          var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
+          var status = String(reqGet(r, ['status'])).toLowerCase();
+          var sh = reqGet(r, ['shift']) || {};
+          var th = reqGet(r, ['theirShift', 'their_shift']) || {};
+          var date = reqGet(sh, ['date']) || reqGet(r, ['date', 'shiftDate']);
+          var stName = reqGet(sh, ['shiftTypeName', 'shift_type_name']) || reqGet(r, ['shiftTypeName']);
+          var who = reqGet(r, ['requesterName', 'requester_name']);
+          var target = reqGet(r, ['targetName', 'target_name']);
+          var theirDate = reqGet(th, ['date']);
+          var theirSt = reqGet(th, ['shiftTypeName', 'shift_type_name']);
+          var requesterId = reqGet(r, ['requesterId', 'requester_id']);
+          var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
+          var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
+          var mine = (requesterId && me && String(requesterId) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
+          // Actionable by me: open to anyone, or explicitly targeted at me.
+          var actionable = !!openToAnyone || !targetId || (me && String(targetId) === String(me.id));
+          var title = kind === 'swap' ? 'Swap request' : 'Pickup request';
+          var desc = (who ? esc(who) : 'Someone') +
+            (kind === 'swap' ? ' wants to swap' : ' asked for cover on') +
+            ' <strong>' + esc(date) + (stName ? ' · ' + stName : '') + '</strong>' +
+            (kind === 'swap' && theirDate ? ' for <strong>' + esc(theirDate) + (theirSt ? ' · ' + theirSt : '') + '</strong>' : '') +
+            (target && kind !== 'swap' ? ' (for ' + esc(target) + ')' : '');
+          var actions = '';
+          if (status === 'pending') {
+            if (mine) actions = '<button type="button" class="btn-secondary" data-req-cancel="' + id + '">Cancel request</button>';
+            else if (actionable) actions = '<button type="button" class="btn" data-req-approve="' + id + '">Approve</button>' +
+              '<button type="button" class="btn-secondary" data-req-decline="' + id + '">Decline</button>';
+            else actions = '<span style="font-size:0.85rem;color:var(--dim)">Waiting on someone else.</span>';
+          } else {
+            actions = '<span style="font-size:0.85rem;color:var(--dim)">Status: ' + esc(status) + '</span>';
+          }
+          return '<div class="req-card"><div style="font-size:0.9rem"><strong>' + esc(title) + '</strong> — ' + desc + '</div>' +
+            '<div class="req-actions">' + actions + '</div></div>';
+        }
+        function reqAction(id, what) {
+          api('/api/schedule/shift-requests/' + id + '/' + what, { method: 'POST' }).then(function (r) {
+            if (r.ok) { msSuccess(what === 'approve' ? 'Request approved.' : what === 'decline' ? 'Request declined.' : 'Request cancelled.'); loadData(); }
+            else msError((r.data && r.data.error) || 'Could not update the request.');
+          }).catch(function () { msError('Network error.'); });
+        }
+
+        // --- Open shifts (claimable extra open slots) ---
+        function renderOpen() {
+          var box = $('ms-open');
+          var slots = (extraSlots || []).filter(function (e) { return (e.count || 0) > 0; });
+          slots.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+          if (!slots.length) {
+            box.innerHTML = '<p style="color:var(--dim)">No open shifts right now.</p>';
+            return;
+          }
+          box.innerHTML = slots.map(function (e, i) {
+            var st = stById(e.shiftTypeId);
+            return '<div class="ms-row">' +
+              '<div style="flex:1;min-width:180px"><strong>' + esc(fmtLong(e.date)) + '</strong><br>' +
+              '<span style="color:var(--dim);font-size:0.9rem">' + esc(st ? st.name : 'Shift') +
+              (st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '') +
+              (e.count > 1 ? ' · ' + e.count + ' open' : '') + '</span></div>' +
+              '<button type="button" class="btn" data-ms-pickup="' + i + '">Pick up</button>' +
+              '</div>';
+          }).join('');
+          box.querySelectorAll('[data-ms-pickup]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var e = slots[parseInt(b.getAttribute('data-ms-pickup'), 10)];
+              claimSlot(e, b);
+            });
+          });
+        }
+        function claimSlot(e, btn) {
+          btn.disabled = true;
+          api('/api/schedule/open-slots/claim', {
+            method: 'POST', body: JSON.stringify({ date: e.date, shiftTypeId: e.shiftTypeId })
+          }).then(function (r) {
+            if (r.ok) { msSuccess('Shift picked up.'); loadData(); }
+            else {
+              msError((r.data && r.data.error) || 'Could not pick up this shift.');
+              btn.disabled = false;
+            }
+          }).catch(function () { msError('Network error.'); btn.disabled = false; });
+        }
+
+        // --- Team schedule (read-only day/week) ---
+        function renderTeam() {
+          document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-msview') === msView);
+          });
+          var box = $('ms-team');
+          var dates = [];
+          if (msView === 'day') {
+            dates = [fmtDate(anchorDate)];
+          } else {
+            var a = new Date(anchorDate);
+            var dow = (a.getDay() + 6) % 7;
+            var f = addDays(a, -dow);
+            for (var i = 0; i < 7; i++) dates.push(fmtDate(addDays(f, i)));
+          }
+          var html = '';
+          dates.forEach(function (ds) {
+            var list = shifts.filter(function (s) { return s.date === ds; });
+            html += '<div class="day-row"><div class="day-row-head"><div><div class="dow">' +
+              esc(parseDate(ds).toLocaleDateString(undefined, { weekday: 'long' })) + '</div>' +
+              '<div class="dnum">' + esc(parseDate(ds).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) + '</div></div></div>' +
+              '<div class="day-row-body">';
+            if (!list.length) html += '<p style="color:#94a3b8;font-size:0.85rem;margin:0">No shifts.</p>';
+            list.forEach(function (s) { html += teamShiftBox(s); });
+            html += '</div></div>';
+          });
+          box.innerHTML = html;
+        }
+        function teamShiftBox(s) {
+          var st = stById(s.shiftTypeId);
+          var color = (st && st.color) || '#637a8e';
+          var nm = displayName(s);
+          var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
+          var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
+          return '<div class="shift-grid">' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st ? st.name : 'Shift') + '</div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + note + '</div>' +
+            '</div>';
+        }
+
+        document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
+          b.addEventListener('click', function () {
+            msView = b.getAttribute('data-msview');
+            anchorDate = new Date();
+            renderTeam();
+          });
+        });
+        $('ms-prev').addEventListener('click', function () { anchorDate = addDays(anchorDate, msView === 'day' ? -1 : -7); renderTeam(); });
+        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); renderTeam(); });
+        $('ms-next').addEventListener('click', function () { anchorDate = addDays(anchorDate, msView === 'day' ? 1 : 7); renderTeam(); });
+      })();
+      </script>
+    </section>
   </main>
 
   <footer class="app-footer">
@@ -5996,12 +6950,41 @@
     }
 
     function handleHash() {
+      if (window.qsAppView === 'myschedule') return; // admin tabs hidden in My schedule view
       var hash = window.location.hash.replace('#', '') || 'schedule';
       var parts = hash.split('/');
       var tab = parts[0], sub = parts[1];
+      // Shared "My schedule" view reachable by hash too (e.g. login routing, bookmarks).
+      if (tab === 'myschedule') { window.qsSetAppView('myschedule'); return; }
+      // Billing tab is owner-only (hidden for non-owners).
+      if (tab === 'billing' && !window.isOwner) { routes['schedule'](); return; }
       if (routes[tab]) routes[tab](sub);
       else routes['schedule']();
     }
+
+    // --- View switcher: Admin view | My schedule (2026-10-12) ---
+    // One shared "My schedule" component for all roles. Owner/scheduler land on the
+    // admin view and switch without re-login; employees land directly on My schedule.
+    window.qsAppView = 'admin';
+    window.qsSetAppView = function (v) {
+      window.qsAppView = v;
+      var admin = (v === 'admin');
+      document.querySelectorAll('#view-switcher button').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-viewmode') === v);
+      });
+      var tabs = document.querySelector('.main-tabs');
+      if (tabs) tabs.style.display = admin ? '' : 'none';
+      document.querySelectorAll('.tab-panel').forEach(function (p) {
+        if (p.id === 'tab-myschedule') p.classList.toggle('active', !admin);
+        else if (!admin) p.classList.remove('active');
+      });
+      if (admin) handleHash();
+      else if (window.qsLoadMySchedule) window.qsLoadMySchedule();
+    };
+    document.querySelector('#view-switcher').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button[data-viewmode]') : null;
+      if (b) window.qsSetAppView(b.getAttribute('data-viewmode'));
+    });
 
     document.querySelector('.main-tabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.tab-btn');
@@ -6129,7 +7112,12 @@
         if (fixBtn) fixBtn.addEventListener('click', window.openBillingPortal || function () {});
       };
       // A blocked write (402) refreshes the banner so the reason is visible.
+      // Non-owners never see billing UI: they get a plain error instead.
       window.showBillingBlocked = function (data) {
+        if (!window.isOwner) {
+          pageError('Change blocked: ' + ((data && data.error) || 'billing needs attention. Ask your workspace owner.'));
+          return;
+        }
         api('/api/billing/status').then(function (r) {
           if (r.ok) window.refreshBillingBanner(r.data);
           else setBanner('error', '<span><strong>Change blocked:</strong> ' + esc(data.error || 'billing needs attention.') + '</span>');
@@ -6156,18 +7144,27 @@
         pageError('Billing setup was cancelled. You can finish it anytime from the billing banner.');
         window.history.replaceState({}, '', window.location.pathname + window.location.hash);
       }
-      api('/api/billing/status').then(function (r) {
-        if (r.ok) window.refreshBillingBanner(r.data);
+      // Billing is owner-only: no billing tab, banners, or status UI for anyone else.
+      api('/api/auth/me').then(function (r) {
+        if (!r.ok || r.data.user.role !== 'owner') return;
+        api('/api/billing/status').then(function (r2) {
+          if (r2.ok) window.refreshBillingBanner(r2.data);
+        });
       });
     })();
 
-    // Intercept blocked-by-billing writes globally so every form explains itself.
+    // Intercept blocked writes globally so every form explains itself:
+    // 402 (billing) refreshes the banner; 403 'active department' prompts a department pick.
     (function () {
       var origApi = api;
       api = function (path, opts) {
         return origApi(path, opts).then(function (result) {
           if (result.status === 402 && result.data && result.data.billingStatus && window.showBillingBlocked) {
             window.showBillingBlocked(result.data);
+          }
+          if (result.status === 403 && result.data &&
+              /active department/i.test(String(result.data.error || '')) && window.qsPromptActiveDept) {
+            window.qsPromptActiveDept();
           }
           return result;
         });
@@ -6219,13 +7216,34 @@
       if (!r.ok) { window.location.href = '/login.html'; return; }
       var role = r.data.user.role;
       window.isOwner = (role === 'owner');
-      // Re-render the billing banner now that we know the role (owner-only buttons).
-      if (window.billingInfo && window.refreshBillingBanner) window.refreshBillingBanner(window.billingInfo);
-      if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
+      window.currentRole = role;
+      window.qsCompanyId = r.data.company && r.data.company.id;
+      // Department-scoped access (contract 2026-10-12): owner -> full access;
+      // scheduler -> departmentAccess from backend; missing field -> full-access fallback.
+      window.qsSetDeptAccess(role === 'owner' ? null : (r.data.user.departmentAccess || null));
+      window.qsLoadActiveDept();
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
       document.title = r.data.company.name + ' · employee schedule';
-      handleHash();
+      if (role === 'employee') {
+        // Employees land DIRECTLY on the shared My schedule view: no switcher, no admin tabs.
+        window.qsAppView = 'myschedule';
+        var sw = $('view-switcher'); if (sw) sw.style.display = 'none';
+        var mt = document.querySelector('.main-tabs'); if (mt) mt.style.display = 'none';
+        document.querySelectorAll('.tab-panel').forEach(function (p) {
+          p.classList.toggle('active', p.id === 'tab-myschedule');
+        });
+        if (window.qsLoadMySchedule) window.qsLoadMySchedule();
+        return;
+      }
+      if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
+      // Billing is owner-only: hide the tab button and all billing UI/banners for non-owners.
+      if (!window.isOwner) {
+        var btab = document.querySelector('.tab-btn[data-tab="billing"]');
+        if (btab) btab.style.display = 'none';
+      }
+      var vsw = $('view-switcher'); if (vsw) vsw.classList.remove('hidden');
+      window.qsSetAppView('admin');
     });
   </script>
 </body>

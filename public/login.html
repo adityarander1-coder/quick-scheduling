@@ -67,7 +67,16 @@
         }).then(function (result) {
           submitBtn.disabled = false;
           if (result.ok) {
-            window.location.href = '/app.html';
+            // Route by role (2026-10-12): owner/scheduler -> admin view, employee ->
+            // the shared "My schedule" view. Both live in app.html; its init picks
+            // the right view, so employees land directly on My schedule.
+            fetch('/api/auth/me', { credentials: 'same-origin' })
+              .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+              .then(function (meResult) {
+                var role = meResult.ok && meResult.data.user ? meResult.data.user.role : null;
+                window.location.href = '/app.html' + (role === 'employee' ? '#myschedule' : '');
+              })
+              .catch(function () { window.location.href = '/app.html'; });
           } else {
             showError(result.data && result.data.error ? result.data.error : 'Login failed. Please try again.');
           }
