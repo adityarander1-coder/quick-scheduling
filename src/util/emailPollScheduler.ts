@@ -22,9 +22,10 @@ async function runPoll(): Promise<void> {
         LEFT JOIN users u ON u.company_id = c.id AND u.is_active = true
         GROUP BY c.id, c.name
         ORDER BY user_count DESC, c.created_at DESC
-        LIMIT 1
       `);
       if (rows.length === 0) return;
+      // Diagnostic: list all companies so the inbox owner can pin GMAIL_COMPANY_ID.
+      console.log('[email-poll] Companies: ' + rows.map((r: any) => `${r.name} (${r.id}, ${r.user_count} users)`).join(' | '));
       companyId = rows[0].id as string;
       console.log(`[email-poll] Using company: ${rows[0].name} (${rows[0].user_count} users)`);
     }
