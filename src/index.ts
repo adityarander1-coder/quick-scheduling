@@ -123,8 +123,9 @@ app.get('/settings.html', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.get('/app.html', (req: Request, res: Response, next: NextFunction) => {
-  const role = req.session?.role;
-  if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {
+  // All signed-in roles may load app.html; the client renders per role
+  // (owner/scheduler: admin view + My schedule switcher; employee: My schedule only).
+  if (!req.session?.userId) {
     res.redirect('/login.html');
     return;
   }
