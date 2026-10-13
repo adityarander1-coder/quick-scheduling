@@ -26,6 +26,10 @@ async function runPoll(): Promise<void> {
       if (rows.length === 0) return;
       // Diagnostic: list all companies so the inbox owner can pin GMAIL_COMPANY_ID.
       console.log('[email-poll] Companies: ' + rows.map((r: any) => `${r.name} (${r.id}, ${r.user_count} users)`).join(' | '));
+      const { rows: urows } = await query(
+        `SELECT c.name AS company, u.first_name, u.last_name FROM users u JOIN companies c ON c.id = u.company_id WHERE u.is_active = true ORDER BY c.name, u.first_name`
+      );
+      console.log('[email-poll] Users: ' + urows.map((u: any) => `${u.first_name} ${u.last_name || ''}`.trim() + '@' + u.company).join(' | '));
       companyId = rows[0].id as string;
       console.log(`[email-poll] Using company: ${rows[0].name} (${rows[0].user_count} users)`);
     }
