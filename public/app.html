@@ -7418,6 +7418,7 @@
     window.qsAppView = 'admin';
     window.qsSetAppView = function (v) {
       window.qsAppView = v;
+      try { localStorage.setItem('qs-app-view', v); } catch (e) {}
       var admin = (v === 'admin');
       document.querySelectorAll('#view-switcher button').forEach(function (b) {
         b.classList.toggle('active', b.getAttribute('data-viewmode') === v);
@@ -7702,7 +7703,9 @@
         if (btab) btab.style.display = 'none';
       }
       var vsw = $('view-switcher'); if (vsw) vsw.classList.remove('hidden');
-      window.qsSetAppView('admin');
+      var savedView = 'admin';
+      try { if (localStorage.getItem('qs-app-view') === 'myschedule') savedView = 'myschedule'; } catch (e) {}
+      window.qsSetAppView(savedView);
       if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
     });
   </script>
