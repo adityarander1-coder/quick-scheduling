@@ -308,10 +308,30 @@ router.post('/password-reset/request', resetRequestLimiter, async (req: Request,
           [crypto.randomUUID(), rows[0].id, tokenHash, expiresAt.toISOString()]
         );
         devStoreToken(tokenHash, token, expiresAt.getTime());
-        // TODO(Phase 6): send the password-reset email via src/util/mailer.ts
-        // (sendMail) once SMTP is configured — subject like
-        // "[Quick Scheduling] Reset your password", body with the reset link
-        // /reset.html?token=<token> and the 1-hour expiry note.
+        // Email the reset link (Resend). Never reveal whether the account exists.
+        try {
+          const { sendMail, escHtml } = await import('../util/mailer.js');
+          const base = `${req.protocol}://${req.get('host')}`;
+          const resetLink = `${base}/reset.html?token=${token}`;
+          const subject = '[Quick Scheduling] Reset your password';
+          const text =
+            `Hi there,\n\n` +
+            `We received a request to reset your Quick Scheduling password.\n\n` +
+            `Reset it here:\n${resetLink}\n\n` +
+            `This link expires in 1 hour. If you didn't request this, you can ignore this email.\n\n` +
+            `— Quick Scheduling`;
+          const html =
+            `<p>Hi there,</p>` +
+            `<p>We received a request to reset your Quick Scheduling password.</p>` +
+            `<p><a href="${escHtml(resetLink)}">Reset your password</a></p>` +
+            `<p style="color:#666;font-size:0.9em">This link expires in 1 hour. If you didn't request this, you can ignore this email.</p>` +
+            `<p>— Quick Scheduling</p>`;
+          await sendMail({ to: rows[0].email, subject, text, html });
+        } catch (err) {
+          // Log and continue: the endpoint must not reveal whether the email exists
+          // or whether sending worked.
+          console.error('[auth] password-reset email failed:', err);
+        }
         if (isDev()) {
           console.log(`[auth][dev] password reset token for ${rows[0].email}: ${token}`);
         }
