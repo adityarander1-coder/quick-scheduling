@@ -530,6 +530,7 @@
     <nav id="employee-tabs" class="main-tabs hidden" role="tablist" aria-label="Employee">
       <button type="button" class="tab-btn active" data-etab="myschedule">My schedule</button>
       <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
+      <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
     </nav>
   </header>
 
@@ -638,6 +639,10 @@
         #tab-myschedule .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
         #tab-myschedule .modal h3 { margin-top: 0; color: var(--text); }
         #tab-myschedule .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
+        #tab-ask .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+        #tab-ask .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
+        #tab-ask .modal h3 { margin-top: 0; color: var(--text); }
+        #tab-ask .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
         #tab-schedule .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
         #tab-schedule .modal h3 { margin-top: 0; color: var(--text); }
         #tab-schedule .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
@@ -3138,13 +3143,30 @@
           <button type="button" id="ask-send" class="btn">Ask</button>
         </div>
       </div>
-      <div class="card" style="margin-top:1rem">
+      <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Email scheduler</h3>
+        <p style="color:var(--dim);font-size:0.9rem">Need a quick approval? Send your scheduler an email from your own email app.</p>
+        <button type="button" id="ask-email-open" class="btn">Email scheduler</button>
+      </div>
+      <div id="ask-email-dialog" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:420px">
+          <h3>Email scheduler</h3>
+          <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem">Who should receive it?</p>
+          <div id="ask-email-recipients" style="margin-bottom:0.8rem"></div>
+          <textarea id="ask-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
+          <div class="modal-actions" style="margin-top:0.8rem">
+            <button type="button" id="ask-email-cancel" class="btn-secondary">Cancel</button>
+            <button type="button" id="ask-email-go" class="btn">Open email app</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="ask-plans-card" style="margin-top:1rem">
         <h3 style="margin-top:0">Change plans awaiting approval</h3>
         <p style="color:var(--dim);font-size:0.9rem">Plans proposed from forwarded emails. Review and approve to apply.</p>
         <button id="check-email-btn" class="btn" style="margin-bottom:0.75rem">Check email now</button>
         <div id="plans-list" style="margin-top:0.75rem"></div>
       </div>
-      <div style="margin-top:1.5rem;text-align:center">
+      <div id="ask-report-wrap" style="margin-top:1.5rem;text-align:center">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
       <script>
@@ -3185,6 +3207,63 @@
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
         });
+        // --- Email scheduler (employees): opens their own email app via mailto ---
+        var emailOpenBtn = $('ask-email-open');
+        var emailDlg = $('ask-email-dialog');
+        function closeEmailDlg() { if (emailDlg) hide(emailDlg); }
+        if (emailOpenBtn && emailDlg) {
+          emailOpenBtn.addEventListener('click', function () {
+            var box = $('ask-email-recipients');
+            box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">Loading…</p>';
+            $('ask-email-message').value = '';
+            show(emailDlg);
+            api('/api/users').then(function (r) {
+              if (!r.ok || !r.data.users) {
+                box.innerHTML = '<p style="color:#c62828;font-size:0.9rem">Could not load the team list.</p>';
+                return;
+              }
+              var recips = r.data.users.filter(function (u) {
+                return u.isActive && (u.role === 'owner' || u.role === 'scheduler') && u.email;
+              });
+              if (!recips.length) {
+                box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No scheduler found.</p>';
+                return;
+              }
+              box.innerHTML = '';
+              recips.forEach(function (u, i) {
+                var label = document.createElement('label');
+                label.style.cssText = 'display:flex;gap:0.5rem;align-items:center;padding:0.4rem 0;font-size:0.95rem';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.checked = true; cb.value = u.email;
+                cb.setAttribute('data-recip', '1');
+                label.appendChild(cb);
+                var span = document.createElement('span');
+                span.textContent = (u.name || (u.firstName + ' ' + u.lastName)).trim() + ' (' + u.role + ') — ' + u.email;
+                label.appendChild(span);
+                box.appendChild(label);
+              });
+            }).catch(function () {
+              box.innerHTML = '<p style="color:#c62828;font-size:0.9rem">Could not load the team list.</p>';
+            });
+          });
+          $('ask-email-cancel').addEventListener('click', closeEmailDlg);
+          $('ask-email-go').addEventListener('click', function () {
+            var emails = [];
+            document.querySelectorAll('#ask-email-recipients [data-recip]:checked').forEach(function (cb) {
+              emails.push(cb.value);
+            });
+            var message = $('ask-email-message').value.trim();
+            if (!emails.length) { $('ask-email-message').focus(); return; }
+            if (!message) { $('ask-email-message').focus(); return; }
+            var me = (window.qsUserName || 'A team member').trim() || 'A team member';
+            var to = emails.map(function (e) { return encodeURIComponent(e); }).join(',');
+            var link = 'mailto:' + to +
+              '?subject=' + encodeURIComponent('Quick approval request from ' + me) +
+              '&body=' + encodeURIComponent(message);
+            closeEmailDlg();
+            window.location.href = link;
+          });
+        }
         addMsg("Hi! Ask me about the schedule — who's on, who's short, anyone's shifts.", 'ai');
         // --- Change plans ---
         var checkBtn = $('check-email-btn');
@@ -7412,6 +7491,15 @@
       else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
     };
 
+    // --- Ask Q-Scheduler visibility by role (2026-10-12) ---
+    // Employees get questions + Email scheduler only. Owner/scheduler get the
+    // full admin version (change plans, Check email now, Run report).
+    window.qsApplyAskVisibility = function (isEmployee) {
+      var plans = $('ask-plans-card'); if (plans) plans.classList.toggle('hidden', isEmployee);
+      var report = $('ask-report-wrap'); if (report) report.classList.toggle('hidden', isEmployee);
+      var emailCard = $('ask-email-card'); if (emailCard) emailCard.classList.toggle('hidden', !isEmployee);
+    };
+
     // --- View switcher: Admin view | My schedule (2026-10-12) ---
     // One shared "My schedule" component for all roles. Owner/scheduler land on the
     // admin view and switch without re-login; employees land directly on My schedule.
@@ -7675,6 +7763,7 @@
       var role = r.data.user.role;
       window.isOwner = (role === 'owner');
       window.currentRole = role;
+      window.qsUserName = r.data.user.name || '';
       window.qsCompanyId = r.data.company && r.data.company.id;
       // Department-scoped access (contract 2026-10-12): owner -> full access;
       // scheduler -> departmentAccess from backend; missing field -> full-access fallback.
@@ -7694,6 +7783,7 @@
         });
         if (window.qsLoadMySchedule) window.qsLoadMySchedule();
         if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
+        if (window.qsApplyAskVisibility) window.qsApplyAskVisibility(true);
         return;
       }
       if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
@@ -7707,6 +7797,7 @@
       try { if (localStorage.getItem('qs-app-view') === 'myschedule') savedView = 'myschedule'; } catch (e) {}
       window.qsSetAppView(savedView);
       if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
+      if (window.qsApplyAskVisibility) window.qsApplyAskVisibility(false);
     });
   </script>
 </body>

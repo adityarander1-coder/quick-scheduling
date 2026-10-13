@@ -2518,9 +2518,10 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
   }
 });
 
-// POST /api/schedule/ask — rule-based natural language Q&A (owner/scheduler).
+// POST /api/schedule/ask — rule-based natural language Q&A (owner/scheduler/employee).
+// Employees get questions only; the answers come from schedule data they can already see.
 // Body: { question: string }
-router.post('/ask', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+router.post('/ask', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const question = String(req.body?.question || '').slice(0, 500);
