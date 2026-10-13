@@ -321,6 +321,12 @@
     #tab-myschedule .ms-row:last-child { border-bottom: none; }
     #tab-myschedule .req-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; background: var(--surface); }
     #tab-myschedule .req-card .req-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    /* Shift requests tab (shared by all roles) */
+    #tab-requests .req-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; background: var(--surface); }
+    #tab-requests .req-card .req-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    #tab-requests .req-wrap { max-width: 860px; }
+    #tab-requests .sched-h1 { margin: 0 0 1rem; font-size: 1.5rem; color: var(--text); }
+    .req-badge { font-weight: 800; font-size: 0.9em; opacity: 0.95; }
     #tab-myschedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
     #tab-myschedule .ms-open-nm { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; font-weight: 700; }
     /* Month grid (read-only) */
@@ -513,12 +519,17 @@
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
+      <button class="tab-btn" data-tab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
       <button class="tab-btn" data-tab="ask">Ask Q-Scheduler</button>
       <button class="tab-btn" data-tab="link">Share Links</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="billing">Billing</button>
       <button class="tab-btn" data-tab="help">Help</button>
+    </nav>
+    <nav id="employee-tabs" class="main-tabs hidden" role="tablist" aria-label="Employee">
+      <button type="button" class="tab-btn active" data-etab="myschedule">My schedule</button>
+      <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
     </nav>
   </header>
 
@@ -6289,12 +6300,6 @@
 
       <div id="ms-view"></div>
 
-      <div class="card" style="margin-top:1.5rem">
-        <h3 style="margin-top:0">Shift requests</h3>
-        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
-        <div id="ms-requests"><p style="color:var(--dim)">Loading…</p></div>
-      </div>
-
       <script>
       (function () {
         // My schedule — employee self-service view mirroring the admin Schedule tab.
@@ -6302,7 +6307,7 @@
         // View), read-only team context, open-slot pickup, swap / ask-for-cover.
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
-        var extraSlots = [], closedShifts = [], requests = [], staffingTargets = [];
+        var extraSlots = [], closedShifts = [], staffingTargets = [];
         var msView = 'week';
         var anchorDate = new Date();
         var rangeFrom = null, rangeTo = null;
@@ -6450,7 +6455,6 @@
           var r = viewRange();
           $('ms-title').textContent = msTitle();
           $('ms-view').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
-          $('ms-requests').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
@@ -6460,7 +6464,6 @@
               api('/api/users'),
               api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
               api('/api/schedule/staffing-targets').catch(function () { return { ok: false }; }),
-              api('/api/schedule/shift-requests').catch(function () { return { ok: false }; }),
             ]);
           }).then(function (rs) {
             if (!rs) return;
@@ -6473,10 +6476,8 @@
               closedShifts = rs[3].data.closedShifts || [];
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
-            requests = (rs[5].ok && rs[5].data.requests) || [];
             renderFilters();
             renderView();
-            renderRequests();
           }).catch(function () { msError('Could not load your schedule.'); });
         }
         window.qsLoadMySchedule = function () { loadData(); };
@@ -6927,96 +6928,6 @@
           }).catch(function () { msError('Network error.'); btn.disabled = false; });
         }
 
-        // ---------- shift requests ----------
-        function reqGet(r, keys) {
-          for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
-          return '';
-        }
-        function renderRequests() {
-          var box = $('ms-requests');
-          if (!requests.length) {
-            box.innerHTML = '<p style="color:var(--dim)">No requests yet. Swap or cover requests will show up here.</p>';
-            return;
-          }
-          function reqMine(r) {
-            var rid = reqGet(r, ['requesterId', 'requester_id']);
-            return (rid && me && String(rid) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
-          }
-          function reqPending(r) { return String(reqGet(r, ['status'])).toLowerCase() === 'pending'; }
-          var openMine = [], openOthers = [], done = [];
-          requests.forEach(function (r) {
-            if (reqPending(r)) (reqMine(r) ? openMine : openOthers).push(r);
-            else done.push(r);
-          });
-          var html = '';
-          if (openOthers.length) {
-            html += '<h4 style="margin:0 0 0.5rem">Needs your answer</h4>' + openOthers.map(reqCard).join('');
-          } else {
-            html += '<p style="color:var(--dim)">Nothing needs your answer right now.</p>';
-          }
-          if (openMine.length) {
-            html += '<h4 style="margin:1rem 0 0.5rem">Your outgoing requests</h4>' + openMine.map(reqCard).join('');
-          }
-          var doneMine = done.filter(reqMine), doneOthers = done.filter(function (r) { return !reqMine(r); });
-          if (doneMine.length) {
-            html += '<h4 style="margin:1rem 0 0.5rem">Your recent requests</h4>' + doneMine.map(reqCard).join('');
-          }
-          if (doneOthers.length) {
-            html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + doneOthers.map(reqCard).join('');
-          }
-          box.innerHTML = html;
-          box.querySelectorAll('[data-req-approve]').forEach(function (b) {
-            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-approve'), 'approve'); });
-          });
-          box.querySelectorAll('[data-req-decline]').forEach(function (b) {
-            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-decline'), 'decline'); });
-          });
-          box.querySelectorAll('[data-req-cancel]').forEach(function (b) {
-            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-cancel'), 'cancel'); });
-          });
-        }
-        function reqCard(r) {
-          var id = reqGet(r, ['id']);
-          var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
-          var status = String(reqGet(r, ['status'])).toLowerCase();
-          var sh = reqGet(r, ['shift']) || {};
-          var th = reqGet(r, ['theirShift', 'their_shift']) || {};
-          var date = reqGet(sh, ['date']) || reqGet(r, ['date', 'shiftDate']);
-          var stName = reqGet(sh, ['shiftTypeName', 'shift_type_name']) || reqGet(r, ['shiftTypeName']);
-          var who = reqGet(r, ['requesterName', 'requester_name']);
-          var target = reqGet(r, ['targetName', 'target_name']);
-          var theirDate = reqGet(th, ['date']);
-          var theirSt = reqGet(th, ['shiftTypeName', 'shift_type_name']);
-          var requesterId = reqGet(r, ['requesterId', 'requester_id']);
-          var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
-          var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
-          var mine = (requesterId && me && String(requesterId) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
-          var actionable = !!openToAnyone || !targetId || (me && String(targetId) === String(me.id));
-          var title = kind === 'swap' ? 'Swap request' : 'Pickup request';
-          var desc = (who ? esc(who) : 'Someone') +
-            (kind === 'swap' ? ' wants to swap' : ' asked for cover on') +
-            ' <strong>' + esc(date) + (stName ? ' · ' + stName : '') + '</strong>' +
-            (kind === 'swap' && theirDate ? ' for <strong>' + esc(theirDate) + (theirSt ? ' · ' + theirSt : '') + '</strong>' : '') +
-            (target && kind !== 'swap' ? ' (for ' + esc(target) + ')' : '');
-          var actions = '';
-          if (status === 'pending') {
-            if (mine) actions = '<button type="button" class="btn-secondary" data-req-cancel="' + id + '">Cancel request</button>';
-            else if (actionable) actions = '<button type="button" class="btn" data-req-approve="' + id + '">Approve</button>' +
-              '<button type="button" class="btn-secondary" data-req-decline="' + id + '">Decline</button>';
-            else actions = '<span style="font-size:0.85rem;color:var(--dim)">Waiting on someone else.</span>';
-          } else {
-            actions = '<span style="font-size:0.85rem;color:var(--dim)">Status: ' + esc(status) + '</span>';
-          }
-          return '<div class="req-card"><div style="font-size:0.9rem"><strong>' + esc(title) + '</strong> — ' + desc + '</div>' +
-            '<div class="req-actions">' + actions + '</div></div>';
-        }
-        function reqAction(id, what) {
-          api('/api/schedule/shift-requests/' + id + '/' + what, { method: 'POST' }).then(function (r) {
-            if (r.ok) { msSuccess(what === 'approve' ? 'Request approved.' : what === 'decline' ? 'Request declined.' : 'Request cancelled.'); loadData(); }
-            else msError((r.data && r.data.error) || 'Could not update the request.');
-          }).catch(function () { msError('Network error.'); });
-        }
-
         // ---------- toolbar events ----------
         document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
@@ -7048,6 +6959,178 @@
           <div class="modal-actions" id="ms-ad-actions"></div>
         </div>
       </div>
+    </section>
+
+    <!-- Shift requests — ONE shared tab for all roles (2026-10-12).
+         Employees reach it from their tab bar; owner/scheduler from the main tabs. -->
+    <section id="tab-requests" class="tab-panel">
+      <div class="req-wrap">
+        <h2 class="sched-h1">Shift requests</h2>
+        <div id="req-error" class="alert alert-error hidden" role="alert"></div>
+        <div id="req-success" class="alert alert-success hidden" role="status"></div>
+        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem" id="req-sub">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
+        <div id="req-list"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+      <script>
+      (function () {
+        // Shared shift-requests tab (2026-10-12): all roles use this one panel.
+        // Badge = requests needing THIS user's attention (pending + actionable).
+        var me = null, requests = [];
+        function reqGet(r, keys) {
+          for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
+          return '';
+        }
+        function isPrivileged() { return me && (me.role === 'owner' || me.role === 'scheduler'); }
+        function reqMine(r) {
+          var rid = reqGet(r, ['requesterId', 'requester_id']);
+          return (rid && me && String(rid) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
+        }
+        function reqPending(r) { return String(reqGet(r, ['status'])).toLowerCase() === 'pending'; }
+        function reqActionable(r) {
+          if (isPrivileged()) return true;
+          var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
+          var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
+          return !!openToAnyone || !targetId || (me && String(targetId) === String(me.id));
+        }
+        function reqNeedsMe(r) { return reqPending(r) && reqActionable(r) && !reqMine(r); }
+        function reqSuccess(m) { var e = $('req-success'); if (e) { e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); } }
+        function reqError(m) { var e = $('req-error'); if (e) { e.textContent = m; show(e); } }
+        function clearMsg() { var a = $('req-error'), b = $('req-success'); if (a) hide(a); if (b) hide(b); }
+
+        function updateBadges() {
+          var n = requests.filter(reqNeedsMe).length;
+          document.querySelectorAll('[data-req-badge]').forEach(function (el) {
+            if (n > 0) { el.textContent = '(' + n + ')'; el.hidden = false; }
+            else { el.textContent = ''; el.hidden = true; }
+          });
+        }
+
+        function reqCard(r) {
+          var id = reqGet(r, ['id']);
+          var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
+          var status = String(reqGet(r, ['status'])).toLowerCase();
+          var sh = reqGet(r, ['shift']) || {};
+          var th = reqGet(r, ['theirShift', 'their_shift']) || {};
+          var date = reqGet(sh, ['date']) || reqGet(r, ['date', 'shiftDate']);
+          var stName = reqGet(sh, ['shiftTypeName', 'shift_type_name']) || reqGet(r, ['shiftTypeName']);
+          var who = reqGet(r, ['requesterName', 'requester_name']);
+          var target = reqGet(r, ['targetName', 'target_name']);
+          var theirDate = reqGet(th, ['date']);
+          var theirSt = reqGet(th, ['shiftTypeName', 'shift_type_name']);
+          var mine = reqMine(r);
+          var actionable = reqActionable(r);
+          var title = kind === 'swap' ? 'Swap request' : 'Pickup request';
+          var desc = (who ? esc(who) : 'Someone') +
+            (kind === 'swap' ? ' wants to swap' : ' asked for cover on') +
+            ' <strong>' + esc(date) + (stName ? ' · ' + stName : '') + '</strong>' +
+            (kind === 'swap' && theirDate ? ' for <strong>' + esc(theirDate) + (theirSt ? ' · ' + theirSt : '') + '</strong>' : '') +
+            (target && kind !== 'swap' ? ' (for ' + esc(target) + ')' : '');
+          var actions = '';
+          if (status === 'pending') {
+            if (mine) actions = '<button type="button" class="btn-secondary" data-req-cancel="' + id + '">Cancel request</button>';
+            else if (actionable) actions = '<button type="button" class="btn" data-req-approve="' + id + '">Approve</button>' +
+              '<button type="button" class="btn-secondary" data-req-decline="' + id + '">Decline</button>';
+            else actions = '<span style="font-size:0.85rem;color:var(--dim)">Waiting on someone else.</span>';
+          } else {
+            actions = '<span style="font-size:0.85rem;color:var(--dim)">Status: ' + esc(status) + '</span>';
+          }
+          return '<div class="req-card"><div style="font-size:0.9rem"><strong>' + esc(title) + '</strong> — ' + desc + '</div>' +
+            '<div class="req-actions">' + actions + '</div></div>';
+        }
+
+        function renderRequests() {
+          var box = $('req-list');
+          if (!box) return;
+          var sub = $('req-sub');
+          if (!requests.length) {
+            box.innerHTML = '<p style="color:var(--dim)">No requests yet. Swap or cover requests will show up here.</p>';
+            return;
+          }
+          var pending = requests.filter(reqPending);
+          var done = requests.filter(function (r) { return !reqPending(r); });
+          var html = '';
+          if (isPrivileged()) {
+            if (sub) sub.textContent = 'Pending pickup and swap requests across the company, and recent history.';
+            if (pending.length) {
+              html += '<h4 style="margin:0 0 0.5rem">Pending requests (' + pending.length + ')</h4>' + pending.map(reqCard).join('');
+            } else {
+              html += '<p style="color:var(--dim)">No pending requests.</p>';
+            }
+            if (done.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + done.map(reqCard).join('');
+            }
+          } else {
+            if (sub) sub.textContent = 'Pickup and swap requests for you to answer, your outgoing requests, and recent history.';
+            var openMine = pending.filter(reqMine), openOthers = pending.filter(function (r) { return !reqMine(r); });
+            var doneMine = done.filter(reqMine), doneOthers = done.filter(function (r) { return !reqMine(r); });
+            if (openOthers.length) {
+              html += '<h4 style="margin:0 0 0.5rem">Needs your answer</h4>' + openOthers.map(reqCard).join('');
+            } else {
+              html += '<p style="color:var(--dim)">Nothing needs your answer right now.</p>';
+            }
+            if (openMine.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Your outgoing requests</h4>' + openMine.map(reqCard).join('');
+            }
+            if (doneMine.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Your recent requests</h4>' + doneMine.map(reqCard).join('');
+            }
+            if (doneOthers.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + doneOthers.map(reqCard).join('');
+            }
+          }
+          box.innerHTML = html;
+          box.querySelectorAll('[data-req-approve]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-approve'), 'approve'); });
+          });
+          box.querySelectorAll('[data-req-decline]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-decline'), 'decline'); });
+          });
+          box.querySelectorAll('[data-req-cancel]').forEach(function (b) {
+            b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-cancel'), 'cancel'); });
+          });
+        }
+
+        function reqAction(id, what) {
+          clearMsg();
+          api('/api/schedule/shift-requests/' + id + '/' + what, { method: 'POST' }).then(function (r) {
+            if (r.ok) {
+              reqSuccess(what === 'approve' ? 'Request approved.' : what === 'decline' ? 'Request declined.' : 'Request cancelled.');
+              loadRequestsTab();
+              if (window.qsLoadMySchedule && $('tab-myschedule') && $('tab-myschedule').classList.contains('active')) window.qsLoadMySchedule();
+            } else reqError((r.data && r.data.error) || 'Could not update the request.');
+          }).catch(function () { reqError('Network error.'); });
+        }
+
+        function loadRequestsTab() {
+          clearMsg();
+          var box = $('req-list');
+          if (box) box.innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          api('/api/auth/me').then(function (mr) {
+            if (!mr.ok) return null;
+            me = mr.data.user;
+            return api('/api/schedule/shift-requests').catch(function () { return { ok: false }; });
+          }).then(function (r) {
+            requests = (r && r.ok && r.data.requests) || [];
+            updateBadges();
+            renderRequests();
+          }).catch(function () { reqError('Could not load shift requests.'); });
+        }
+        window.qsLoadRequestsTab = loadRequestsTab;
+        window.qsRefreshReqBadge = function () {
+          api('/api/auth/me').then(function (mr) {
+            if (!mr.ok) return null;
+            me = mr.data.user;
+            return api('/api/schedule/shift-requests').catch(function () { return { ok: false }; });
+          }).then(function (r) {
+            if (!r) return;
+            requests = (r.ok && r.data.requests) || [];
+            updateBadges();
+            var panel = $('tab-requests');
+            if (panel && panel.classList.contains('active')) renderRequests();
+          }).catch(function () {});
+        };
+      })();
+      </script>
     </section>
 
   </main>
@@ -7246,6 +7329,7 @@
 
     var routes = {
       'schedule': function() { activateTab('schedule'); },
+      'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'ask': function() { activateTab('ask'); },
       'settings': function(sub) { activateTab('settings', sub || 'rotations'); },
       'bulk': function() { activateTab('bulk'); },
@@ -7261,7 +7345,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', requests: 'Shift requests', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
@@ -7285,6 +7369,20 @@
       else routes['schedule']();
     }
 
+    // --- Employee tabs: My schedule | Shift requests (2026-10-12) ---
+    // Employees (and owner/scheduler in "My schedule" view mode) switch between the
+    // shared schedule panel and the shared requests panel here.
+    window.qsSetEmployeeTab = function (t) {
+      document.querySelectorAll('#employee-tabs .tab-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-etab') === t);
+      });
+      document.querySelectorAll('.tab-panel').forEach(function (p) {
+        p.classList.toggle('active', p.id === 'tab-' + t);
+      });
+      if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
+      else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
+    };
+
     // --- View switcher: Admin view | My schedule (2026-10-12) ---
     // One shared "My schedule" component for all roles. Owner/scheduler land on the
     // admin view and switch without re-login; employees land directly on My schedule.
@@ -7297,12 +7395,14 @@
       });
       var tabs = document.querySelector('.main-tabs');
       if (tabs) tabs.style.display = admin ? '' : 'none';
+      var et = $('employee-tabs');
+      if (et) et.classList.toggle('hidden', admin);
       document.querySelectorAll('.tab-panel').forEach(function (p) {
         if (p.id === 'tab-myschedule') p.classList.toggle('active', !admin);
         else if (!admin) p.classList.remove('active');
       });
       if (admin) handleHash();
-      else if (window.qsLoadMySchedule) window.qsLoadMySchedule();
+      else window.qsSetEmployeeTab('myschedule');
     };
     document.querySelector('#view-switcher').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('button[data-viewmode]') : null;
@@ -7312,6 +7412,11 @@
     document.querySelector('.main-tabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.tab-btn');
       if (btn) window.location.hash = btn.getAttribute('data-tab');
+    });
+    var etabs = $('employee-tabs');
+    if (etabs) etabs.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-etab]');
+      if (btn) window.qsSetEmployeeTab(btn.getAttribute('data-etab'));
     });
     document.querySelector('.sub-tabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.subtab-btn');
@@ -7553,10 +7658,12 @@
         window.qsAppView = 'myschedule';
         var sw = $('view-switcher'); if (sw) sw.style.display = 'none';
         var mt = document.querySelector('.main-tabs'); if (mt) mt.style.display = 'none';
+        var et2 = $('employee-tabs'); if (et2) et2.classList.remove('hidden');
         document.querySelectorAll('.tab-panel').forEach(function (p) {
           p.classList.toggle('active', p.id === 'tab-myschedule');
         });
         if (window.qsLoadMySchedule) window.qsLoadMySchedule();
+        if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
         return;
       }
       if (role !== 'owner' && role !== 'scheduler') { window.location.href = '/home.html'; return; }
@@ -7567,6 +7674,7 @@
       }
       var vsw = $('view-switcher'); if (vsw) vsw.classList.remove('hidden');
       window.qsSetAppView('admin');
+      if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
     });
   </script>
 </body>

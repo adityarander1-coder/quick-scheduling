@@ -2957,6 +2957,9 @@ router.get('/shift-requests', requireRole('owner', 'scheduler', 'employee'), asy
   try {
     const companyId = req.session.companyId!;
     const me = req.session.userId!;
+    // Owners/schedulers see every request in the company (they approve everything);
+    // employees see requests involving them (their own, targeted at them, or open to anyone).
+    const privileged = req.session.role === 'owner' || req.session.role === 'scheduler';
     const { rows } = await query(
       `SELECT r.id, r.request_type AS "requestType",
               r.shift_id AS "shiftId", r.their_shift_id AS "theirShiftId",
@@ -2976,11 +2979,11 @@ router.get('/shift-requests', requireRole('owner', 'scheduler', 'employee'), asy
        LEFT JOIN shifts ts ON ts.id = r.their_shift_id
        LEFT JOIN shift_types tst ON tst.id = ts.shift_type_id
        WHERE r.company_id = $1
-         AND (r.requester_id = $2 OR r.target_user_id = $2 OR r.target_user_id IS NULL)
+         AND ($2 OR r.requester_id = $3 OR r.target_user_id = $3 OR r.target_user_id IS NULL)
          AND (r.status = 'pending'
               OR (r.status <> 'pending' AND r.decided_at >= now() - interval '30 days'))
        ORDER BY r.created_at DESC`,
-      [companyId, me]
+      [companyId, privileged, me]
     );
     const label = (r: any, prefix: string): string | null => {
       const nick = r[`${prefix}Nickname`];
