@@ -4,7 +4,7 @@
 
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { query } from '../db';
+import { query, withTransaction } from '../db';
 import { requireRole } from '../middleware/auth';
 import {
   getDepartmentAccess,
@@ -2684,6 +2684,510 @@ router.get('/plans/reject/:token', async (req: Request, res: Response) => {
     res.send('<h1>Rejected</h1><p>The plan was rejected and will not be applied.</p>');
   } catch (err) {
     res.status(500).send('<h1>Error</h1>');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Employee self-service — open-slot claims, pickup/swap requests (migration 034).
+// Allowed roles: owner, scheduler, employee.
+// Employees see all departments' schedules read-only (see GET /shifts below —
+// no department filtering on reads), and may only act on their own shifts.
+// Only REAL (manual) shift rows participate here: rotation-generated entries
+// have no shift row (their ids look like "rot-...") and are schedulers'
+// territory.
+// ---------------------------------------------------------------------------
+
+/** Error that carries an HTTP status through withTransaction's catch. */
+class RequestError extends Error {
+  statusCode: number;
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+/** Active team member of this company, or null. */
+async function activeMember(companyId: string, userId: string): Promise<any | null> {
+  const { rows } = await query(
+    'SELECT id, role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
+    [userId, companyId]
+  );
+  return rows[0] || null;
+}
+
+/** A real (manual) shift row in this company, or null. */
+async function manualShift(companyId: string, shiftId: string): Promise<any | null> {
+  const { rows } = await query(
+    `SELECT s.id, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId",
+            s.date::text AS date, st.name AS "shiftTypeName"
+     FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
+     WHERE s.id = $1 AND s.company_id = $2`,
+    [shiftId, companyId]
+  );
+  return rows[0] || null;
+}
+
+// POST /api/schedule/open-slots/claim — claim one extra open slot as your shift.
+// Atomic: the UPDATE ... WHERE count > 0 serializes concurrent claims on the
+// row lock, so two people can never claim the same slot.
+router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { date, shiftTypeId } = req.body ?? {};
+    if (!isValidDate(date) || typeof shiftTypeId !== 'string' || !shiftTypeId) {
+      res.status(400).json({ error: 'A valid date and shift type are required.' });
+      return;
+    }
+    if (!(await activeMember(companyId, me))) {
+      res.status(403).json({ error: 'Your account is not active.' });
+      return;
+    }
+    const { rows: trows } = await query(
+      'SELECT id FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [shiftTypeId, companyId]
+    );
+    if (!trows.length) {
+      res.status(404).json({ error: 'Shift type not found.' });
+      return;
+    }
+    const shiftId = crypto.randomUUID();
+    let claimed = false;
+    try {
+      await withTransaction(async (tx) => {
+        const { rows: slotRows } = await tx.query(
+          `UPDATE extra_open_slots SET count = count - 1
+           WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
+           RETURNING count`,
+          [companyId, date, shiftTypeId]
+        );
+        if (!slotRows.length) return; // nothing left — the race loser lands here
+        if (Number(slotRows[0].count) <= 0) {
+          await tx.query(
+            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, date, shiftTypeId]
+          );
+        }
+        await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, true, $6)`,
+          [shiftId, companyId, me, shiftTypeId, date, me]
+        );
+        claimed = true;
+      });
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        res.status(409).json({ error: 'You already have that shift on that date.' });
+        return;
+      }
+      throw err;
+    }
+    if (!claimed) {
+      res.status(409).json({ error: 'That open slot was just taken by someone else.' });
+      return;
+    }
+    res.status(201).json({ id: shiftId, date, shiftTypeId, userId: me });
+    // Audit: shift created.
+    const names = await shiftDisplayNames(companyId, me, shiftTypeId);
+    auditLog({
+      companyId, date, action: 'created',
+      personName: names.personName, shiftTypeName: names.shiftTypeName,
+      source: 'manual', changedBy: me,
+      details: { via: 'open-slot-claim' },
+    });
+  } catch (err) {
+    console.error('[schedule] claim open slot failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shifts/:id/request-pickup — ask someone (or anyone) to
+// take over one of your shifts. Requester must own the shift (or be
+// scheduler/owner). targetUserId null = open to the whole company.
+router.post('/shifts/:id/request-pickup', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const shiftId = req.params.id;
+    const targetUserId = req.body?.targetUserId ? String(req.body.targetUserId) : null;
+
+    const shift = await manualShift(companyId, shiftId);
+    if (!shift) {
+      res.status(404).json({ error: 'Shift not found.' });
+      return;
+    }
+    const isPrivileged = role === 'owner' || role === 'scheduler';
+    if (shift.userId !== me && !isPrivileged) {
+      res.status(403).json({ error: 'You can only request pickup for your own shifts.' });
+      return;
+    }
+    if (targetUserId) {
+      const target = await activeMember(companyId, targetUserId);
+      if (!target) {
+        res.status(404).json({ error: 'That team member was not found or is not active.' });
+        return;
+      }
+      if (targetUserId === shift.userId) {
+        res.status(400).json({ error: 'That shift is already assigned to them.' });
+        return;
+      }
+    }
+    const { rows: existing } = await query(
+      "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",
+      [companyId, shiftId]
+    );
+    if (existing.length) {
+      res.status(409).json({ error: 'There is already a pending request for that shift.' });
+      return;
+    }
+    const id = crypto.randomUUID();
+    await query(
+      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
+       VALUES ($1, $2, 'pickup', $3, $4, $5, 'pending')`,
+      [id, companyId, shiftId, me, targetUserId]
+    );
+    res.status(201).json({
+      id, requestType: 'pickup', shiftId, targetUserId, requesterId: me, status: 'pending',
+      shift: { date: shift.date, shiftTypeName: shift.shiftTypeName },
+    });
+  } catch (err) {
+    console.error('[schedule] request pickup failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shifts/swap-request — propose exchanging two shifts:
+// myShiftId (mine) with theirShiftId (theirs).
+router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { myShiftId, theirShiftId } = req.body ?? {};
+    if (!myShiftId || !theirShiftId) {
+      res.status(400).json({ error: 'Both shifts are required.' });
+      return;
+    }
+    if (myShiftId === theirShiftId) {
+      res.status(400).json({ error: 'You cannot swap a shift with itself.' });
+      return;
+    }
+    const mine = await manualShift(companyId, String(myShiftId));
+    const theirs = await manualShift(companyId, String(theirShiftId));
+    if (!mine || !theirs) {
+      res.status(404).json({ error: 'One of the shifts was not found.' });
+      return;
+    }
+    if (mine.userId !== me) {
+      res.status(403).json({ error: 'You can only swap your own shifts.' });
+      return;
+    }
+    if (theirs.userId === me) {
+      res.status(400).json({ error: 'You cannot swap a shift with yourself.' });
+      return;
+    }
+    const { rows: existing } = await query(
+      `SELECT id FROM shift_requests
+       WHERE company_id = $1 AND status = 'pending'
+         AND (shift_id = $2 OR shift_id = $3 OR their_shift_id = $2 OR their_shift_id = $3)
+       LIMIT 1`,
+      [companyId, myShiftId, theirShiftId]
+    );
+    if (existing.length) {
+      res.status(409).json({ error: 'There is already a pending request on one of those shifts.' });
+      return;
+    }
+    const id = crypto.randomUUID();
+    await query(
+      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, their_shift_id, requester_id, target_user_id, status)
+       VALUES ($1, $2, 'swap', $3, $4, $5, $6, 'pending')`,
+      [id, companyId, myShiftId, theirShiftId, me, theirs.userId]
+    );
+    res.status(201).json({
+      id, requestType: 'swap', myShiftId, theirShiftId,
+      targetUserId: theirs.userId, requesterId: me, status: 'pending',
+      myShift: { date: mine.date, shiftTypeName: mine.shiftTypeName },
+      theirShift: { date: theirs.date, shiftTypeName: theirs.shiftTypeName },
+    });
+  } catch (err) {
+    console.error('[schedule] swap request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/shift-requests — pending requests relevant to me (I
+// requested, I'm the target, or it's open to anyone), plus my decided
+// requests from the last 30 days for history.
+router.get('/shift-requests', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { rows } = await query(
+      `SELECT r.id, r.request_type AS "requestType",
+              r.shift_id AS "shiftId", r.their_shift_id AS "theirShiftId",
+              r.requester_id AS "requesterId", r.target_user_id AS "targetUserId",
+              r.status, r.created_at AS "createdAt", r.decided_at AS "decidedAt",
+              s.date::text AS "shiftDate", st.name AS "shiftTypeName",
+              ru.nickname AS "requesterNickname",
+              ru.first_name AS "requesterFirstName", ru.last_name AS "requesterLastName",
+              tu.nickname AS "targetNickname",
+              tu.first_name AS "targetFirstName", tu.last_name AS "targetLastName",
+              ts.date::text AS "theirShiftDate", tst.name AS "theirShiftTypeName"
+       FROM shift_requests r
+       JOIN shifts s ON s.id = r.shift_id
+       JOIN shift_types st ON st.id = s.shift_type_id
+       JOIN users ru ON ru.id = r.requester_id
+       LEFT JOIN users tu ON tu.id = r.target_user_id
+       LEFT JOIN shifts ts ON ts.id = r.their_shift_id
+       LEFT JOIN shift_types tst ON tst.id = ts.shift_type_id
+       WHERE r.company_id = $1
+         AND (r.requester_id = $2 OR r.target_user_id = $2 OR r.target_user_id IS NULL)
+         AND (r.status = 'pending'
+              OR (r.status <> 'pending' AND r.decided_at >= now() - interval '30 days'))
+       ORDER BY r.created_at DESC`,
+      [companyId, me]
+    );
+    const label = (r: any, prefix: string): string | null => {
+      const nick = r[`${prefix}Nickname`];
+      const name = `${r[`${prefix}FirstName`] || ''} ${r[`${prefix}LastName`] || ''}`.trim();
+      return nick || name || null;
+    };
+    res.json({
+      requests: rows.map((r: any) => ({
+        id: r.id,
+        requestType: r.requestType,
+        shiftId: r.shiftId,
+        theirShiftId: r.theirShiftId,
+        requesterId: r.requesterId,
+        requesterName: label(r, 'requester'),
+        targetUserId: r.targetUserId,
+        targetName: r.targetUserId ? label(r, 'target') : null,
+        openToAnyone: r.targetUserId === null,
+        status: r.status,
+        createdAt: r.createdAt,
+        decidedAt: r.decidedAt,
+        shift: { date: r.shiftDate, shiftTypeName: r.shiftTypeName },
+        theirShift: r.theirShiftId
+          ? { date: r.theirShiftDate, shiftTypeName: r.theirShiftTypeName }
+          : null,
+      })),
+    });
+  } catch (err) {
+    console.error('[schedule] list shift requests failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-requests/:id/approve — accept a request.
+// Allowed: the target, any active team member for open (target-less)
+// requests, or scheduler/owner. Runs in one transaction: re-checks
+// pending (SELECT ... FOR UPDATE), verifies the shifts still have the
+// expected owners, applies the change, then cancels other pending requests
+// touching the same shifts.
+router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const id = req.params.id;
+
+    const { rows } = await query(
+      `SELECT id, request_type AS "requestType", shift_id AS "shiftId",
+              their_shift_id AS "theirShiftId", requester_id AS "requesterId",
+              target_user_id AS "targetUserId", status
+       FROM shift_requests WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: 'Request not found.' });
+      return;
+    }
+    const r = rows[0];
+    if (r.status !== 'pending') {
+      res.status(409).json({ error: 'This request has already been decided.' });
+      return;
+    }
+    const isPrivileged = role === 'owner' || role === 'scheduler';
+    if (!isPrivileged && r.targetUserId !== me && r.targetUserId !== null) {
+      res.status(403).json({ error: 'You are not allowed to approve this request.' });
+      return;
+    }
+    if (r.targetUserId === null && !(await activeMember(companyId, me))) {
+      res.status(403).json({ error: 'Your account is not active.' });
+      return;
+    }
+    if (r.requestType === 'pickup' && r.requesterId === me) {
+      res.status(400).json({ error: 'You cannot pick up your own shift — cancel the request instead.' });
+      return;
+    }
+
+    try {
+      await withTransaction(async (tx) => {
+        const { rows: locked } = await tx.query(
+          `SELECT request_type AS "requestType", shift_id AS "shiftId",
+                  their_shift_id AS "theirShiftId", requester_id AS "requesterId",
+                  target_user_id AS "targetUserId", status
+           FROM shift_requests WHERE id = $1 FOR UPDATE`,
+          [id]
+        );
+        if (!locked.length || locked[0].status !== 'pending') {
+          throw new RequestError(409, 'This request was just decided by someone else.');
+        }
+        const lr = locked[0];
+        if (lr.requestType === 'pickup') {
+          const { rows: srows } = await tx.query(
+            'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
+            [lr.shiftId]
+          );
+          if (!srows.length) throw new RequestError(409, 'The shift no longer exists.');
+          if (srows[0].userId !== lr.requesterId) {
+            throw new RequestError(409, 'The shift changed hands since the request was made.');
+          }
+          if (srows[0].userId === me) {
+            throw new RequestError(400, 'That shift is already yours.');
+          }
+          await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [me, lr.shiftId]);
+        } else {
+          // Swap: lock both rows in a stable order to avoid deadlocks.
+          const ids = [lr.shiftId, lr.theirShiftId].sort();
+          const found = new Map<string, any>();
+          for (const sid of ids) {
+            const { rows: srows } = await tx.query(
+              'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
+              [sid]
+            );
+            if (srows.length) found.set(sid, srows[0]);
+          }
+          const a = found.get(lr.shiftId);
+          const b = found.get(lr.theirShiftId);
+          if (!a || !b) throw new RequestError(409, 'One of the shifts no longer exists.');
+          if (a.userId !== lr.requesterId || b.userId !== lr.targetUserId) {
+            throw new RequestError(409, 'One of the shifts changed hands since the request was made.');
+          }
+          await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [b.userId, lr.shiftId]);
+          await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [a.userId, lr.theirShiftId]);
+        }
+        await tx.query(
+          "UPDATE shift_requests SET status = 'approved', decided_at = now() WHERE id = $1",
+          [id]
+        );
+        // Stale out any other pending requests touching the same shift(s).
+        const shiftIds = lr.requestType === 'swap' ? [lr.shiftId, lr.theirShiftId] : [lr.shiftId];
+        await tx.query(
+          `UPDATE shift_requests SET status = 'cancelled', decided_at = now()
+           WHERE id <> $1 AND status = 'pending'
+             AND (shift_id = ANY($2) OR their_shift_id = ANY($2))`,
+          [id, shiftIds]
+        );
+      });
+    } catch (err: any) {
+      if (err instanceof RequestError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (err?.code === '23505') {
+        res.status(409).json({ error: 'That would give you a duplicate shift — you already have that shift type on that date.' });
+        return;
+      }
+      throw err;
+    }
+    res.json({ ok: true, status: 'approved' });
+
+    // Audit: who took over whose shift.
+    try {
+      const { rows: arows } = await query(
+        'SELECT date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1',
+        [r.shiftId]
+      );
+      if (arows.length) {
+        const names = await shiftDisplayNames(companyId, me, arows[0].shiftTypeId);
+        await auditLog({
+          companyId, date: arows[0].date, action: 'updated',
+          personName: names.personName, shiftTypeName: names.shiftTypeName,
+          source: 'manual', changedBy: me,
+          details: { via: 'shift-request-approved', requestId: id, requestType: r.requestType },
+        });
+      }
+    } catch { /* audit must never break the response */ }
+  } catch (err) {
+    console.error('[schedule] approve shift request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-requests/:id/decline — requester, target, scheduler, or owner.
+router.post('/shift-requests/:id/decline', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const id = req.params.id;
+
+    const { rows } = await query(
+      `SELECT id, requester_id AS "requesterId", target_user_id AS "targetUserId", status
+       FROM shift_requests WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: 'Request not found.' });
+      return;
+    }
+    const r = rows[0];
+    const isPrivileged = role === 'owner' || role === 'scheduler';
+    if (!isPrivileged && r.requesterId !== me && r.targetUserId !== me) {
+      res.status(403).json({ error: 'You are not allowed to decline this request.' });
+      return;
+    }
+    const { rowCount } = await query(
+      "UPDATE shift_requests SET status = 'declined', decided_at = now() WHERE id = $1 AND status = 'pending'",
+      [id]
+    );
+    if (!rowCount) {
+      res.status(409).json({ error: 'This request has already been decided.' });
+      return;
+    }
+    res.json({ ok: true, status: 'declined' });
+  } catch (err) {
+    console.error('[schedule] decline shift request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-requests/:id/cancel — requester or scheduler/owner.
+router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const id = req.params.id;
+
+    const { rows } = await query(
+      `SELECT id, requester_id AS "requesterId", status
+       FROM shift_requests WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: 'Request not found.' });
+      return;
+    }
+    const r = rows[0];
+    const isPrivileged = role === 'owner' || role === 'scheduler';
+    if (!isPrivileged && r.requesterId !== me) {
+      res.status(403).json({ error: 'You can only cancel your own requests.' });
+      return;
+    }
+    const { rowCount } = await query(
+      "UPDATE shift_requests SET status = 'cancelled', decided_at = now() WHERE id = $1 AND status = 'pending'",
+      [id]
+    );
+    if (!rowCount) {
+      res.status(409).json({ error: 'This request has already been decided.' });
+      return;
+    }
+    res.json({ ok: true, status: 'cancelled' });
+  } catch (err) {
+    console.error('[schedule] cancel shift request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 

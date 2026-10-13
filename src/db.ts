@@ -133,6 +133,57 @@ export async function query<T = any>(
   return { rows, rowCount: rows.length > 0 ? rows.length : affected };
 }
 
+/** A transactional query client (works on both pg Pool and PGlite). */
+export interface TxClient {
+  query: <T = any>(text: string, params?: any[]) => Promise<{ rows: T[]; rowCount: number }>;
+}
+
+/**
+ * Run `fn` inside a single database transaction. Rows locked with
+ * `SELECT ... FOR UPDATE` are safe against concurrent transactions here —
+ * this is how open-slot claims and request approvals avoid races.
+ */
+export async function withTransaction<T>(fn: (tx: TxClient) => Promise<T>): Promise<T> {
+  const client = await open();
+  if (usingPool) {
+    const pgClient = await (client as Pool).connect();
+    try {
+      await pgClient.query('BEGIN');
+      const tx: TxClient = {
+        query: async (text, params) => {
+          const result = await pgClient.query(text, params);
+          return { rows: result.rows as any[], rowCount: result.rowCount ?? result.rows.length };
+        },
+      };
+      const out = await fn(tx);
+      await pgClient.query('COMMIT');
+      return out;
+    } catch (err) {
+      await pgClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      pgClient.release();
+    }
+  }
+  const pg = client as PGlite;
+  let out: T;
+  await pg.transaction(async (tx) => {
+    const client2: TxClient = {
+      query: async (text, params) => {
+        const result = await tx.query(text, params);
+        const rows = result.rows as any[];
+        const affected =
+          typeof (result as any).affectedRows === 'number'
+            ? (result as any).affectedRows
+            : 0;
+        return { rows, rowCount: rows.length > 0 ? rows.length : affected };
+      },
+    };
+    out = await fn(client2);
+  });
+  return out!;
+}
+
 /** Close the DB client (used by the migrate CLI). */
 export async function close(): Promise<void> {
   if (db) {
