@@ -37,10 +37,12 @@ function validateAvatar(v: any): string | null {
 
 const PROFILE_SELECT = `
   SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
-         d.name AS department_name, u.job_role, u.role,
+         d.name AS department_name, u.job_role, u.job_role_id,
+         jr.name AS job_role_name, u.role,
          u.end_date, u.is_active, u.created_at, u.special_instructions, u.profile_color, u.avatar_data,
          inv.used AS inv_used, inv.sent_at AS inv_sent_at, inv.expires_at AS inv_expires_at
   FROM users u LEFT JOIN departments d ON d.id = u.department_id
+  LEFT JOIN job_roles jr ON jr.id = u.job_role_id
   LEFT JOIN LATERAL (
     SELECT i.used_at IS NOT NULL AS used, i.sent_at, i.expires_at
     FROM invites i WHERE i.user_id = u.id
@@ -70,6 +72,8 @@ export function publicProfile(u: any) {
     departmentId: u.department_id ?? null,
     department: u.department_name ?? null,
     jobRole: u.job_role ?? null,
+    jobRoleId: u.job_role_id ?? null,
+    jobRoleName: u.job_role_name ?? null,
     role: u.role,
     endDate: toDateStr(u.end_date),
     isActive: !!u.is_active,
@@ -87,6 +91,25 @@ function toDateStr(v: any): string | null {
   if (typeof v === 'string') return v.slice(0, 10);
   if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
   return null;
+}
+
+/** Resolve a job role id to a company+department-scoped role, or null when blank. */
+async function resolveJobRole(
+  jobRoleId: unknown,
+  departmentId: string | null,
+  companyId: string
+): Promise<{ ok: true; id: string | null; name: string | null } | { ok: false; error: string }> {
+  const raw = String(jobRoleId ?? '').trim();
+  if (!raw) return { ok: true, id: null, name: null };
+  if (!departmentId) {
+    return { ok: false, error: 'Choose a department before assigning a job role.' };
+  }
+  const { rows } = await query(
+    `SELECT id, name FROM job_roles WHERE id = $1 AND company_id = $2 AND department_id = $3`,
+    [raw, companyId, departmentId]
+  );
+  if (!rows.length) return { ok: false, error: 'Job role not found in that department.' };
+  return { ok: true, id: rows[0].id, name: rows[0].name };
 }
 
 /** Resolve a department id to a company-scoped department, or null when blank. */
@@ -130,7 +153,7 @@ router.get('/', async (req: Request, res: Response) => {
 // admin copies/shares manually. Response: 201 {user, inviteLink}.
 router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
-    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, specialInstructions, profileColor, avatarData } =
+    const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, jobRoleId, specialInstructions, profileColor, avatarData } =
       req.body ?? {};
     // Prefer explicit firstName/lastName; fall back to splitting a legacy `name`.
     let first = String(firstName ?? '').trim();
@@ -163,6 +186,19 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
       res.status(400).json({ error: dept.error });
       return;
     }
+    // Job role: a linked department role wins and syncs the legacy free-text
+    // column; otherwise the legacy free-text jobRole still works as before.
+    let jobRoleIdVal: string | null = null;
+    let jobRoleText: string | null = String(jobRole ?? '').trim() || null;
+    if (jobRoleId !== undefined) {
+      const jr = await resolveJobRole(jobRoleId, dept.id, req.session.companyId!);
+      if (!jr.ok) {
+        res.status(400).json({ error: jr.error });
+        return;
+      }
+      jobRoleIdVal = jr.id;
+      jobRoleText = jr.name;
+    }
     // Department scoping: the scheduler's active department must be the
     // member's department (owner bypasses).
     if (!(await requireActiveDepartment(req, res, dept.id ? [dept.id] : []))) return;
@@ -178,8 +214,8 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
     const passwordHash = await unusablePasswordHash();
     const userId = crypto.randomUUID();
     await query(
-      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, password_hash, role, special_instructions, profile_color, avatar_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      `INSERT INTO users (id, company_id, first_name, last_name, name, nickname, email, phone, department_id, job_role, job_role_id, password_hash, role, special_instructions, profile_color, avatar_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         userId,
         req.session.companyId,
@@ -190,7 +226,8 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
         cleanEmail,
         String(phone ?? '').trim() || null,
         dept.id,
-        String(jobRole ?? '').trim() || null,
+        jobRoleText,
+        jobRoleIdVal,
         passwordHash,
         role,
         String(specialInstructions ?? '').trim().slice(0, 500) || null,
@@ -309,7 +346,25 @@ router.patch('/:id', async (req: Request, res: Response) => {
       // Already resolved + validated in the department-scoping block above.
       push('department_id', resolvedDept!.id);
     }
-    if (body.jobRole !== undefined) push('job_role', String(body.jobRole).trim() || null);
+    // Job role: a linked department role wins and syncs the legacy free-text
+    // column; otherwise the legacy free-text jobRole still works as before.
+    const targetDeptId = body.departmentId !== undefined ? resolvedDept!.id : (target.department_id ?? null);
+    if (body.jobRoleId !== undefined) {
+      const jr = await resolveJobRole(body.jobRoleId, targetDeptId, companyId);
+      if (!jr.ok) {
+        res.status(400).json({ error: jr.error });
+        return;
+      }
+      push('job_role_id', jr.id);
+      push('job_role', jr.name);
+    } else if (body.departmentId !== undefined && targetDeptId !== (target.department_id ?? null)) {
+      // Moved departments without a new role: the old department's role no
+      // longer applies — unlink it (free-text job_role stays as history).
+      push('job_role_id', null);
+    } else if (body.jobRole !== undefined) {
+      push('job_role', String(body.jobRole).trim() || null);
+      push('job_role_id', null);
+    }
     if (body.specialInstructions !== undefined) push('special_instructions', String(body.specialInstructions).trim().slice(0, 500) || null);
     if (body.profileColor !== undefined) push('profile_color', String(body.profileColor).trim() || null);
     if (body.avatarData !== undefined) push('avatar_data', validateAvatar(body.avatarData));

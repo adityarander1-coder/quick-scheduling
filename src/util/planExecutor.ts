@@ -65,6 +65,34 @@ async function findShiftType(companyId: string, name: string): Promise<{ id: str
   return null;
 }
 
+/** Find one manual shift row for a user on a date, optionally filtered by shift type name. */
+async function findShiftRow(
+  companyId: string,
+  userId: string,
+  date: string,
+  shiftTypeName?: string
+): Promise<{ id: string; shift_type_id: string; date: string; published: boolean; notes: string | null; shift_type_name: string } | null> {
+  let stId: string | null = null;
+  if (shiftTypeName) {
+    const st = await findShiftType(companyId, shiftTypeName);
+    if (!st) throw new Error(`Shift type not found: ${shiftTypeName}`);
+    stId = st.id;
+  }
+  const params: any[] = [companyId, userId, date];
+  let q = `SELECT s.id, s.shift_type_id, s.date::text AS date, s.published, s.notes, st.name AS shift_type_name
+           FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
+           WHERE s.company_id = $1 AND s.user_id = $2 AND s.date = $3`;
+  if (stId) { q += ' AND s.shift_type_id = $4'; params.push(stId); }
+  q += ' ORDER BY s.created_at LIMIT 1';
+  const { rows } = await query(q, params);
+  return rows[0] ?? null;
+}
+
+function noManualShiftMsg(display: string, date: string, shiftTypeName?: string): string {
+  return `No shift found for ${display} on ${date}${shiftTypeName ? ` (${shiftTypeName})` : ''}. ` +
+    `Only manually-assigned shifts can be swapped — rotation-generated shifts need the scheduler.`;
+}
+
 /** Execute a plan's changes. Returns per-change results. */
 export async function executePlan(
   companyId: string,
@@ -72,6 +100,10 @@ export async function executePlan(
   executedBy: string
 ): Promise<ExecuteResult[]> {
   const results: ExecuteResult[] = [];
+  // created_by is a uuid FK — only use executedBy when it's actually a user id.
+  const createdBy = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(executedBy)
+    ? executedBy
+    : null;
   for (const change of plan.changes || []) {
     try {
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
@@ -80,13 +112,75 @@ export async function executePlan(
         if (!user) throw new Error(`Person not found: ${change.person}`);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
-        await query(
+        const inserted = await query(
           `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
            VALUES ($1, $2, $3, $4, $5, true, $6)
            ON CONFLICT DO NOTHING`,
-          [uuidv4(), companyId, user.id, st.id, change.date, executedBy]
+          [uuidv4(), companyId, user.id, st.id, change.date, createdBy]
         );
-        results.push({ action: 'assign', success: true, message: `Assigned ${user.display} to ${st.name} on ${change.date}` });
+        if (inserted.rowCount === 0) {
+          results.push({ action: 'assign', success: true, message: `Already on ${st.name} on ${change.date} — no change needed` });
+        } else {
+          results.push({ action: 'assign', success: true, message: `Assigned ${user.display} to ${st.name} on ${change.date}` });
+        }
+      } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
+        // Swap exchanges two people's shifts. Same-day swap uses `date`;
+        // cross-date swap uses fromDate/toDate. Runs in one transaction so a
+        // half-applied swap is impossible.
+        const fromUser = await findUser(companyId, change.fromPerson);
+        const toUser = await findUser(companyId, change.toPerson);
+        if (!fromUser) throw new Error(`Person not found: ${change.fromPerson}`);
+        if (!toUser) throw new Error(`Person not found: ${change.toPerson}`);
+        const fromDate = change.fromDate || change.date;
+        const toDate = change.toDate || change.date;
+        if (!fromDate || !toDate) throw new Error('Swap needs a date (or fromDate/toDate).');
+        const fromShift = await findShiftRow(companyId, fromUser.id, fromDate, change.shiftType);
+        if (!fromShift) throw new Error(noManualShiftMsg(fromUser.display, fromDate, change.shiftType));
+        const toShift = await findShiftRow(companyId, toUser.id, toDate, change.shiftType);
+        const { withTransaction } = await import('../db.js');
+        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+        if (!toShift) {
+          // toPerson has no shift on that date: treat as a move of fromPerson's shift.
+          await withTransaction(async (tx) => {
+            const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromShift.id, companyId]);
+            if (del.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${fromDate} — it may have changed.`);
+            const ins = await tx.query(
+              `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+              [uuidv4(), companyId, toUser.id, fromShift.shift_type_id, toDate, fromShift.notes, fromShift.published, createdBy]
+            );
+            if (ins.rowCount === 0) throw new Error(`${toUser.display} is already on ${fromShift.shift_type_name} on ${toDate} — no change made.`);
+          });
+          results.push({ action: 'swap', success: true, message: `Moved ${fromUser.display}'s ${fromShift.shift_type_name} on ${fromDate} to ${toUser.display} on ${toDate} (${toUser.display} had no shift to swap)` });
+        } else {
+          // Exchange the two assignments: delete both rows, re-insert with
+          // swapped people (avoids UNIQUE conflicts on same-type same-day swaps).
+          await withTransaction(async (tx) => {
+            const del1 = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromShift.id, companyId]);
+            if (del1.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${fromDate} — it may have changed.`);
+            const del2 = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [toShift.id, companyId]);
+            if (del2.rowCount === 0) throw new Error(`Could not remove ${toUser.display}'s shift on ${toDate} — it may have changed.`);
+            const ins1 = await tx.query(
+              `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+              [uuidv4(), companyId, toUser.id, fromShift.shift_type_id, fromDate, fromShift.notes, fromShift.published, createdBy]
+            );
+            if (ins1.rowCount === 0) throw new Error(`Could not place ${toUser.display} on ${fromShift.shift_type_name} on ${fromDate} — conflicting shift exists.`);
+            const ins2 = await tx.query(
+              `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+              [uuidv4(), companyId, fromUser.id, toShift.shift_type_id, toDate, toShift.notes, toShift.published, createdBy]
+            );
+            if (ins2.rowCount === 0) throw new Error(`Could not place ${fromUser.display} on ${toShift.shift_type_name} on ${toDate} — conflicting shift exists.`);
+          });
+          const sameDay = fromDate === toDate;
+          results.push({
+            action: 'swap', success: true,
+            message: sameDay
+              ? `Swapped ${fromUser.display} (${fromShift.shift_type_name}) ↔ ${toUser.display} (${toShift.shift_type_name}) on ${fromDate}`
+              : `Swapped ${fromUser.display}'s ${fromShift.shift_type_name} on ${fromDate} ↔ ${toUser.display}'s ${toShift.shift_type_name} on ${toDate}`,
+          });
+        }
       } else if (change.action === 'unassign' && change.person && change.date) {
         const user = await findUser(companyId, change.person);
         if (!user) throw new Error(`Person not found: ${change.person}`);
@@ -96,8 +190,19 @@ export async function executePlan(
           const st = await findShiftType(companyId, change.shiftType);
           if (st) { q += ' AND shift_type_id = $4'; params.push(st.id); }
         }
-        await query(q, params);
-        results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
+        const deleted = await query(q, params);
+        if (deleted.rowCount === 0) {
+          // Never report success when nothing was deleted. The most common
+          // cause: rotation-generated entries have no shift row, so they
+          // can't be removed this way — the rotation must be changed instead.
+          results.push({
+            action: 'unassign', success: false,
+            message: `No shift found for ${user.display} on ${change.date} to remove. ` +
+              `If this entry comes from a rotation, it has no shift row — change the rotation instead.`,
+          });
+        } else {
+          results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
+        }
       } else if (change.action === 'move' && change.fromPerson && change.toPerson && change.date) {
         // Move = unassign fromPerson + assign toPerson (same shift type).
         const fromUser = await findUser(companyId, change.fromPerson);
@@ -112,7 +217,7 @@ export async function executePlan(
           if (st) { shiftQ = 'SELECT shift_type_id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1'; shiftParams.push(st.id); }
         }
         const { rows: srows } = await query(shiftQ, shiftParams);
-        if (!srows.length) throw new Error(`No shift found for ${fromUser.display} on ${change.date}`);
+        if (!srows.length) throw new Error(`No shift found for ${fromUser.display} on ${change.date}. Only manually-assigned shifts can be moved — rotation-generated shifts need the scheduler.`);
         const shiftTypeId = srows[0].shift_type_id;
         await query('DELETE FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
           [companyId, fromUser.id, change.date, shiftTypeId]);
@@ -120,7 +225,7 @@ export async function executePlan(
         await query(
           `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
            VALUES ($1, $2, $3, $4, $5, true, $6) ON CONFLICT DO NOTHING`,
-          [uuidv4(), companyId, toUser.id, shiftTypeId, change.date, executedBy]
+          [uuidv4(), companyId, toUser.id, shiftTypeId, change.date, createdBy]
         );
         results.push({ action: 'move', success: true, message: `Moved ${fromUser.display} → ${toUser.display} on ${change.date}` });
       } else {

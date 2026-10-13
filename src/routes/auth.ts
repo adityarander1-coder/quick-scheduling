@@ -67,6 +67,7 @@ function publicUser(u: {
   phone?: string | null;
   department_id?: string | null;
   job_role?: string | null;
+  job_role_id?: string | null;
   end_date?: string | null;
   is_active?: boolean;
   role: string;
@@ -84,6 +85,7 @@ function publicUser(u: {
     phone: u.phone ?? null,
     departmentId: u.department_id ?? null,
     jobRole: u.job_role ?? null,
+    jobRoleId: u.job_role_id ?? null,
     endDate: toDateStr(u.end_date),
     isActive: u.is_active ?? true,
     role: u.role,
@@ -125,7 +127,7 @@ export function setSession(req: Request, userId: string, companyId: string, role
 async function loadUserAndCompany(userId: string) {
   const { rows } = await query<DbUser & { company_name: string }>(
     `SELECT u.id, u.company_id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
-            u.job_role, u.end_date, u.is_active, u.role, c.name AS company_name
+            u.job_role, u.job_role_id, u.end_date, u.is_active, u.role, c.name AS company_name
      FROM users u JOIN companies c ON c.id = u.company_id
      WHERE u.id = $1`,
     [userId]

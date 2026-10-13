@@ -14,6 +14,7 @@ import { PGliteSessionStore } from './sessionStore';
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
 import departmentsRouter from './routes/departments';
+import jobRolesRouter from './routes/jobRoles';
 import candidatesRouter from './routes/candidates';
 
 import invitesRouter from './routes/invites';
@@ -72,6 +73,7 @@ app.use('/api', billingWriteGate);
 app.use('/api/billing', billingRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/departments', departmentsRouter);
+app.use('/api/job-roles', jobRolesRouter);
 app.use('/api/candidates', candidatesRouter);
 app.use('/api/invites', invitesRouter);
 app.use('/api/schedule', scheduleRouter);

@@ -3420,6 +3420,7 @@
           <button class="subtab-btn active" data-subtab="shifts">Shifts</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
           <button class="subtab-btn" data-subtab="team">Team members</button>
+          <button class="subtab-btn" data-subtab="jobroles">Job roles</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
         </nav>
@@ -4084,7 +4085,7 @@
                   <div class="form-row"><label>Phone <span class="hint">(optional)</span></label><input type="tel" id="team-add-phone" autocomplete="off"></div>
                   <div class="form-row"><label>System role</label><select id="team-add-role"></select></div>
                   <div class="form-row"><label>Department</label><select id="team-add-dept"><option value="">— None —</option></select></div>
-                  <div class="form-row"><label>Job role <span class="hint">e.g. Day Hospitalist, Night NP</span></label><input type="text" id="team-add-jobrole" autocomplete="off"></div>
+                  <div class="form-row"><label>Job role</label><select id="team-add-jobrole"><option value="">— None —</option></select></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional, e.g. prefers nights, no weekends)</span></label><textarea id="team-add-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Profile photo <span class="hint">(optional)</span></label>
                     <div style="display:flex;align-items:center;gap:12px">
@@ -4117,7 +4118,7 @@
                   <div class="form-row"><label>Nickname</label><input type="text" id="team-edit-nickname" autocomplete="off"></div>
                   <div class="form-row"><label>Phone</label><input type="tel" id="team-edit-phone" autocomplete="off"></div>
                   <div class="form-row"><label>Department</label><select id="team-edit-dept"><option value="">— None —</option></select></div>
-                  <div class="form-row"><label>Job role</label><input type="text" id="team-edit-jobrole" autocomplete="off"></div>
+                  <div class="form-row"><label>Job role</label><select id="team-edit-jobrole"><option value="">— None —</option></select></div>
                   <div class="form-row"><label>End date <span class="hint">Last day on the schedule</span></label><input type="date" id="team-edit-enddate"></div>
                   <div class="form-row" id="team-edit-role-wrap"><label>System role</label><select id="team-edit-role"></select></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="team-edit-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
@@ -4431,7 +4432,27 @@
                   var editMember = editingId ? memberById(editingId) : null;
                   fillDeptSelect($('team-add-dept'), '');
                   fillDeptSelect($('team-edit-dept'), editMember ? editMember.departmentId : '');
+                  fillRoleSelect($('team-add-jobrole'), '', '');
+                  if (editMember) fillRoleSelect($('team-edit-jobrole'), editMember.departmentId, editMember.jobRoleId);
+                  else fillRoleSelect($('team-edit-jobrole'), '', '');
                   renderDeptList();
+                });
+              }
+
+              // Job role dropdowns: roles come from the member's department.
+              function fillRoleSelect(selectEl, deptId, selectedId) {
+                selectEl.textContent = '';
+                var none = document.createElement('option');
+                none.value = ''; none.textContent = '— None —';
+                selectEl.appendChild(none);
+                if (!deptId || !window.qsJobRolesForDept) return;
+                window.qsJobRolesForDept(deptId).then(function (roles) {
+                  roles.forEach(function (r) {
+                    var opt = document.createElement('option');
+                    opt.value = r.id; opt.textContent = r.name;
+                    if (String(r.id) === String(selectedId)) opt.selected = true;
+                    selectEl.appendChild(opt);
+                  });
                 });
               }
 
@@ -4558,7 +4579,7 @@
                 $('team-edit-nickname').value = u.nickname || '';
                 $('team-edit-phone').value = u.phone || '';
                 fillDeptSelect($('team-edit-dept'), u.departmentId);
-                $('team-edit-jobrole').value = u.jobRole || '';
+                fillRoleSelect($('team-edit-jobrole'), u.departmentId, u.jobRoleId);
                 $('team-edit-enddate').value = u.endDate || '';
                 $('team-edit-instructions').value = u.specialInstructions || '';
                 var roleWrap = $('team-edit-role-wrap');
@@ -4640,7 +4661,7 @@
                     nickname: $('team-add-nickname').value.trim(),
                     phone: $('team-add-phone').value.trim(),
                     departmentId: $('team-add-dept').value,
-                    jobRole: $('team-add-jobrole').value.trim(),
+                    jobRoleId: $('team-add-jobrole').value,
                     specialInstructions: $('team-add-instructions').value.trim(),
                     avatarData: addAvatarData
                   };
@@ -4694,7 +4715,7 @@
                     nickname: $('team-edit-nickname').value.trim(),
                     phone: $('team-edit-phone').value.trim(),
                     departmentId: $('team-edit-dept').value,
-                    jobRole: $('team-edit-jobrole').value.trim(),
+                    jobRoleId: $('team-edit-jobrole').value,
                     endDate: $('team-edit-enddate').value,
                     specialInstructions: $('team-edit-instructions').value.trim(),
                     avatarData: editAvatarRemoved ? '' : editAvatarData
@@ -4767,6 +4788,13 @@
                   setupEdit();
                   setupDeptForm();
                   $('team-search').addEventListener('input', renderMembers);
+                  // Job role dropdowns follow the selected department.
+                  $('team-add-dept').addEventListener('change', function () {
+                    fillRoleSelect($('team-add-jobrole'), $('team-add-dept').value, '');
+                  });
+                  $('team-edit-dept').addEventListener('change', function () {
+                    fillRoleSelect($('team-edit-jobrole'), $('team-edit-dept').value, '');
+                  });
                   $('team-invite-send').addEventListener('click', function () { if (inviteUserId) sendInvite(inviteUserId); });
                   $('team-invite-mark-sent').addEventListener('click', function () { if (inviteUserId) markInviteSent(inviteUserId); });
                   loadDepartments();
@@ -4778,6 +4806,178 @@
               if (isActive()) init();
               else {
                 // Defer init until first activation
+                var onHash = function () {
+                  if (isActive()) { window.removeEventListener('hashchange', onHash); init(); }
+                };
+                window.addEventListener('hashchange', onHash);
+              }
+            })();
+            </script>
+          </div>
+          <div id="subtab-jobroles" class="sub-panel">
+            <div class="set-head-row">
+              <h3 class="set-h3" style="margin:0">Job roles</h3>
+            </div>
+            <p class="set-desc">Add the job roles each department hires for — e.g. Physician, Nurse Practitioner, Secretary. Team member profiles pick a role from this list, and shift types can restrict pickup to specific roles.</p>
+            <div class="form-row" style="max-width:320px;margin-bottom:1rem">
+              <label>Department</label>
+              <select id="jr-dept-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+            </div>
+            <div id="jr-error" class="alert alert-error hidden" role="alert"></div>
+            <div id="jr-list" class="sub-card"></div>
+            <form id="jr-add-form" novalidate style="margin-top:0.8rem">
+              <div class="form-row"><label>New job role</label><input type="text" id="jr-add-name" placeholder="e.g. Nurse Practitioner" autocomplete="off"></div>
+              <div style="margin-top:0.8rem"><button type="submit" class="btn" id="jr-add-btn">Add job role</button></div>
+            </form>
+
+            <script>
+            (function () {
+              // Job roles sub-panel: department-scoped role management.
+              var roles = [];
+              var departments = [];
+              var deptId = '';
+
+              function isActive() {
+                var h = window.location.hash || '#settings/rotations';
+                return h.indexOf('#settings/jobroles') === 0;
+              }
+              function escHtml(s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              }
+              function showErr(msg) {
+                var el = $('jr-error'); el.textContent = msg; el.classList.remove('hidden');
+              }
+              function hideErr() { var el = $('jr-error'); el.textContent = ''; el.classList.add('hidden'); }
+
+              function canEditDept() {
+                if (window.isOwner) return true;
+                return !!(window.qsCanEditDept && window.qsCanEditDept(deptId));
+              }
+
+              function renderRoles() {
+                var list = $('jr-list');
+                var html = '';
+                if (!roles.length) {
+                  html = '<p style="color:var(--dim);font-size:0.9rem;margin:0">No job roles yet for this department.</p>';
+                } else {
+                  roles.forEach(function (r) {
+                    html += '<div style="display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border)">' +
+                      '<span style="flex:1;font-size:0.95rem">' + escHtml(r.name) + '</span>';
+                    if (canEditDept()) {
+                      html += '<button type="button" class="btn-secondary" data-jr-rename="' + r.id + '" style="padding:0.3rem 0.7rem;font-size:0.82rem">Rename</button>' +
+                        '<button type="button" class="btn-secondary" data-jr-del="' + r.id + '" style="padding:0.3rem 0.7rem;font-size:0.82rem">Delete</button>';
+                    } else {
+                      html += '<span style="font-size:0.8rem;color:var(--dim)">View only</span>';
+                    }
+                    html += '</div>';
+                  });
+                }
+                list.innerHTML = html;
+                list.querySelectorAll('[data-jr-rename]').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var r = roles.filter(function (x) { return x.id === b.getAttribute('data-jr-rename'); })[0];
+                    if (!r) return;
+                    var next = window.prompt('Rename job role:', r.name);
+                    if (next === null) return;
+                    next = next.trim();
+                    if (!next || next === r.name) return;
+                    api('/api/job-roles/' + r.id, {
+                      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name: next })
+                    }).then(function (res) {
+                      if (res.ok) loadRoles();
+                      else showErr((res.data && res.data.error) || 'Could not rename.');
+                    }).catch(function () { showErr('Network error. Please try again.'); });
+                  });
+                });
+                list.querySelectorAll('[data-jr-del]').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var r = roles.filter(function (x) { return x.id === b.getAttribute('data-jr-del'); })[0];
+                    if (!r) return;
+                    if (!window.confirm('Delete job role "' + r.name + '"? Team members keep their accounts.')) return;
+                    api('/api/job-roles/' + r.id, { method: 'DELETE' }).then(function (res) {
+                      if (res.ok) loadRoles();
+                      else showErr((res.data && res.data.error) || 'Could not delete.');
+                    }).catch(function () { showErr('Network error. Please try again.'); });
+                  });
+                });
+                // Department scope: no edit access -> hide the add form.
+                var showAdd = canEditDept() && !!deptId;
+                $('jr-add-form').style.display = showAdd ? '' : 'none';
+              }
+
+              function fillDeptSelect() {
+                var sel = $('jr-dept-select');
+                sel.textContent = '';
+                var viewDepts = departments.filter(function (d) {
+                  return window.qsCanViewDept ? window.qsCanViewDept(d.id) : true;
+                });
+                viewDepts.forEach(function (d) {
+                  var opt = document.createElement('option');
+                  opt.value = d.id; opt.textContent = d.name;
+                  sel.appendChild(opt);
+                });
+                if (viewDepts.length) {
+                  if (viewDepts.map(function (d) { return d.id; }).indexOf(deptId) === -1) {
+                    deptId = viewDepts[0].id;
+                  }
+                  sel.value = deptId;
+                } else {
+                  deptId = '';
+                }
+              }
+
+              function loadRoles() {
+                hideErr();
+                if (!deptId) { roles = []; renderRoles(); return; }
+                api('/api/job-roles?departmentId=' + encodeURIComponent(deptId)).then(function (r) {
+                  if (r.ok) { roles = r.data.jobRoles || []; renderRoles(); }
+                  else showErr((r.data && r.data.error) || 'Could not load job roles.');
+                }).catch(function () { showErr('Network error. Could not load job roles.'); });
+              }
+
+              function loadDepartments() {
+                api('/api/departments').then(function (r) {
+                  if (!r.ok) return;
+                  departments = r.data.departments || [];
+                  fillDeptSelect();
+                  loadRoles();
+                });
+              }
+
+              $('jr-dept-select').addEventListener('change', function () {
+                deptId = $('jr-dept-select').value;
+                loadRoles();
+              });
+              $('jr-add-form').addEventListener('submit', function (e) {
+                e.preventDefault();
+                hideErr();
+                var name = $('jr-add-name').value.trim();
+                if (!name) { showErr('Job role name is required.'); return; }
+                if (!deptId) { showErr('Choose a department first.'); return; }
+                $('jr-add-btn').disabled = true;
+                api('/api/job-roles', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ departmentId: deptId, name: name })
+                }).then(function (r) {
+                  $('jr-add-btn').disabled = false;
+                  if (r.ok) { $('jr-add-name').value = ''; loadRoles(); }
+                  else showErr((r.data && r.data.error) || 'Could not add job role.');
+                }).catch(function () { $('jr-add-btn').disabled = false; showErr('Network error. Please try again.'); });
+              });
+
+              // Expose a cached role-name lookup other panels can reuse.
+              window.qsJobRolesForDept = function (dId) {
+                return api('/api/job-roles?departmentId=' + encodeURIComponent(dId)).then(function (r) {
+                  return r.ok ? (r.data.jobRoles || []) : [];
+                }).catch(function () { return []; });
+              };
+
+              function init() { loadDepartments(); }
+              window.addEventListener('hashchange', function () { if (isActive()) loadDepartments(); });
+              if (isActive()) init();
+              else {
                 var onHash = function () {
                   if (isActive()) { window.removeEventListener('hashchange', onHash); init(); }
                 };
@@ -4969,6 +5169,10 @@
                   <label>Departments <span class="hint">(optional — leave empty for all departments; check multiple for cross-department shifts)</span></label>
                   <div id="shift-new-depts" style="display:flex;flex-wrap:wrap;gap:6px"></div>
                 </div>
+                <div class="form-row">
+                  <label>Eligible job roles <span class="hint">(optional — checked roles can pick up this shift; leave empty for everyone)</span></label>
+                  <div id="shift-new-roles"></div>
+                </div>
                 <div class="modal-actions">
                   <button type="button" id="shift-modal-cancel" class="btn-secondary">Cancel</button>
                   <button type="button" id="shift-modal-save" class="btn">Add</button>
@@ -4981,6 +5185,105 @@
               // Shifts sub-panel — ported from settings.html shifts section, IDs prefixed shift-.
               var shiftTypes = [];
               var departments = [];
+              var deptRoles = {}; // deptId -> job roles (loaded per loadAll)
+
+              // Job roles for one department (cached per page load).
+              function rolesForDept(deptId) {
+                if (deptRoles[deptId]) return Promise.resolve(deptRoles[deptId]);
+                if (!window.qsJobRolesForDept) return Promise.resolve([]);
+                return window.qsJobRolesForDept(deptId).then(function (roles) {
+                  deptRoles[deptId] = roles || [];
+                  return deptRoles[deptId];
+                });
+              }
+              // Union of job roles across departments (sorted by name).
+              function rolesForDepts(deptIds) {
+                var ids = (deptIds || []).filter(Boolean);
+                if (!ids.length) {
+                  ids = departments.filter(function (d) { return window.qsCanViewDept(d.id); }).map(function (d) { return d.id; });
+                }
+                return Promise.all(ids.map(rolesForDept)).then(function (lists) {
+                  var seen = {}, out = [];
+                  lists.forEach(function (l) {
+                    (l || []).forEach(function (r) {
+                      if (!seen[r.id]) { seen[r.id] = 1; out.push(r); }
+                    });
+                  });
+                  out.sort(function (a, b) {
+                    var x = String(a.name).toLowerCase(), y = String(b.name).toLowerCase();
+                    return x < y ? -1 : (x > y ? 1 : 0);
+                  });
+                  return out;
+                });
+              }
+              function roleNameById(id) {
+                for (var k in deptRoles) {
+                  for (var i = 0; i < deptRoles[k].length; i++) {
+                    if (String(deptRoles[k][i].id) === String(id)) return deptRoles[k][i].name;
+                  }
+                }
+                return null;
+              }
+              function roleNames(ids) {
+                var names = [];
+                (ids || []).forEach(function (id) {
+                  var n = roleNameById(id);
+                  if (n) names.push(n);
+                });
+                return names.length ? names.join(', ') : 'Everyone';
+              }
+
+              // "Eligible job roles" checkbox dropdown — same multi-select
+              // pattern as the department filter. Checked = eligible to pick
+              // up; empty = everyone can pick up.
+              function roleDropdownHTML(roles, selectedIds, prefix) {
+                selectedIds = selectedIds || [];
+                var label = selectedIds.length
+                  ? selectedIds.length + ' role' + (selectedIds.length > 1 ? 's' : '')
+                  : 'All roles';
+                return '<div class="dept-dd" data-dd="' + prefix + '" style="position:relative">' +
+                  '<button type="button" class="dept-dd-btn" data-rolebtn="' + prefix + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.88rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:140px;max-width:200px"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>' +
+                  '<div class="dept-dd-menu" data-rolemenu="' + prefix + '" style="display:none;position:absolute;top:100%;left:0;z-index:70;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;min-width:180px;max-height:200px;overflow-y:auto;padding:6px">' +
+                  '<p style="font-size:0.78rem;color:var(--dim);margin:2px 4px 6px">Checked roles can pick up this shift. Leave empty for everyone.</p>' +
+                  (roles.length ? roles.map(function (r) {
+                    var on = selectedIds.indexOf(r.id) !== -1;
+                    return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
+                      '<input type="checkbox" data-rolechk="' + prefix + '" value="' + r.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(r.name) + '</label>';
+                  }).join('') : '<p style="font-size:0.85rem;color:var(--dim);margin:4px">No job roles in these departments yet — add them under Settings → Job roles.</p>') +
+                  '</div></div>';
+              }
+              function refreshRoleDdLabel(prefix) {
+                var btn = document.querySelector('[data-rolebtn="' + prefix + '"] span');
+                if (!btn) return;
+                var n = checkedRoleIds(prefix).length;
+                btn.textContent = n ? n + ' role' + (n > 1 ? 's' : '') : 'All roles';
+              }
+              function checkedRoleIds(prefix) {
+                var ids = [];
+                document.querySelectorAll('input[data-rolechk="' + prefix + '"]:checked').forEach(function (cb) { ids.push(cb.value); });
+                return ids;
+              }
+              // Roles for a shift row, loaded async then re-rendered.
+              var rowRoles = {}; // rowIndex -> roles array
+              function loadRowRoles(i, deptIds, selectedIds) {
+                rolesForDepts(deptIds).then(function (roles) {
+                  rowRoles[i] = roles;
+                  var host = document.querySelector('[data-roleslot="row' + i + '"]');
+                  if (host) {
+                    host.innerHTML = roleDropdownHTML(roles, selectedIds, 'roles-row' + i);
+                  }
+                });
+              }
+              // "Eligible job roles" dropdown in the add-shift-type modal:
+              // roles follow the checked departments.
+              function renderNewModalRoles() {
+                var host = $('shift-new-roles');
+                if (!host) return;
+                host.innerHTML = '<span style="font-size:0.85rem;color:var(--dim)">Loading roles…</span>';
+                rolesForDepts(checkedDeptIds('new')).then(function (roles) {
+                  host.innerHTML = roleDropdownHTML(roles, [], 'newroles');
+                });
+              }
 
               function deptDropdownHTML(selectedIds, prefix) {
                 selectedIds = selectedIds || [];
@@ -5025,6 +5328,29 @@
                 var cb = e.target;
                 if (cb && cb.matches && cb.matches('input[data-deptchk]')) {
                   refreshDeptDdLabel(cb.getAttribute('data-deptchk'));
+                  // Add-shift modal: roles follow the checked departments.
+                  if (cb.getAttribute('data-deptchk') === 'new') renderNewModalRoles();
+                }
+              });
+              // "Eligible job roles" dropdown open/close + label refresh
+              // (delegated — rows re-render). Role menus share the
+              // .dept-dd-menu class, so the handler above closes them too.
+              document.addEventListener('click', function (e) {
+                var btn = e.target.closest ? e.target.closest('[data-rolebtn]') : null;
+                document.querySelectorAll('[data-rolemenu]').forEach(function (m) {
+                  var p = m.getAttribute('data-rolemenu');
+                  if (btn && btn.getAttribute('data-rolebtn') === p) {
+                    m.style.display = m.style.display === 'none' ? 'block' : 'none';
+                  } else {
+                    m.style.display = 'none';
+                  }
+                });
+                if (btn) e.stopPropagation();
+              });
+              document.addEventListener('change', function (e) {
+                var cb = e.target;
+                if (cb && cb.matches && cb.matches('input[data-rolechk]')) {
+                  refreshRoleDdLabel(cb.getAttribute('data-rolechk'));
                 }
               });
 
@@ -5071,6 +5397,11 @@
                     '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
                     (editable ? '' : ' <span class="read-only-hint" title="Switch active department to edit" style="color:#6b7280;font-size:0.75rem;font-weight:700">View only</span>') + '</label>' +
                     '<div style="max-width:200px">' + (editable ? deptDropdownHTML(deptIds, 'row' + i) : '<span style="font-size:0.88rem;color:var(--dim)">' + esc(deptNames(deptIds)) + '</span>') + '</div>' +
+                    '<div style="max-width:200px" title="Which job roles can pick up this shift">' +
+                      (editable
+                        ? '<div data-roleslot="row' + i + '"><span style="font-size:0.85rem;color:var(--dim)">Loading roles…</span></div>'
+                        : '<span style="font-size:0.88rem;color:var(--dim)">' + esc(roleNames(st.eligibleJobRoleIds)) + '</span>') +
+                    '</div>' +
                     '<div class="time-inputs">' +
                       '<input type="time" id="shift-start-' + i + '" value="' + esc(st.startTime || '08:00') + '"' + ((deleted || !editable) ? ' disabled' : '') + '>' +
                       '<span>to</span>' +
@@ -5086,6 +5417,12 @@
                 if ($('shift-add-btn')) $('shift-add-btn').style.display = anyEditable ? '' : 'none';
                 if ($('shift-save-btn')) $('shift-save-btn').style.display = anyEditable ? '' : 'none';
                 $('shift-shifts-list').innerHTML = html;
+                // Load each editable row's eligible-roles dropdown (async per department).
+                shiftTypes.forEach(function (st, i) {
+                  if (!window.qsStEditable(st)) return;
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  loadRowRoles(i, deptIds, st.eligibleJobRoleIds || []);
+                });
                 $('shift-shifts-list').querySelectorAll('.shift-restore-btn').forEach(function (b) {
                   b.addEventListener('click', function () {
                     var name = b.getAttribute('data-name');
@@ -5116,8 +5453,18 @@
                 ]).then(function (rs) {
                   var r = rs[0];
                   // Department scope: hide shift types outside the view list.
-                  if (r.ok) { shiftTypes = (r.data.shiftTypes || []).filter(window.qsStViewable); renderShifts(); }
-                  else pageError((r.data && r.data.error) || 'Could not load shift types.');
+                  if (!r.ok) { pageError((r.data && r.data.error) || 'Could not load shift types.'); return; }
+                  shiftTypes = (r.data.shiftTypes || []).filter(window.qsStViewable);
+                  // Preload job roles for every department used, so the
+                  // eligible-roles dropdowns (and view-only role names) render.
+                  var deptIds = {};
+                  shiftTypes.forEach(function (st) {
+                    var ids = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                    ids.forEach(function (id) { deptIds[id] = 1; });
+                  });
+                  return rolesForDepts(Object.keys(deptIds));
+                }).then(function () {
+                  if (shiftTypes) renderShifts();
                 }).catch(function () { pageError('Network error. Could not load shift types.'); });
               }
 
@@ -5132,6 +5479,7 @@
                       startTime: $('shift-start-' + i).value,
                       endTime: $('shift-end-' + i).value,
                       departmentIds: checkedDeptIds('row' + i),
+                      eligibleJobRoleIds: checkedRoleIds('roles-row' + i),
                     }),
                   }));
                 });
@@ -5147,6 +5495,7 @@
                 $('shift-new-name').value = '';
                 $('shift-new-color').value = '#3b82f6';
                 hide($('shift-modal-error'));
+                renderNewModalRoles();
                 show($('shift-modal'));
               });
               $('shift-modal-cancel').addEventListener('click', function () { hide($('shift-modal')); });
@@ -5158,7 +5507,7 @@
                 }
                 api('/api/schedule/shift-types', {
                   method: 'POST',
-                  body: JSON.stringify({ name: name, color: $('shift-new-color').value, departmentIds: checkedDeptIds('new') }),
+                  body: JSON.stringify({ name: name, color: $('shift-new-color').value, departmentIds: checkedDeptIds('new'), eligibleJobRoleIds: checkedRoleIds('newroles') }),
                 }).then(function (r) {
                   if (r.ok) { hide($('shift-modal')); pageSuccess('Shift type added.'); loadAll(); }
                   else { var e2 = $('shift-modal-error'); e2.textContent = (r.data && r.data.error) || 'Could not add.'; show(e2); }
@@ -6395,6 +6744,7 @@
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
+        var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
         var msView = 'week';
         var anchorDate = new Date();
         var rangeFrom = null, rangeTo = null;
@@ -6563,6 +6913,17 @@
               closedShifts = rs[3].data.closedShifts || [];
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
+            // Job role names for eligibility notes ("Requires: Physician").
+            if (window.qsJobRolesForDept && departments.length) {
+              Promise.all(departments.map(function (d) { return window.qsJobRolesForDept(d.id); }))
+                .then(function (lists) {
+                  jobRoleNames = {};
+                  lists.forEach(function (l) {
+                    (l || []).forEach(function (r) { jobRoleNames[String(r.id)] = r.name; });
+                  });
+                  renderView();
+                }).catch(function () {});
+            }
             renderFilters();
             renderView();
           }).catch(function () { msError('Could not load your schedule.'); });
@@ -6732,6 +7093,25 @@
         function isWorking(dateStr) {
           return shifts.some(function (s) { return s.date === dateStr && isMine(s); });
         }
+        // Job-role eligibility for open-slot pickup — symmetric with the
+        // server gate. Empty list = everyone eligible; otherwise the member's
+        // linked job role must be in the shift type's eligible list.
+        function eligibleRoleIds(st) {
+          return (st && Array.isArray(st.eligibleJobRoleIds)) ? st.eligibleJobRoleIds : [];
+        }
+        function roleEligible(st) {
+          var ids = eligibleRoleIds(st);
+          if (!ids.length) return true;
+          return !!(me && me.jobRoleId && ids.indexOf(String(me.jobRoleId)) !== -1);
+        }
+        function requiredRoleNames(st) {
+          var names = [];
+          eligibleRoleIds(st).forEach(function (id) {
+            var n = jobRoleNames[String(id)];
+            if (n) names.push(n);
+          });
+          return names.join(', ');
+        }
 
         // ---------- rendering ----------
         function shiftBoxHtml(s) {
@@ -6757,10 +7137,15 @@
 
         function openSlotHtml(dateStr, st, n) {
           var color = st.color || '#637a8e';
-          var canPick = !isWorking(dateStr);
-          var btn = canPick
-            ? '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>'
-            : '<span style="font-size:0.8rem;color:var(--dim)">You work this day</span>';
+          var btn;
+          if (isWorking(dateStr)) {
+            btn = '<span style="font-size:0.8rem;color:var(--dim)">You work this day</span>';
+          } else if (!roleEligible(st)) {
+            var req = requiredRoleNames(st);
+            btn = '<span style="font-size:0.8rem;color:var(--dim)">Requires: ' + esc(req || 'specific job role') + '</span>';
+          } else {
+            btn = '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>';
+          }
           return '<div class="shift-grid open-slot">' +
             '<div class="shift-cat" style="background:' + tint(color, 88) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(st.name) + '</div>' +
             '<div class="shift-nm ms-open-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">' +
