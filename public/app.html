@@ -321,6 +321,24 @@
     #tab-myschedule .ms-row:last-child { border-bottom: none; }
     #tab-myschedule .req-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; background: var(--surface); }
     #tab-myschedule .req-card .req-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    #tab-myschedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
+    #tab-myschedule .ms-open-nm { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; font-weight: 700; }
+    /* Month grid (read-only) */
+    #tab-myschedule .ms-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+    #tab-myschedule .ms-month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); }
+    #tab-myschedule .ms-day-box { background: #fff; min-height: 110px; padding: 0.5rem; cursor: pointer; }
+    #tab-myschedule .ms-day-box:hover { background: #f8fafc; }
+    #tab-myschedule .ms-day-box.other-month { background: #f8fafc; color: #94a3b8; }
+    #tab-myschedule .ms-day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
+    #tab-myschedule .ms-day-num { font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; color: #102d47; }
+    #tab-myschedule .ms-month-chip { display: flex; align-items: center; gap: 0.35rem; border-radius: 8px; padding: 0.25rem 0.45rem; margin-bottom: 0.2rem; font-size: 0.75rem; font-weight: 600; color: #0a0a0a; border: 1px solid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #tab-myschedule .ms-month-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    #tab-myschedule .ms-month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; }
+    #tab-myschedule .ms-month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-top: 0.2rem; font-size: 0.72rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
+    @media (max-width: 700px) {
+      #tab-myschedule .ms-day-box { min-height: 80px; padding: 0.35rem; }
+      #tab-myschedule .ms-month-chip { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
+    }
     .app-content {
       max-width: 1100px;
       margin: 0 auto;
@@ -6242,49 +6260,50 @@
       <div id="ms-error" class="alert alert-error hidden" role="alert"></div>
       <div id="ms-success" class="alert alert-success hidden" role="status"></div>
 
-      <div class="card" style="margin-bottom:1rem">
-        <h3 style="margin-top:0">My upcoming shifts</h3>
-        <div id="ms-mine"><p style="color:var(--dim)">Loading…</p></div>
+      <div id="ms-filters" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
+
+      <div class="sched-toolbar" style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+        <div class="view-tabs" role="tablist" aria-label="Schedule view">
+          <button type="button" data-msview="day" role="tab">Day</button>
+          <button type="button" data-msview="week" role="tab" class="active">Week</button>
+          <button type="button" data-msview="month" role="tab">Month</button>
+          <button type="button" data-msview="range" role="tab">Range</button>
+        </div>
+        <div class="date-nav" style="display:flex;gap:0.4rem;align-items:center">
+          <button type="button" id="ms-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
+          <button type="button" id="ms-today" class="btn-secondary">Today</button>
+          <button type="button" id="ms-next" class="btn-secondary" aria-label="Next">&rarr;</button>
+        </div>
+        <span id="ms-title" style="font-weight:700"></span>
       </div>
 
-      <div class="card" style="margin-bottom:1rem">
+      <div id="ms-range-picker" class="hidden" style="gap:0.6rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+        <label>From <input type="date" id="ms-range-from" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;font-size:0.95rem"></label>
+        <label>To <input type="date" id="ms-range-to" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;font-size:0.95rem"></label>
+        <button type="button" id="ms-range-apply" class="btn">Apply</button>
+      </div>
+
+      <div id="ms-view"></div>
+
+      <div class="card" style="margin-top:1.5rem">
         <h3 style="margin-top:0">Shift requests</h3>
         <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
         <div id="ms-requests"><p style="color:var(--dim)">Loading…</p></div>
       </div>
 
-      <div class="card" style="margin-bottom:1rem">
-        <h3 style="margin-top:0">Open shifts</h3>
-        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Unfilled positions you can pick up.</p>
-        <div id="ms-open"><p style="color:var(--dim)">Loading…</p></div>
-      </div>
-
-      <div class="card">
-        <h3 style="margin-top:0">Team schedule</h3>
-        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
-          <div class="view-tabs" role="tablist" aria-label="Team schedule view">
-            <button type="button" data-msview="day" role="tab">Day</button>
-            <button type="button" data-msview="week" role="tab" class="active">Week</button>
-          </div>
-          <div style="display:flex;gap:0.5rem;margin-left:auto">
-            <button type="button" id="ms-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
-            <button type="button" id="ms-today" class="btn-secondary">Today</button>
-            <button type="button" id="ms-next" class="btn-secondary" aria-label="Next">&rarr;</button>
-          </div>
-        </div>
-        <div id="ms-team"><p style="color:var(--dim)">Loading…</p></div>
-      </div>
-
       <script>
       (function () {
-        // Shared "My schedule" component — read-only team context + self-service actions.
-        // Backend contract (2026-10-12): open-slots/claim, shifts/:id/request-pickup,
-        // shifts/swap-request, shift-requests (+ approve/decline/cancel). Wired defensively.
+        // My schedule — employee self-service view mirroring the admin Schedule tab.
+        // Day/Week/Month/Range toggles, three dropdown filters (Department, Shift,
+        // View), read-only team context, open-slot pickup, swap / ask-for-cover.
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
-        var extraSlots = [], closedShifts = [], requests = [];
+        var extraSlots = [], closedShifts = [], requests = [], staffingTargets = [];
         var msView = 'week';
         var anchorDate = new Date();
+        var rangeFrom = null, rangeTo = null;
+        var deptFilters = [], shiftFilters = [];
+        var viewFilters = ['everyone']; // 'my' | 'everyone' | 'available' (multi-select)
 
         function pad(n) { return (n < 10 ? '0' : '') + n; }
         function fmtDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -6334,33 +6353,100 @@
         function msError(m) { var e = $('ms-error'); if (e) { e.textContent = m; show(e); } }
         function msSuccess(m) { var e = $('ms-success'); if (e) { e.textContent = m; show(e); setTimeout(function(){hide(e);}, 4000); } }
         function clearMsg() { hide($('ms-error')); hide($('ms-success')); }
+        function isMine(s) { return me && String(s.userId) === String(me.id); }
+        function shiftLabel(s) {
+          var st = stById(s.shiftTypeId);
+          var nm = st ? st.name : 'Shift';
+          var times = st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '';
+          var draft = (s.published === false) ? ' (draft)' : '';
+          return nm + times + draft;
+        }
+        function memberDeptId(userId) {
+          for (var i = 0; i < members.length; i++) {
+            if (String(members[i].id) === String(userId)) return members[i].departmentId || null;
+          }
+          return null;
+        }
+        function shiftDeptIds(s) {
+          // Departments a shift belongs to: its shift type's departments, else the member's home dept.
+          var st = stById(s.shiftTypeId);
+          if (st && st.departmentIds && st.departmentIds.length) return st.departmentIds.map(String);
+          if (st && st.departmentId) return [String(st.departmentId)];
+          var md = memberDeptId(s.userId);
+          return md ? [String(md)] : [];
+        }
 
         // Small dialog using the global action-dialog (same pattern as the schedule swap UI).
         function msDialog(title, bodyHtml, buttons) {
-          window._dlgCallbacks = window._dlgCallbacks || {};
           $('ad-title').textContent = title;
           $('ad-body').innerHTML = bodyHtml;
           var actions = $('ad-actions');
-          var html = '';
-          window._dlgCallbacks = {};
-          buttons.forEach(function (btn, i) {
-            var cls = btn.primary ? 'btn' : 'btn-secondary';
-            if (btn.onClick) window._dlgCallbacks['m' + i] = btn.onClick;
-            var oc = btn.onClick ? ' onclick="window._dlgFire(\'m' + i + '\')"' : ' onclick="hide(document.getElementById(\'action-dialog\'))"';
-            html += '<button type="button" class="' + cls + '"' + oc + '>' + esc(btn.label) + '</button>';
+          actions.innerHTML = '';
+          buttons.forEach(function (btn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = btn.primary ? 'btn' : 'btn-secondary';
+            b.textContent = btn.label;
+            if (btn.onClick) b.addEventListener('click', btn.onClick);
+            else b.addEventListener('click', function () { hide($('action-dialog')); });
+            actions.appendChild(b);
           });
-          actions.innerHTML = html;
           show($('action-dialog'));
         }
 
+        // ---------- view range ----------
+        function viewRange() {
+          var a = new Date(anchorDate);
+          a.setHours(0, 0, 0, 0);
+          var from, to;
+          if (msView === 'day') {
+            from = new Date(a); to = new Date(a);
+          } else if (msView === 'week') {
+            var dow = (a.getDay() + 6) % 7; // Monday start
+            from = new Date(a); from.setDate(a.getDate() - dow);
+            to = new Date(from); to.setDate(from.getDate() + 6);
+          } else if (msView === 'range' && rangeFrom && rangeTo) {
+            from = parseDate(rangeFrom); to = parseDate(rangeTo);
+          } else {
+            from = new Date(a.getFullYear(), a.getMonth(), 1);
+            to = new Date(a.getFullYear(), a.getMonth() + 1, 0);
+          }
+          return { from: fmtDate(from), to: fmtDate(to) };
+        }
+        function msTitle() {
+          var r = viewRange();
+          var f = parseDate(r.from), t = parseDate(r.to);
+          if (msView === 'day')
+            return f.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+          if (msView === 'week')
+            return 'Week of ' + f.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+          if (msView === 'month')
+            return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+          var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+            ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+          if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
+          else s += ', ' + f.getFullYear();
+          return s;
+        }
+
+        // ---------- data ----------
         function loadData() {
           clearMsg();
-          var from = fmtDate(new Date());
-          var to = fmtDate(addDays(new Date(), 13));
-          $('ms-mine').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
-          $('ms-open').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          var rp = $('ms-range-picker');
+          if (msView === 'range') { rp.classList.remove('hidden'); rp.style.display = 'flex'; }
+          else { rp.classList.add('hidden'); rp.style.display = 'none'; }
+          if (msView === 'range' && (!rangeFrom || !rangeTo)) {
+            var a = new Date(anchorDate);
+            var dow = (a.getDay() + 6) % 7;
+            var f = new Date(a); f.setDate(a.getDate() - dow);
+            var t = new Date(f); t.setDate(f.getDate() + 13);
+            rangeFrom = fmtDate(f); rangeTo = fmtDate(t);
+            $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
+          }
+          var r = viewRange();
+          $('ms-title').textContent = msTitle();
+          $('ms-view').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
           $('ms-requests').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
-          $('ms-team').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
@@ -6368,8 +6454,8 @@
               api('/api/departments'),
               api('/api/schedule/shift-types'),
               api('/api/users'),
-              api('/api/schedule/shifts?from=' + from + '&to=' + to),
-              // May 404 until the backend lands — never let it fail the whole view.
+              api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
+              api('/api/schedule/staffing-targets').catch(function () { return { ok: false }; }),
               api('/api/schedule/shift-requests').catch(function () { return { ok: false }; }),
             ]);
           }).then(function (rs) {
@@ -6382,52 +6468,338 @@
               extraSlots = rs[3].data.extraSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
             }
-            // shift-requests may 404 until the backend lands — treat as empty, not an error.
-            requests = (rs[4].ok && rs[4].data.requests) || [];
-            renderMine();
+            if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
+            requests = (rs[5].ok && rs[5].data.requests) || [];
+            renderFilters();
+            renderView();
             renderRequests();
-            renderOpen();
-            renderTeam();
           }).catch(function () { msError('Could not load your schedule.'); });
         }
         window.qsLoadMySchedule = function () { loadData(); };
 
-        function isMine(s) { return me && String(s.userId) === String(me.id); }
+        // ---------- filters ----------
+        function showEveryone() { return viewFilters.indexOf('everyone') !== -1; }
+        function showMine() { return showEveryone() || viewFilters.indexOf('my') !== -1; }
+        function showAvailable() { return showEveryone() || viewFilters.indexOf('available') !== -1; }
 
-        function shiftLabel(s) {
-          var st = stById(s.shiftTypeId);
-          var nm = st ? st.name : 'Shift';
-          var times = st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '';
-          var draft = (s.published === false) ? ' (draft)' : '';
-          return nm + times + draft;
+        function ddBtn(id, label) {
+          return '<button type="button" id="' + id + '" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>';
+        }
+        function ddMenu(id) {
+          return '<div id="' + id + '" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">';
+        }
+        function ddCheck(label, attr, val, on, bold) {
+          return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer' + (bold ? ';font-weight:700;border-bottom:1px solid var(--border)' : '') + '">' +
+            '<input type="checkbox" ' + attr + '="' + val + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(label) + '</label>';
         }
 
-        // --- My upcoming shifts ---
-        function renderMine() {
-          var today = fmtDate(new Date());
-          var mine = shifts.filter(function (s) { return isMine(s) && s.date >= today; });
-          mine.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-          if (!mine.length) {
-            $('ms-mine').innerHTML = '<p style="color:var(--dim)">No upcoming shifts. Check the open shifts below to pick one up.</p>';
-            return;
+        function renderFilters() {
+          var el = $('ms-filters');
+          var deptLabel = deptFilters.length ? deptFilters.length + ' department' + (deptFilters.length > 1 ? 's' : '') : 'All departments';
+          var shiftLabel = shiftFilters.length ? shiftFilters.length + ' shift' + (shiftFilters.length > 1 ? 's' : '') : 'All shifts';
+          var viewNames = { my: 'My shifts', everyone: "Everyone's schedule", available: 'Available shifts' };
+          var viewLabel = showEveryone() ? "Everyone's schedule"
+            : viewFilters.length ? viewFilters.map(function (v) { return viewNames[v]; }).join(', ') : 'Select view';
+          el.innerHTML =
+            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            ddBtn('ms-dept-btn', deptLabel) + ddMenu('ms-dept-menu') +
+            departments.map(function (d) {
+              return ddCheck(d.name, 'data-msdept', d.id, deptFilters.indexOf(String(d.id)) !== -1);
+            }).join('') + '</div></div>' +
+            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            ddBtn('ms-shift-btn', shiftLabel) + ddMenu('ms-shift-menu') +
+            ddCheck('All shifts', 'data-msshift', '__all', shiftFilters.length === 0, true) +
+            shiftTypes.map(function (st) {
+              return ddCheck(st.name, 'data-msshift', st.id, shiftFilters.indexOf(String(st.id)) !== -1);
+            }).join('') + '</div></div>' +
+            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">View</label>' +
+            ddBtn('ms-view-btn', viewLabel) + ddMenu('ms-view-menu') +
+            ddCheck("Everyone's schedule", 'data-msviewf', 'everyone', showEveryone()) +
+            ddCheck('My shifts', 'data-msviewf', 'my', viewFilters.indexOf('my') !== -1) +
+            ddCheck('Available shifts', 'data-msviewf', 'available', viewFilters.indexOf('available') !== -1) +
+            '</div></div>';
+          var dbtn = $('ms-dept-btn'), dmenu = $('ms-dept-menu');
+          var sbtn = $('ms-shift-btn'), smenu = $('ms-shift-menu');
+          var vbtn = $('ms-view-btn'), vmenu = $('ms-view-menu');
+          function closeAll(except) {
+            [dmenu, smenu, vmenu].forEach(function (m) { if (m !== except) m.style.display = 'none'; });
           }
-          $('ms-mine').innerHTML = mine.map(function (s) {
-            // Rotation-generated shifts (rot-…) have no real shift row — schedulers' territory.
-            var isRot = String(s.id).indexOf('rot-') === 0;
-            var dis = isRot ? ' disabled title="Rotation shifts are managed by your scheduler"' : '';
-            return '<div class="ms-row">' +
-              '<div style="flex:1;min-width:180px"><strong>' + esc(fmtLong(s.date)) + '</strong><br>' +
-              '<span style="color:var(--dim);font-size:0.9rem">' + esc(shiftLabel(s)) + '</span>' +
-              (s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '') + '</div>' +
-              '<button type="button" class="btn-secondary" data-ms-swap="' + s.id + '"' + dis + '>Swap</button>' +
-              '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '"' + dis + '>Ask for cover</button>' +
+          dbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = dmenu.style.display === 'none'; closeAll(); dmenu.style.display = o ? 'block' : 'none'; });
+          sbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = smenu.style.display === 'none'; closeAll(); smenu.style.display = o ? 'block' : 'none'; });
+          vbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = vmenu.style.display === 'none'; closeAll(); vmenu.style.display = o ? 'block' : 'none'; });
+          // Single document-level closer (guarded — renderFilters re-renders the menus).
+          if (!window._msDocCloser) {
+            window._msDocCloser = function (e) {
+              var dm = $('ms-dept-menu'), sm = $('ms-shift-menu'), vm = $('ms-view-menu');
+              var db = $('ms-dept-btn'), sb = $('ms-shift-btn'), vb = $('ms-view-btn');
+              if (dm && !dm.contains(e.target) && e.target !== db &&
+                  sm && !sm.contains(e.target) && e.target !== sb &&
+                  vm && !vm.contains(e.target) && e.target !== vb) {
+                [dm, sm, vm].forEach(function (m) { if (m) m.style.display = 'none'; });
+              }
+            };
+            document.addEventListener('click', window._msDocCloser);
+          }
+          dmenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = String(cb.getAttribute('data-msdept'));
+              var i = deptFilters.indexOf(id);
+              if (cb.checked && i === -1) deptFilters.push(id);
+              if (!cb.checked && i !== -1) deptFilters.splice(i, 1);
+              renderFilters(); renderView();
+              var m2 = $('ms-dept-menu'); if (m2) m2.style.display = 'block';
+            });
+          });
+          smenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = String(cb.getAttribute('data-msshift'));
+              if (id === '__all') shiftFilters = [];
+              else {
+                var i = shiftFilters.indexOf(id);
+                if (cb.checked && i === -1) shiftFilters.push(id);
+                if (!cb.checked && i !== -1) shiftFilters.splice(i, 1);
+              }
+              renderFilters(); renderView();
+              var m2 = $('ms-shift-menu'); if (m2) m2.style.display = 'block';
+            });
+          });
+          vmenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = cb.getAttribute('data-msviewf');
+              var i = viewFilters.indexOf(id);
+              if (cb.checked && i === -1) viewFilters.push(id);
+              if (!cb.checked && i !== -1) viewFilters.splice(i, 1);
+              if (!viewFilters.length) viewFilters = ['everyone'];
+              renderFilters(); renderView();
+              var m2 = $('ms-view-menu'); if (m2) m2.style.display = 'block';
+            });
+          });
+        }
+
+        // ---------- shift / slot filtering ----------
+        function shiftPasses(s) {
+          if (shiftFilters.length && shiftFilters.indexOf(String(s.shiftTypeId)) === -1) return false;
+          if (deptFilters.length) {
+            var ds = shiftDeptIds(s);
+            if (!ds.some(function (d) { return deptFilters.indexOf(d) !== -1; })) return false;
+          }
+          return true;
+        }
+        function slotPasses(dateStr, shiftTypeId) {
+          if (shiftFilters.length && shiftFilters.indexOf(String(shiftTypeId)) === -1) return false;
+          if (deptFilters.length) {
+            var st = stById(shiftTypeId);
+            var ds = st && st.departmentIds && st.departmentIds.length ? st.departmentIds.map(String)
+              : (st && st.departmentId ? [String(st.departmentId)] : []);
+            if (!ds.some(function (d) { return deptFilters.indexOf(d) !== -1; })) return false;
+          }
+          return true;
+        }
+        function shiftsFor(dateStr) {
+          return shifts.filter(function (s) {
+            if (s.date !== dateStr || !shiftPasses(s)) return false;
+            if (showEveryone()) return true;
+            if (viewFilters.indexOf('my') !== -1) return isMine(s);
+            return false; // available-only: assigned shifts hidden, only open slots show
+          });
+        }
+        // Staffing target that applies to a shift type on a given date.
+        function targetCountFor(dateStr, shiftTypeId) {
+          for (var i = 0; i < staffingTargets.length; i++) {
+            var t = staffingTargets[i];
+            if (String(t.shiftTypeId) !== String(shiftTypeId)) continue;
+            var weekdays = t.weekdays || [0, 1, 2, 3, 4, 5, 6];
+            if (weekdays.indexOf(parseDate(dateStr).getDay()) < 0) return 0;
+            if (t.startDate && dateStr < t.startDate) return 0;
+            if (t.endDate && dateStr > t.endDate) return 0;
+            return t.targetCount || 0;
+          }
+          return 0;
+        }
+        function isShiftClosed(dateStr, shiftTypeId) {
+          return (closedShifts || []).some(function (c) {
+            return c.date === dateStr && String(c.shiftTypeId) === String(shiftTypeId);
+          });
+        }
+        // Number of claimable open positions for a shift type on a date
+        // (mirrors the admin Schedule view: target + extra - filled).
+        function openCountFor(dateStr, shiftTypeId) {
+          if (isShiftClosed(dateStr, shiftTypeId)) return 0;
+          var target = targetCountFor(dateStr, shiftTypeId);
+          var extra = 0;
+          (extraSlots || []).forEach(function (e) {
+            if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) extra += (e.count || 0);
+          });
+          if (!target && !extra) return 0;
+          var filled = 0;
+          for (var i = 0; i < shifts.length; i++) {
+            if (shifts[i].date === dateStr && String(shifts[i].shiftTypeId) === String(shiftTypeId)) filled++;
+          }
+          return Math.max(0, target + extra - filled);
+        }
+        function isWorking(dateStr) {
+          return shifts.some(function (s) { return s.date === dateStr && isMine(s); });
+        }
+
+        // ---------- rendering ----------
+        function shiftBoxHtml(s) {
+          var st = stById(s.shiftTypeId);
+          var color = (st && st.color) || '#637a8e';
+          var label = st ? st.name : 'Shift';
+          var nm = displayName(s);
+          var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
+          var draftTag = (s.published === false) ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
+          var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
+          var html = '<div class="shift-grid">' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + note + '</div>' +
+            '</div>';
+          if (isMine(s) && String(s.id).indexOf('rot-') !== 0) {
+            html += '<div style="display:flex;gap:0.5rem;margin:-2px 0 8px;flex-wrap:wrap">' +
+              '<button type="button" class="btn-secondary" data-ms-swap="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Swap</button>' +
+              '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Ask for cover</button>' +
               '</div>';
-          }).join('');
-          $('ms-mine').querySelectorAll('[data-ms-swap]').forEach(function (b) {
+          }
+          return html;
+        }
+
+        function openSlotHtml(dateStr, st, n) {
+          var color = st.color || '#637a8e';
+          var canPick = !isWorking(dateStr);
+          var btn = canPick
+            ? '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>'
+            : '<span style="font-size:0.8rem;color:var(--dim)">You work this day</span>';
+          return '<div class="shift-grid open-slot">' +
+            '<div class="shift-cat" style="background:' + tint(color, 88) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(st.name) + '</div>' +
+            '<div class="shift-nm ms-open-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">' +
+            '<span>+ Open slot</span>' + btn + '</div></div>';
+        }
+
+        function dayRowHtml(dateStr) {
+          var d = parseDate(dateStr);
+          var dow = d.toLocaleDateString(undefined, { weekday: 'long' });
+          var dnum = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+          var list = shiftsFor(dateStr);
+          var html = '<article class="day-row" data-date="' + dateStr + '">';
+          html += '<header class="day-row-head"><div><div class="dow">' + esc(dow) + '</div>' +
+            '<div class="dnum">' + esc(dnum) + '</div></div></header>';
+          html += '<div class="day-row-body">';
+          var hasContent = false;
+          // Group shifts by type (stable order), mirroring the admin view.
+          var byType = {};
+          list.forEach(function (s) { (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s); });
+          var renderedIds = {};
+          shiftTypes.forEach(function (st) {
+            if (shiftFilters.length && shiftFilters.indexOf(String(st.id)) === -1) return;
+            var items = byType[st.id] || [];
+            var open = showAvailable() && slotPasses(dateStr, st.id) ? openCountFor(dateStr, st.id) : 0;
+            if (!items.length && !open) return;
+            hasContent = true;
+            items.forEach(function (s) { html += shiftBoxHtml(s); renderedIds[s.id] = true; });
+            for (var i = 0; i < open; i++) html += openSlotHtml(dateStr, st, i + 1);
+          });
+          list.forEach(function (s) {
+            if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
+          });
+          if (!hasContent) html += '<div class="empty-day">' + (showAvailable() && !showEveryone() && viewFilters.indexOf('my') === -1 ? 'No open shifts.' : 'No shifts.') + '</div>';
+          html += '</div></article>';
+          return html;
+        }
+
+        function renderView() {
+          document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-msview') === msView);
+          });
+          $('ms-title').textContent = msTitle();
+          var el = $('ms-view');
+          if (msView === 'month') renderMonth(el);
+          else if (msView === 'day') renderDay(el);
+          else renderWeek(el);
+          bindMsActions(el);
+        }
+
+        function eachDate(from, to, fn) {
+          for (var ms = Date.parse(from + 'T00:00:00'); ms <= Date.parse(to + 'T00:00:00'); ms += 86400000) {
+            var d = new Date(ms);
+            fn(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
+          }
+        }
+
+        function renderDay(el) {
+          var r = viewRange();
+          el.innerHTML = dayRowHtml(r.from);
+        }
+        function renderWeek(el) {
+          var r = viewRange();
+          var html = '';
+          eachDate(r.from, r.to, function (ds) { html += dayRowHtml(ds); });
+          el.innerHTML = html;
+        }
+
+        // Simplified read-only month grid. Own shifts highlighted; open days marked.
+        // Tapping a day jumps to day view.
+        function renderMonth(el) {
+          var r = viewRange();
+          var first = parseDate(r.from);
+          var gridStart = new Date(first);
+          gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          var html = '<div class="ms-month-grid">';
+          ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
+            html += '<div class="ms-month-dow">' + d + '</div>';
+          });
+          for (var i = 0; i < 42; i++) {
+            var d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+            var ds = fmtDate(d);
+            if (i >= 35 && d.getMonth() !== first.getMonth()) break;
+            var inMonth = d.getMonth() === first.getMonth();
+            var today = fmtDate(new Date()) === ds;
+            var cls = 'ms-day-box' + (inMonth ? '' : ' other-month') + (today ? ' today' : '');
+            html += '<div class="' + cls + '" data-ms-day="' + ds + '">';
+            html += '<div class="ms-day-num">' + d.getDate() + '</div>';
+            var list = shiftsFor(ds);
+            var shown = 0;
+            list.forEach(function (s) {
+              if (shown >= 3) return;
+              var st = stById(s.shiftTypeId);
+              var color = (st && st.color) || '#637a8e';
+              html += '<div class="ms-month-chip" style="border-color:' + tint(color, 60) + '">' +
+                '<span class="dot" style="background:' + esc(color) + '"></span>' +
+                '<span>' + esc(isMine(s) ? 'YOU · ' + (st ? st.name : 'Shift') : displayName(s)) + '</span></div>';
+              shown++;
+            });
+            if (list.length > 3) html += '<div class="ms-month-more">+' + (list.length - 3) + ' more</div>';
+            if (showAvailable()) {
+              var opens = 0;
+              shiftTypes.forEach(function (st) {
+                if (slotPasses(ds, st.id)) opens += openCountFor(ds, st.id);
+              });
+              if (opens) html += '<div class="ms-month-open">' + opens + ' open</div>';
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+          el.innerHTML = html;
+          el.querySelectorAll('[data-ms-day]').forEach(function (box) {
+            box.addEventListener('click', function () {
+              msView = 'day';
+              anchorDate = parseDate(box.getAttribute('data-ms-day'));
+              loadData();
+            });
+          });
+        }
+
+        function bindMsActions(el) {
+          el.querySelectorAll('[data-ms-swap]').forEach(function (b) {
             b.addEventListener('click', function () { openSwapDialog(b.getAttribute('data-ms-swap')); });
           });
-          $('ms-mine').querySelectorAll('[data-ms-cover]').forEach(function (b) {
+          el.querySelectorAll('[data-ms-cover]').forEach(function (b) {
             b.addEventListener('click', function () { openCoverDialog(b.getAttribute('data-ms-cover')); });
+          });
+          el.querySelectorAll('[data-ms-pickup]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var parts = b.getAttribute('data-ms-pickup').split('|');
+              claimSlot(parts[0], parts[1], b);
+            });
           });
         }
 
@@ -6436,8 +6808,7 @@
           return null;
         }
 
-        // Candidate list — the existing swap UI pattern from the schedule:
-        // anybody on the team, off first, Working/Off badges.
+        // Candidate list — anybody on the team, off first, Working/Off badges.
         function swapCandidateList(dateStr, excludeId) {
           var workingIds = {};
           shifts.forEach(function (sh) {
@@ -6459,7 +6830,6 @@
           });
         }
 
-        // --- Swap: pick my shift -> pick their shift -> swap request ---
         function openSwapDialog(myShiftId) {
           var s = shiftById(myShiftId);
           if (!s || String(s.id).indexOf('rot-') === 0) return;
@@ -6511,7 +6881,6 @@
           }).catch(function () { msError('Network error. Could not send the swap request.'); });
         }
 
-        // --- Ask for cover: request pickup of my shift (specific person or anyone) ---
         function openCoverDialog(myShiftId) {
           var s = shiftById(myShiftId);
           if (!s || String(s.id).indexOf('rot-') === 0) return;
@@ -6541,7 +6910,20 @@
           }).catch(function () { msError('Network error. Could not send the pickup request.'); });
         }
 
-        // --- Shift requests: pending for me / mine / history ---
+        function claimSlot(dateStr, shiftTypeId, btn) {
+          btn.disabled = true;
+          api('/api/schedule/open-slots/claim', {
+            method: 'POST', body: JSON.stringify({ date: dateStr, shiftTypeId: shiftTypeId })
+          }).then(function (r) {
+            if (r.ok) { msSuccess('Shift picked up.'); loadData(); }
+            else {
+              msError((r.data && r.data.error) || 'Could not pick up this shift.');
+              btn.disabled = false;
+            }
+          }).catch(function () { msError('Network error.'); btn.disabled = false; });
+        }
+
+        // ---------- shift requests ----------
         function reqGet(r, keys) {
           for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
           return '';
@@ -6590,9 +6972,6 @@
           });
         }
         function reqCard(r) {
-          // Backend shape (migration 034): {id, requestType:'pickup'|'swap', shiftId,
-          // theirShiftId, requesterId, requesterName, targetUserId, targetName,
-          // openToAnyone, status, shift:{date, shiftTypeName}, theirShift:{...}|null}
           var id = reqGet(r, ['id']);
           var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
           var status = String(reqGet(r, ['status'])).toLowerCase();
@@ -6608,7 +6987,6 @@
           var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
           var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
           var mine = (requesterId && me && String(requesterId) === String(me.id)) || !!reqGet(r, ['mine', 'isMine', 'isRequester']);
-          // Actionable by me: open to anyone, or explicitly targeted at me.
           var actionable = !!openToAnyone || !targetId || (me && String(targetId) === String(me.id));
           var title = kind === 'swap' ? 'Swap request' : 'Pickup request';
           var desc = (who ? esc(who) : 'Someone') +
@@ -6635,98 +7013,32 @@
           }).catch(function () { msError('Network error.'); });
         }
 
-        // --- Open shifts (claimable extra open slots) ---
-        function renderOpen() {
-          var box = $('ms-open');
-          var slots = (extraSlots || []).filter(function (e) { return (e.count || 0) > 0; });
-          slots.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
-          if (!slots.length) {
-            box.innerHTML = '<p style="color:var(--dim)">No open shifts right now.</p>';
-            return;
-          }
-          box.innerHTML = slots.map(function (e, i) {
-            var st = stById(e.shiftTypeId);
-            return '<div class="ms-row">' +
-              '<div style="flex:1;min-width:180px"><strong>' + esc(fmtLong(e.date)) + '</strong><br>' +
-              '<span style="color:var(--dim);font-size:0.9rem">' + esc(st ? st.name : 'Shift') +
-              (st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '') +
-              (e.count > 1 ? ' · ' + e.count + ' open' : '') + '</span></div>' +
-              '<button type="button" class="btn" data-ms-pickup="' + i + '">Pick up</button>' +
-              '</div>';
-          }).join('');
-          box.querySelectorAll('[data-ms-pickup]').forEach(function (b) {
-            b.addEventListener('click', function () {
-              var e = slots[parseInt(b.getAttribute('data-ms-pickup'), 10)];
-              claimSlot(e, b);
-            });
-          });
-        }
-        function claimSlot(e, btn) {
-          btn.disabled = true;
-          api('/api/schedule/open-slots/claim', {
-            method: 'POST', body: JSON.stringify({ date: e.date, shiftTypeId: e.shiftTypeId })
-          }).then(function (r) {
-            if (r.ok) { msSuccess('Shift picked up.'); loadData(); }
-            else {
-              msError((r.data && r.data.error) || 'Could not pick up this shift.');
-              btn.disabled = false;
-            }
-          }).catch(function () { msError('Network error.'); btn.disabled = false; });
-        }
-
-        // --- Team schedule (read-only day/week) ---
-        function renderTeam() {
-          document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
-            b.classList.toggle('active', b.getAttribute('data-msview') === msView);
-          });
-          var box = $('ms-team');
-          var dates = [];
-          if (msView === 'day') {
-            dates = [fmtDate(anchorDate)];
-          } else {
-            var a = new Date(anchorDate);
-            var dow = (a.getDay() + 6) % 7;
-            var f = addDays(a, -dow);
-            for (var i = 0; i < 7; i++) dates.push(fmtDate(addDays(f, i)));
-          }
-          var html = '';
-          dates.forEach(function (ds) {
-            var list = shifts.filter(function (s) { return s.date === ds; });
-            html += '<div class="day-row"><div class="day-row-head"><div><div class="dow">' +
-              esc(parseDate(ds).toLocaleDateString(undefined, { weekday: 'long' })) + '</div>' +
-              '<div class="dnum">' + esc(parseDate(ds).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })) + '</div></div></div>' +
-              '<div class="day-row-body">';
-            if (!list.length) html += '<p style="color:#94a3b8;font-size:0.85rem;margin:0">No shifts.</p>';
-            list.forEach(function (s) { html += teamShiftBox(s); });
-            html += '</div></div>';
-          });
-          box.innerHTML = html;
-        }
-        function teamShiftBox(s) {
-          var st = stById(s.shiftTypeId);
-          var color = (st && st.color) || '#637a8e';
-          var nm = displayName(s);
-          var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
-          var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
-          return '<div class="shift-grid">' +
-            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st ? st.name : 'Shift') + '</div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + note + '</div>' +
-            '</div>';
-        }
-
+        // ---------- toolbar events ----------
         document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
             msView = b.getAttribute('data-msview');
             anchorDate = new Date();
-            renderTeam();
+            loadData();
           });
         });
-        $('ms-prev').addEventListener('click', function () { anchorDate = addDays(anchorDate, msView === 'day' ? -1 : -7); renderTeam(); });
-        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); renderTeam(); });
-        $('ms-next').addEventListener('click', function () { anchorDate = addDays(anchorDate, msView === 'day' ? 1 : 7); renderTeam(); });
+        $('ms-prev').addEventListener('click', function () {
+          var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'month' ? -30 : -14;
+          anchorDate = addDays(anchorDate, step); loadData();
+        });
+        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); loadData(); });
+        $('ms-next').addEventListener('click', function () {
+          var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'month' ? 30 : 14;
+          anchorDate = addDays(anchorDate, step); loadData();
+        });
+        $('ms-range-apply').addEventListener('click', function () {
+          var f = $('ms-range-from').value, t = $('ms-range-to').value;
+          if (!f || !t || f > t) { msError('Pick a valid date range.'); return; }
+          rangeFrom = f; rangeTo = t; loadData();
+        });
       })();
       </script>
     </section>
+
   </main>
 
   <footer class="app-footer">

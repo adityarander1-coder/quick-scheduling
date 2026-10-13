@@ -2755,19 +2755,54 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
     let claimed = false;
     try {
       await withTransaction(async (tx) => {
+        // Path 1: manually-added extra open slots (atomic row-locked decrement).
         const { rows: slotRows } = await tx.query(
           `UPDATE extra_open_slots SET count = count - 1
            WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
            RETURNING count`,
           [companyId, date, shiftTypeId]
         );
-        if (!slotRows.length) return; // nothing left — the race loser lands here
-        if (Number(slotRows[0].count) <= 0) {
+        if (slotRows.length) {
+          if (Number(slotRows[0].count) <= 0) {
+            await tx.query(
+              'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+              [companyId, date, shiftTypeId]
+            );
+          }
           await tx.query(
-            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-            [companyId, date, shiftTypeId]
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, true, $6)`,
+            [shiftId, companyId, me, shiftTypeId, date, me]
           );
+          claimed = true;
+          return;
         }
+        // Path 2: staffing-target gap (no extra_open_slots row). Lock the target
+        // row so concurrent claims for the same shift type serialize.
+        const { rows: crows } = await tx.query(
+          'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [companyId, date, shiftTypeId]
+        );
+        if (crows.length) return; // closed — nothing to claim
+        const { rows: trows } = await tx.query(
+          `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+           FROM staffing_targets
+           WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
+          [companyId, shiftTypeId]
+        );
+        if (!trows.length) return; // no target and no extra slots — nothing to claim
+        const t = trows[0];
+        const dow = new Date(date + 'T00:00:00').getDay();
+        const wdays: number[] = t.weekdays || [0, 1, 2, 3, 4, 5, 6];
+        if (wdays.indexOf(dow) === -1) return;
+        const sd: string | null = t.start_date || null;
+        const ed: string | null = t.end_date || null;
+        if ((sd && date < sd) || (ed && date > ed)) return;
+        const { rows: frows } = await tx.query(
+          'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [companyId, date, shiftTypeId]
+        );
+        if (frows[0].n >= (t.target_count || 0)) return; // gap already filled
         await tx.query(
           `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
            VALUES ($1, $2, $3, $4, $5, true, $6)`,
