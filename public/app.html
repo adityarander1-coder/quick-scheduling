@@ -6827,17 +6827,15 @@
             html += '<div class="' + cls + '" data-ms-day="' + ds + '">';
             html += '<div class="ms-day-num">' + d.getDate() + '</div>';
             var list = shiftsFor(ds);
-            var shown = 0;
             list.forEach(function (s) {
-              if (shown >= 3) return;
               var st = stById(s.shiftTypeId);
               var color = (st && st.color) || '#637a8e';
-              html += '<div class="ms-month-chip" style="border-color:' + tint(color, 60) + '">' +
+              var shiftName = st ? st.name : 'Shift';
+              var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
+              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span>' + esc(isMine(s) ? 'YOU · ' + (st ? st.name : 'Shift') : displayName(s)) + '</span></div>';
-              shown++;
+                '<span><strong>' + esc(shiftName) + '</strong> — ' + esc(who) + '</span></div>';
             });
-            if (list.length > 3) html += '<div class="ms-month-more">+' + (list.length - 3) + ' more</div>';
             if (showAvailable()) {
               var opens = 0;
               shiftTypes.forEach(function (st) {
