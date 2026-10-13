@@ -5,6 +5,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { getDepartmentAccess } from '../util/departmentAccess';
 
 const router = Router();
 
@@ -15,6 +16,7 @@ function publicDept(d: any) {
 }
 
 // GET /api/departments — list departments in the caller's company.
+// Department-scoped for schedulers (view scope); owner and employees see all.
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
@@ -22,7 +24,12 @@ router.get('/', async (req: Request, res: Response) => {
        WHERE company_id = $1 ORDER BY lower(name)`,
       [req.session.companyId]
     );
-    res.json({ departments: rows.map(publicDept) });
+    let depts = rows;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+      depts = rows.filter((d) => access.view.includes(d.id));
+    }
+    res.json({ departments: depts.map(publicDept) });
   } catch (err) {
     console.error('[departments] list failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

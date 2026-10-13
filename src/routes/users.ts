@@ -13,6 +13,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db';
 import { requireAuth, requireRole, Role } from '../middleware/auth';
+import { getDepartmentAccess, requireActiveDepartment } from '../util/departmentAccess';
 import { splitName, joinName } from '../util/names';
 import { issueInvite, unusablePasswordHash, inviteStatusFrom, InviteStatus } from '../util/invites';
 import { isMailConfigured, sendMail, escHtml } from '../util/mailer';
@@ -104,12 +105,19 @@ async function resolveDepartment(
 }
 
 // GET /api/users — team directory for the caller's company (employees read-only).
+// Department-scoped for schedulers (view scope); owner and employees see all.
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.company_id = $1 ORDER BY u.created_at`, [
       req.session.companyId,
     ]);
-    res.json({ users: rows.map(publicProfile) });
+    let users = rows;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+      // Members with no home department are company-global and visible to any scheduler.
+      users = rows.filter((u) => !u.department_id || access.view.includes(u.department_id));
+    }
+    res.json({ users: users.map(publicProfile) });
   } catch (err) {
     console.error('[users] list failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -155,6 +163,9 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
       res.status(400).json({ error: dept.error });
       return;
     }
+    // Department scoping: the scheduler's active department must be the
+    // member's department (owner bypasses).
+    if (!(await requireActiveDepartment(req, res, dept.id ? [dept.id] : []))) return;
 
     const existing = await query('SELECT id FROM users WHERE lower(email) = lower($1)', [cleanEmail]);
     if (existing.rowCount > 0) {
@@ -245,6 +256,25 @@ router.patch('/:id', async (req: Request, res: Response) => {
     }
 
     // owner / scheduler
+    // Department scoping: the scheduler's active department must be the
+    // member's new (or current) home department. Deactivation counts as an
+    // edit of that member, so it goes through the same check.
+    let resolvedDept: { ok: true; id: string | null } | null = null;
+    {
+      let relevant: string[] = [];
+      if (body.departmentId !== undefined) {
+        const dept = await resolveDepartment(body.departmentId, companyId);
+        if (!dept.ok) {
+          res.status(400).json({ error: dept.error });
+          return;
+        }
+        resolvedDept = dept;
+        relevant = dept.id ? [dept.id] : [];
+      } else if (target.department_id) {
+        relevant = [target.department_id];
+      }
+      if (!(await requireActiveDepartment(req, res, relevant))) return;
+    }
     const sets: string[] = [];
     const params: any[] = [];
     const push = (col: string, val: any) => {
@@ -276,12 +306,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     if (body.nickname !== undefined) push('nickname', String(body.nickname).trim() || null);
     if (body.phone !== undefined) push('phone', String(body.phone).trim() || null);
     if (body.departmentId !== undefined) {
-      const dept = await resolveDepartment(body.departmentId, companyId);
-      if (!dept.ok) {
-        res.status(400).json({ error: dept.error });
-        return;
-      }
-      push('department_id', dept.id);
+      // Already resolved + validated in the department-scoping block above.
+      push('department_id', resolvedDept!.id);
     }
     if (body.jobRole !== undefined) push('job_role', String(body.jobRole).trim() || null);
     if (body.specialInstructions !== undefined) push('special_instructions', String(body.specialInstructions).trim().slice(0, 500) || null);
@@ -494,6 +520,103 @@ router.post('/:id/send-invite', requireRole('owner', 'scheduler'), async (req: R
     res.json({ ok: true, inviteLink });
   } catch (err) {
     console.error('[users] send-invite failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Scheduler department access — owner only.
+// ---------------------------------------------------------------------------
+
+// GET /api/users/:id/department-access — all company departments with the
+// member's current access level ('none' | 'view' | 'edit').
+router.get('/:id/department-access', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: urows } = await query(
+      'SELECT id FROM users WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!urows.length) {
+      res.status(404).json({ error: 'Team member not found.' });
+      return;
+    }
+    const { rows: depts } = await query(
+      `SELECT id, name FROM departments WHERE company_id = $1 ORDER BY lower(name)`,
+      [companyId]
+    );
+    const access = await getDepartmentAccess(req.params.id, companyId);
+    res.json({
+      departments: depts.map((d) => ({
+        id: d.id,
+        name: d.name,
+        access: access.edit.includes(d.id) ? 'edit' : access.view.includes(d.id) ? 'view' : 'none',
+      })),
+    });
+  } catch (err) {
+    console.error('[users] department-access failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/users/:id/department-access — replace the member's department
+// access rows. Body: { access: [{ departmentId, accessLevel: 'view'|'edit' }] }.
+// Departments absent from the list get no access.
+router.put('/:id/department-access', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: urows } = await query(
+      'SELECT id FROM users WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!urows.length) {
+      res.status(404).json({ error: 'Team member not found.' });
+      return;
+    }
+    const access = req.body?.access;
+    if (!Array.isArray(access)) {
+      res.status(400).json({ error: 'access must be an array.' });
+      return;
+    }
+    // Validate every department belongs to this company, levels are valid,
+    // and no department appears twice.
+    const { rows: depts } = await query(
+      'SELECT id FROM departments WHERE company_id = $1',
+      [companyId]
+    );
+    const validIds = new Set(depts.map((d: { id: string }) => d.id));
+    const seen = new Set<string>();
+    for (const a of access) {
+      const departmentId = String(a?.departmentId ?? '').trim();
+      const accessLevel = a?.accessLevel;
+      if (!validIds.has(departmentId)) {
+        res.status(400).json({ error: 'Department not found.' });
+        return;
+      }
+      if (accessLevel !== 'view' && accessLevel !== 'edit') {
+        res.status(400).json({ error: "accessLevel must be 'view' or 'edit'." });
+        return;
+      }
+      if (seen.has(departmentId)) {
+        res.status(400).json({ error: 'Duplicate department in access list.' });
+        return;
+      }
+      seen.add(departmentId);
+    }
+    await query(
+      'DELETE FROM scheduler_department_access WHERE user_id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    for (const a of access) {
+      await query(
+        `INSERT INTO scheduler_department_access (company_id, user_id, department_id, access_level)
+         VALUES ($1, $2, $3, $4)`,
+        [companyId, req.params.id, String(a.departmentId).trim(), a.accessLevel]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[users] set department-access failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

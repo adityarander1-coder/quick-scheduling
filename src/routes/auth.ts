@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { query } from '../db';
 import { requireAuth, Role } from '../middleware/auth';
 import { splitName, joinName } from '../util/names';
+import { getDepartmentAccess, DepartmentAccess } from '../util/departmentAccess';
 
 const router = Router();
 
@@ -259,6 +260,10 @@ router.post('/logout', (req: Request, res: Response) => {
 });
 
 // GET /api/auth/me — current session user, or 401.
+// Includes departmentAccess for department scoping:
+// - owner: { edit: 'all', view: 'all' } (owner bypasses department checks).
+// - scheduler/employee: { edit: string[], view: string[] } (department UUIDs;
+//   edit ids are also in view). Employees are not department-scoped on reads.
 router.get('/me', requireAuth, async (req: Request, res: Response) => {
   try {
     const data = await loadUserAndCompany(req.session.userId!);
@@ -266,7 +271,13 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
       res.status(401).json({ error: 'You are not signed in.' });
       return;
     }
-    res.json(data);
+    let departmentAccess: DepartmentAccess | { edit: 'all'; view: 'all' };
+    if (req.session.role === 'owner') {
+      departmentAccess = { edit: 'all', view: 'all' };
+    } else {
+      departmentAccess = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+    }
+    res.json({ ...data, departmentAccess });
   } catch (err) {
     console.error('[auth] me failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

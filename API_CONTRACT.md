@@ -31,7 +31,9 @@ UUIDs generated in Node (`crypto.randomUUID()`), stored as `uuid`.
   Creates company + first user with role `owner`. Rate limit: 5/min/IP.
 - `POST /api/auth/login` `{email, password}` → `200 {user, company}` (same shape). `401` on bad credentials (same message either way). Rate limit: 10/min/IP.
 - `POST /api/auth/logout` → `200 {ok:true}`, destroys session.
-- `GET /api/auth/me` → `200 {user:{id,name,email,role}, company:{id,name}}` or `401 {error}`.
+- `GET /api/auth/me` → `200 {user:{id,name,email,role}, company:{id,name}, departmentAccess}` or `401 {error}`.
+  `departmentAccess`: owner → `{edit:'all', view:'all'}` (owner bypasses department checks);
+  scheduler/employee → `{edit:[deptIds], view:[deptIds]}` (edit ids are included in view).
 - `POST /api/auth/password-reset/request` `{email}` → always `200 {ok:true}` (no user enumeration).
   Creates token (32 random bytes, hex), stores SHA-256 hash, expires in 1 hour. Rate limit: 5/min/IP.
   DEV ONLY (only when `DEV_MODE=true`): `GET /api/auth/password-reset/dev-token?email=` → `200 {token}` so the flow is testable without email. Never enable in production.
@@ -45,6 +47,14 @@ UUIDs generated in Node (`crypto.randomUUID()`), stored as `uuid`.
 - `POST /api/users/:id/invite-link` → `200 {inviteLink}` — get a valid link to copy/share later (mints a fresh link; raw tokens are never stored). Same effect as reinvite.
 - `POST /api/users/:id/invite-sent` → `200 {ok:true}` — mark the current invite as sent (`404` if none unsent).
 - `POST /api/users/:id/send-invite` → `200 {ok:true, inviteLink}` — emails the invite link via SMTP (nodemailer; `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM`/`SMTP_SECURE` env). `503 {error:"Email sending is not set up yet."}` when SMTP is unconfigured (UI falls back to copy-link). Marks invite "sent" on success.
+- `GET /api/users/:id/department-access` (owner only) → `200 {departments:[{id, name, access:'none'|'view'|'edit'}]}` — every company department with the member's current access level.
+- `PUT /api/users/:id/department-access` (owner only) `{access:[{departmentId, accessLevel:'view'|'edit'}]}` → `200 {ok:true}` — replaces the member's rows (departments absent from the list = no access). Validates department ids belong to the company (`400` otherwise).
+
+## Department-scoped permissions (migration `033_scheduler_department_access.sql`)
+- Table `scheduler_department_access(user_id, department_id, access_level 'view'|'edit')`, unique per `(user_id, department_id)`, cascading deletes. Backfill: every existing scheduler gets `edit` on every department in their company.
+- Owner: everything, bypasses all department checks. Scheduler: `view`/`edit` per department (edit implies view); no rows = sees nothing. Employee: schedule reads are not department-restricted; `403` on all write endpoints.
+- Reads (scheduler-scoped; owner sees all; employees unrestricted): `GET /api/departments`, `GET /api/schedule/shift-types`, `GET /api/users`, `GET /api/schedule/staffing-targets` — filtered to viewable departments. Shift types with no departments ("global") are visible to any scheduler.
+- Writes (scheduler): the frontend sends the department the scheduler is acting in as the **`X-Active-Department`** request header (department UUID). The header must be one of the scheduler's Edit departments (`403 "You do not have edit access to the active department."` otherwise). If the header is absent and the scheduler has exactly one edit department, that one is used; with zero or 2+ edit departments, `403 "Select an active department to make changes."` Owner needs no header. A write is allowed only if the target belongs to the active department: the shift type's departments (via `shift_type_departments` / legacy `department_id`) include it, or the team member's home department is it (`403 "That change belongs to a different department."` otherwise). Department-less targets are company-global: any active department may act. Applies to: shift assign/edit/delete + bulk actions, rotations (+ pauses, apply), staffing targets `PUT`, shift types create/edit/delete/restore, team member add/edit/deactivate. Billing: `POST /api/billing/checkout` and `/portal` are owner-only; `GET /api/billing/status` is read-only for banners.
 
 ## Invites (`/api/invites`) — public, token is the credential, rate-limited
 - `GET /api/invites/info?token=` → `200 {companyName, firstName, lastName, name}` or `400` ("This invite link is invalid or has expired.").

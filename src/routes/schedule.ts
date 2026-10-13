@@ -6,6 +6,14 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db';
 import { requireRole } from '../middleware/auth';
+import {
+  getDepartmentAccess,
+  shiftTypesDepartmentIds,
+  usersDepartmentIds,
+  assignmentRelevantDepartments,
+  rotationRelevantDepartments,
+  requireActiveDepartment,
+} from '../util/departmentAccess';
 
 const router = Router();
 
@@ -118,7 +126,17 @@ router.get('/shift-types', async (req: Request, res: Response) => {
        WHERE st.company_id = $1 ORDER BY st.sort_order, st.name`,
       [companyId]
     );
-    res.json({ shiftTypes: rows });
+    // Department scoping: schedulers see shift types they can view (any of the
+    // type's departments, or department-less "global" types). Owner sees all.
+    let types = rows;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      types = rows.filter((st: any) => {
+        const depts: string[] = st.departmentIds || [];
+        return !depts.length || depts.some((d) => access.view.includes(d));
+      });
+    }
+    res.json({ shiftTypes: types });
   } catch (err) {
     console.error('[schedule] shift-types failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -191,6 +209,9 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
       }
       validDeptIds.push(dept[0].id);
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the type's departments (owner bypasses).
+    if (!(await requireActiveDepartment(req, res, validDeptIds))) return;
     const id = crypto.randomUUID();
     await query(
       `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, department_id)
@@ -429,7 +450,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/schedule/shifts — assign a shift (owner/scheduler).
+// POST /api/schedule/shifts — assign a shift (owner/scheduler; department-scoped for schedulers).
 router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -438,6 +459,12 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       res.status(400).json({ error: 'Team member, shift type, and a valid date are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments or the member's home department.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
+    ))) return;
     // Verify member and shift type belong to this company.
     const { rows: urows } = await query(
       'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
@@ -505,7 +532,7 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
   }
 });
 
-// POST /api/schedule/shifts/bulk — assign same shift across a date range (owner/scheduler).
+// POST /api/schedule/shifts/bulk — assign same shift across a date range (owner/scheduler; department-scoped).
 router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -518,6 +545,12 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
       res.status(400).json({ error: 'End date must be on or after start date.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments or the member's home department.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
+    ))) return;
     // Verify member and shift type belong to this company.
     const { rows: urows } = await query(
       'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
@@ -565,7 +598,7 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
-// POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler).
+// POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler; department-scoped).
 // Deletes manual shifts; for rotation shifts, adds skip periods so they don't appear.
 router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -580,6 +613,13 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       res.status(400).json({ error: 'No valid dates provided.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the affected members' home departments (no userIds = company-wide;
+    // needs an active Edit department).
+    if (!(await requireActiveDepartment(
+      req, res,
+      await usersDepartmentIds(Array.isArray(userIds) ? userIds : [], companyId)
+    ))) return;
     const userFilter = Array.isArray(userIds) && userIds.length
       ? 'AND user_id = ANY($3::uuid[])'
       : '';
@@ -622,7 +662,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
   }
 });
 
-// DELETE /api/schedule/shifts/:id — remove a shift (owner/scheduler).
+// DELETE /api/schedule/shifts/:id — remove a shift (owner/scheduler; department-scoped).
 router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -632,6 +672,15 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
        FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
       [req.params.id, companyId]
     );
+    if (srows.length) {
+      // Department scoping: the scheduler's active department must be one of
+      // the shift type's departments or the member's home department.
+      if (!(await requireActiveDepartment(
+        req, res,
+        await assignmentRelevantDepartments(
+          [{ userId: srows[0].userId, shiftTypeId: srows[0].shiftTypeId }], companyId)
+      ))) return;
+    }
     const { rowCount } = await query(
       'DELETE FROM shifts WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
@@ -656,7 +705,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
   }
 });
 
-// POST /api/schedule/extra-slots — adjust open slots for dates (owner/scheduler).
+// POST /api/schedule/extra-slots — adjust open slots for dates (owner/scheduler; department-scoped).
 // Body: { dates:[...], shiftTypeId, count } — count can be negative to remove slots.
 router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -669,6 +718,12 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
       res.status(400).json({ error: 'Dates, shift type, and a non-zero count are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([shiftTypeId], companyId)
+    ))) return;
     for (const d of dates) {
       await query(
         `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
@@ -690,7 +745,7 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
-// DELETE /api/schedule/extra-slots — remove extra open slots (owner/scheduler).
+// DELETE /api/schedule/extra-slots — remove extra open slots (owner/scheduler; department-scoped).
 // Body: { dates:[...], shiftTypeId } — removes entirely; or { date, shiftTypeId, count } to reduce.
 router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -701,6 +756,12 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
       res.status(400).json({ error: 'Dates and shift type are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([shiftTypeId], companyId)
+    ))) return;
     await query(
       'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3',
       [companyId, dates, shiftTypeId]
@@ -712,7 +773,7 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
   }
 });
 
-// POST /api/schedule/closed-shifts — mark a shift type unavailable for a date (owner/scheduler).
+// POST /api/schedule/closed-shifts — mark a shift type unavailable for a date (owner/scheduler; department-scoped).
 router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -721,6 +782,12 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       res.status(400).json({ error: 'Date and shift type are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([shiftTypeId], companyId)
+    ))) return;
     await query(
       `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
        VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
@@ -733,7 +800,7 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
   }
 });
 
-// DELETE /api/schedule/closed-shifts — reopen a shift type for a date (owner/scheduler).
+// DELETE /api/schedule/closed-shifts — reopen a shift type for a date (owner/scheduler; department-scoped).
 router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -742,6 +809,12 @@ router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: R
       res.status(400).json({ error: 'Date and shift type are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([shiftTypeId], companyId)
+    ))) return;
     await query(
       'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
       [companyId, date, shiftTypeId]
@@ -767,10 +840,18 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
     }
     // Get the original shift to know its date.
     const { rows: orig } = await query(
-      'SELECT date::text AS date FROM shifts WHERE id = $1 AND company_id = $2',
+      'SELECT date::text AS date, user_id AS "userId", shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
     );
     if (!orig.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    // Department scoping: the scheduler's active department must be one of
+    // the new or original shift's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments(
+        [{ userId, shiftTypeId }, { userId: orig[0].userId, shiftTypeId: orig[0].shiftTypeId }],
+        companyId)
+    ))) return;
     const origDate = orig[0].date;
     let updated = 0, created = 0;
     for (const d of dateList) {
@@ -813,7 +894,7 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
   }
 });
 
-// PUT /api/schedule/shifts/:id — update one manual shift (owner/scheduler).
+// PUT /api/schedule/shifts/:id — update one manual shift (owner/scheduler; department-scoped).
 router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -821,6 +902,20 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
     if (!isValidDate(date) || !userId || !shiftTypeId) {
       res.status(400).json({ error: 'Date, team member, and shift type are required.' });
       return;
+    }
+    // Department scoping: the scheduler's active department must be one of
+    // the new or existing shift's departments.
+    const { rows: existRows } = await query(
+      'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (existRows.length) {
+      if (!(await requireActiveDepartment(
+        req, res,
+        await assignmentRelevantDepartments(
+          [{ userId, shiftTypeId }, { userId: existRows[0].userId, shiftTypeId: existRows[0].shiftTypeId }],
+          companyId)
+      ))) return;
     }
     // Prevent duplicates.
     const { rows: dup } = await query(
@@ -853,7 +948,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
   }
 });
 
-// POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift.
+// POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift (owner/scheduler; department-scoped).
 router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -863,6 +958,13 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
        FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
       [req.params.id, companyId]
     );
+    if (srows.length) {
+      if (!(await requireActiveDepartment(
+        req, res,
+        await assignmentRelevantDepartments(
+          [{ userId: srows[0].userId, shiftTypeId: srows[0].shiftTypeId }], companyId)
+      ))) return;
+    }
     const { rowCount } = await query(
       'UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
       [published !== false, req.params.id, companyId]
@@ -888,7 +990,7 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
   }
 });
 
-// POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance.
+// POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance (owner/scheduler; department-scoped).
 // Body: { rotationId, userId, date, shiftTypeId, published }
 router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -898,6 +1000,10 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       res.status(400).json({ error: 'rotationId, userId, date, and shiftTypeId are required.' });
       return;
     }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
+    ))) return;
     await query(
       `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -912,7 +1018,7 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
   }
 });
 
-// DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance
+// DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance (owner/scheduler; department-scoped).
 // Body: { rotationId, userId, date, shiftTypeId }
 router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -922,6 +1028,10 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       res.status(400).json({ error: 'rotationId, userId, and date are required.' });
       return;
     }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
+    ))) return;
     await query(
       `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
        VALUES ($1, $2, $3, $4, $5)
@@ -1028,7 +1138,7 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
 });
 
 
-// POST /api/schedule/shifts/bulk-publish-state — publish/unpublish specific members' shifts in a date range.
+// POST /api/schedule/shifts/bulk-publish-state — publish/unpublish specific members' shifts in a date range (owner/scheduler; department-scoped).
 // Body: { dates:[...], userIds:[...], published: bool }. Handles manual + rotation shifts.
 router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -1040,6 +1150,12 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
       res.status(400).json({ error: 'Dates and team members are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the affected members' home departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await usersDepartmentIds(userIds, companyId)
+    ))) return;
     // Manual shifts
     const { rowCount } = await query(
       `UPDATE shifts SET published = $1
@@ -1234,7 +1350,7 @@ router.get('/rotations', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/schedule/rotations — create (owner/scheduler).
+// POST /api/schedule/rotations — create (owner/scheduler; department-scoped).
 // Body: {name, cycleDays (1–84), startDate, assignments: [{userId, cycleDay, shiftTypeId}]}
 router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -1245,6 +1361,12 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
       res.status(400).json({ error: 'Name, cycle length (1–84 days), and a valid start date are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of
+    // the departments touched by the assignments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments(Array.isArray(assignments) ? assignments : [], companyId)
+    ))) return;
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
     const st = startTime && timeRe.test(startTime) ? startTime : null;
     const et = endTime && timeRe.test(endTime) ? endTime : null;
@@ -1284,7 +1406,7 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
 });
 
 // POST /api/schedule/rotations/:id/apply — generate shifts from rotation
-// over a date range (owner/scheduler). Skips dates that already have the
+// over a date range (owner/scheduler; department-scoped). Skips dates that already have the
 // same user+shift-type assigned.
 router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -1303,6 +1425,9 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
       res.status(404).json({ error: 'Rotation not found or inactive.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of the
+    // rotation's departments (shift type departments or member home departments).
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const rot = rots[0];
     const { rows: asg } = await query(
       'SELECT user_id AS "userId", cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId" FROM rotation_assignments WHERE rotation_id = $1',
@@ -1336,7 +1461,7 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
   }
 });
 
-// DELETE /api/schedule/rotations/:id (owner/scheduler).
+// DELETE /api/schedule/rotations/:id (owner/scheduler; department-scoped).
 router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1344,6 +1469,8 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
       'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
     );
+    // Department scoping: the scheduler's active department must be one of the rotation's departments.
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const { rowCount } = await query(
       'DELETE FROM rotations WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
@@ -1366,7 +1493,7 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
   }
 });
 
-// PATCH /api/schedule/rotations/:id — toggle active/paused
+// PATCH /api/schedule/rotations/:id — toggle active/paused (owner/scheduler; department-scoped)
 router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1375,6 +1502,8 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
       res.status(400).json({ error: 'isActive (boolean) is required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of the rotation's departments.
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const { rows } = await query(
       'UPDATE rotations SET is_active = $1 WHERE id = $2 AND company_id = $3 RETURNING id, is_active AS "isActive"',
       [isActive, req.params.id, companyId]
@@ -1434,7 +1563,7 @@ router.get('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (re
   }
 });
 
-// POST /api/schedule/rotations/:id/pauses — add a pause period
+// POST /api/schedule/rotations/:id/pauses — add a pause period (owner/scheduler; department-scoped)
 router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1456,6 +1585,8 @@ router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (r
       res.status(404).json({ error: 'Rotation not found.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of the rotation's departments.
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const { rows } = await query(
       `INSERT INTO rotation_pauses (company_id, rotation_id, start_date, end_date, reason)
        VALUES ($1, $2, $3, $4, $5) RETURNING id, start_date::text AS "startDate", end_date::text AS "endDate", reason`,
@@ -1468,10 +1599,12 @@ router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (r
   }
 });
 
-// DELETE /api/schedule/rotations/:id/pauses/:pauseId — remove a pause period
+// DELETE /api/schedule/rotations/:id/pauses/:pauseId — remove a pause period (owner/scheduler; department-scoped)
 router.delete('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // Department scoping: the scheduler's active department must be one of the rotation's departments.
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const { rowCount } = await query(
       'DELETE FROM rotation_pauses WHERE id = $1 AND rotation_id = $2 AND company_id = $3',
       [req.params.pauseId, req.params.id, companyId]
@@ -1487,7 +1620,7 @@ router.delete('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'
   }
 });
 
-// PUT /api/schedule/rotations/:id/pauses/:pauseId — update a pause period's dates/reason
+// PUT /api/schedule/rotations/:id/pauses/:pauseId — update a pause period's dates/reason (owner/scheduler; department-scoped)
 router.put('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1496,6 +1629,8 @@ router.put('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), 
       res.status(400).json({ error: 'Valid start and end dates are required.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of the rotation's departments.
+    if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
     const { rowCount } = await query(
       `UPDATE rotation_pauses SET start_date = $1, end_date = $2, reason = $3
        WHERE id = $4 AND rotation_id = $5 AND company_id = $6`,
@@ -1517,6 +1652,7 @@ router.put('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), 
 // ---------------------------------------------------------------------------
 
 // GET /api/schedule/staffing-targets — list with shift type info.
+// Department-scoped for schedulers (view scope); owner sees all.
 router.get('/staffing-targets', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1525,21 +1661,32 @@ router.get('/staffing-targets', async (req: Request, res: Response) => {
       `SELECT st.id AS "shiftTypeId", st.name, st.color,
               COALESCE(t.target_count, 0) AS "targetCount",
               COALESCE(t.weekdays, '{0,1,2,3,4,5,6}') AS weekdays,
-              t.start_date::text AS "startDate", t.end_date::text AS "endDate"
+              t.start_date::text AS "startDate", t.end_date::text AS "endDate",
+              COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "departmentIds"
        FROM shift_types st
        LEFT JOIN staffing_targets t ON t.shift_type_id = st.id AND t.company_id = $1
        WHERE st.company_id = $1 AND st.is_active = true
        ORDER BY st.sort_order, st.name`,
       [companyId]
     );
-    res.json({ targets: rows });
+    // Department scoping: schedulers see targets for shift types they can view
+    // (any of the type's departments, or department-less "global" types).
+    let targets = rows;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      targets = rows.filter((t: any) => {
+        const depts: string[] = t.departmentIds || [];
+        return !depts.length || depts.some((d) => access.view.includes(d));
+      });
+    }
+    res.json({ targets });
   } catch (err) {
     console.error('[schedule] list staffing targets failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
-// PUT /api/schedule/staffing-targets — save all targets (owner/scheduler).
+// PUT /api/schedule/staffing-targets — save all targets (owner/scheduler; department-scoped).
 router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1548,6 +1695,12 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
       res.status(400).json({ error: 'targets must be an array.' });
       return;
     }
+    // Department scoping: the scheduler's active department must be one of the
+    // targeted shift types' departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds(targets.map((t: any) => t?.shiftTypeId), companyId)
+    ))) return;
     for (const t of targets) {
       const count = Math.min(20, Math.max(0, parseInt(t.targetCount) || 0));
       await query(
@@ -1609,6 +1762,13 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
       updates.push(`department_id = $${i++}`); vals.push(deptIdsForJoin[0] || null);
     }
     if (!updates.length) { res.status(400).json({ error: 'Nothing to update.' }); return; }
+    // Department scoping: the scheduler's active department must be one of the
+    // shift type's current or incoming departments.
+    {
+      const existing = await shiftTypesDepartmentIds([req.params.id], companyId);
+      const relevant = deptIdsForJoin !== null ? [...new Set([...existing, ...deptIdsForJoin])] : existing;
+      if (!(await requireActiveDepartment(req, res, relevant))) return;
+    }
     vals.push(req.params.id, companyId);
     const { rowCount } = await query(
       `UPDATE shift_types SET ${updates.join(', ')} WHERE id = $${i++} AND company_id = $${i}`,
@@ -1638,11 +1798,16 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
-// DELETE /api/schedule/shift-types/:id — delete (owner/scheduler).
+// DELETE /api/schedule/shift-types/:id — delete (owner/scheduler; department-scoped).
 // Shifts using this type are kept; the type is deactivated instead if in use.
 router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // Department scoping: the scheduler's active department must be one of the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([req.params.id], companyId)
+    ))) return;
     const { rows } = await query(
       'SELECT id FROM shifts WHERE shift_type_id = $1 AND company_id = $2 LIMIT 1',
       [req.params.id, companyId]
@@ -1666,10 +1831,15 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
   }
 });
 
-// POST /api/schedule/shift-types/:id/restore — reactivate a soft-deleted shift type.
+// POST /api/schedule/shift-types/:id/restore — reactivate a soft-deleted shift type (owner/scheduler; department-scoped).
 router.post('/shift-types/:id/restore', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // Department scoping: the scheduler's active department must be one of the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([req.params.id], companyId)
+    ))) return;
     const { rowCount } = await query(
       'UPDATE shift_types SET is_active = true WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
