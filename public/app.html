@@ -626,6 +626,12 @@
         }
         #tab-schedule .month-chip strong { font-weight: 800; }
         #tab-schedule .month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; margin-bottom: 0.15rem; }
+        /* Shift-request sub-tabs */
+        #tab-requests .req-subtabs { display: flex; gap: 0.25rem; border-bottom: 2px solid var(--border); margin: 0.75rem 0 1rem; }
+        #tab-requests .req-subtab { padding: 0.6rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.95rem; font-weight: 600; color: var(--dim); border-bottom: 3px solid transparent; margin-bottom: -2px; }
+        #tab-requests .req-subtab:hover { color: var(--text); }
+        #tab-requests .req-subtab.active { color: var(--text); border-bottom-color: var(--teal); }
+        #tab-requests .req-subcount { font-weight: 400; color: var(--dim); }
         /* Modals */
         #tab-schedule .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
         #tab-myschedule .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -6969,6 +6975,10 @@
         <div id="req-error" class="alert alert-error hidden" role="alert"></div>
         <div id="req-success" class="alert alert-success hidden" role="status"></div>
         <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem" id="req-sub">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
+        <div class="req-subtabs" role="tablist" aria-label="Shift request groups">
+          <button type="button" class="req-subtab active" data-req-subtab="received" role="tab">Received<span class="req-subcount" data-req-subcount="received"></span></button>
+          <button type="button" class="req-subtab" data-req-subtab="sent" role="tab">Sent<span class="req-subcount" data-req-subcount="sent"></span></button>
+        </div>
         <div id="req-list"><p style="color:var(--dim)">Loading…</p></div>
       </div>
       <script>
@@ -6976,6 +6986,7 @@
         // Shared shift-requests tab (2026-10-12): all roles use this one panel.
         // Badge = requests needing THIS user's attention (pending + actionable).
         var me = null, requests = [];
+        var reqSubTab = 'received'; // 'received' | 'sent' — Deepika's sub-tab labels
         function reqGet(r, keys) {
           for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
           return '';
@@ -7038,44 +7049,59 @@
             '<div class="req-actions">' + actions + '</div></div>';
         }
 
+        function setReqSubTab(t) {
+          reqSubTab = t;
+          document.querySelectorAll('[data-req-subtab]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-req-subtab') === t);
+          });
+          renderRequests();
+        }
+
         function renderRequests() {
           var box = $('req-list');
           if (!box) return;
           var sub = $('req-sub');
+          var sentReqs = requests.filter(reqMine);
+          var receivedReqs = requests.filter(function (r) { return !reqMine(r); });
+          var sentPending = sentReqs.filter(reqPending), sentDone = sentReqs.filter(function (r) { return !reqPending(r); });
+          var recvPending = receivedReqs.filter(reqPending), recvDone = receivedReqs.filter(function (r) { return !reqPending(r); });
+          // Sub-tab pending counts
+          document.querySelectorAll('[data-req-subcount="received"]').forEach(function (el) {
+            el.textContent = recvPending.length ? ' (' + recvPending.length + ')' : '';
+          });
+          document.querySelectorAll('[data-req-subcount="sent"]').forEach(function (el) {
+            el.textContent = sentPending.length ? ' (' + sentPending.length + ')' : '';
+          });
+          document.querySelectorAll('[data-req-subtab]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-req-subtab') === reqSubTab);
+          });
           if (!requests.length) {
+            if (sub) sub.textContent = 'Pickup and swap requests for you to answer, your outgoing requests, and recent history.';
             box.innerHTML = '<p style="color:var(--dim)">No requests yet. Swap or cover requests will show up here.</p>';
             return;
           }
-          var pending = requests.filter(reqPending);
-          var done = requests.filter(function (r) { return !reqPending(r); });
           var html = '';
-          if (isPrivileged()) {
-            if (sub) sub.textContent = 'Pending pickup and swap requests across the company, and recent history.';
-            if (pending.length) {
-              html += '<h4 style="margin:0 0 0.5rem">Pending requests (' + pending.length + ')</h4>' + pending.map(reqCard).join('');
+          if (reqSubTab === 'sent') {
+            // Sent: requests this user created (swap, cover/pickup, open-slot claims).
+            if (sub) sub.textContent = 'Requests you sent — swaps, cover requests, and open-shift pickups.';
+            if (sentPending.length) {
+              html += '<h4 style="margin:0 0 0.5rem">Pending (' + sentPending.length + ')</h4>' + sentPending.map(reqCard).join('');
             } else {
-              html += '<p style="color:var(--dim)">No pending requests.</p>';
+              html += '<p style="color:var(--dim)">You have no pending requests.</p>';
             }
-            if (done.length) {
-              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + done.map(reqCard).join('');
+            if (sentDone.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + sentDone.map(reqCard).join('');
             }
           } else {
-            if (sub) sub.textContent = 'Pickup and swap requests for you to answer, your outgoing requests, and recent history.';
-            var openMine = pending.filter(reqMine), openOthers = pending.filter(function (r) { return !reqMine(r); });
-            var doneMine = done.filter(reqMine), doneOthers = done.filter(function (r) { return !reqMine(r); });
-            if (openOthers.length) {
-              html += '<h4 style="margin:0 0 0.5rem">Needs your answer</h4>' + openOthers.map(reqCard).join('');
+            // Received: requests from others this user can act on.
+            if (sub) sub.textContent = isPrivileged() ? 'Requests from others across the company that need a decision.' : 'Requests from others for you to answer.';
+            if (recvPending.length) {
+              html += '<h4 style="margin:0 0 0.5rem">Needs your answer (' + recvPending.length + ')</h4>' + recvPending.map(reqCard).join('');
             } else {
               html += '<p style="color:var(--dim)">Nothing needs your answer right now.</p>';
             }
-            if (openMine.length) {
-              html += '<h4 style="margin:1rem 0 0.5rem">Your outgoing requests</h4>' + openMine.map(reqCard).join('');
-            }
-            if (doneMine.length) {
-              html += '<h4 style="margin:1rem 0 0.5rem">Your recent requests</h4>' + doneMine.map(reqCard).join('');
-            }
-            if (doneOthers.length) {
-              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + doneOthers.map(reqCard).join('');
+            if (recvDone.length) {
+              html += '<h4 style="margin:1rem 0 0.5rem">Recently resolved</h4>' + recvDone.map(reqCard).join('');
             }
           }
           box.innerHTML = html;
@@ -7115,6 +7141,9 @@
             renderRequests();
           }).catch(function () { reqError('Could not load shift requests.'); });
         }
+        document.querySelectorAll('[data-req-subtab]').forEach(function (b) {
+          b.addEventListener('click', function () { setReqSubTab(b.getAttribute('data-req-subtab')); });
+        });
         window.qsLoadRequestsTab = loadRequestsTab;
         window.qsRefreshReqBadge = function () {
           api('/api/auth/me').then(function (mr) {
