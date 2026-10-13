@@ -2518,6 +2518,23 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
   }
 });
 
+// GET /api/schedule/ai-scheduler-email — the inbox address the AI scheduler
+// (email-to-plan pipeline) reads. Employees address "Email scheduler" requests here;
+// the pipeline reads it and sends a plan to the human schedulers for approval.
+router.get('/ai-scheduler-email', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const email = (process.env.GMAIL_USER || '').trim();
+    if (!email) {
+      res.status(503).json({ error: 'The AI scheduler inbox is not set up yet.' });
+      return;
+    }
+    res.json({ email });
+  } catch (err) {
+    console.error('[schedule] ai-scheduler-email failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/ask — rule-based natural language Q&A (owner/scheduler/employee).
 // Employees get questions only; the answers come from schedule data they can already see.
 // Body: { question: string }

@@ -3144,15 +3144,14 @@
         </div>
       </div>
       <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Email scheduler</h3>
-        <p style="color:var(--dim);font-size:0.9rem">Need a quick approval? Send your scheduler an email from your own email app.</p>
-        <button type="button" id="ask-email-open" class="btn">Email scheduler</button>
+        <h3 style="margin-top:0">Email AI scheduler</h3>
+        <p style="color:var(--dim);font-size:0.9rem">Need a quick approval? The AI scheduler reads your email and sends a plan to your schedulers for approval.</p>
+        <button type="button" id="ask-email-open" class="btn">Email AI scheduler</button>
       </div>
       <div id="ask-email-dialog" class="modal-backdrop hidden">
         <div class="modal" style="max-width:420px">
-          <h3>Email scheduler</h3>
-          <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem">Who should receive it?</p>
-          <div id="ask-email-recipients" style="margin-bottom:0.8rem"></div>
+          <h3>Email AI scheduler</h3>
+          <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="ask-email-to"></p>
           <textarea id="ask-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
           <div class="modal-actions" style="margin-top:0.8rem">
             <button type="button" id="ask-email-cancel" class="btn-secondary">Cancel</button>
@@ -3207,57 +3206,38 @@
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
         });
-        // --- Email scheduler (employees): opens their own email app via mailto ---
+        // --- Email scheduler (employees): opens their own email app via mailto,
+        // addressed to the AI scheduler inbox (it reads the email and sends a
+        // plan to the human schedulers for approval).
         var emailOpenBtn = $('ask-email-open');
         var emailDlg = $('ask-email-dialog');
+        var aiSchedulerEmail = '';
         function closeEmailDlg() { if (emailDlg) hide(emailDlg); }
         if (emailOpenBtn && emailDlg) {
           emailOpenBtn.addEventListener('click', function () {
-            var box = $('ask-email-recipients');
-            box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">Loading…</p>';
+            $('ask-email-to').textContent = 'To: loading…';
             $('ask-email-message').value = '';
             show(emailDlg);
-            api('/api/users').then(function (r) {
-              if (!r.ok || !r.data.users) {
-                box.innerHTML = '<p style="color:#c62828;font-size:0.9rem">Could not load the team list.</p>';
+            api('/api/schedule/ai-scheduler-email').then(function (r) {
+              if (!r.ok || !r.data.email) {
+                $('ask-email-to').textContent = '';
+                $('ask-email-message').placeholder = 'Could not load the scheduler inbox.';
+                aiSchedulerEmail = '';
                 return;
               }
-              var recips = r.data.users.filter(function (u) {
-                return u.isActive && (u.role === 'owner' || u.role === 'scheduler') && u.email;
-              });
-              if (!recips.length) {
-                box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No scheduler found.</p>';
-                return;
-              }
-              box.innerHTML = '';
-              recips.forEach(function (u, i) {
-                var label = document.createElement('label');
-                label.style.cssText = 'display:flex;gap:0.5rem;align-items:center;padding:0.4rem 0;font-size:0.95rem';
-                var cb = document.createElement('input');
-                cb.type = 'checkbox'; cb.checked = true; cb.value = u.email;
-                cb.setAttribute('data-recip', '1');
-                label.appendChild(cb);
-                var span = document.createElement('span');
-                span.textContent = (u.name || (u.firstName + ' ' + u.lastName)).trim() + ' (' + u.role + ') — ' + u.email;
-                label.appendChild(span);
-                box.appendChild(label);
-              });
+              aiSchedulerEmail = r.data.email;
+              $('ask-email-to').textContent = 'To: ' + aiSchedulerEmail + ' (AI scheduler)';
             }).catch(function () {
-              box.innerHTML = '<p style="color:#c62828;font-size:0.9rem">Could not load the team list.</p>';
+              aiSchedulerEmail = '';
+              $('ask-email-to').textContent = 'Could not load the scheduler inbox.';
             });
           });
           $('ask-email-cancel').addEventListener('click', closeEmailDlg);
           $('ask-email-go').addEventListener('click', function () {
-            var emails = [];
-            document.querySelectorAll('#ask-email-recipients [data-recip]:checked').forEach(function (cb) {
-              emails.push(cb.value);
-            });
             var message = $('ask-email-message').value.trim();
-            if (!emails.length) { $('ask-email-message').focus(); return; }
-            if (!message) { $('ask-email-message').focus(); return; }
+            if (!aiSchedulerEmail || !message) { $('ask-email-message').focus(); return; }
             var me = (window.qsUserName || 'A team member').trim() || 'A team member';
-            var to = emails.map(function (e) { return encodeURIComponent(e); }).join(',');
-            var link = 'mailto:' + to +
+            var link = 'mailto:' + encodeURIComponent(aiSchedulerEmail) +
               '?subject=' + encodeURIComponent('Quick approval request from ' + me) +
               '&body=' + encodeURIComponent(message);
             closeEmailDlg();
