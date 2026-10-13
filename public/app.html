@@ -6376,11 +6376,11 @@
           return md ? [String(md)] : [];
         }
 
-        // Small dialog using the global action-dialog (same pattern as the schedule swap UI).
+        // Small dialog using the myschedule dialog (same pattern as the schedule swap UI).
         function msDialog(title, bodyHtml, buttons) {
-          $('ad-title').textContent = title;
-          $('ad-body').innerHTML = bodyHtml;
-          var actions = $('ad-actions');
+          $('ms-ad-title').textContent = title;
+          $('ms-ad-body').innerHTML = bodyHtml;
+          var actions = $('ms-ad-actions');
           actions.innerHTML = '';
           buttons.forEach(function (btn) {
             var b = document.createElement('button');
@@ -6388,10 +6388,10 @@
             b.className = btn.primary ? 'btn' : 'btn-secondary';
             b.textContent = btn.label;
             if (btn.onClick) b.addEventListener('click', btn.onClick);
-            else b.addEventListener('click', function () { hide($('action-dialog')); });
+            else b.addEventListener('click', function () { hide($('ms-action-dialog')); });
             actions.appendChild(b);
           });
-          show($('action-dialog'));
+          show($('ms-action-dialog'));
         }
 
         // ---------- view range ----------
@@ -6839,7 +6839,7 @@
             '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Choose whose shift you want to swap with:</p>' +
             cands.map(function (c) { return c.html; }).join(''),
             [{ label: 'Cancel' }]);
-          $('action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
+          $('ms-action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
             b.addEventListener('click', function () { openTheirShiftsDialog(myShiftId, b.getAttribute('data-ms-cand')); });
           });
         }
@@ -6866,13 +6866,13 @@
                 esc(fmtLong(x.date)) + '</strong> · ' + esc(shiftLabel(x)) + '</span></button>';
             }).join(''),
             [{ label: 'Back', onClick: function () { openSwapDialog(myShiftId); } }, { label: 'Cancel' }]);
-          $('action-dialog').querySelectorAll('[data-ms-their]').forEach(function (b) {
+          $('ms-action-dialog').querySelectorAll('[data-ms-their]').forEach(function (b) {
             b.addEventListener('click', function () { sendSwapRequest(myShiftId, b.getAttribute('data-ms-their')); });
           });
         }
 
         function sendSwapRequest(myShiftId, theirShiftId) {
-          hide($('action-dialog'));
+          hide($('ms-action-dialog'));
           api('/api/schedule/shifts/swap-request', {
             method: 'POST', body: JSON.stringify({ myShiftId: myShiftId, theirShiftId: theirShiftId })
           }).then(function (r) {
@@ -6890,7 +6890,7 @@
             '<button type="button" class="sp-item" data-ms-cand=""><span class="sp-ic" style="background:#e8f5e9">📣</span><span><strong>Anyone available</strong></span></button>' +
             cands.map(function (c) { return c.html; }).join(''),
             [{ label: 'Cancel' }]);
-          $('action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
+          $('ms-action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
             b.addEventListener('click', function () {
               var tid = b.getAttribute('data-ms-cand') || null;
               sendPickupRequest(myShiftId, tid);
@@ -6899,7 +6899,7 @@
         }
 
         function sendPickupRequest(myShiftId, targetUserId) {
-          hide($('action-dialog'));
+          hide($('ms-action-dialog'));
           var body = {};
           if (targetUserId) body.targetUserId = targetUserId;
           api('/api/schedule/shifts/' + myShiftId + '/request-pickup', {
@@ -7037,6 +7037,13 @@
         });
       })();
       </script>
+      <div id="ms-action-dialog" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:340px">
+          <h3 id="ms-ad-title">Confirm</h3>
+          <div id="ms-ad-body" style="margin:12px 0;font-size:14px"></div>
+          <div class="modal-actions" id="ms-ad-actions"></div>
+        </div>
+      </div>
     </section>
 
   </main>
