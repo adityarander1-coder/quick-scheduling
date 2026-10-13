@@ -7521,6 +7521,9 @@
       });
       if (admin) handleHash();
       else window.qsSetEmployeeTab('myschedule');
+      // Ask Q-Scheduler content follows the view mode: admin view gets the full
+      // admin version; My schedule view gets the employee version (Q&A + email).
+      if (window.qsApplyAskVisibility) window.qsApplyAskVisibility(!admin);
     };
     document.querySelector('#view-switcher').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('button[data-viewmode]') : null;
@@ -7797,7 +7800,6 @@
       try { if (localStorage.getItem('qs-app-view') === 'myschedule') savedView = 'myschedule'; } catch (e) {}
       window.qsSetAppView(savedView);
       if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
-      if (window.qsApplyAskVisibility) window.qsApplyAskVisibility(false);
     });
   </script>
 </body>
