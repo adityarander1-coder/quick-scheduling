@@ -9,6 +9,36 @@ import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
+/** Required-field check for a plan change. Returns a list of problems (empty = complete). */
+function changeProblems(change: any): string[] {
+  const problems: string[] = [];
+  const missing = (v: any) => v === null || v === undefined || v === '';
+  switch (change.action) {
+    case 'assign':
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.date)) problems.push('no date given');
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      break;
+    case 'unassign':
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.date)) problems.push('no date given');
+      break;
+    case 'move':
+      if (missing(change.fromPerson)) problems.push('no person to move');
+      if (missing(change.toPerson)) problems.push('no replacement person');
+      if (missing(change.date) && missing(change.fromDate)) problems.push('no date given');
+      break;
+    case 'swap':
+      if (missing(change.fromPerson)) problems.push('no first person named');
+      if (missing(change.toPerson)) problems.push('no second person named');
+      if (missing(change.date)) problems.push('no date given');
+      break;
+    default:
+      problems.push(`unsupported action "${change.action}"`);
+  }
+  return problems;
+}
+
 /**
  * Poll the Gmail inbox for new schedule change emails.
  * Creates pending plans for Deepika to approve. Never modifies the schedule directly.
@@ -100,6 +130,33 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
 
         // Skip if not a schedule change
         if (plan.emailType !== 'change_request' || !plan.changes || plan.changes.length === 0) {
+          await markImapAsRead(uid);
+          continue;
+        }
+
+        // Gate: every change must be complete. If the AI left required fields
+        // blank (or flagged low confidence / needs clarification), ask the sender
+        // for the missing info instead of creating a broken approve link.
+        const incomplete = plan.changes
+          .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
+          .filter((x: any) => x.problems.length > 0);
+        const needsInfo = incomplete.length > 0 || plan.needsClarification || plan.confidence === 'low';
+        if (needsInfo) {
+          const detail = incomplete.length
+            ? incomplete.map((x: any) => `Change ${x.i + 1} (${plan.changes[x.i].action || 'unknown'}): ${x.problems.join(', ')}`).join('; ')
+            : (plan.needsClarification || 'I could not understand the requested change well enough to build it.');
+          try {
+            const { sendMail } = await import('./mailer.js');
+            await sendMail({
+              to: email.from,
+              subject: `Re: ${email.subject}`,
+              text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nPlease reply with the missing detail and I'll build the change for approval.\n\n— Quick Scheduling`,
+              html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p><p>Please reply with the missing detail and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
+            });
+            console.log(`[email-poll] Clarification requested from ${email.from}: ${detail}`);
+          } catch (mailErr: any) {
+            console.log(`[email-poll] Clarification email failed: ${mailErr.message}`);
+          }
           await markImapAsRead(uid);
           continue;
         }
