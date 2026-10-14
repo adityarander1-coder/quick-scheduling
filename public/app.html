@@ -8279,5 +8279,81 @@
       if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
     });
   </script>
+  <style>
+    /* Floating Email AI scheduler button — visible on every tab, all roles. */
+    #fab-email-ai {
+      position: fixed; right: 1.1rem; bottom: 1.1rem; width: 58px; height: 58px;
+      border-radius: 50%; background: var(--accent); color: #fff; border: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.28); cursor: pointer; z-index: 90;
+      display: flex; align-items: center; justify-content: center; padding: 0;
+    }
+    #fab-email-ai:hover { filter: brightness(1.1); }
+    #fab-email-ai:active { transform: scale(0.94); }
+    #fab-email-ai svg { width: 27px; height: 27px; }
+    @media (max-width: 700px) {
+      #fab-email-ai { right: 0.9rem; bottom: 0.9rem; width: 52px; height: 52px; }
+      #fab-email-ai svg { width: 24px; height: 24px; }
+    }
+    /* Global (body-level) dialog for the FAB — unscoped so it works from any tab. */
+    #fab-email-dialog { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    #fab-email-dialog .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(440px, 92vw); max-height: 88vh; overflow-y: auto; }
+    #fab-email-dialog .modal h3 { margin-top: 0; color: var(--text); }
+    #fab-email-dialog .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
+  </style>
+  <button type="button" id="fab-email-ai" title="Email AI scheduler" aria-label="Email AI scheduler">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
+  </button>
+  <div id="fab-email-dialog" class="hidden">
+    <div class="modal">
+      <h3>Email AI scheduler</h3>
+      <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="fab-email-to"></p>
+      <textarea id="fab-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
+      <div class="modal-actions">
+        <button type="button" id="fab-email-cancel" class="btn-secondary">Cancel</button>
+        <button type="button" id="fab-email-go" class="btn">Open email app</button>
+      </div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    // Floating Email AI scheduler: one-tap access from any tab, all roles.
+    // Opens the user's own email app via mailto, addressed to the AI scheduler inbox.
+    var fab = $('fab-email-ai');
+    var dlg = $('fab-email-dialog');
+    if (!fab || !dlg) return;
+    var aiEmail = '';
+    function closeDlg() { hide(dlg); }
+    fab.addEventListener('click', function () {
+      $('fab-email-to').textContent = 'To: loading…';
+      $('fab-email-message').value = '';
+      show(dlg);
+      api('/api/schedule/ai-scheduler-email').then(function (r) {
+        if (!r.ok || !r.data.email) {
+          $('fab-email-to').textContent = '';
+          $('fab-email-message').placeholder = 'Could not load the scheduler inbox.';
+          aiEmail = '';
+          return;
+        }
+        aiEmail = r.data.email;
+        $('fab-email-to').textContent = 'To: ' + aiEmail + ' (AI scheduler)';
+      }).catch(function () {
+        aiEmail = '';
+        $('fab-email-to').textContent = 'Could not load the scheduler inbox.';
+      });
+    });
+    $('fab-email-cancel').addEventListener('click', closeDlg);
+    dlg.addEventListener('click', function (e) { if (e.target === dlg) closeDlg(); });
+    $('fab-email-go').addEventListener('click', function () {
+      var message = $('fab-email-message').value.trim();
+      if (!aiEmail || !message) { $('fab-email-message').focus(); return; }
+      var me = (window.qsUserName || 'A team member').trim() || 'A team member';
+      var link = 'mailto:' + encodeURIComponent(aiEmail) +
+        '?subject=' + encodeURIComponent('Quick approval request from ' + me) +
+        '&body=' + encodeURIComponent(message);
+      closeDlg();
+      window.location.href = link;
+    });
+  })();
+  </script>
 </body>
 </html>
