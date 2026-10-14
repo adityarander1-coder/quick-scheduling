@@ -3421,10 +3421,11 @@
       <div class="card">
         <h2>Settings</h2>
         <nav class="sub-tabs" role="tablist">
-          <button class="subtab-btn active" data-subtab="shifts">Shifts</button>
+          <button class="subtab-btn active" data-subtab="departments">Departments</button>
+          <button class="subtab-btn" data-subtab="jobroles">Job roles</button>
+          <button class="subtab-btn" data-subtab="shifts">Shifts</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
           <button class="subtab-btn" data-subtab="team">Team members</button>
-          <button class="subtab-btn" data-subtab="jobroles">Job roles</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
         </nav>
@@ -4061,6 +4062,18 @@
             })();
             </script>
           </div>
+          <div id="subtab-departments" class="sub-panel active">
+            <div class="sub-card">
+              <h3>Departments</h3>
+              <p class="set-desc">Organize your team into departments (e.g. Emergency, ICU, Pediatrics). Schedulers can be scoped to specific departments.</p>
+              <div id="team-dept-error" class="alert alert-error hidden" role="alert"></div>
+              <div id="team-dept-list"></div>
+              <form id="team-dept-form" novalidate style="margin-top:0.8rem">
+                <div class="form-row"><label>New department</label><input type="text" id="team-dept-name" autocomplete="off"></div>
+                <div style="margin-top:0.8rem"><button type="submit" class="btn">Add department</button></div>
+              </form>
+            </div>
+          </div>
           <div id="subtab-team" class="sub-panel">
             <div class="settings-section-head">
               <span class="settings-section-icon" aria-hidden="true">
@@ -4141,16 +4154,6 @@
               </form>
             </div>
 
-            <div class="sub-card">
-              <h3>Departments</h3>
-              <div id="team-dept-error" class="alert alert-error hidden" role="alert"></div>
-              <div id="team-dept-list"></div>
-              <form id="team-dept-form" novalidate style="margin-top:0.8rem">
-                <div class="form-row"><label>New department</label><input type="text" id="team-dept-name" autocomplete="off"></div>
-                <div style="margin-top:0.8rem"><button type="submit" class="btn">Add department</button></div>
-              </form>
-            </div>
-
             <script>
             (function () {
               // Team sub-panel — ported from team.html, IDs prefixed team-.
@@ -4165,7 +4168,7 @@
 
               function isActive() {
                 var h = window.location.hash || '#settings/rotations';
-                return h.indexOf('#settings/team') === 0;
+                return h.indexOf('#settings/team') === 0 || h.indexOf('#settings/departments') === 0;
               }
               function esc(s) { return s == null ? '' : String(s); }
               function showErr(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
@@ -5143,7 +5146,7 @@
             })();
             </script>
           </div>
-          <div id="subtab-shifts" class="sub-panel active">
+          <div id="subtab-shifts" class="sub-panel">
             <div class="set-head-row">
               <h3 class="set-h3" style="margin:0">Shift settings</h3>
               <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
@@ -8090,7 +8093,7 @@
       'schedule': function() { activateTab('schedule'); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'ask': function() { activateTab('ask'); },
-      'settings': function(sub) { activateTab('settings', sub || 'rotations'); },
+      'settings': function(sub) { activateTab('settings', sub || 'departments'); },
       'bulk': function() { activateTab('bulk'); },
       'link': function() { activateTab('link'); },
       'billing': function() { activateTab('billing'); loadBillingTab(); },
