@@ -5151,7 +5151,7 @@
               <h3 class="set-h3" style="margin:0">Shift settings</h3>
               <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
                 <button type="button" id="shift-add-btn" class="btn-secondary">+ Add shift type</button>
-                <button type="button" id="shift-save-btn" class="btn">Save shift times</button>
+                <button type="button" id="shift-save-btn" class="btn">Save changes</button>
               </div>
             </div>
             <p class="set-desc">Define your own shift types — any roles, any company. Set default start and end times for each.</p>
@@ -5401,8 +5401,10 @@
                   var deleted = st.isActive === false;
                   html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
-                    '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
-                    (editable ? '' : ' <span class="read-only-hint" title="Switch active department to edit" style="color:#6b7280;font-size:0.75rem;font-weight:700">View only</span>') + '</label>' +
+                    (editable && !deleted
+                      ? '<input type="text" id="shift-name-' + i + '" value="' + esc(st.name) + '" style="font-weight:700;font-size:1rem;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;min-width:140px;flex:1;font-family:inherit">'
+                      : '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
+                      (editable ? '' : ' <span class="read-only-hint" title="Switch active department to edit" style="color:#6b7280;font-size:0.75rem;font-weight:700">View only</span>') + '</label>') +
                     '<div style="max-width:200px">' + (editable ? deptDropdownHTML(deptIds, 'row' + i) : '<span style="font-size:0.88rem;color:var(--dim)">' + esc(deptNames(deptIds)) + '</span>') + '</div>' +
                     '<div style="max-width:200px" title="Which job roles can pick up this shift">' +
                       (editable
@@ -5483,6 +5485,7 @@
                   updates.push(api('/api/schedule/shift-types/' + st.id, {
                     method: 'PUT',
                     body: JSON.stringify({
+                      name: ($('shift-name-' + i) && $('shift-name-' + i).value || '').trim() || st.name,
                       startTime: $('shift-start-' + i).value,
                       endTime: $('shift-end-' + i).value,
                       departmentIds: checkedDeptIds('row' + i),
