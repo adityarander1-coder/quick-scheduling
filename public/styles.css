@@ -176,3 +176,17 @@ tr:last-child td { border-bottom: none; }
 .pw-strength.weak { color: #dc2626; }
 .pw-strength.fair { color: #d97706; }
 .pw-strength.strong { color: #16a34a; }
+
+/* Blue auth pages (login, signup, forgot, reset). */
+body.auth-blue {
+  background: linear-gradient(135deg, #1668dc 0%, #0f54b8 60%, #0b3f8a 100%);
+  min-height: 100vh;
+}
+body.auth-blue .brand h1 { color: #fff; }
+body.auth-blue .brand p { color: rgba(255, 255, 255, 0.85); }
+body.auth-blue .card {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  border: none;
+}
+body.auth-blue .form-links a { color: #fff; }
+body.auth-blue .form-links a:hover { text-decoration: underline; }
