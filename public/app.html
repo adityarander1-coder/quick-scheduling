@@ -337,8 +337,11 @@
     #tab-myschedule .ms-day-box.other-month { background: #f8fafc; color: #94a3b8; }
     #tab-myschedule .ms-day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
     #tab-myschedule .ms-day-num { font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; color: #102d47; }
-    #tab-myschedule .ms-month-chip { display: flex; align-items: center; gap: 0.35rem; border-radius: 8px; padding: 0.25rem 0.45rem; margin-bottom: 0.2rem; font-size: 0.75rem; font-weight: 600; color: #0a0a0a; border: 1px solid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #tab-myschedule .ms-month-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    #tab-myschedule .ms-month-chip { display: flex; align-items: flex-start; gap: 0.35rem; border-radius: 8px; padding: 0.25rem 0.45rem; margin-bottom: 0.2rem; font-size: 0.75rem; font-weight: 600; color: #0a0a0a; border: 1px solid; }
+    #tab-myschedule .ms-month-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 0.2rem; }
+    #tab-myschedule .ms-month-chip .ms-chip-text { display: block; min-width: 0; line-height: 1.25; }
+    #tab-myschedule .ms-month-chip .ms-chip-text strong { display: block; }
+    #tab-myschedule .ms-month-chip .ms-chip-who { display: block; font-weight: 500; }
     #tab-myschedule .ms-month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; }
     #tab-myschedule .ms-month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-top: 0.2rem; font-size: 0.72rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
     @media (max-width: 700px) {
@@ -6736,6 +6739,15 @@
       </div>
 
       <div id="ms-view"></div>
+      <div id="ms-day-modal" class="modal-backdrop hidden">
+        <div class="modal">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+            <h3 id="ms-day-modal-title" style="margin:0"></h3>
+            <button type="button" id="ms-day-modal-close" class="btn btn-sm">Close</button>
+          </div>
+          <div id="ms-day-modal-body"></div>
+        </div>
+      </div>
 
       <script>
       (function () {
@@ -6927,6 +6939,8 @@
             }
             renderFilters();
             renderView();
+            // Keep the date popup in sync if it's open.
+            if (msDayModalDate && !$('ms-day-modal').classList.contains('hidden')) openMsDayModal(msDayModalDate);
           }).catch(function () { msError('Could not load your schedule.'); });
         }
         window.qsLoadMySchedule = function () { loadData(); };
@@ -7243,14 +7257,17 @@
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span><strong>' + esc(shiftName) + '</strong> — ' + esc(who) + '</span></div>';
+                '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
             });
             if (showAvailable()) {
-              var opens = 0;
+              var openParts = [];
               shiftTypes.forEach(function (st) {
-                if (slotPasses(ds, st.id)) opens += openCountFor(ds, st.id);
+                if (slotPasses(ds, st.id)) {
+                  var c = openCountFor(ds, st.id);
+                  if (c > 0) openParts.push(c + '× ' + st.name);
+                }
               });
-              if (opens) html += '<div class="ms-month-open">' + opens + ' open</div>';
+              if (openParts.length) html += '<div class="ms-month-open">' + esc(openParts.join(', ')) + ' open</div>';
             }
             html += '</div>';
           }
@@ -7258,12 +7275,30 @@
           el.innerHTML = html;
           el.querySelectorAll('[data-ms-day]').forEach(function (box) {
             box.addEventListener('click', function () {
-              msView = 'day';
-              anchorDate = parseDate(box.getAttribute('data-ms-day'));
-              loadData();
+              openMsDayModal(box.getAttribute('data-ms-day'));
             });
           });
         }
+
+        // Date popup for the desktop month grid: shows the day's shifts in a
+        // modal so the user never leaves the month view.
+        var msDayModalDate = null;
+        function openMsDayModal(ds) {
+          msDayModalDate = ds;
+          var d = parseDate(ds);
+          $('ms-day-modal-title').textContent = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+          var body = $('ms-day-modal-body');
+          body.innerHTML = dayRowHtml(ds);
+          bindMsActions(body);
+          $('ms-day-modal').classList.remove('hidden');
+        }
+        document.getElementById('ms-day-modal-close').addEventListener('click', function () {
+          msDayModalDate = null;
+          $('ms-day-modal').classList.add('hidden');
+        });
+        document.getElementById('ms-day-modal').addEventListener('click', function (e) {
+          if (e.target === this) { msDayModalDate = null; this.classList.add('hidden'); }
+        });
 
         // Phone month layout (mirrors the admin month strip): mini date grid on
         // top — tap a date to jump the strip there — plus a horizontal sliding
@@ -7315,14 +7350,17 @@
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span><strong>' + esc(shiftName) + '</strong> — ' + esc(who) + '</span></div>';
+                '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
             });
             if (showAvailable()) {
-              var opens = 0;
+              var openParts = [];
               shiftTypes.forEach(function (st) {
-                if (slotPasses(ds, st.id)) opens += openCountFor(ds, st.id);
+                if (slotPasses(ds, st.id)) {
+                  var c = openCountFor(ds, st.id);
+                  if (c > 0) openParts.push(c + '× ' + st.name);
+                }
               });
-              if (opens) html += '<div class="ms-month-open">' + opens + ' open</div>';
+              if (openParts.length) html += '<div class="ms-month-open">' + esc(openParts.join(', ')) + ' open</div>';
             }
             html += '</div>';
             d.setDate(d.getDate() + 1);
