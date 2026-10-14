@@ -8282,17 +8282,19 @@
   <style>
     /* Floating Email AI scheduler button — visible on every tab, all roles. */
     #fab-email-ai {
-      position: fixed; right: 1.1rem; bottom: 1.1rem; width: 58px; height: 58px;
-      border-radius: 50%; background: var(--accent); color: #fff; border: none;
+      position: fixed; right: 1.1rem; bottom: 1.1rem;
+      display: flex; align-items: center; gap: 0.45rem;
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 999px; padding: 0.72rem 1.05rem;
+      font-size: 0.78rem; font-weight: 600; letter-spacing: 0.01em;
       box-shadow: 0 4px 16px rgba(0,0,0,0.28); cursor: pointer; z-index: 90;
-      display: flex; align-items: center; justify-content: center; padding: 0;
     }
     #fab-email-ai:hover { filter: brightness(1.1); }
-    #fab-email-ai:active { transform: scale(0.94); }
-    #fab-email-ai svg { width: 27px; height: 27px; }
+    #fab-email-ai:active { transform: scale(0.96); }
+    #fab-email-ai svg { width: 19px; height: 19px; flex: none; }
     @media (max-width: 700px) {
-      #fab-email-ai { right: 0.9rem; bottom: 0.9rem; width: 52px; height: 52px; }
-      #fab-email-ai svg { width: 24px; height: 24px; }
+      #fab-email-ai { right: 0.9rem; bottom: 0.9rem; padding: 0.62rem 0.9rem; font-size: 0.72rem; }
+      #fab-email-ai svg { width: 17px; height: 17px; }
     }
     /* Global (body-level) dialog for the FAB — unscoped so it works from any tab. */
     #fab-email-dialog { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -8302,6 +8304,7 @@
   </style>
   <button type="button" id="fab-email-ai" title="Email AI scheduler" aria-label="Email AI scheduler">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
+    <span>Email AI</span>
   </button>
   <div id="fab-email-dialog" class="hidden">
     <div class="modal">
