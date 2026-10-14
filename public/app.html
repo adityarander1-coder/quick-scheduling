@@ -553,6 +553,7 @@
       <button type="button" class="tab-btn active" data-etab="myschedule">My schedule</button>
       <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
+      <button type="button" class="tab-btn" data-etab="ehelp">Help</button>
     </nav>
   </header>
 
@@ -7716,6 +7717,71 @@
         };
       })();
       </script>
+    </section>
+
+    <!-- Employee Help — visible in the employee tab bar (and My schedule view for
+         owner/scheduler). Covers employee functions only. -->
+    <section id="tab-ehelp" class="tab-panel">
+      <div class="card">
+        <h2 style="margin-top:0">Help & How-to</h2>
+        <p style="color:var(--dim)">Everything you can do as a team member, in one place.</p>
+      </div>
+
+      <div class="card">
+        <h3>My schedule views</h3>
+        <p><strong>My schedule</strong> shows the whole team's schedule — your shifts and everyone else's.</p>
+        <ul>
+          <li><strong>Day</strong> — everyone working on one date, with full shift names.</li>
+          <li><strong>Week</strong> — seven days at a glance.</li>
+          <li><strong>Month</strong> — on phones: a mini date grid on top (tap a date to jump) plus a sliding two-day strip below. Teal dots mark your shifts, gray dots mark others'.</li>
+          <li><strong>Range</strong> — pick any date range.</li>
+        </ul>
+        <p>Green dates are published (final), gray are draft, plain are empty.</p>
+      </div>
+
+      <div class="card">
+        <h3>Filters</h3>
+        <p>Three dropdowns above the schedule:</p>
+        <ul>
+          <li><strong>Department</strong> — show one department or all.</li>
+          <li><strong>Shift</strong> — show one shift type or all.</li>
+          <li><strong>View</strong> — <strong>My shifts</strong> (only yours), <strong>Everyone's schedule</strong> (the full team), or <strong>Available shifts</strong> (open shifts you can pick up).</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Picking up open shifts</h3>
+        <p>Set the View filter to <strong>Available shifts</strong> to see open shifts across the whole date range. Tap one to pick it up.</p>
+        <ul>
+          <li>You can only pick up a shift on a date you're not already working.</li>
+          <li>Some shifts require a specific job role (shown as <em>Requires: …</em>). You can only claim shifts your role is eligible for.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Swap &amp; ask for cover</h3>
+        <p>On <strong>your own</strong> shifts you can:</p>
+        <ul>
+          <li><strong>Swap</strong> — offer your shift to a teammate in exchange for one of theirs.</li>
+          <li><strong>Ask for cover</strong> — ask someone to take your shift. Cover requests need approval.</li>
+        </ul>
+        <p>Other people's shifts are read-only — you can't change them.</p>
+      </div>
+
+      <div class="card">
+        <h3>Shift requests</h3>
+        <p>The <strong>Shift requests</strong> tab has two sub-tabs:</p>
+        <ul>
+          <li><strong>Sent</strong> — requests you made (pickups, swaps, cover).</li>
+          <li><strong>Received</strong> — requests sent to you. A badge on the tab tells you when one needs your action.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Ask Q-Scheduler</h3>
+        <p>Ask plain-language questions about the schedule, like <em>"Who's working on October 14?"</em> or <em>"Am I scheduled next weekend?"</em></p>
+        <p>The <strong>Email AI</strong> button (also floating at the bottom-right of every screen) opens your email app addressed to the AI scheduler — write what you need (a day off, a swap, a question) and the system builds a plan and sends it to your scheduler for approval.</p>
+      </div>
     </section>
 
   </main>
