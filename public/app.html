@@ -77,9 +77,9 @@
       if (!window.qsInEditList(deptId)) return false;
       var a = window.qsDeptAccess;
       if (!a) return true; // full access fallback
-      // Unassigned content: editable only when the scheduler has an active department
-      // (so a scheduler with no edit access anywhere can't change anything).
-      if (deptId == null || deptId === '') return !!window.qsActiveDeptId;
+      // Unassigned content: only the owner can edit (schedulers work within
+      // their assigned departments — no ambiguous unassigned edits).
+      if (deptId == null || deptId === '') return false;
       return String(deptId) === String(window.qsActiveDeptId);
     };
     // Departments a shift type belongs to (migration 032).

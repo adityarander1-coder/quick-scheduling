@@ -157,7 +157,13 @@ export async function requireActiveDepartment(
     return null;
   }
   const relevant = [...new Set((relevantDepartmentIds || []).filter(Boolean))];
-  if (relevant.length && !relevant.includes(active)) {
+  if (!relevant.length) {
+    // Unassigned content: owner-only. Schedulers work within their assigned
+    // departments — no ambiguous unassigned edits.
+    res.status(403).json({ error: 'That item has no department assigned. Only the owner can change it.' });
+    return null;
+  }
+  if (!relevant.includes(active)) {
     res.status(403).json({ error: 'That change belongs to a different department.' });
     return null;
   }
