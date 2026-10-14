@@ -65,6 +65,62 @@ async function findShiftType(companyId: string, name: string): Promise<{ id: str
   return null;
 }
 
+/**
+ * Exclude rotation-generated instances for a user on a date (the "give off"
+ * path for rotation days, which have no shift row). Returns the number of
+ * rotation instances actually excluded.
+ */
+async function excludeRotationInstances(
+  companyId: string,
+  userId: string,
+  date: string,
+  shiftTypeId: string | null
+): Promise<number> {
+  const { rows: rotations } = await query(
+    `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
+     FROM rotations WHERE company_id = $1 AND is_active = true`,
+    [companyId]
+  );
+  let excluded = 0;
+  for (const rot of rotations) {
+    const { rows: assignments } = await query(
+      `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
+       FROM rotation_assignments ra
+       JOIN users u ON u.id = ra.user_id
+       WHERE ra.rotation_id = $1 AND ra.user_id = $2 AND u.is_active = true
+         AND (u.end_date IS NULL OR u.end_date::text >= $3)`,
+      [rot.id, userId, date]
+    );
+    if (!assignments.length) continue;
+    const startDate = new Date(rot.startDate + 'T00:00:00');
+    const target = new Date(date + 'T00:00:00');
+    if (isNaN(startDate.getTime()) || isNaN(target.getTime()) || target < startDate) continue;
+    const daysSinceStart = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
+    const cycleDay = (daysSinceStart % rot.cycleDays) + 1; // 1-indexed, matches schedule.ts
+    const matches = assignments.filter(
+      (a: any) => a.cycleDay === cycleDay && (!shiftTypeId || a.shiftTypeId === shiftTypeId)
+    );
+    if (!matches.length) continue;
+    // Skip dates inside a pause period (vacation etc.).
+    const { rows: pauses } = await query(
+      `SELECT 1 FROM rotation_pauses
+       WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
+      [rot.id, date]
+    );
+    if (pauses.length) continue;
+    for (const m of matches) {
+      const ins = await query(
+        `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+        [companyId, rot.id, userId, date, m.shiftTypeId]
+      );
+      if (ins.rowCount && ins.rowCount > 0) excluded++;
+    }
+  }
+  return excluded;
+}
+
 /** Find one manual shift row for a user on a date, optionally filtered by shift type name. */
 async function findShiftRow(
   companyId: string,
@@ -186,20 +242,27 @@ export async function executePlan(
         if (!user) throw new Error(`Person not found: ${change.person}`);
         let q = 'DELETE FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3';
         const params: any[] = [companyId, user.id, change.date];
+        let shiftTypeId: string | null = null;
         if (change.shiftType) {
           const st = await findShiftType(companyId, change.shiftType);
-          if (st) { q += ' AND shift_type_id = $4'; params.push(st.id); }
+          if (st) { q += ' AND shift_type_id = $4'; params.push(st.id); shiftTypeId = st.id; }
         }
         const deleted = await query(q, params);
         if (deleted.rowCount === 0) {
-          // Never report success when nothing was deleted. The most common
-          // cause: rotation-generated entries have no shift row, so they
-          // can't be removed this way — the rotation must be changed instead.
-          results.push({
-            action: 'unassign', success: false,
-            message: `No shift found for ${user.display} on ${change.date} to remove. ` +
-              `If this entry comes from a rotation, it has no shift row — change the rotation instead.`,
-          });
+          // No direct shift row — the visible entry is rotation-generated, so
+          // exclude the rotation instance(s) for that date instead.
+          const excluded = await excludeRotationInstances(companyId, user.id, change.date, shiftTypeId);
+          if (excluded > 0) {
+            results.push({
+              action: 'unassign', success: true,
+              message: `Removed ${user.display} from ${change.date} (rotation day)`,
+            });
+          } else {
+            results.push({
+              action: 'unassign', success: false,
+              message: `No shift found for ${user.display} on ${change.date} to remove.`,
+            });
+          }
         } else {
           results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
         }
