@@ -182,9 +182,9 @@ body.auth-blue {
   background: linear-gradient(160deg, #082f4f 0%, #123f60 70%, #0d4a73 100%);
   min-height: 100vh;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
 }
-body.auth-blue .container { position: relative; z-index: 2; }
+body.auth-blue .container { position: relative; z-index: 2; padding-bottom: 4rem; }
 body.auth-blue .brand h1 { color: #fff; }
 body.auth-blue .brand p { color: rgba(255, 255, 255, 0.85); }
 body.auth-blue .card {
