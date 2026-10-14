@@ -39,6 +39,16 @@
           <input type="email" id="email" name="email" autocomplete="email" required>
         </label>
         <label>
+          What field are you in?
+          <select id="industry" name="industry">
+            <option value="other" selected>Other / General</option>
+            <option value="hospital">Hospital / Healthcare</option>
+            <option value="restaurant">Restaurant / Food</option>
+            <option value="retail">Retail / Store</option>
+            <option value="warehouse">Warehouse / Logistics</option>
+          </select>
+        </label>
+        <label>
           Password
           <span class="hint">At least 8 characters, with a capital letter, a number, and a special character.</span>
           <span class="pw-wrap"><input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></span><span class="pw-meter" aria-hidden="true"><span class="pw-meter-fill" id="password-meter-fill"></span></span><span class="pw-strength" id="password-strength"></span>
@@ -72,6 +82,7 @@
         var contactName = document.getElementById('contactName').value.trim();
         var email = document.getElementById('email').value.trim();
         var password = document.getElementById('password').value;
+        var industry = document.getElementById('industry').value || 'other';
         if (!companyName || !contactName || !email || !password) {
           showError('Please fill in all fields.');
           return;
@@ -86,7 +97,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ companyName: companyName, contactName: contactName, email: email, password: password })
+          body: JSON.stringify({ companyName: companyName, contactName: contactName, email: email, password: password, industry: industry })
         }).then(function (res) {
           return res.json().then(function (data) { return { ok: res.ok, data: data }; });
         }).then(function (result) {

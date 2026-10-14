@@ -87,6 +87,47 @@ const DEFAULT_SHIFT_TYPES = [
   { name: 'Night Shift', shortName: 'NIGHT', color: '#3b4a5c', textColor: '#ffffff', sortOrder: 4, startTime: '00:00', endTime: '08:00' },
 ];
 
+// Per-industry example shifts (chosen at signup via the industry picker).
+// ---------------------------------------------------------------------------
+const INDUSTRY_SHIFT_TYPES: Record<string, typeof DEFAULT_SHIFT_TYPES> = {
+  hospital: [
+    { name: 'Day Shift', shortName: 'DAY', color: '#2672d8', textColor: '#ffffff', sortOrder: 1, startTime: '08:00', endTime: '20:00' },
+    { name: 'Night Shift', shortName: 'NIGHT', color: '#3b4a5c', textColor: '#ffffff', sortOrder: 2, startTime: '20:00', endTime: '08:00' },
+    { name: 'Swing Shift', shortName: 'SWING', color: '#d98314', textColor: '#ffffff', sortOrder: 3, startTime: '12:00', endTime: '00:00' },
+  ],
+  restaurant: [
+    { name: 'Breakfast Shift', shortName: 'BFST', color: '#d98314', textColor: '#ffffff', sortOrder: 1, startTime: '06:00', endTime: '11:00' },
+    { name: 'Lunch Shift', shortName: 'LNCH', color: '#2672d8', textColor: '#ffffff', sortOrder: 2, startTime: '11:00', endTime: '16:00' },
+    { name: 'Dinner Shift', shortName: 'DNR', color: '#8a5fb0', textColor: '#ffffff', sortOrder: 3, startTime: '16:00', endTime: '22:00' },
+  ],
+  retail: [
+    { name: 'Opening Shift', shortName: 'OPEN', color: '#2672d8', textColor: '#ffffff', sortOrder: 1, startTime: '08:00', endTime: '16:00' },
+    { name: 'Midday Shift', shortName: 'MID', color: '#00a9a4', textColor: '#ffffff', sortOrder: 2, startTime: '10:00', endTime: '18:00' },
+    { name: 'Closing Shift', shortName: 'CLOSE', color: '#3b4a5c', textColor: '#ffffff', sortOrder: 3, startTime: '14:00', endTime: '22:00' },
+  ],
+  warehouse: [
+    { name: '1st Shift', shortName: '1ST', color: '#2672d8', textColor: '#ffffff', sortOrder: 1, startTime: '06:00', endTime: '14:00' },
+    { name: '2nd Shift', shortName: '2ND', color: '#d98314', textColor: '#ffffff', sortOrder: 2, startTime: '14:00', endTime: '22:00' },
+    { name: '3rd Shift', shortName: '3RD', color: '#3b4a5c', textColor: '#ffffff', sortOrder: 3, startTime: '22:00', endTime: '06:00' },
+  ],
+};
+
+/** Seed shift types for a company from an explicit list. */
+async function seedShiftTypes(companyId: string, list: typeof DEFAULT_SHIFT_TYPES) {
+  for (const st of list) {
+    await query(
+      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, start_time, end_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [crypto.randomUUID(), companyId, st.name, st.shortName, st.color, st.textColor, st.sortOrder, (st as any).startTime || null, (st as any).endTime || null]
+    );
+  }
+}
+
+/** Shift types for an industry key; falls back to the generic set. */
+export function shiftTypesForIndustry(industry: string): typeof DEFAULT_SHIFT_TYPES {
+  return INDUSTRY_SHIFT_TYPES[industry] || DEFAULT_SHIFT_TYPES;
+}
+
 /** Ensure the company has shift types; seed defaults if none exist. */
 async function ensureShiftTypes(companyId: string) {
   const { rows } = await query(
@@ -94,13 +135,13 @@ async function ensureShiftTypes(companyId: string) {
     [companyId]
   );
   if (rows.length) return;
-  for (const st of DEFAULT_SHIFT_TYPES) {
-    await query(
-      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, start_time, end_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [crypto.randomUUID(), companyId, st.name, st.shortName, st.color, st.textColor, st.sortOrder, (st as any).startTime || null, (st as any).endTime || null]
-    );
-  }
+  // Prefer the company's chosen industry; fall back to generic.
+  let industry = 'other';
+  try {
+    const c = await query('SELECT industry FROM companies WHERE id = $1', [companyId]);
+    if (c.rows.length && c.rows[0].industry) industry = c.rows[0].industry;
+  } catch { /* industry column may not exist yet on older DBs */ }
+  await seedShiftTypes(companyId, shiftTypesForIndustry(industry));
 }
 
 function isValidDate(s: any): boolean {

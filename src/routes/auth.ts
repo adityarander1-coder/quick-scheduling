@@ -143,7 +143,7 @@ async function loadUserAndCompany(userId: string) {
 // POST /api/auth/signup — creates company + first owner user, starts a session.
 router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   try {
-    const { companyName, contactName, email, password } = req.body ?? {};
+    const { companyName, contactName, email, password, industry } = req.body ?? {};
     if (!companyName || !contactName || !email || !password) {
       res.status(400).json({ error: 'Company name, contact name, email, and password are required.' });
       return;
@@ -170,9 +170,12 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const userId = crypto.randomUUID();
     const nameSplit = splitName(contactName);
 
+    const validIndustries = ['hospital', 'restaurant', 'retail', 'warehouse', 'other'];
+    const cleanIndustry = validIndustries.includes(String(industry)) ? String(industry) : 'other';
+
     await query(
-      `INSERT INTO companies (id, name, billing_status, trial_ends_at) VALUES ($1, $2, 'trial', now() + interval '14 days')`,
-      [companyId, String(companyName).trim()]
+      `INSERT INTO companies (id, name, billing_status, trial_ends_at, industry) VALUES ($1, $2, 'trial', now() + interval '14 days', $3)`,
+      [companyId, String(companyName).trim(), cleanIndustry]
     );
     await query(
       `INSERT INTO users (id, company_id, first_name, last_name, name, email, password_hash, role)
