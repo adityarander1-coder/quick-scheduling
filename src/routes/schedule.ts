@@ -77,15 +77,14 @@ async function shiftDisplayNames(companyId: string, userId: string, shiftTypeId:
   };
 }
 
-// Default shift types (hospital defaults, seeded per company on first use).
-// Colors match the prototype: Day Hospitalist blue, Swing amber, Night dark.
+// Default shift types (generic, seeded per company on first use).
+// Kept industry-neutral — every company renames/adds their own.
 // ---------------------------------------------------------------------------
 const DEFAULT_SHIFT_TYPES = [
-  { name: 'Day Hospitalist', shortName: 'DH', color: '#f06e5b', textColor: '#ffffff', sortOrder: 1, startTime: '08:00', endTime: '20:00' },
-  { name: 'Swing Shift', shortName: 'SW', color: '#d98314', textColor: '#ffffff', sortOrder: 2, startTime: '12:00', endTime: '00:00' },
-  { name: 'Night Hospitalist', shortName: 'NH', color: '#2672d8', textColor: '#ffffff', sortOrder: 3, startTime: '20:00', endTime: '08:00' },
-  { name: 'Night NP', shortName: 'NNP', color: '#8a5fb0', textColor: '#ffffff', sortOrder: 4, startTime: '20:00', endTime: '08:00' },
-  { name: 'Day NP', shortName: 'DNP', color: '#00a88f', textColor: '#ffffff', sortOrder: 5, startTime: '08:00', endTime: '20:00' },
+  { name: 'Morning Shift', shortName: 'AM', color: '#2672d8', textColor: '#ffffff', sortOrder: 1, startTime: '08:00', endTime: '16:00' },
+  { name: 'Day Shift', shortName: 'DAY', color: '#00a9a4', textColor: '#ffffff', sortOrder: 2, startTime: '09:00', endTime: '17:00' },
+  { name: 'Evening Shift', shortName: 'EVE', color: '#d98314', textColor: '#ffffff', sortOrder: 3, startTime: '16:00', endTime: '00:00' },
+  { name: 'Night Shift', shortName: 'NIGHT', color: '#3b4a5c', textColor: '#ffffff', sortOrder: 4, startTime: '00:00', endTime: '08:00' },
 ];
 
 /** Ensure the company has shift types; seed defaults if none exist. */
