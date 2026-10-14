@@ -177,11 +177,14 @@ tr:last-child td { border-bottom: none; }
 .pw-strength.fair { color: #d97706; }
 .pw-strength.strong { color: #16a34a; }
 
-/* Blue auth pages (login, signup, forgot, reset). */
+/* Blue auth pages (login, signup, forgot, reset) — navy from the landing page. */
 body.auth-blue {
-  background: linear-gradient(135deg, #1668dc 0%, #0f54b8 60%, #0b3f8a 100%);
+  background: linear-gradient(160deg, #082f4f 0%, #123f60 70%, #0d4a73 100%);
   min-height: 100vh;
+  position: relative;
+  overflow: hidden;
 }
+body.auth-blue .container { position: relative; z-index: 2; }
 body.auth-blue .brand h1 { color: #fff; }
 body.auth-blue .brand p { color: rgba(255, 255, 255, 0.85); }
 body.auth-blue .card {
@@ -190,3 +193,22 @@ body.auth-blue .card {
 }
 body.auth-blue .form-links a { color: #fff; }
 body.auth-blue .form-links a:hover { text-decoration: underline; }
+/* Floating schedule boxes in the background. */
+.bg-shifts { position: fixed; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.bg-shift {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  padding: 0.7rem 1rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #102d47;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
+  filter: blur(1.5px);
+  opacity: 0.55;
+  line-height: 1.3;
+}
+.bg-shift span { display: block; font-weight: 500; font-size: 0.8rem; color: #5c7185; }
+@media (max-width: 700px) {
+  .bg-shift { font-size: 0.75rem; padding: 0.5rem 0.7rem; }
+}
