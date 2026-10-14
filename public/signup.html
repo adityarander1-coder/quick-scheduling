@@ -102,10 +102,10 @@
                   window.location.href = co.data.url;
                 } else {
                   // Billing not configured (dev) — continue to the app; trial still applies.
-                  window.location.href = '/home.html';
+                  window.location.href = '/app.html';
                 }
               })
-              .catch(function () { window.location.href = '/home.html'; });
+              .catch(function () { window.location.href = '/app.html'; });
           } else {
             showError(result.data && result.data.error ? result.data.error : 'Sign up failed. Please try again.');
           }
