@@ -7250,14 +7250,32 @@
             html += '<div class="' + cls + '" data-ms-day="' + ds + '">';
             html += '<div class="ms-day-num">' + d.getDate() + '</div>';
             var list = shiftsFor(ds);
+            // Group by shift type: shift name once, names listed under it.
+            var byType = {};
+            list.forEach(function (s) { (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s); });
+            shiftTypes.forEach(function (st) {
+              var items = byType[st.id] || [];
+              if (!items.length) return;
+              var color = st.color || '#637a8e';
+              var names = items.map(function (s) {
+                return '<span class="ms-chip-who">' + esc(isMine(s) ? 'YOU · ' + displayName(s) : displayName(s)) + '</span>';
+              }).join('');
+              var title = esc(st.name + ' — ' + items.map(function (s) { return displayName(s); }).join(', '));
+              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + title + '">' +
+                '<span class="dot" style="background:' + esc(color) + '"></span>' +
+                '<span class="ms-chip-text"><strong>' + esc(st.name) + '</strong>' + names + '</span></div>';
+            });
+            // Any shifts whose type isn't in shiftTypes (safety net — render ungrouped).
+            var knownIds = {};
+            shiftTypes.forEach(function (st) { knownIds[st.id] = true; });
             list.forEach(function (s) {
+              if (knownIds[s.shiftTypeId]) return;
               var st = stById(s.shiftTypeId);
               var color = (st && st.color) || '#637a8e';
-              var shiftName = st ? st.name : 'Shift';
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
-              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
+              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc((st ? st.name : 'Shift') + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
+                '<span class="ms-chip-text"><strong>' + esc(st ? st.name : 'Shift') + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
             });
             if (showAvailable()) {
               var openParts = [];
