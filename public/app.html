@@ -6712,6 +6712,54 @@
       <div style="margin-top:1.5rem;text-align:center" id="help-audit-btn-wrap">
         <button type="button" class="btn-secondary audit-page-btn">Run report</button>
       </div>
+
+      <style>
+        /* Click-to-open help topics (admin + employee sides). */
+        #tab-help .help-collapsible > h3, #tab-ehelp .help-collapsible > h3 {
+          cursor: pointer; user-select: none;
+          display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+          margin: 0; padding: 0.2rem 0;
+        }
+        #tab-help .help-collapsible > h3::after, #tab-ehelp .help-collapsible > h3::after {
+          content: '\25B8'; color: var(--accent); font-size: 1.1rem; flex-shrink: 0;
+          transition: transform 0.15s ease;
+        }
+        #tab-help .help-collapsible.open > h3::after, #tab-ehelp .help-collapsible.open > h3::after {
+          transform: rotate(90deg);
+        }
+        #tab-help .help-collapsible .help-body, #tab-ehelp .help-collapsible .help-body { display: none; }
+        #tab-help .help-collapsible.open .help-body, #tab-ehelp .help-collapsible.open .help-body { display: block; }
+      </style>
+      <script>
+      (function () {
+        // Convert each help topic card into a click-to-open section, on both
+        // the admin and employee sides (plus the standalone employee help tab).
+        function makeCollapsible(root) {
+          var cards = root.querySelectorAll('.card');
+          var first = true;
+          cards.forEach(function (card) {
+            var h3 = null;
+            for (var i = 0; i < card.children.length; i++) {
+              if (card.children[i].tagName === 'H3') { h3 = card.children[i]; break; }
+            }
+            if (!h3) return;
+            card.classList.add('help-collapsible');
+            var body = document.createElement('div');
+            body.className = 'help-body';
+            var sibs = [];
+            var n = h3.nextSibling;
+            while (n) { sibs.push(n); n = n.nextSibling; }
+            sibs.forEach(function (s) { body.appendChild(s); });
+            card.appendChild(body);
+            if (first) { card.classList.add('open'); first = false; }
+            h3.addEventListener('click', function () { card.classList.toggle('open'); });
+          });
+        }
+        makeCollapsible(document.getElementById('help-admin'));
+        makeCollapsible(document.getElementById('help-employee'));
+        makeCollapsible(document.getElementById('tab-ehelp'));
+      })();
+      </script>
     </section>
 
     <!-- My schedule — ONE shared employee view for all roles (2026-10-12).
