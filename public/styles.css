@@ -179,7 +179,7 @@ tr:last-child td { border-bottom: none; }
 
 /* Blue auth pages (login, signup, forgot, reset) — navy from the landing page. */
 body.auth-blue {
-  background: linear-gradient(135deg, #1668dc 0%, #0e8fc0 55%, #00a9a4 100%);
+  background: linear-gradient(160deg, #082f4f 0%, #123f60 70%, #0d4a73 100%);
   min-height: 100vh;
   position: relative;
   overflow: hidden;
