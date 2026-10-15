@@ -3,7 +3,12 @@
 import { query } from '../db.js';
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'bulk_publish' | 'bulk_unpublish';
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
+          'add_department' | 'rename_department' |
+          'add_team_member' | 'update_team_member' |
+          'add_shift_type' | 'rename_shift_type' |
+          'set_staffing_target' |
+          'bulk_publish' | 'bulk_unpublish';
   person?: string;
   fromPerson?: string;
   toPerson?: string;
@@ -12,7 +17,14 @@ interface PlanChange {
   toDate?: string;
   shiftType?: string;
   jobRoleName?: string;
+  newJobRoleName?: string;
   department?: string;
+  newDepartment?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  newShiftType?: string;
+  targetCount?: number;
 }
 
 interface ExecuteResult {
@@ -65,6 +77,24 @@ async function findShiftType(companyId: string, name: string): Promise<{ id: str
     if (day) return { id: day.id, name: day.name };
   }
   return null;
+}
+
+async function findDepartment(companyId: string, name: string): Promise<{ id: string; name: string } | null> {
+  const { rows } = await query(
+    'SELECT id, name FROM departments WHERE company_id = $1 AND is_active = true',
+    [companyId]
+  );
+  const lower = name.toLowerCase().trim();
+  for (const d of rows) {
+    if (d.name.toLowerCase() === lower || d.name.toLowerCase().includes(lower) || lower.includes(d.name.toLowerCase())) {
+      return { id: d.id, name: d.name };
+    }
+  }
+  return null;
+}
+
+async function findMember(companyId: string, name: string): Promise<{ id: string; display: string } | null> {
+  return findUser(companyId, name);
 }
 
 /**
@@ -319,6 +349,126 @@ export async function executePlan(
           );
           results.push({ action: 'add_job_role', success: true, message: `Added job role "${change.jobRoleName}" to ${dept.name}` });
         }
+      } else if (change.action === 'rename_job_role' && change.jobRoleName && change.newJobRoleName && change.department) {
+        const dept = await findDepartment(companyId, change.department);
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        const { rows } = await query(
+          'UPDATE job_roles SET name = $1 WHERE company_id = $2 AND department_id = $3 AND lower(name) = lower($4) RETURNING id',
+          [change.newJobRoleName.trim(), companyId, dept.id, change.jobRoleName.trim()]
+        );
+        if (!rows.length) throw new Error(`Job role not found: ${change.jobRoleName}`);
+        results.push({ action: 'rename_job_role', success: true, message: `Renamed job role "${change.jobRoleName}" → "${change.newJobRoleName}" in ${dept.name}` });
+      } else if (change.action === 'add_department' && change.department) {
+        const { rows: existing } = await query(
+          'SELECT id FROM departments WHERE company_id = $1 AND lower(name) = lower($2)',
+          [companyId, change.department.trim()]
+        );
+        if (existing.length) {
+          results.push({ action: 'add_department', success: true, message: `Department "${change.department}" already exists — no change needed` });
+        } else {
+          const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+          await query(
+            'INSERT INTO departments (id, company_id, name, is_active) VALUES ($1, $2, $3, true)',
+            [uuidv4(), companyId, change.department.trim()]
+          );
+          results.push({ action: 'add_department', success: true, message: `Added department "${change.department}"` });
+        }
+      } else if (change.action === 'rename_department' && change.department && change.newDepartment) {
+        const dept = await findDepartment(companyId, change.department);
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        await query(
+          'UPDATE departments SET name = $1 WHERE id = $2',
+          [change.newDepartment.trim(), dept.id]
+        );
+        results.push({ action: 'rename_department', success: true, message: `Renamed department "${change.department}" → "${change.newDepartment}"` });
+      } else if (change.action === 'add_team_member' && change.firstName && change.lastName) {
+        let deptId: string | null = null;
+        if (change.department) {
+          const dept = await findDepartment(companyId, change.department);
+          if (!dept) throw new Error(`Department not found: ${change.department}`);
+          deptId = dept.id;
+        }
+        let roleId: string | null = null;
+        if (change.jobRoleName && deptId) {
+          const { rows } = await query(
+            'SELECT id FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+            [companyId, deptId, change.jobRoleName.trim()]
+          );
+          if (rows.length) roleId = rows[0].id;
+        }
+        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+        const memberId = uuidv4();
+        await query(
+          `INSERT INTO users (id, company_id, first_name, last_name, email, department_id, job_role_id, role, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'employee', true)`,
+          [memberId, companyId, change.firstName.trim(), change.lastName.trim(),
+           change.email ? change.email.trim() : null, deptId, roleId]
+        );
+        results.push({ action: 'add_team_member', success: true, message: `Added team member ${change.firstName} ${change.lastName}${change.department ? ` to ${change.department}` : ''}` });
+      } else if (change.action === 'update_team_member' && change.person) {
+        const member = await findMember(companyId, change.person);
+        if (!member) throw new Error(`Team member not found: ${change.person}`);
+        const updates: string[] = [];
+        const params: any[] = [];
+        let pi = 1;
+        if (change.department) {
+          const dept = await findDepartment(companyId, change.department);
+          if (!dept) throw new Error(`Department not found: ${change.department}`);
+          updates.push(`department_id = $${pi++}`); params.push(dept.id);
+        }
+        if (change.jobRoleName) {
+          const { rows } = await query(
+            'SELECT id, department_id FROM job_roles WHERE company_id = $1 AND lower(name) = lower($2)',
+            [companyId, change.jobRoleName.trim()]
+          );
+          if (!rows.length) throw new Error(`Job role not found: ${change.jobRoleName}`);
+          updates.push(`job_role_id = $${pi++}`); params.push(rows[0].id);
+        }
+        if (!updates.length) throw new Error('No updates specified for team member');
+        params.push(member.id);
+        await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${pi}`, params);
+        results.push({ action: 'update_team_member', success: true, message: `Updated ${member.display}` });
+      } else if (change.action === 'add_shift_type' && change.shiftType && change.department) {
+        const dept = await findDepartment(companyId, change.department);
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        const { rows: existing } = await query(
+          'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
+          [companyId, change.shiftType.trim()]
+        );
+        if (existing.length) {
+          results.push({ action: 'add_shift_type', success: true, message: `Shift type "${change.shiftType}" already exists — no change needed` });
+        } else {
+          const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+          const stId = uuidv4();
+          await query(
+            `INSERT INTO shift_types (id, company_id, name, color, department_id)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [stId, companyId, change.shiftType.trim(), '#3b82f6', dept.id]
+          );
+          await query(
+            'INSERT INTO shift_type_departments (shift_type_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [stId, dept.id]
+          );
+          results.push({ action: 'add_shift_type', success: true, message: `Added shift type "${change.shiftType}" to ${dept.name}` });
+        }
+      } else if (change.action === 'rename_shift_type' && change.shiftType && change.newShiftType) {
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        await query('UPDATE shift_types SET name = $1 WHERE id = $2', [change.newShiftType.trim(), st.id]);
+        results.push({ action: 'rename_shift_type', success: true, message: `Renamed shift type "${change.shiftType}" → "${change.newShiftType}"` });
+      } else if (change.action === 'set_staffing_target' && change.shiftType && change.targetCount !== undefined) {
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const count = Math.min(20, Math.max(0, Math.round(change.targetCount)));
+        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+        await query(
+          `INSERT INTO staffing_targets (id, company_id, shift_type_id, target_count, weekdays)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (company_id, shift_type_id)
+           DO UPDATE SET target_count = $4`,
+          [uuidv4(), companyId, st.id, count, [0,1,2,3,4,5,6]]
+        );
+        results.push({ action: 'set_staffing_target', success: true, message: `Set staffing target for "${change.shiftType}" to ${count} per day` });
       } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate) {
         const publish = change.action === 'bulk_publish';
         let shiftTypeId: string | null = null;

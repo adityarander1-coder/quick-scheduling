@@ -37,6 +37,38 @@ function changeProblems(change: any): string[] {
       if (missing(change.jobRoleName)) problems.push('no job role name given');
       if (missing(change.department)) problems.push('no department given');
       break;
+    case 'rename_job_role':
+      if (missing(change.jobRoleName)) problems.push('no job role name given');
+      if (missing(change.newJobRoleName)) problems.push('no new job role name given');
+      if (missing(change.department)) problems.push('no department given');
+      break;
+    case 'add_department':
+      if (missing(change.department)) problems.push('no department name given');
+      break;
+    case 'rename_department':
+      if (missing(change.department)) problems.push('no department name given');
+      if (missing(change.newDepartment)) problems.push('no new department name given');
+      break;
+    case 'add_team_member':
+      if (missing(change.firstName)) problems.push('no first name given');
+      if (missing(change.lastName)) problems.push('no last name given');
+      break;
+    case 'update_team_member':
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.department) && missing(change.jobRoleName)) problems.push('no updates specified');
+      break;
+    case 'add_shift_type':
+      if (missing(change.shiftType)) problems.push('no shift type name given');
+      if (missing(change.department)) problems.push('no department given');
+      break;
+    case 'rename_shift_type':
+      if (missing(change.shiftType)) problems.push('no shift type name given');
+      if (missing(change.newShiftType)) problems.push('no new shift type name given');
+      break;
+    case 'set_staffing_target':
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      if (change.targetCount === undefined || change.targetCount === null) problems.push('no target count given');
+      break;
     case 'bulk_publish':
     case 'bulk_unpublish':
       if (missing(change.fromDate)) problems.push('no start date given');

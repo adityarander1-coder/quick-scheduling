@@ -44,19 +44,28 @@ async function discoverModel(apiKey: string): Promise<string> {
 }
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'bulk_publish' | 'bulk_unpublish';
-  person?: string;          // name for assign/unassign
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
+          'add_department' | 'rename_department' |
+          'add_team_member' | 'update_team_member' |
+          'add_shift_type' | 'rename_shift_type' |
+          'set_staffing_target' |
+          'bulk_publish' | 'bulk_unpublish';
+  person?: string;          // name for assign/unassign/update_team_member
   fromPerson?: string;       // for move/swap
   toPerson?: string;         // for move/swap
   date?: string;             // YYYY-MM-DD
   fromDate?: string;
   toDate?: string;
   shiftType?: string;       // shift type name
-  // For add_job_role:
-  jobRoleName?: string;
+  jobRoleName?: string;     // for add_job_role, add_team_member, update_team_member
+  newJobRoleName?: string;  // for rename_job_role
   department?: string;      // department name
-  // For bulk_publish/bulk_unpublish:
-  // uses fromDate/toDate for the range, shiftType optional
+  newDepartment?: string;   // for rename_department
+  firstName?: string;       // for add_team_member
+  lastName?: string;        // for add_team_member
+  email?: string;           // for add_team_member
+  newShiftType?: string;    // for rename_shift_type
+  targetCount?: number;     // for set_staffing_target
 }
 
 export interface SchedulePlan {
@@ -110,16 +119,23 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|unassign|move|swap|add_job_role|bulk_publish|bulk_unpublish",
-      "person": "Full Name (for assign/unassign)",
+      "action": "assign|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish",
+      "person": "Full Name (for assign/unassign/update_team_member)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
       "date": "YYYY-MM-DD",
       "fromDate": "YYYY-MM-DD (for move/bulk)",
       "toDate": "YYYY-MM-DD (for move/bulk)",
       "shiftType": "Shift type name",
-      "jobRoleName": "Job role name (for add_job_role)",
-      "department": "Department name (for add_job_role)"
+      "jobRoleName": "Job role name",
+      "newJobRoleName": "New job role name (for rename_job_role)",
+      "department": "Department name",
+      "newDepartment": "New department name (for rename_department)",
+      "firstName": "First name (for add_team_member)",
+      "lastName": "Last name (for add_team_member)",
+      "email": "Email (for add_team_member)",
+      "newShiftType": "New shift type name (for rename_shift_type)",
+      "targetCount": "Number (for set_staffing_target)"
     }
   ],
   "summary": "Plain-language summary of the proposed changes, or the question being asked",
@@ -136,7 +152,17 @@ Respond with JSON only, no other text:
 
 Rules:
 - For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
-- For "settings_change": fill in "changes" with settings actions. Currently supported: "add_job_role" needs jobRoleName + department. Example: "Add PGY4 role to Internal Medicine residency" → action "add_job_role", jobRoleName "PGY4", department "Internal Medicine residency Program". Match department names fuzzily. If the department or role name is unclear, set needsClarification.
+- For "settings_change": fill in "changes" with settings actions. Supported actions:
+  - "add_job_role": needs jobRoleName + department. Example: "Add PGY4 role to IM Residency" → jobRoleName "PGY4", department "IM Residency".
+  - "rename_job_role": needs jobRoleName + newJobRoleName + department.
+  - "add_department": needs department. Example: "Add Cardiology department" → department "Cardiology".
+  - "rename_department": needs department + newDepartment.
+  - "add_team_member": needs firstName + lastName; department and jobRoleName optional. Example: "Add John Smith to IM Residency as PGY2" → firstName "John", lastName "Smith", department "IM Residency", jobRoleName "PGY2".
+  - "update_team_member": needs person; department and/or jobRoleName to update.
+  - "add_shift_type": needs shiftType + department. Example: "Add Cardiology shift to IM Residency" → shiftType "Cardiology", department "IM Residency".
+  - "rename_shift_type": needs shiftType + newShiftType.
+  - "set_staffing_target": needs shiftType + targetCount. Example: "Set staffing of 2 for Cardiology" → shiftType "Cardiology", targetCount 2.
+  Match department/shift type names fuzzily. If critical info is missing, set needsClarification.
 - For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today.
 - For "schedule_question": set "changes" to []. Fill in "question" with parsed details. Resolve relative dates against today's date. Examples: "who is working Oct 12" → kind "who_is_on", startDate=endDate="2026-10-12". "Schedule for Oct 11-13" → kind "schedule_for_dates" with startDate/endDate. "When is John working" → kind "person_schedule" with person name.
 - For "other": set "changes" to [], "question" to null, summary to "Not schedule related.", confidence to "high".`;
