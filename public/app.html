@@ -4218,6 +4218,30 @@
             </div>
             <div class="team-list" id="team-members-list"></div>
 
+            <div class="sub-card" id="team-promote-card" style="margin-top:1.2rem">
+              <h3>Promote job roles</h3>
+              <p class="set-desc">Move people from one job role to another at year-end (e.g., PGY1 → PGY2). Uncheck anyone who should not be promoted.</p>
+              <div id="team-promote-error" class="alert alert-error hidden" role="alert"></div>
+              <div id="team-promote-success" class="alert alert-success hidden" role="status"></div>
+              <div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;align-items:flex-end">
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Department</label>
+                  <select id="promote-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:160px"></select>
+                </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From role</label>
+                  <select id="promote-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
+                </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To role</label>
+                  <select id="promote-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
+                </div>
+                <button type="button" id="promote-load" class="btn-secondary">Find members</button>
+              </div>
+              <div id="promote-members" style="border:1px solid var(--border);border-radius:8px;padding:0.6rem;max-height:200px;overflow-y:auto;margin-bottom:0.8rem;display:none"></div>
+              <button type="button" id="promote-run" class="btn" style="display:none">Promote selected</button>
+            </div>
+
             <div class="sub-card" id="team-add-card">
               <h3>Add a team member</h3>
               <div id="team-add-error" class="alert alert-error hidden" role="alert"></div>
@@ -4912,6 +4936,97 @@
                 });
               }
 
+              function setupPromote() {
+                var deptSel = $('promote-dept'), fromSel = $('promote-from'), toSel = $('promote-to');
+                var listEl = $('promote-members'), runBtn = $('promote-run');
+                var errEl = $('team-promote-error'), okEl = $('team-promote-success');
+                function showErr(m) { errEl.textContent = m; errEl.classList.remove('hidden'); okEl.classList.add('hidden'); }
+                function showOk(m) { okEl.textContent = m; okEl.classList.remove('hidden'); errEl.classList.add('hidden'); }
+                function hideMsg() { errEl.classList.add('hidden'); okEl.classList.add('hidden'); }
+                function fillDepts() {
+                  deptSel.textContent = '';
+                  departments.filter(function (d) {
+                    return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id);
+                  }).forEach(function (d) {
+                    var o = document.createElement('option'); o.value = d.id; o.textContent = d.name;
+                    deptSel.appendChild(o);
+                  });
+                  // Pre-select global filter if set.
+                  if (window.qsActiveDeptId) {
+                    var opt = deptSel.querySelector('option[value="' + window.qsActiveDeptId + '"]');
+                    if (opt) deptSel.value = window.qsActiveDeptId;
+                  }
+                  fillRoles();
+                }
+                function fillRoles() {
+                  var deptId = deptSel.value;
+                  [fromSel, toSel].forEach(function (sel) { sel.textContent = ''; });
+                  if (!deptId) return;
+                  api('/api/job-roles?departmentId=' + encodeURIComponent(deptId)).then(function (r) {
+                    var roles = (r.ok && (r.data.jobRoles || r.data.roles)) ? (r.data.jobRoles || r.data.roles) : [];
+                    roles.forEach(function (role) {
+                      [fromSel, toSel].forEach(function (sel) {
+                        var o = document.createElement('option'); o.value = role.id; o.textContent = role.name;
+                        sel.appendChild(o);
+                      });
+                    });
+                  }).catch(function () {});
+                }
+                deptSel.addEventListener('change', fillRoles);
+                $('promote-load').addEventListener('click', function () {
+                  hideMsg();
+                  var deptId = deptSel.value, fromId = fromSel.value;
+                  if (!deptId || !fromId) { showErr('Select a department and a from-role.'); return; }
+                  var matched = members.filter(function (u) {
+                    return String(u.departmentId) === String(deptId) && String(u.jobRoleId) === String(fromId);
+                  });
+                  if (!matched.length) {
+                    listEl.style.display = 'none'; runBtn.style.display = 'none';
+                    showErr('No members found with that role in this department.');
+                    return;
+                  }
+                  listEl.innerHTML = matched.map(function (u) {
+                    var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
+                    return '<label style="display:block;padding:6px 0;cursor:pointer;font-size:0.95rem">' +
+                      '<input type="checkbox" class="promote-cb" value="' + u.id + '" checked style="margin-right:8px">' +
+                      esc(nm) + '</label>';
+                  }).join('');
+                  listEl.style.display = ''; runBtn.style.display = '';
+                });
+                runBtn.addEventListener('click', function () {
+                  hideMsg();
+                  var toId = toSel.value, toName = toSel.selectedOptions[0].textContent;
+                  var ids = Array.prototype.map.call(listEl.querySelectorAll('.promote-cb:checked'), function (cb) { return cb.value; });
+                  if (!ids.length) { showErr('Select at least one member.'); return; }
+                  if (!confirm('Promote ' + ids.length + ' member(s) to "' + toName + '"?')) return;
+                  runBtn.disabled = true; runBtn.textContent = 'Promoting…';
+                  Promise.all(ids.map(function (id) {
+                    return api('/api/users/' + id, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ jobRoleId: toId })
+                    });
+                  })).then(function (results) {
+                    var ok = results.filter(function (r) { return r.ok; }).length;
+                    runBtn.disabled = false; runBtn.textContent = 'Promote selected';
+                    if (ok === ids.length) {
+                      showOk('Promoted ' + ok + ' member(s) to "' + toName + '".');
+                      listEl.style.display = 'none'; runBtn.style.display = 'none';
+                      loadMembers();
+                    } else {
+                      showErr('Promoted ' + ok + ' of ' + ids.length + '. Some failed.');
+                    }
+                  }).catch(function () {
+                    runBtn.disabled = false; runBtn.textContent = 'Promote selected';
+                    showErr('Network error.');
+                  });
+                });
+                // Initialize.
+                fillDepts();
+                // Re-fill when global department filter changes.
+                window.qsSyncPromoteDept = fillDepts;
+              }
+
               function init() {
                 api('/api/auth/me').then(function (r) {
                   if (!r.ok) return; // app shell handles redirect
@@ -4928,6 +5043,7 @@
                   setupAdd();
                   setupEdit();
                   setupDeptForm();
+                  setupPromote();
                   $('team-search').addEventListener('input', renderMembers);
                   // Job role dropdowns follow the selected department.
                   $('team-add-dept').addEventListener('change', function () {
@@ -8409,6 +8525,8 @@
         if (activeBtn) activeBtn.click();
         // Sync Job Roles sub-tab's department picker with the global filter.
         if (window.qsSyncJobRolesDept) window.qsSyncJobRolesDept();
+        // Sync Promote tool's department picker.
+        if (window.qsSyncPromoteDept) window.qsSyncPromoteDept();
       } catch (e) {}
     };
     // Re-render Bulk Actions when the global department filter changes.
