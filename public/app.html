@@ -5157,9 +5157,13 @@
                 var html = '';
                 var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                 // Department scope: hide targets for shift types outside the view list.
+                // Global filter: hide targets for shift types outside the selected department.
                 shownTargets = targets.filter(function (t) {
                   var st = stById(t.shiftTypeId);
-                  return !st || window.qsStViewable(st);
+                  if (!st || !window.qsStViewable(st)) return false;
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  if (window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows)) return false;
+                  return true;
                 });
                 if ($('staff-save-btn')) {
                   var anyEditable = shownTargets.some(targetEditable);
