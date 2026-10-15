@@ -289,6 +289,28 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+router.get('/debug-dept-access/:userId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (req.session.role !== 'owner') { res.status(403).json({ error: 'Owner only.' }); return; }
+    const { rows } = await query(
+      `SELECT sda.department_id, sda.access_level, d.name as dept_name,
+              u.id as user_id, u.email, u.role, u.company_id as user_company,
+              s.company_id as session_company
+       FROM users u
+       LEFT JOIN scheduler_department_access sda ON sda.user_id = u.id
+       LEFT JOIN departments d ON d.id = sda.department_id
+       CROSS JOIN (SELECT $2::uuid as company_id) s
+       WHERE u.id = $1`,
+      [req.params.userId, req.session.companyId]
+    );
+    const access = await getDepartmentAccess(req.params.userId, req.session.companyId!);
+    res.json({ rows, computedAccess: access, session: { userId: req.session.userId, role: req.session.role, companyId: req.session.companyId } });
+  } catch (err) {
+    console.error('[auth] debug-dept-access failed:', err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
