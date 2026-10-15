@@ -3766,6 +3766,8 @@
                 var shown = members.filter(function (m) {
                   // Department scope: hide people in departments with no view access.
                   if (!window.qsMemberViewable(m)) return false;
+                  // Global department filter.
+                  if (!window.qsDeptFilterAllows(m.departmentId)) return false;
                   if (!q) return true;
                   return fullName(m).toLowerCase().indexOf(q) >= 0;
                 });
@@ -5089,6 +5091,18 @@
                 deptId = $('jr-dept-select').value;
                 loadRoles();
               });
+              // Sync with global department filter: when it changes, update our selector.
+              window.qsSyncJobRolesDept = function () {
+                try {
+                  if (!window.qsActiveDeptId) return; // "All" → leave as-is
+                  var sel = $('jr-dept-select');
+                  if (sel && sel.value !== window.qsActiveDeptId) {
+                    // Only sync if the global dept is in our (filtered) options.
+                    var opt = sel.querySelector('option[value="' + window.qsActiveDeptId + '"]');
+                    if (opt) { sel.value = window.qsActiveDeptId; deptId = window.qsActiveDeptId; loadRoles(); }
+                  }
+                } catch (e) {}
+              };
               $('jr-add-form').addEventListener('submit', function (e) {
                 e.preventDefault();
                 hideErr();
@@ -6117,34 +6131,28 @@
           api('/api/users').then(function (r) {
             if (!r.ok) return;
             bulkAllMembers = (r.data.users || []).filter(function (u) { return u.isActive; });
+            loadJobRoles();
             renderBulkMembers($('bulk-member-search').value);
           }).catch(function () {});
         }
         function loadJobRoles() {
-          // Load job roles from viewable departments for the filter dropdown.
-          var depts = (window.qsDepartments || []).filter(function (d) {
-            if (!window.qsCanViewDept(d.id)) return false;
-            if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
-            return true;
+          // Derive job roles from the loaded team members (simpler than per-dept API calls).
+          var seen = {};
+          bulkJobRoles = [];
+          bulkAllMembers.forEach(function (u) {
+            if (!u.jobRoleId || seen[u.jobRoleId]) return;
+            seen[u.jobRoleId] = true;
+            bulkJobRoles.push({ id: u.jobRoleId, name: u.jobRole || u.role || 'Unnamed role', deptName: '' });
           });
-          Promise.all(depts.map(function (d) {
-            return api('/api/job-roles?departmentId=' + encodeURIComponent(d.id)).then(function (r) {
-              return (r.ok && r.data.roles ? r.data.roles : []).map(function (role) {
-                return { id: role.id, name: role.name, deptName: d.name };
-              });
-            }).catch(function () { return []; });
-          })).then(function (lists) {
-            bulkJobRoles = [];
-            lists.forEach(function (l) { bulkJobRoles = bulkJobRoles.concat(l); });
-            var sel = $('bulk-jobrole-filter');
-            if (sel) {
-              var cur = sel.value;
-              sel.innerHTML = '<option value="">All job roles</option>' + bulkJobRoles.map(function (role) {
-                return '<option value="' + role.id + '">' + esc(role.name) + ' (' + esc(role.deptName) + ')</option>';
-              }).join('');
-              sel.value = cur;
-            }
-          });
+          bulkJobRoles.sort(function (a, b) { return a.name.localeCompare(b.name); });
+          var sel = $('bulk-jobrole-filter');
+          if (sel) {
+            var cur = sel.value;
+            sel.innerHTML = '<option value="">All job roles</option>' + bulkJobRoles.map(function (role) {
+              return '<option value="' + role.id + '">' + esc(role.name) + '</option>';
+            }).join('');
+            sel.value = cur;
+          }
         }
         function renderBulkMembers(q) {
           q = (q || '').toLowerCase();
@@ -8373,6 +8381,8 @@
         if (!settingsTab || !settingsTab.classList.contains('active')) return;
         var activeBtn = settingsTab.querySelector('.subtab-btn.active');
         if (activeBtn) activeBtn.click();
+        // Sync Job Roles sub-tab's department picker with the global filter.
+        if (window.qsSyncJobRolesDept) window.qsSyncJobRolesDept();
       } catch (e) {}
     };
     // Re-render Bulk Actions when the global department filter changes.
