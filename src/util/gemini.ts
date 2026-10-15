@@ -44,7 +44,7 @@ async function discoverModel(apiKey: string): Promise<string> {
 }
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap';
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'bulk_publish' | 'bulk_unpublish';
   person?: string;          // name for assign/unassign
   fromPerson?: string;       // for move/swap
   toPerson?: string;         // for move/swap
@@ -52,6 +52,11 @@ interface PlanChange {
   fromDate?: string;
   toDate?: string;
   shiftType?: string;       // shift type name
+  // For add_job_role:
+  jobRoleName?: string;
+  department?: string;      // department name
+  // For bulk_publish/bulk_unpublish:
+  // uses fromDate/toDate for the range, shiftType optional
 }
 
 export interface SchedulePlan {
@@ -59,7 +64,7 @@ export interface SchedulePlan {
   summary: string;
   confidence: 'high' | 'medium' | 'low';
   needsClarification?: string; // question to ask if ambiguous
-  emailType: 'change_request' | 'schedule_question' | 'other';
+  emailType: 'change_request' | 'schedule_question' | 'settings_change' | 'bulk_action' | 'other';
   question?: {
     kind: 'schedule_for_dates' | 'who_is_on' | 'person_schedule' | 'general';
     startDate?: string;  // YYYY-MM-DD
@@ -96,21 +101,25 @@ ${emailBody}
 First, classify the email into one of:
 - "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts)
 - "schedule_question": the sender is asking about the schedule (who is working when, what is the schedule for certain dates)
+- "settings_change": the sender wants to manage settings (add a job role, add a department, add a team member)
+- "bulk_action": the sender wants a bulk operation (publish/unpublish shifts for a date range)
 - "other": not related to scheduling
 
 Respond with JSON only, no other text:
 {
-  "emailType": "change_request|schedule_question|other",
+  "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|unassign|move|swap",
+      "action": "assign|unassign|move|swap|add_job_role|bulk_publish|bulk_unpublish",
       "person": "Full Name (for assign/unassign)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
       "date": "YYYY-MM-DD",
-      "fromDate": "YYYY-MM-DD (for move)",
-      "toDate": "YYYY-MM-DD (for move)",
-      "shiftType": "Shift type name"
+      "fromDate": "YYYY-MM-DD (for move/bulk)",
+      "toDate": "YYYY-MM-DD (for move/bulk)",
+      "shiftType": "Shift type name",
+      "jobRoleName": "Job role name (for add_job_role)",
+      "department": "Department name (for add_job_role)"
     }
   ],
   "summary": "Plain-language summary of the proposed changes, or the question being asked",
@@ -127,6 +136,8 @@ Respond with JSON only, no other text:
 
 Rules:
 - For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
+- For "settings_change": fill in "changes" with settings actions. Currently supported: "add_job_role" needs jobRoleName + department. Example: "Add PGY4 role to Internal Medicine residency" → action "add_job_role", jobRoleName "PGY4", department "Internal Medicine residency Program". Match department names fuzzily. If the department or role name is unclear, set needsClarification.
+- For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today.
 - For "schedule_question": set "changes" to []. Fill in "question" with parsed details. Resolve relative dates against today's date. Examples: "who is working Oct 12" → kind "who_is_on", startDate=endDate="2026-10-12". "Schedule for Oct 11-13" → kind "schedule_for_dates" with startDate/endDate. "When is John working" → kind "person_schedule" with person name.
 - For "other": set "changes" to [], "question" to null, summary to "Not schedule related.", confidence to "high".`;
 

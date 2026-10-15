@@ -3,7 +3,7 @@
 import { query } from '../db.js';
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap';
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'bulk_publish' | 'bulk_unpublish';
   person?: string;
   fromPerson?: string;
   toPerson?: string;
@@ -11,6 +11,8 @@ interface PlanChange {
   fromDate?: string;
   toDate?: string;
   shiftType?: string;
+  jobRoleName?: string;
+  department?: string;
 }
 
 interface ExecuteResult {
@@ -291,6 +293,49 @@ export async function executePlan(
           [uuidv4(), companyId, toUser.id, shiftTypeId, change.date, createdBy]
         );
         results.push({ action: 'move', success: true, message: `Moved ${fromUser.display} → ${toUser.display} on ${change.date}` });
+      } else if (change.action === 'add_job_role' && change.jobRoleName && change.department) {
+        const { rows: depts } = await query(
+          'SELECT id, name FROM departments WHERE company_id = $1 AND is_active = true',
+          [companyId]
+        );
+        const deptLower = change.department.toLowerCase().trim();
+        const dept = depts.find((d: any) =>
+          d.name.toLowerCase() === deptLower ||
+          d.name.toLowerCase().includes(deptLower) ||
+          deptLower.includes(d.name.toLowerCase())
+        );
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        const { rows: existing } = await query(
+          'SELECT id FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, dept.id, change.jobRoleName.trim()]
+        );
+        if (existing.length) {
+          results.push({ action: 'add_job_role', success: true, message: `Job role "${change.jobRoleName}" already exists in ${dept.name} — no change needed` });
+        } else {
+          const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+          await query(
+            'INSERT INTO job_roles (id, company_id, department_id, name) VALUES ($1, $2, $3, $4)',
+            [uuidv4(), companyId, dept.id, change.jobRoleName.trim()]
+          );
+          results.push({ action: 'add_job_role', success: true, message: `Added job role "${change.jobRoleName}" to ${dept.name}` });
+        }
+      } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate) {
+        const publish = change.action === 'bulk_publish';
+        let shiftTypeId: string | null = null;
+        if (change.shiftType) {
+          const st = await findShiftType(companyId, change.shiftType);
+          if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+          shiftTypeId = st.id;
+        }
+        let q = `UPDATE shifts SET published = $1 WHERE company_id = $2 AND date >= $3 AND date <= $4`;
+        const params: any[] = [publish, companyId, change.fromDate, change.toDate];
+        if (shiftTypeId) { q += ` AND shift_type_id = $5`; params.push(shiftTypeId); }
+        const updated = await query(q, params);
+        const count = updated.rowCount || 0;
+        results.push({
+          action: change.action, success: true,
+          message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
+        });
       } else {
         results.push({ action: change.action, success: false, message: `Unsupported or incomplete change: ${JSON.stringify(change)}` });
       }

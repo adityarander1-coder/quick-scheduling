@@ -33,6 +33,15 @@ function changeProblems(change: any): string[] {
       if (missing(change.toPerson)) problems.push('no second person named');
       if (missing(change.date)) problems.push('no date given');
       break;
+    case 'add_job_role':
+      if (missing(change.jobRoleName)) problems.push('no job role name given');
+      if (missing(change.department)) problems.push('no department given');
+      break;
+    case 'bulk_publish':
+    case 'bulk_unpublish':
+      if (missing(change.fromDate)) problems.push('no start date given');
+      if (missing(change.toDate)) problems.push('no end date given');
+      break;
     default:
       problems.push(`unsupported action "${change.action}"`);
   }
@@ -128,8 +137,9 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           continue;
         }
 
-        // Skip if not a schedule change
-        if (plan.emailType !== 'change_request' || !plan.changes || plan.changes.length === 0) {
+        // Skip if not a change/bulk/settings request
+        const actionableTypes = ['change_request', 'settings_change', 'bulk_action'];
+        if (!actionableTypes.includes(plan.emailType) || !plan.changes || plan.changes.length === 0) {
           await markImapAsRead(uid);
           continue;
         }
