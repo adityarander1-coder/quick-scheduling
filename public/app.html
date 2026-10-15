@@ -8553,7 +8553,7 @@
     };
 
     // Init
-    api('/api/auth/me').then(function (r) {
+    api('/api/auth/me?_=' + Date.now()).then(function (r) {
       if (!r.ok) { window.location.href = '/login.html'; return; }
       var role = r.data.user.role;
       window.isOwner = (role === 'owner');
