@@ -124,10 +124,24 @@
       var sel = document.getElementById('dept-switcher-select');
       if (!bar || !sel) return;
       var a = window.qsDeptAccess;
-      // Owners see everything — no switcher needed.
-      if (!a || window.isOwner || window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
-      var allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
-      if (!allIds.length) { bar.classList.add('hidden'); return; }
+      var isOwner = !!window.isOwner;
+      // Retry once if scheduler data isn't ready yet (backend may lag).
+      if (!isOwner && !a && window.currentRole === 'scheduler' && !window._deptBarRetried) {
+        window._deptBarRetried = true;
+        setTimeout(function () { window._deptBarRetried = false; renderDeptSwitcherBar(); }, 1500);
+        return;
+      }
+      // Owners see all departments; schedulers see their assigned ones.
+      // Hide only when there's nothing to switch between.
+      var allIds;
+      if (isOwner) {
+        allIds = (window.qsDepartments || []).map(function (d) { return String(d.id); });
+      } else {
+        if (!a) { bar.classList.add('hidden'); return; }
+        if (window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
+        allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
+      }
+      if (allIds.length < 1) { bar.classList.add('hidden'); return; }
       bar.classList.remove('hidden');
       var cur = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
       // If no active dept yet and only one department, default to it.
@@ -138,7 +152,7 @@
       }
       sel.innerHTML = '<option value="__all"' + (!cur ? ' selected' : '') + '>All departments</option>' + allIds.map(function (id) {
         var nm = (window.qsDeptName && window.qsDeptName(id)) || id;
-        var ro = a.edit.indexOf(id) === -1 ? ' (view only)' : '';
+        var ro = (!isOwner && a && a.edit.indexOf(id) === -1) ? ' (view only)' : '';
         return '<option value="' + id + '"' + (String(cur) === String(id) ? ' selected' : '') + '>' + esc(nm) + ro + '</option>';
       }).join('');
     }
@@ -150,8 +164,12 @@
           // "All departments": clear active dept → view everything together.
           // Edits still gated per-department; backend prompts to pick one.
           window.qsSetActiveDept(null);
+          // Clear the schedule tab's department filter too.
+          if (window.sched) { window.sched.deptFilters = []; }
         } else {
           window.qsSetActiveDept(v);
+          // Scope the schedule tab to just this department.
+          if (window.sched) { window.sched.deptFilters = [v]; }
         }
         // Reload current views so everything re-filters to the new selection.
         if (typeof handleHash === 'function') handleHash();
