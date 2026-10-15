@@ -7798,12 +7798,10 @@
               cell.classList.add('selected');
             });
           });
-          // Tapping a day card jumps to day view for that date.
+          // Tapping a day card opens the day popup (stay on month view).
           el.querySelectorAll('[data-ms-strip-day]').forEach(function (card) {
             card.addEventListener('click', function () {
-              msView = 'day';
-              anchorDate = parseDate(card.getAttribute('data-ms-strip-day'));
-              loadData();
+              openMsDayModal(card.getAttribute('data-ms-strip-day'));
             });
           });
           // Scroll the strip to today on render.
