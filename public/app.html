@@ -115,7 +115,41 @@
       if (persist !== false) { try { localStorage.setItem(window.qsActiveDeptKey(), window.qsActiveDeptId || ''); } catch (e) {} }
       if (window.qsRenderActiveDeptSwitcher) window.qsRenderActiveDeptSwitcher();
       if (window.qsRefreshAdminAffordances) window.qsRefreshAdminAffordances();
+      renderDeptSwitcherBar();
     };
+    // Global department switcher bar (schedulers only): pick which department
+    // the admin view is scoped to. Shown when the scheduler has 1+ departments.
+    function renderDeptSwitcherBar() {
+      var bar = document.getElementById('dept-switcher-bar');
+      var sel = document.getElementById('dept-switcher-select');
+      if (!bar || !sel) return;
+      var a = window.qsDeptAccess;
+      // Owners see everything — no switcher needed.
+      if (!a || window.isOwner || window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
+      var allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
+      if (!allIds.length) { bar.classList.add('hidden'); return; }
+      bar.classList.remove('hidden');
+      var cur = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
+      // If no active dept yet, default to first edit (or first view).
+      if (!cur || allIds.indexOf(cur) === -1) {
+        cur = (a.edit[0] || allIds[0]) ? String(a.edit[0] || allIds[0]) : null;
+        if (cur) window.qsSetActiveDept(cur);
+      }
+      sel.innerHTML = allIds.map(function (id) {
+        var nm = (window.qsDeptName && window.qsDeptName(id)) || id;
+        var ro = a.edit.indexOf(id) === -1 ? ' (view only)' : '';
+        return '<option value="' + id + '"' + (String(cur) === String(id) ? ' selected' : '') + '>' + esc(nm) + ro + '</option>';
+      }).join('');
+    }
+    window.qsRenderDeptSwitcherBar = renderDeptSwitcherBar;
+    document.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'dept-switcher-select') {
+        window.qsSetActiveDept(e.target.value);
+        // Reload current views so everything re-filters to the new department.
+        if (typeof handleHash === 'function') handleHash();
+        window.dispatchEvent(new Event('hashchange'));
+      }
+    });
     // Default: stored value if still in the edit list, else the first edit department.
     window.qsLoadActiveDept = function () {
       var a = window.qsDeptAccess;
@@ -547,6 +581,10 @@
     <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View">
       <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
       <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
+    </div>
+    <div id="dept-switcher-bar" class="hidden" style="display:flex;align-items:center;gap:0.6rem;padding:0.6rem 1rem;background:#e0f2f1;border-bottom:1px solid #b2dfdb">
+      <label for="dept-switcher-select" style="font-weight:700;font-size:0.9rem;color:#004d40;white-space:nowrap">Department:</label>
+      <select id="dept-switcher-select" style="flex:1;max-width:320px;padding:0.5rem 0.7rem;border:1px solid #80cbc4;border-radius:8px;font-size:1rem;background:#fff" aria-label="Switch department"></select>
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
@@ -1080,6 +1118,7 @@
             renderActiveDeptSwitcher();
             renderDeptFilter();
             renderLegend();
+            if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
             renderView();
             renderPublishBar();
           }).catch(function () { pageError('Could not load the schedule.'); });
@@ -8490,6 +8529,8 @@
       // Show the "no departments" banner for schedulers with zero access.
       var ndBanner = $('no-dept-banner');
       if (ndBanner) ndBanner.classList.toggle('hidden', !window.qsHasNoDeptAccess());
+      // Render the global department switcher bar for schedulers.
+      if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
       document.title = r.data.company.name + ' · employee schedule';
