@@ -6153,8 +6153,8 @@
             .filter(function (u) {
               // Department scope: only viewable team members.
               if (!window.qsMemberViewable(u)) return false;
-              // Global department filter (non-owners only; owners see all).
-              if (!window.isOwner && !window.qsDeptFilterAllows(u.departmentId)) return false;
+              // Global department filter: show only members of the selected department.
+              if (!window.qsDeptFilterAllows(u.departmentId)) return false;
               // Job role filter.
               if (roleFilter && String(u.jobRoleId) !== String(roleFilter)) return false;
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
@@ -6293,6 +6293,10 @@
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        // Expose refresh for department filter changes.
+        window.qsRefreshBulkMembers = function () {
+          if (isActive()) { renderBulkMembers($('bulk-member-search').value); loadBulkShiftTypes(); loadJobRoles(); }
+        };
         updateBulkSlotVisibility();
       })();
       </script>
@@ -8374,11 +8378,7 @@
     // Re-render Bulk Actions when the global department filter changes.
     window.qsRefreshBulkForDept = function () {
       try {
-        var bulkTab = document.getElementById('tab-bulk');
-        if (!bulkTab || !bulkTab.classList.contains('active')) return;
-        // Re-trigger the bulk tab load by simulating hash change.
-        if (window.qsLoadBulkTab) window.qsLoadBulkTab();
-        else { var h = window.location.hash; window.location.hash = '#bulk-refresh'; window.location.hash = h || '#bulk'; }
+        if (window.qsRefreshBulkMembers) window.qsRefreshBulkMembers();
       } catch (e) {}
     };
 
