@@ -175,11 +175,23 @@
         if (v === '__all') {
           // "All departments": clear active dept → view everything together.
           window.qsSetActiveDept(null);
-          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(null);
         } else {
           window.qsSetActiveDept(v);
-          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(v);
         }
+        // Switch to the Schedule tab and apply the filter there.
+        try {
+          var schedBtn = document.querySelector('.tab-btn[data-tab="schedule"]');
+          if (schedBtn) schedBtn.click();
+        } catch (err) {}
+        // Apply after a tick so the schedule tab's code is loaded.
+        setTimeout(function () {
+          if (window.qsScheduleSetDeptFilter) {
+            window.qsScheduleSetDeptFilter(v === '__all' ? null : v);
+          } else if (window.sched) {
+            window.sched.deptFilters = (v === '__all') ? [] : [v];
+            window.sched.shiftFilters = [];
+          }
+        }, 300);
       }
     });
     // Default: stored value if still in the edit list, else the first edit department.
