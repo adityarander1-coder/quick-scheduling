@@ -188,11 +188,7 @@
           window.qsSetActiveDept(v);
           window.qsDesiredDeptFilter = v;
         }
-        // Switch to the Schedule tab.
-        try {
-          var schedBtn = document.querySelector('.tab-btn[data-tab="schedule"]');
-          if (schedBtn) schedBtn.click();
-        } catch (err) {}
+        // Stay on the current tab — do not navigate away.
         // Try to apply now; schedule tab also picks up qsDesiredDeptFilter on load.
         setTimeout(function () {
           if (window.qsScheduleSetDeptFilter) {
@@ -3731,6 +3727,14 @@
               function rotViewable(r) {
                 var sts = rotShiftTypes(r);
                 if (!sts.length) return true;
+                // Global department filter: rotation must have a shift type in the selected department.
+                if (window.qsActiveDeptId) {
+                  var inFilter = sts.some(function (st) {
+                    var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                    return deptIds.some(window.qsDeptFilterAllows);
+                  });
+                  if (!inFilter) return false;
+                }
                 return sts.some(window.qsStViewable);
               }
               function rotEditable(r) {
@@ -6118,7 +6122,7 @@
         }
         function loadJobRoles() {
           // Load job roles from viewable departments for the filter dropdown.
-          var depts = (window.sched && window.sched.departments ? window.sched.departments : []).filter(function (d) {
+          var depts = (window.qsDepartments || []).filter(function (d) {
             if (!window.qsCanViewDept(d.id)) return false;
             if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
             return true;
