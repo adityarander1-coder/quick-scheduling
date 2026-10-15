@@ -311,7 +311,38 @@ router.get('/debug-dept-access/:userId', requireAuth, async (req: Request, res: 
       [targetUserId, req.session.companyId]
     );
     const access = await getDepartmentAccess(targetUserId, req.session.companyId!);
-    res.json({ rows, computedAccess: access, session: { userId: req.session.userId, role: req.session.role, companyId: req.session.companyId } });
+    // Return HTML for easy reading (not JSON).
+    var html = '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:sans-serif;padding:20px;max-width:600px}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #ccc;padding:8px;text-align:left}th{background:#f0f0f0}.ok{color:green;font-weight:bold}.bad{color:red;font-weight:bold}</style></head><body>';
+    html += '<h2>Department Access Debug</h2>';
+    if (!rows.length || !rows[0].user_id) {
+      html += '<p class="bad">User not found.</p>';
+    } else {
+      var u = rows[0];
+      html += '<p><b>User:</b> ' + u.email + ' (' + u.role + ')</p>';
+      html += '<p><b>User company_id:</b> ' + u.user_company + '</p>';
+      html += '<p><b>Your session company_id:</b> ' + u.session_company + '</p>';
+      if (u.user_company !== u.session_company) {
+        html += '<p class="bad">⚠️ MISMATCH! User is in a different company than your session. This is the bug.</p>';
+      } else {
+        html += '<p class="ok">✓ Company IDs match.</p>';
+      }
+      html += '<h3>Department access rows:</h3>';
+      var hasRows = rows.some(function(r) { return r.department_id; });
+      if (!hasRows) {
+        html += '<p class="bad">No department access rows found for this user. The save did not persist.</p>';
+      } else {
+        html += '<table><tr><th>Department</th><th>Access</th></tr>';
+        rows.forEach(function(r) {
+          if (r.department_id) html += '<tr><td>' + (r.dept_name || r.department_id) + '</td><td>' + r.access_level + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      html += '<h3>Computed access (what /api/auth/me returns):</h3>';
+      html += '<p>Edit: ' + JSON.stringify(access.edit) + '</p>';
+      html += '<p>View: ' + JSON.stringify(access.view) + '</p>';
+    }
+    html += '</body></html>';
+    res.send(html);
   } catch (err) {
     console.error('[auth] debug-dept-access failed:', err);
     res.status(500).json({ error: String(err) });
