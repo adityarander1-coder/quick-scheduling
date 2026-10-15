@@ -586,11 +586,17 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       return;
     }
     const { rows: trows } = await query(
-      'SELECT id FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
       [shiftTypeId, companyId]
     );
     if (!trows.length) {
       res.status(404).json({ error: 'Shift type not found.' });
+      return;
+    }
+    // Job role enforcement: member's role must be eligible for this shift type.
+    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+    if (!eligibility.ok) {
+      res.status(403).json({ error: eligibility.error });
       return;
     }
     const id = crypto.randomUUID();
@@ -672,11 +678,17 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
       return;
     }
     const { rows: trows } = await query(
-      'SELECT id FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
       [shiftTypeId, companyId]
     );
     if (!trows.length) {
       res.status(404).json({ error: 'Shift type not found.' });
+      return;
+    }
+    // Job role enforcement.
+    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+    if (!eligibility.ok) {
+      res.status(403).json({ error: eligibility.error });
       return;
     }
     // Build date list (cap at 93 days to prevent abuse)

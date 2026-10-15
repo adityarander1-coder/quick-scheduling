@@ -1565,7 +1565,22 @@
         function monthDayInner(ds, d, headHtml) {
           var html = '<div class="day-num">' + headHtml + statusPillHtml(ds) + '</div>';
           var dayShifts = shiftsFor(ds);
-          dayShifts.forEach(function (s) { html += monthChipHtml(s); });
+          // Group by shift type: show shift name once, list people under it.
+          var byType = {};
+          dayShifts.forEach(function (s) { (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s); });
+          Object.keys(byType).forEach(function (stId) {
+            var items = byType[stId];
+            var st = shiftTypeById(stId);
+            var published = isPublished(ds) && items[0].published !== false;
+            var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
+            var shiftName = st ? st.name : '';
+            var names = items.map(function (s) { return esc(displayName(s)); }).join('<br>');
+            var title = esc(items.map(function (s) { return displayName(s); }).join(', ') + ' — ' + shiftName);
+            html += '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+              '" title="' + title + '">' +
+              '<span class="dot" style="background:' + esc(color) + '"></span>' +
+              '<span><strong>' + esc(shiftName) + '</strong><br>' + names + '</span></div>';
+          });
           var openTotal = 0;
           sched.shiftTypes.forEach(function (st) {
             if (!shiftTypeVisible(st)) return;
@@ -1915,7 +1930,7 @@
         // that the inline-handler rewrite wired to this name but never defined.
         window.qsDeleteShift = function(sid) {
           var s = shiftById(sid);
-          if (s && !shiftEditable(s)) return;
+          if (s && !shiftEditable(s)) { pageError('You do not have permission to delete this shift.'); return; }
           var isRot = sid && sid.indexOf('rot-') === 0;
           showDialog('Delete shift', '<p>Delete this shift?</p>', [
             { label: 'Cancel' },
