@@ -6071,6 +6071,9 @@
           </div>
           <div>
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
+            <select id="bulk-jobrole-filter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px">
+              <option value="">All job roles</option>
+            </select>
             <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
             <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
           </div>
@@ -6105,6 +6108,7 @@
           return h.indexOf('#bulk') === 0;
         }
         var bulkAllMembers = [];
+        var bulkJobRoles = [];
         function loadMembers() {
           api('/api/users').then(function (r) {
             if (!r.ok) return;
@@ -6112,14 +6116,43 @@
             renderBulkMembers($('bulk-member-search').value);
           }).catch(function () {});
         }
+        function loadJobRoles() {
+          // Load job roles from viewable departments for the filter dropdown.
+          var depts = (window.sched && window.sched.departments ? window.sched.departments : []).filter(function (d) {
+            if (!window.qsCanViewDept(d.id)) return false;
+            if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
+            return true;
+          });
+          Promise.all(depts.map(function (d) {
+            return api('/api/job-roles?departmentId=' + encodeURIComponent(d.id)).then(function (r) {
+              return (r.ok && r.data.roles ? r.data.roles : []).map(function (role) {
+                return { id: role.id, name: role.name, deptName: d.name };
+              });
+            }).catch(function () { return []; });
+          })).then(function (lists) {
+            bulkJobRoles = [];
+            lists.forEach(function (l) { bulkJobRoles = bulkJobRoles.concat(l); });
+            var sel = $('bulk-jobrole-filter');
+            if (sel) {
+              var cur = sel.value;
+              sel.innerHTML = '<option value="">All job roles</option>' + bulkJobRoles.map(function (role) {
+                return '<option value="' + role.id + '">' + esc(role.name) + ' (' + esc(role.deptName) + ')</option>';
+              }).join('');
+              sel.value = cur;
+            }
+          });
+        }
         function renderBulkMembers(q) {
           q = (q || '').toLowerCase();
+          var roleFilter = $('bulk-jobrole-filter') ? $('bulk-jobrole-filter').value : '';
           var html = bulkAllMembers
             .filter(function (u) {
               // Department scope: only viewable team members.
               if (!window.qsMemberViewable(u)) return false;
               // Global department filter (non-owners only; owners see all).
               if (!window.isOwner && !window.qsDeptFilterAllows(u.departmentId)) return false;
+              // Job role filter.
+              if (roleFilter && String(u.jobRoleId) !== String(roleFilter)) return false;
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
               return !q || nm.toLowerCase().indexOf(q) >= 0;
             })
@@ -6251,9 +6284,10 @@
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadJobRoles(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadJobRoles(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
+        $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
         updateBulkSlotVisibility();
       })();
