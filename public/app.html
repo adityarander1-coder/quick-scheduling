@@ -1241,6 +1241,8 @@
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
             // Re-render Settings sub-tab if visible (department filter changed).
             if (window.qsRefreshSettingsForDept) window.qsRefreshSettingsForDept();
+            // Re-render Bulk Actions if visible.
+            if (window.qsRefreshBulkForDept) window.qsRefreshBulkForDept();
           } catch (e) {}
         };
 
@@ -6110,6 +6112,8 @@
             .filter(function (u) {
               // Department scope: only viewable team members.
               if (!window.qsMemberViewable(u)) return false;
+              // Global department filter.
+              if (!window.qsDeptFilterAllows(u.departmentId)) return false;
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
               return !q || nm.toLowerCase().indexOf(q) >= 0;
             })
@@ -6131,8 +6135,12 @@
             if (!r.ok) return;
             var sel = $('bulk-shifttype');
             // Department scope: bulk writes apply to the active department only.
+            // Global filter: only shift types in the selected department.
             sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) {
-              return st.isActive && window.qsStEditable(st);
+              if (!st.isActive || !window.qsStEditable(st)) return false;
+              var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+              if (window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows)) return false;
+              return true;
             }).map(function (st) {
               return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
             }).join('');
@@ -8315,6 +8323,16 @@
         if (!settingsTab || !settingsTab.classList.contains('active')) return;
         var activeBtn = settingsTab.querySelector('.subtab-btn.active');
         if (activeBtn) activeBtn.click();
+      } catch (e) {}
+    };
+    // Re-render Bulk Actions when the global department filter changes.
+    window.qsRefreshBulkForDept = function () {
+      try {
+        var bulkTab = document.getElementById('tab-bulk');
+        if (!bulkTab || !bulkTab.classList.contains('active')) return;
+        // Re-trigger the bulk tab load by simulating hash change.
+        if (window.qsLoadBulkTab) window.qsLoadBulkTab();
+        else { var h = window.location.hash; window.location.hash = '#bulk-refresh'; window.location.hash = h || '#bulk'; }
       } catch (e) {}
     };
 
