@@ -289,6 +289,29 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+router.get('/debug-me', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const data = await loadUserAndCompany(req.session.userId!);
+    let departmentAccess: any = null;
+    if (req.session.role !== 'owner') {
+      departmentAccess = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+    } else {
+      departmentAccess = { edit: 'all', view: 'all' };
+    }
+    var html = '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:sans-serif;padding:20px;max-width:600px;word-break:break-all}pre{background:#f0f0f0;padding:12px;overflow:auto}</style></head><body>';
+    html += '<h2>Your /api/auth/me data</h2>';
+    html += '<p><b>Session role:</b> ' + req.session.role + '</p>';
+    html += '<p><b>Session userId:</b> ' + req.session.userId + '</p>';
+    html += '<p><b>Session companyId:</b> ' + req.session.companyId + '</p>';
+    html += '<h3>departmentAccess in response:</h3><pre>' + JSON.stringify(departmentAccess, null, 2) + '</pre>';
+    html += '<h3>Full user object:</h3><pre>' + JSON.stringify(data?.user, null, 2) + '</pre>';
+    html += '</body></html>';
+    res.send(html);
+  } catch (err) {
+    res.status(500).send('Error: ' + String(err));
+  }
+});
+
 router.get('/debug-dept-access/:userId', requireAuth, async (req: Request, res: Response) => {
   try {
     if (req.session.role !== 'owner') { res.status(403).json({ error: 'Owner only.' }); return; }
