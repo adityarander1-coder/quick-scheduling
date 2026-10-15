@@ -6136,23 +6136,49 @@
           }).catch(function () {});
         }
         function loadJobRoles() {
-          // Derive job roles from the loaded team members (simpler than per-dept API calls).
-          var seen = {};
-          bulkJobRoles = [];
-          bulkAllMembers.forEach(function (u) {
-            if (!u.jobRoleId || seen[u.jobRoleId]) return;
-            seen[u.jobRoleId] = true;
-            bulkJobRoles.push({ id: u.jobRoleId, name: u.jobRole || u.role || 'Unnamed role', deptName: '' });
-          });
-          bulkJobRoles.sort(function (a, b) { return a.name.localeCompare(b.name); });
-          var sel = $('bulk-jobrole-filter');
-          if (sel) {
-            var cur = sel.value;
-            sel.innerHTML = '<option value="">All job roles</option>' + bulkJobRoles.map(function (role) {
-              return '<option value="' + role.id + '">' + esc(role.name) + '</option>';
-            }).join('');
-            sel.value = cur;
+          // Fetch job roles from the API for departments in the current filter.
+          // Uses window.qsDepartments if available, else fetches from API.
+          function getDepts() {
+            var depts = window.qsDepartments || [];
+            if (depts.length) return Promise.resolve(depts);
+            return api('/api/departments').then(function (r) {
+              return (r.ok && r.data.departments) ? r.data.departments : [];
+            }).catch(function () { return []; });
           }
+          getDepts().then(function (allDepts) {
+            var depts = allDepts.filter(function (d) {
+              if (!window.qsCanViewDept(d.id)) return false;
+              if (!window.qsDeptFilterAllows(d.id)) return false;
+              return true;
+            });
+            if (!depts.length) {
+              var sel0 = $('bulk-jobrole-filter');
+              if (sel0) sel0.innerHTML = '<option value="">All job roles</option>';
+              return;
+            }
+            Promise.all(depts.map(function (d) {
+              return api('/api/job-roles?departmentId=' + encodeURIComponent(d.id)).then(function (r) {
+                var roles = (r.ok && (r.data.jobRoles || r.data.roles)) ? (r.data.jobRoles || r.data.roles) : [];
+                return roles.map(function (role) {
+                  return { id: role.id, name: role.name, deptName: d.name };
+                });
+              }).catch(function () { return []; });
+            })).then(function (lists) {
+              bulkJobRoles = [];
+              lists.forEach(function (l) { bulkJobRoles = bulkJobRoles.concat(l); });
+              bulkJobRoles.sort(function (a, b) { return a.name.localeCompare(b.name); });
+              var sel = $('bulk-jobrole-filter');
+              if (sel) {
+                var cur = sel.value;
+                sel.innerHTML = '<option value="">All job roles</option>' + bulkJobRoles.map(function (role) {
+                  var label = role.deptName ? role.name + ' (' + role.deptName + ')' : role.name;
+                  return '<option value="' + role.id + '">' + esc(label) + '</option>';
+                }).join('');
+                // Keep selection if still valid, else reset.
+                if (cur && bulkJobRoles.some(function (r) { return String(r.id) === String(cur); })) sel.value = cur;
+              }
+            });
+          });
         }
         function renderBulkMembers(q) {
           q = (q || '').toLowerCase();
@@ -6296,8 +6322,8 @@
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadJobRoles(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadJobRoles(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
