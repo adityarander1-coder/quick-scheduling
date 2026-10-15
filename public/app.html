@@ -137,11 +137,23 @@
       if (isOwner) {
         allIds = (window.qsDepartments || []).map(function (d) { return String(d.id); });
       } else {
-        if (!a) { bar.classList.add('hidden'); return; }
+        // Diagnostic: show why the bar is hidden (visible to user for troubleshooting).
+        if (!a) {
+          bar.classList.remove('hidden');
+          sel.innerHTML = '<option>Loading departments… (access data missing)</option>';
+          sel.disabled = true;
+          return;
+        }
         if (window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
         allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
       }
-      if (allIds.length < 1) { bar.classList.add('hidden'); return; }
+      if (allIds.length < 1) {
+        bar.classList.remove('hidden');
+        sel.innerHTML = '<option>No departments assigned — ask your workspace owner</option>';
+        sel.disabled = true;
+        return;
+      }
+      sel.disabled = false;
       bar.classList.remove('hidden');
       var cur = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
       // If no active dept yet and only one department, default to it.
