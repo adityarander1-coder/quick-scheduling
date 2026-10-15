@@ -81,7 +81,7 @@ async function findShiftType(companyId: string, name: string): Promise<{ id: str
 
 async function findDepartment(companyId: string, name: string): Promise<{ id: string; name: string } | null> {
   const { rows } = await query(
-    'SELECT id, name FROM departments WHERE company_id = $1 AND is_active = true',
+    'SELECT id, name FROM departments WHERE company_id = $1',
     [companyId]
   );
   const lower = name.toLowerCase().trim();
@@ -325,7 +325,7 @@ export async function executePlan(
         results.push({ action: 'move', success: true, message: `Moved ${fromUser.display} → ${toUser.display} on ${change.date}` });
       } else if (change.action === 'add_job_role' && change.jobRoleName && change.department) {
         const { rows: depts } = await query(
-          'SELECT id, name FROM departments WHERE company_id = $1 AND is_active = true',
+          'SELECT id, name FROM departments WHERE company_id = $1',
           [companyId]
         );
         const deptLower = change.department.toLowerCase().trim();
@@ -368,7 +368,7 @@ export async function executePlan(
         } else {
           const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
           await query(
-            'INSERT INTO departments (id, company_id, name, is_active) VALUES ($1, $2, $3, true)',
+            'INSERT INTO departments (id, company_id, name) VALUES ($1, $2, $3)',
             [uuidv4(), companyId, change.department.trim()]
           );
           results.push({ action: 'add_department', success: true, message: `Added department "${change.department}"` });
