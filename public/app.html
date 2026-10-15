@@ -169,29 +169,35 @@
       }).join('');
     }
     window.qsRenderDeptSwitcherBar = renderDeptSwitcherBar;
+    // Global desired department filter (set by the top-level switcher; schedule tab picks it up on load).
+    window.qsDesiredDeptFilter = null;
     document.addEventListener('change', function (e) {
       if (e.target && e.target.id === 'dept-switcher-select') {
         var v = e.target.value;
         if (v === '__all') {
           // "All departments": clear active dept → view everything together.
           window.qsSetActiveDept(null);
+          window.qsDesiredDeptFilter = null;
         } else {
           window.qsSetActiveDept(v);
+          window.qsDesiredDeptFilter = v;
         }
-        // Switch to the Schedule tab and apply the filter there.
+        // Switch to the Schedule tab.
         try {
           var schedBtn = document.querySelector('.tab-btn[data-tab="schedule"]');
           if (schedBtn) schedBtn.click();
         } catch (err) {}
-        // Apply after a tick so the schedule tab's code is loaded.
+        // Try to apply now; schedule tab also picks up qsDesiredDeptFilter on load.
         setTimeout(function () {
           if (window.qsScheduleSetDeptFilter) {
-            window.qsScheduleSetDeptFilter(v === '__all' ? null : v);
-          } else if (window.sched) {
-            window.sched.deptFilters = (v === '__all') ? [] : [v];
-            window.sched.shiftFilters = [];
+            window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
           }
         }, 300);
+        setTimeout(function () {
+          if (window.qsScheduleSetDeptFilter) {
+            window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
+          }
+        }, 1500);
       }
     });
     // Default: stored value if still in the edit list, else the first edit department.
@@ -1163,6 +1169,12 @@
             renderDeptFilter();
             renderLegend();
             if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
+            // Apply the global department filter if the switcher set one.
+            if (window.qsDesiredDeptFilter) {
+              sched.deptFilters = [String(window.qsDesiredDeptFilter)];
+              sched.shiftFilters = [];
+              renderDeptFilter();
+            }
             renderView();
             renderPublishBar();
           }).catch(function () { pageError('Could not load the schedule.'); });
