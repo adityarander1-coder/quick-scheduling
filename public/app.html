@@ -60,7 +60,7 @@
     // Department visible at all? (view or edit access; unassigned -> visible)
     window.qsCanViewDept = function (deptId) {
       var a = window.qsDeptAccess;
-      if (!a) return true; // full access fallback
+      if (!a) return !!window.isOwner; // owner: full access; scheduler with missing data: deny (fail closed)
       if (deptId == null || deptId === '') return true; // unassigned -> visible
       deptId = String(deptId);
       return a.edit.indexOf(deptId) !== -1 || a.view.indexOf(deptId) !== -1;
@@ -68,7 +68,7 @@
     // Department in the edit list (ignores which one is active)?
     window.qsInEditList = function (deptId) {
       var a = window.qsDeptAccess;
-      if (!a) return true; // full access fallback
+      if (!a) return !!window.isOwner; // owner: full access; scheduler with missing data: deny (fail closed)
       if (deptId == null || deptId === '') return true; // unassigned -> in scope
       return a.edit.indexOf(String(deptId)) !== -1;
     };
@@ -76,7 +76,7 @@
     window.qsCanEditDept = function (deptId) {
       if (!window.qsInEditList(deptId)) return false;
       var a = window.qsDeptAccess;
-      if (!a) return true; // full access fallback
+      if (!a) return !!window.isOwner; // owner: full access; scheduler with missing data: deny (fail closed)
       // Unassigned content: only the owner can edit (schedulers work within
       // their assigned departments — no ambiguous unassigned edits).
       if (deptId == null || deptId === '') return false;
