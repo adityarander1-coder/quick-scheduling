@@ -5426,10 +5426,12 @@
 
               function deptDropdownHTML(selectedIds, prefix) {
                 selectedIds = selectedIds || [];
-                // Global department filter: when a specific department is selected,
-                // only that department is available in the dropdown.
+                // Global department filter: for non-owners, when a specific department is selected,
+                // only that department is available. Owners see all (filter is for focus, not restriction).
                 var availDepts = departments.filter(function (d) {
-                  return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id);
+                  if (!window.qsCanViewDept(d.id)) return false;
+                  if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
+                  return true;
                 });
                 // If the global filter excludes all selected departments, fall back to showing viewable.
                 if (!availDepts.length) availDepts = departments.filter(function (d) { return window.qsCanViewDept(d.id); });
@@ -5845,8 +5847,12 @@
                 var none = document.createElement('option');
                 none.value = ''; none.textContent = '— None —';
                 sel.appendChild(none);
-                // Department scope: only viewable departments. Global filter applies too.
-                departments.filter(function (d) { return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id); }).forEach(function (d) {
+                // Department scope: only viewable departments. Global filter applies to non-owners only.
+                departments.filter(function (d) {
+                  if (!window.qsCanViewDept(d.id)) return false;
+                  if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
+                  return true;
+                }).forEach(function (d) {
                   var opt = document.createElement('option');
                   opt.value = d.id; opt.textContent = d.name;
                   if (d.id === selectedId) opt.selected = true;
@@ -6112,8 +6118,8 @@
             .filter(function (u) {
               // Department scope: only viewable team members.
               if (!window.qsMemberViewable(u)) return false;
-              // Global department filter.
-              if (!window.qsDeptFilterAllows(u.departmentId)) return false;
+              // Global department filter (non-owners only; owners see all).
+              if (!window.isOwner && !window.qsDeptFilterAllows(u.departmentId)) return false;
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
               return !q || nm.toLowerCase().indexOf(q) >= 0;
             })
@@ -6135,11 +6141,13 @@
             if (!r.ok) return;
             var sel = $('bulk-shifttype');
             // Department scope: bulk writes apply to the active department only.
-            // Global filter: only shift types in the selected department.
+            // Global filter: non-owners only see shift types in the selected department.
             sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) {
               if (!st.isActive || !window.qsStEditable(st)) return false;
-              var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
-              if (window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows)) return false;
+              if (!window.isOwner && window.qsActiveDeptId) {
+                var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                if (!deptIds.some(window.qsDeptFilterAllows)) return false;
+              }
               return true;
             }).map(function (st) {
               return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
