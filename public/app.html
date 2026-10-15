@@ -5420,13 +5420,20 @@
 
               function deptDropdownHTML(selectedIds, prefix) {
                 selectedIds = selectedIds || [];
+                // Global department filter: when a specific department is selected,
+                // only that department is available in the dropdown.
+                var availDepts = departments.filter(function (d) {
+                  return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id);
+                });
+                // If the global filter excludes all selected departments, fall back to showing viewable.
+                if (!availDepts.length) availDepts = departments.filter(function (d) { return window.qsCanViewDept(d.id); });
                 var label = selectedIds.length
                   ? selectedIds.length + ' department' + (selectedIds.length > 1 ? 's' : '')
                   : 'All departments';
                 return '<div class="dept-dd" data-dd="' + prefix + '" style="position:relative">' +
                   '<button type="button" class="dept-dd-btn" data-ddbtn="' + prefix + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.88rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:140px;max-width:200px"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>' +
                   '<div class="dept-dd-menu" data-ddmenu="' + prefix + '" style="display:none;position:absolute;top:100%;left:0;z-index:70;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;min-width:180px;max-height:200px;overflow-y:auto;padding:6px">' +
-                  departments.filter(function (d) { return window.qsCanViewDept(d.id); }).map(function (d) {
+                  availDepts.map(function (d) {
                     var on = selectedIds.indexOf(d.id) !== -1;
                     return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
                       '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
@@ -5832,8 +5839,8 @@
                 var none = document.createElement('option');
                 none.value = ''; none.textContent = '— None —';
                 sel.appendChild(none);
-                // Department scope: only viewable departments.
-                departments.filter(function (d) { return window.qsCanViewDept(d.id); }).forEach(function (d) {
+                // Department scope: only viewable departments. Global filter applies too.
+                departments.filter(function (d) { return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id); }).forEach(function (d) {
                   var opt = document.createElement('option');
                   opt.value = d.id; opt.textContent = d.name;
                   if (d.id === selectedId) opt.selected = true;
