@@ -4897,7 +4897,7 @@
                   myUserId = r.data.user.id;
                   myRole = r.data.user.role;
                   window.isOwner = (myRole === 'owner');
-                  if (window.qsSetDeptAccess) window.qsSetDeptAccess(myRole === 'owner' ? null : (r.data.user.departmentAccess || null));
+                  if (window.qsSetDeptAccess) window.qsSetDeptAccess(myRole === 'owner' ? null : (r.data.departmentAccess || null));
                   // Department scope: no edit access anywhere -> hide the add forms.
                   if (window.qsDeptAccess && !window.qsDeptAccess.edit.length) {
                     ['team-add-card', 'team-dept-form'].forEach(function (id) {
@@ -8588,7 +8588,7 @@
       window.qsCompanyId = r.data.company && r.data.company.id;
       // Department-scoped access (contract 2026-10-12): owner -> full access;
       // scheduler -> departmentAccess from backend; missing field -> full-access fallback.
-      window.qsSetDeptAccess(role === 'owner' ? null : (r.data.user.departmentAccess || null));
+      window.qsSetDeptAccess(role === 'owner' ? null : (r.data.departmentAccess || null));
       window.qsLoadActiveDept();
       // Show the "no departments" banner for schedulers with zero access.
       var ndBanner = $('no-dept-banner');
