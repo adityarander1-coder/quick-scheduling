@@ -110,6 +110,12 @@
     };
     // Active department persistence: qs.activeDepartment.<companyId>
     window.qsActiveDeptKey = function () { return 'qs.activeDepartment.' + (window.qsCompanyId || 'default'); };
+    // Returns true if the global department filter allows this department ID.
+    // When "All departments" (null) is selected, everything passes.
+    window.qsDeptFilterAllows = function (deptId) {
+      if (!window.qsActiveDeptId) return true;
+      return String(deptId) === String(window.qsActiveDeptId);
+    };
     window.qsSetActiveDept = function (id, persist) {
       window.qsActiveDeptId = id ? String(id) : null;
       if (persist !== false) { try { localStorage.setItem(window.qsActiveDeptKey(), window.qsActiveDeptId || ''); } catch (e) {} }
@@ -1233,6 +1239,8 @@
             renderActiveDeptSwitcher();
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+            // Re-render Settings sub-tab if visible (department filter changed).
+            if (window.qsRefreshSettingsForDept) window.qsRefreshSettingsForDept();
           } catch (e) {}
         };
 
@@ -4339,6 +4347,8 @@
                 var shown = members.filter(function (u) {
                   // Department scope: hide people in departments with no view access.
                   if (!window.qsMemberViewable(u)) return false;
+                  // Global department filter: show only members of the selected department.
+                  if (!window.qsDeptFilterAllows(u.departmentId)) return false;
                   if (!q) return true;
                   var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
                   return nm.toLowerCase().indexOf(q) >= 0;
@@ -4580,7 +4590,10 @@
                 var list = $('team-dept-list');
                 list.textContent = '';
                 // Department scope: only viewable departments appear; rename/delete only when editable.
-                var viewDepts = departments.filter(function (d) { return window.qsCanViewDept(d.id); });
+                // Global filter: when a specific department is selected in the switcher, show only it.
+                var viewDepts = departments.filter(function (d) {
+                  return window.qsCanViewDept(d.id) && window.qsDeptFilterAllows(d.id);
+                });
                 if (!viewDepts.length) { list.textContent = 'No departments yet.'; return; }
                 viewDepts.forEach(function (d) {
                   var div = document.createElement('div');
@@ -5031,7 +5044,7 @@
                 var sel = $('jr-dept-select');
                 sel.textContent = '';
                 var viewDepts = departments.filter(function (d) {
-                  return window.qsCanViewDept ? window.qsCanViewDept(d.id) : true;
+                  return (window.qsCanViewDept ? window.qsCanViewDept(d.id) : true) && window.qsDeptFilterAllows(d.id);
                 });
                 viewDepts.forEach(function (d) {
                   var opt = document.createElement('option');
@@ -5507,10 +5520,12 @@
                 var html = '';
                 var anyEditable = false;
                 shiftTypes.forEach(function (st, i) {
+                  // Global department filter: show only shift types in the selected department.
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  if (window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows)) return;
                   // Department scope: view-only rows render without edit controls.
                   var editable = window.qsStEditable(st);
                   if (editable) anyEditable = true;
-                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
                   var deleted = st.isActive === false;
                   html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
                     '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
@@ -8281,6 +8296,16 @@
         });
       }
     }
+
+    // Re-render the active Settings sub-tab when the global department filter changes.
+    window.qsRefreshSettingsForDept = function () {
+      try {
+        var settingsTab = document.getElementById('tab-settings');
+        if (!settingsTab || !settingsTab.classList.contains('active')) return;
+        var activeBtn = settingsTab.querySelector('.subtab-btn.active');
+        if (activeBtn) activeBtn.click();
+      } catch (e) {}
+    };
 
     function handleHash() {
       if (window.qsAppView === 'myschedule') return; // admin tabs hidden in My schedule view
