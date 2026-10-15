@@ -174,18 +174,12 @@
         var v = e.target.value;
         if (v === '__all') {
           // "All departments": clear active dept → view everything together.
-          // Edits still gated per-department; backend prompts to pick one.
           window.qsSetActiveDept(null);
-          // Clear the schedule tab's department filter too.
-          if (window.sched) { window.sched.deptFilters = []; }
+          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(null);
         } else {
           window.qsSetActiveDept(v);
-          // Scope the schedule tab to just this department.
-          if (window.sched) { window.sched.deptFilters = [v]; }
+          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(v);
         }
-        // Reload current views so everything re-filters to the new selection.
-        if (typeof handleHash === 'function') handleHash();
-        window.dispatchEvent(new Event('hashchange'));
       }
     });
     // Default: stored value if still in the edit list, else the first edit department.
@@ -1446,6 +1440,14 @@
           else if (sched.view === 'day') renderDay(el);
           else renderWeek(el);
         }
+        // Global hook: apply a department filter from the top-level switcher.
+        window.qsScheduleSetDeptFilter = function (deptId) {
+          if (!window.sched) return;
+          window.sched.deptFilters = deptId ? [String(deptId)] : [];
+          window.sched.shiftFilters = [];
+          try { renderDeptFilter(); } catch (e) {}
+          try { renderView(); } catch (e) {}
+        };
 
         function renderWeek(el) {
           var r = viewRange();
