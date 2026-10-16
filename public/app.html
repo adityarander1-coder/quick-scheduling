@@ -4548,7 +4548,7 @@
                   }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Access per department:</p>';
+                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Access per department:</p><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0.6rem">';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     html += '<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
@@ -4559,6 +4559,7 @@
                       '<option value="edit"' + (val === 'edit' ? ' selected' : '') + '>Edit</option>' +
                       '</select></div>';
                   });
+                  html += '</div>';
                   html += '<div style="margin-top:0.8rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap"><button type="button" class="btn" data-acc-save style="padding:0.5rem 1.2rem;font-size:0.9rem">Save access</button>' +
                     '<span data-acc-msg style="font-size:0.9rem"></span></div>';
                   panel.innerHTML = html;
