@@ -126,10 +126,11 @@
     // Global department switcher bar (schedulers only): pick which department
     // the admin view is scoped to. Shown when the scheduler has 1+ departments.
     function renderDeptSwitcherBar() {
-      var sel = document.getElementById('dept-switcher-select');
-      var wrap = document.getElementById('dept-switcher-wrap');
-      if (!sel || !wrap) return;
-      var bar = wrap; // wrapper drops down from the Admin tab
+      var menu = document.getElementById('admin-dept-menu');
+      var label = document.getElementById('admin-dept-label');
+      var btn = document.getElementById('admin-tab-btn');
+      if (!menu || !btn) return;
+      var bar = btn.parentElement; // dropdown wrapper under the Admin tab
       var a = window.qsDeptAccess;
       var isOwner = !!window.isOwner;
       // Retry once if scheduler data isn't ready yet (backend may lag).
@@ -146,34 +147,55 @@
       } else {
         // Diagnostic: show why the bar is hidden (visible to user for troubleshooting).
         if (!a) {
-          bar.classList.remove('hidden');
-          sel.innerHTML = '<option>Loading departments… (access data missing)</option>';
-          sel.disabled = true;
+          menu.innerHTML = '<div style="padding:0.5rem 0.8rem;font-size:0.9rem;color:var(--dim)">Loading departments…</div>';
           return;
         }
         if (window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
         allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
       }
-      if (allIds.length < 1) {
-        bar.classList.remove('hidden');
-        sel.innerHTML = '<option>No departments assigned — ask your workspace owner</option>';
-        sel.disabled = true;
-        return;
-      }
-      sel.disabled = false;
-      bar.classList.remove('hidden');
       var cur = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
-      // If no active dept yet and only one department, default to it.
-      // Otherwise default to "All departments" (view everything together).
       if ((!cur || allIds.indexOf(cur) === -1) && allIds.length === 1) {
         cur = String(allIds[0]);
         window.qsSetActiveDept(cur);
       }
-      sel.innerHTML = '<option value="__all"' + (!cur ? ' selected' : '') + '>All departments</option>' + allIds.map(function (id) {
+      // Update the Admin tab label with current department.
+      if (label) {
+        var curName = cur ? ((window.qsDeptName && window.qsDeptName(cur)) || '') : '';
+        label.textContent = curName ? '· ' + curName : '';
+      }
+      // Build the dropdown menu.
+      var items = [{ id: '__all', name: 'All departments' }].concat(allIds.map(function (id) {
         var nm = (window.qsDeptName && window.qsDeptName(id)) || id;
         var ro = (!isOwner && a && a.edit.indexOf(id) === -1) ? ' (view only)' : '';
-        return '<option value="' + id + '"' + (String(cur) === String(id) ? ' selected' : '') + '>' + esc(nm) + ro + '</option>';
-      }).join('');
+        return { id: id, name: nm + ro };
+      }));
+      menu.innerHTML = '';
+      items.forEach(function (it) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.style.cssText = 'display:block;width:100%;text-align:left;padding:0.5rem 0.8rem;border:0;background:none;font-size:0.9rem;cursor:pointer;border-radius:8px';
+        b.textContent = (String(cur) === String(it.id) || (!cur && it.id === '__all') ? '✓ ' : '') + it.name;
+        b.addEventListener('click', function () {
+          menu.classList.add('hidden');
+          if (it.id === '__all') {
+            window.qsSetActiveDept(null);
+            window.qsDesiredDeptFilter = null;
+          } else {
+            window.qsSetActiveDept(it.id);
+            window.qsDesiredDeptFilter = it.id;
+          }
+          setTimeout(function () {
+            if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
+          }, 300);
+          setTimeout(function () {
+            if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
+          }, 1000);
+          renderDeptSwitcherBar();
+        });
+        b.addEventListener('mouseenter', function () { b.style.background = '#f1f5f9'; });
+        b.addEventListener('mouseleave', function () { b.style.background = 'none'; });
+        menu.appendChild(b);
+      });
     }
     window.qsRenderDeptSwitcherBar = renderDeptSwitcherBar;
     // Global desired department filter (set by the top-level switcher; schedule tab picks it up on load).
@@ -628,15 +650,15 @@
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
-          <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
+          <div style="position:relative">
+            <button type="button" data-viewmode="admin" class="active" role="tab" id="admin-tab-btn" aria-haspopup="true">Admin view <span id="admin-dept-label" style="font-weight:400;opacity:0.8"></span> <span style="font-size:0.7em">▾</span></button>
+            <div id="admin-dept-menu" class="hidden" style="position:absolute;top:100%;left:0;z-index:50;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.12);min-width:200px;padding:0.3rem;margin-top:4px"></div>
+          </div>
           <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
         </div>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
-    </div>
-    <div id="dept-switcher-wrap" class="hidden" style="padding:0 1rem 0.4rem">
-      <select id="dept-switcher-select" aria-label="Switch department" style="padding:0.4rem 0.6rem;border:1px solid var(--border);border-radius:10px;font-size:0.85rem;background:#fff;max-width:260px;width:100%"></select>
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
