@@ -169,6 +169,11 @@ async function main(): Promise<void> {
   const { startEmailPollScheduler } = await import('./util/emailPollScheduler.js');
   startEmailPollScheduler();
   startBillingSync(); // daily Stripe reconciliation + grace -> read_only -> suspended
+  // Apply due scheduled role promotions on boot and daily.
+  import('./routes/schedule.js').then(m => {
+    m.applyDuePromotions();
+    setInterval(() => m.applyDuePromotions(), 24 * 60 * 60 * 1000);
+  }).catch(err => console.error('[app] promotions scheduler failed:', err));
   app.listen(PORT, () => {
     console.log(`[app] Quick Scheduling listening on http://localhost:${PORT}`);
   });

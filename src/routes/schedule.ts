@@ -3621,3 +3621,96 @@ router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'emp
 });
 
 export default router;
+
+// POST /api/schedule/scheduled-promotions — schedule future role promotions (owner/scheduler).
+router.post('/scheduled-promotions', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = (req.session as any)?.userId;
+    const { promotions, effectiveDate } = req.body;
+    if (!Array.isArray(promotions) || !promotions.length) { res.status(400).json({ error: 'promotions must be a non-empty array.' }); return; }
+    if (!effectiveDate || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) { res.status(400).json({ error: 'effectiveDate must be YYYY-MM-DD.' }); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    if (effectiveDate < today) { res.status(400).json({ error: 'Effective date must be today or in the future.' }); return; }
+    let created = 0;
+    for (const p of promotions) {
+      if (!p.userId || !p.toRoleId) continue;
+      // Verify user and role belong to this company.
+      const { rows: urows } = await query('SELECT id, job_role_id FROM users WHERE id = $1 AND company_id = $2', [p.userId, companyId]);
+      if (!urows.length) continue;
+      const { rows: rrows } = await query('SELECT id FROM job_roles WHERE id = $1 AND company_id = $2', [p.toRoleId, companyId]);
+      if (!rrows.length) continue;
+      await query(
+        `INSERT INTO scheduled_promotions (company_id, user_id, from_role_id, to_role_id, effective_date, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (company_id, user_id, effective_date) DO UPDATE SET to_role_id = $4, from_role_id = $3, status = 'pending', applied_at = NULL`,
+        [companyId, p.userId, urows[0].job_role_id || null, p.toRoleId, effectiveDate, userId]
+      );
+      created++;
+    }
+    res.json({ ok: true, created });
+  } catch (err) {
+    console.error('[schedule] schedule promotions failed:', err);
+    res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
+// GET /api/schedule/scheduled-promotions — list pending scheduled promotions.
+router.get('/scheduled-promotions', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT sp.id, sp.effective_date, sp.status, sp.created_at,
+              u.name AS user_name, u.email AS user_email,
+              fr.name AS from_role, tr.name AS to_role,
+              d.name AS department_name
+       FROM scheduled_promotions sp
+       JOIN users u ON u.id = sp.user_id
+       LEFT JOIN job_roles fr ON fr.id = sp.from_role_id
+       JOIN job_roles tr ON tr.id = sp.to_role_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE sp.company_id = $1 AND sp.status = 'pending'
+       ORDER BY sp.effective_date, u.name`,
+      [companyId]
+    );
+    res.json({ promotions: rows });
+  } catch (err) {
+    console.error('[schedule] list promotions failed:', err);
+    res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
+// DELETE /api/schedule/scheduled-promotions/:id — cancel a pending promotion.
+router.delete('/scheduled-promotions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rowCount } = await query(
+      "UPDATE scheduled_promotions SET status = 'cancelled' WHERE id = $1 AND company_id = $2 AND status = 'pending'",
+      [req.params.id, companyId]
+    );
+    if (!rowCount) { res.status(404).json({ error: 'Promotion not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] cancel promotion failed:', err);
+    res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
+// Apply due promotions — called on server start and daily.
+export async function applyDuePromotions() {
+  try {
+    const { rows } = await query(
+      `SELECT sp.id, sp.company_id, sp.user_id, sp.to_role_id
+       FROM scheduled_promotions sp
+       WHERE sp.status = 'pending' AND sp.effective_date <= CURRENT_DATE`
+    );
+    for (const p of rows) {
+      await query('UPDATE users SET job_role_id = $1 WHERE id = $2 AND company_id = $3', [p.to_role_id, p.user_id, p.company_id]);
+      await query("UPDATE scheduled_promotions SET status = 'applied', applied_at = NOW() WHERE id = $1", [p.id]);
+    }
+    if (rows.length) console.log(`[promotions] Applied ${rows.length} due role promotions.`);
+  } catch (err) {
+    console.error('[promotions] Failed to apply due promotions:', err);
+  }
+}
+

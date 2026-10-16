@@ -4237,10 +4237,15 @@
                   <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To role</label>
                   <select id="promote-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
                 </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Effective date</label>
+                  <input type="date" id="promote-date" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+                </div>
                 <button type="button" id="promote-load" class="btn-secondary">Find members</button>
               </div>
               <div id="promote-members" style="border:1px solid var(--border);border-radius:8px;padding:0.6rem;max-height:200px;overflow-y:auto;margin-bottom:0.8rem;display:none"></div>
-              <button type="button" id="promote-run" class="btn" style="display:none">Promote selected</button>
+              <button type="button" id="promote-run" class="btn" style="display:none">Schedule promotion</button>
+              <div id="promote-scheduled" style="margin-top:1rem"></div>
             </div>
 
             <div class="sub-card" id="team-add-card">
@@ -4993,31 +4998,59 @@
                   var toId = toSel.value, toName = toSel.selectedOptions[0].textContent;
                   var ids = Array.prototype.map.call(listEl.querySelectorAll('.promote-cb:checked'), function (cb) { return cb.value; });
                   if (!ids.length) { showErr('Select at least one member.'); return; }
-                  if (!confirm('Promote ' + ids.length + ' member(s) to "' + toName + '"?')) return;
-                  runBtn.disabled = true; runBtn.textContent = 'Promoting…';
-                  Promise.all(ids.map(function (id) {
-                    return api('/api/users/' + id, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ jobRoleId: toId })
-                    });
-                  })).then(function (results) {
-                    var ok = results.filter(function (r) { return r.ok; }).length;
-                    runBtn.disabled = false; runBtn.textContent = 'Promote selected';
-                    if (ok === ids.length) {
-                      showOk('Promoted ' + ok + ' member(s) to "' + toName + '".');
+                  var effDate = $('promote-date').value;
+                  if (!effDate) { showErr('Pick an effective date.'); return; }
+                  var today = new Date().toISOString().slice(0, 10);
+                  if (effDate < today) { showErr('Effective date must be today or in the future.'); return; }
+                  if (!confirm('Schedule promotion of ' + ids.length + ' member(s) to "' + toName + '" effective ' + effDate + '?')) return;
+                  runBtn.disabled = true; runBtn.textContent = 'Scheduling…';
+                  api('/api/schedule/scheduled-promotions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ effectiveDate: effDate, promotions: ids.map(function (id) { return { userId: id, toRoleId: toId }; }) })
+                  }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+                  .then(function (res) {
+                    runBtn.disabled = false; runBtn.textContent = 'Schedule promotion';
+                    if (res.ok) {
+                      showOk('Scheduled ' + res.data.created + ' promotion(s) for ' + effDate + '.');
                       listEl.style.display = 'none'; runBtn.style.display = 'none';
-                      loadMembers();
+                      loadScheduled();
                     } else {
-                      showErr('Promoted ' + ok + ' of ' + ids.length + '. Some failed.');
+                      showErr(res.data.error || 'Failed to schedule.');
                     }
                   }).catch(function () {
-                    runBtn.disabled = false; runBtn.textContent = 'Promote selected';
+                    runBtn.disabled = false; runBtn.textContent = 'Schedule promotion';
                     showErr('Network error.');
                   });
                 });
+                // List pending scheduled promotions.
+                function loadScheduled() {
+                  var wrap = $('promote-scheduled');
+                  api('/api/schedule/scheduled-promotions').then(function (r) { return r.json(); }).then(function (d) {
+                    var list = (d && d.promotions) || [];
+                    if (!list.length) { wrap.innerHTML = ''; return; }
+                    var html = '<h4 style="margin:0 0 0.5rem">Scheduled promotions</h4>';
+                    list.forEach(function (p) {
+                      html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.6rem;padding:0.4rem 0.6rem;border:1px solid var(--border);border-radius:8px;margin-bottom:0.4rem">' +
+                        '<span style="font-size:0.9rem">' + esc(p.user_name) + ' → <b>' + esc(p.to_role) + '</b>' +
+                        (p.department_name ? ' <span style="color:var(--dim)">(' + esc(p.department_name) + ')</span>' : '') +
+                        ' <span style="color:var(--dim)">· ' + esc(p.effective_date) + '</span></span>' +
+                        '<button type="button" class="btn-secondary promote-cancel" data-id="' + p.id + '" style="padding:4px 10px;font-size:0.8rem">Cancel</button></div>';
+                    });
+                    wrap.innerHTML = html;
+                    wrap.querySelectorAll('.promote-cancel').forEach(function (btn) {
+                      btn.addEventListener('click', function () {
+                        if (!confirm('Cancel this scheduled promotion?')) return;
+                        api('/api/schedule/scheduled-promotions/' + btn.getAttribute('data-id'), { method: 'DELETE' })
+                          .then(function () { loadScheduled(); })
+                          .catch(function () { showErr('Network error.'); });
+                      });
+                    });
+                  }).catch(function () { /* ignore */ });
+                }
                 // Initialize.
                 fillDepts();
+                loadScheduled();
                 // Re-fill when global department filter changes.
                 window.qsSyncPromoteDept = fillDepts;
               }
