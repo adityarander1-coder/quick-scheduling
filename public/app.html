@@ -670,28 +670,28 @@
         #tab-schedule .range-picker label { font-weight: 600; font-size: 0.9rem; }
         #tab-schedule .range-picker input[type="date"] { padding: 0.4rem; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; }
         /* Demo day boxes */
-        #tab-schedule article.day-row { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.3rem; overflow: hidden; }
-        #tab-schedule .day-row-head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0.4rem; min-height: 32px; padding: 0.25rem 0.5rem; background: var(--surface-alt); border-bottom: 1px solid var(--border); }
+        #tab-schedule article.day-row { background: #ffffff; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.2rem; overflow: hidden; }
+        #tab-schedule .day-row-head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0.25rem; min-height: 20px; padding: 0.12rem 0.4rem; background: var(--surface-alt); border-bottom: 1px solid var(--border); }
         #tab-schedule .day-row-date { cursor: pointer; }
-        #tab-schedule .day-row-date .dow { font-size: 15px; font-weight: 700; color: var(--text); }
-        #tab-schedule .day-row-date .dnum { font-size: 11px; color: var(--dim); }
+        #tab-schedule .day-row-date .dow { font-size: 12px; font-weight: 700; color: var(--text); }
+        #tab-schedule .day-row-date .dnum { font-size: 10px; color: var(--dim); }
         #tab-schedule .day-row-actions { display: flex; align-items: center; gap: 0.6rem; }
         #tab-schedule .add-shift-btn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--navy); color: #fff; font-size: 1.4rem; font-weight: 700; cursor: pointer; line-height: 1; padding: 0; }
         #tab-schedule .add-shift-btn:hover { filter: brightness(1.15); }
-        #tab-schedule .day-row-body { padding: 0.3rem 0.5rem; }
-        #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 2px; min-height: 22px; margin-bottom: 3px; }
+        #tab-schedule .day-row-body { padding: 0.15rem 0.4rem; }
+        #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 1px; min-height: 14px; margin-bottom: 2px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
         @media (min-width: 900px) {
           body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
-          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; align-items: start; }
+          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.4rem; align-items: start; }
           #tab-schedule .week-grid article.day-row { margin-bottom: 0; }
           #tab-schedule .sched-control-box { display: flex; align-items: center; gap: 1rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0; font-size: 1.2rem; white-space: nowrap; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 0; flex: 1 1 320px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; flex-wrap: nowrap; }
         }
-        #tab-schedule .shift-cat { border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
-        #tab-schedule .shift-nm { background: #ffffff; border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
+        #tab-schedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
+        #tab-schedule .shift-nm { background: #ffffff; border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
         #tab-schedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
         /* Open shift slots (unfilled staffing targets) */
         #tab-schedule button.open-slot { border: 0; background: none; padding: 0; width: 100%; cursor: pointer; font: inherit; text-align: left; }
