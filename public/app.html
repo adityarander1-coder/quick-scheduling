@@ -126,9 +126,9 @@
     // Global department switcher bar (schedulers only): pick which department
     // the admin view is scoped to. Shown when the scheduler has 1+ departments.
     function renderDeptSwitcherBar() {
-      var bar = document.getElementById('dept-switcher-bar');
       var sel = document.getElementById('dept-switcher-select');
-      if (!bar || !sel) return;
+      if (!sel) return;
+      var bar = sel; // select now lives directly in the header
       var a = window.qsDeptAccess;
       var isOwner = !!window.isOwner;
       // Retry once if scheduler data isn't ready yet (backend may lag).
@@ -625,18 +625,15 @@
   <header class="app-header">
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
-      <div>
+      <div style="display:flex;align-items:center;gap:0.5rem">
+        <select id="dept-switcher-select" class="hidden" aria-label="Switch department" style="padding:0.4rem 0.6rem;border:1px solid var(--border);border-radius:10px;font-size:0.85rem;background:#fff;max-width:200px"></select>
         <span class="user-chip" id="user-chip"></span>
-        <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
+        <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
     </div>
     <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View">
       <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
       <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
-    </div>
-    <div id="dept-switcher-bar" class="hidden" style="margin:0.6rem 1rem;padding:0.6rem 1rem;background:#40e0d0;border:1px solid #20b2aa;border-radius:20px;display:flex;align-items:center;gap:0.6rem">
-      <label for="dept-switcher-select" style="font-weight:700;font-size:0.9rem;color:#00332e;white-space:nowrap">Department:</label>
-      <select id="dept-switcher-select" style="flex:1;min-width:0;width:100%;padding:0.5rem 0.7rem;border:1px solid #20b2aa;border-radius:14px;font-size:1rem;background:#fff;box-sizing:border-box" aria-label="Switch department"></select>
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
