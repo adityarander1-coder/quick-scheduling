@@ -6223,16 +6223,46 @@
                         var checked = (d.ccUserIds || []).indexOf(u.id) >= 0 ? ' checked' : '';
                         return '<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:0.85rem"><input type="checkbox" data-dept="' + d.id + '" data-cc-user="' + u.id + '"' + checked + '> ' + esc(u.name) + '</label>';
                       }).join('');
+                      var extraList = (d.extraEmails || []).map(function (e) {
+                        return '<span style="display:inline-flex;align-items:center;gap:4px;background:#eef2f7;border-radius:12px;padding:2px 8px;margin:2px;font-size:0.85rem">' + esc(e) +
+                          ' <button type="button" data-dept="' + d.id + '" data-remove-email="' + esc(e) + '" style="border:0;background:none;cursor:pointer;color:#888;font-size:0.9rem">×</button></span>';
+                      }).join('');
                       html += '<div class="sub-card" style="margin-bottom:1rem"><h4 style="margin:0 0 0.5rem">' + esc(d.name) + '</h4>' +
                         '<div style="margin-bottom:0.5rem"><label style="font-size:0.9rem;font-weight:600">Primary recipient: </label>' +
                         '<select data-dept="' + d.id + '" data-primary style="padding:6px;border:1px solid var(--border);border-radius:8px">' + primaryOpts + '</select></div>' +
-                        '<div><span style="font-size:0.9rem;font-weight:600">CC:</span><div style="margin-top:4px">' + ccBoxes + '</div></div></div>';
+                        '<div style="margin-bottom:0.5rem"><span style="font-size:0.9rem;font-weight:600">CC:</span><div style="margin-top:4px">' + ccBoxes + '</div></div>' +
+                        '<div><span style="font-size:0.9rem;font-weight:600">Additional emails:</span><div style="margin-top:4px" data-extra-list="' + d.id + '">' + extraList + '</div>' +
+                        '<div style="display:flex;gap:6px;margin-top:6px"><input type="email" placeholder="name@example.com" data-extra-input="' + d.id + '" style="padding:6px;border:1px solid var(--border);border-radius:8px;flex:1">' +
+                        '<button type="button" class="btn-secondary" data-add-email="' + d.id + '">Add</button></div></div></div>';
                     });
                     $('dept-notif-list').innerHTML = html || '<p>No departments yet.</p>';
                     loaded = true;
                   }
                 });
               }
+              // Add/remove extra emails (client-side, saved with the form).
+              document.addEventListener('click', function (e) {
+                var addBtn = e.target.closest('[data-add-email]');
+                if (addBtn) {
+                  var deptId = addBtn.getAttribute('data-add-email');
+                  var input = document.querySelector('[data-extra-input="' + deptId + '"]');
+                  var val = (input.value || '').trim().toLowerCase();
+                  if (val && val.includes('@')) {
+                    // Avoid duplicates.
+                    if (!document.querySelector('[data-remove-email="' + val + '"][data-dept="' + deptId + '"]')) {
+                      var list = document.querySelector('[data-extra-list="' + deptId + '"]');
+                      var span = document.createElement('span');
+                      span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#eef2f7;border-radius:12px;padding:2px 8px;margin:2px;font-size:0.85rem';
+                      span.innerHTML = esc(val) + ' <button type="button" data-dept="' + deptId + '" data-remove-email="' + esc(val) + '" style="border:0;background:none;cursor:pointer;color:#888;font-size:0.9rem">×</button>';
+                      list.appendChild(span);
+                    }
+                    input.value = '';
+                  }
+                  return;
+                }
+                var rmBtn = e.target.closest('[data-remove-email]');
+                if (rmBtn) { rmBtn.parentElement.remove(); }
+              });
               $('dept-notif-save').addEventListener('click', function () {
                 var msg = $('dept-notif-msg');
                 msg.textContent = 'Saving...';
@@ -6243,7 +6273,11 @@
                   document.querySelectorAll('#dept-notif-list [data-cc-user][data-dept="' + deptId + '"]').forEach(function (cb) {
                     if (cb.checked) ccUserIds.push(cb.getAttribute('data-cc-user'));
                   });
-                  settings.push({ departmentId: deptId, primaryUserId: sel.value || null, ccUserIds: ccUserIds });
+                  var extraEmails = [];
+                  document.querySelectorAll('[data-remove-email][data-dept="' + deptId + '"]').forEach(function (btn) {
+                    extraEmails.push(btn.getAttribute('data-remove-email'));
+                  });
+                  settings.push({ departmentId: deptId, primaryUserId: sel.value || null, ccUserIds: ccUserIds, extraEmails: extraEmails });
                 });
                 api('/api/schedule/dept-notifications', {
                   method: 'PUT',

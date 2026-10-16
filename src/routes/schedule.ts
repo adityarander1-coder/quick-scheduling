@@ -1905,12 +1905,22 @@ router.get('/notification-settings', requireRole('owner'), async (req: Request, 
 // Email AI notification settings — per-department primary + CC recipients.
 // ---------------------------------------------------------------------------
 
-// GET /api/schedule/dept-notifications — owner only.
-router.get('/dept-notifications', requireRole('owner'), async (req: Request, res: Response) => {
+// GET /api/schedule/dept-notifications — owner sees all; scheduler sees own edit departments.
+router.get('/dept-notifications', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { rows: depts } = await query('SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
-    const { rows: settings } = await query('SELECT * FROM department_notification_settings WHERE company_id = $1', [companyId]);
+    const role = (req.session as any)?.role;
+    const userId = (req.session as any)?.userId;
+    let deptFilter = '';
+    let deptParams: any[] = [companyId];
+    if (role !== 'owner') {
+      const access = await getDepartmentAccess(userId, companyId);
+      if (!access.edit.length) { res.json({ departments: [], users: [] }); return; }
+      deptFilter = ' AND d.id = ANY($2)';
+      deptParams.push(access.edit);
+    }
+    const { rows: depts } = await query(`SELECT d.id, d.name FROM departments d WHERE d.company_id = $1${deptFilter} ORDER BY d.name`, deptParams);
+    const { rows: settings } = await query('SELECT department_id, primary_user_id, cc_user_ids, extra_emails FROM department_notification_settings WHERE company_id = $1', [companyId]);
     const byDept: any = {};
     settings.forEach((s: any) => { byDept[s.department_id] = s; });
     const { rows: users } = await query(
@@ -1922,6 +1932,7 @@ router.get('/dept-notifications', requireRole('owner'), async (req: Request, res
         id: d.id, name: d.name,
         primaryUserId: byDept[d.id]?.primary_user_id || null,
         ccUserIds: byDept[d.id]?.cc_user_ids || [],
+        extraEmails: byDept[d.id]?.extra_emails || [],
       })),
       users: users.map((u: any) => ({ id: u.id, name: (u.first_name + ' ' + u.last_name).trim(), email: u.email, role: u.role })),
     });
@@ -1931,23 +1942,34 @@ router.get('/dept-notifications', requireRole('owner'), async (req: Request, res
   }
 });
 
-// PUT /api/schedule/dept-notifications — owner only.
-router.put('/dept-notifications', requireRole('owner'), async (req: Request, res: Response) => {
+// PUT /api/schedule/dept-notifications — owner: all departments; scheduler: only own edit departments.
+router.put('/dept-notifications', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const role = (req.session as any)?.role;
+    const userId = (req.session as any)?.userId;
+    let allowedDepts: Set<string> | null = null;
+    if (role !== 'owner') {
+      const access = await getDepartmentAccess(userId, companyId);
+      allowedDepts = new Set(access.edit);
+    }
     const settings = req.body.settings;
     if (!Array.isArray(settings)) { res.status(400).json({ error: 'settings must be an array.' }); return; }
     for (const s of settings) {
       if (!s.departmentId) continue;
+      if (allowedDepts && !allowedDepts.has(s.departmentId)) continue;
       const { rows: drows } = await query('SELECT id FROM departments WHERE id = $1 AND company_id = $2', [s.departmentId, companyId]);
       if (!drows.length) continue;
       const primaryUserId = s.primaryUserId || null;
       const ccUserIds = Array.isArray(s.ccUserIds) ? s.ccUserIds.filter(Boolean) : [];
+      const extraEmails = Array.isArray(s.extraEmails)
+        ? [...new Set(s.extraEmails.map((e: string) => String(e).trim().toLowerCase()).filter((e: string) => e.includes('@')))]
+        : [];
       await query(
-        `INSERT INTO department_notification_settings (department_id, company_id, primary_user_id, cc_user_ids, updated_at)
-         VALUES ($1, $2, $3, $4, now())
-         ON CONFLICT (department_id) DO UPDATE SET primary_user_id = $3, cc_user_ids = $4, updated_at = now()`,
-        [s.departmentId, companyId, primaryUserId, ccUserIds]
+        `INSERT INTO department_notification_settings (department_id, company_id, primary_user_id, cc_user_ids, extra_emails, updated_at)
+         VALUES ($1, $2, $3, $4, $5, now())
+         ON CONFLICT (department_id) DO UPDATE SET primary_user_id = $3, cc_user_ids = $4, extra_emails = $5, updated_at = now()`,
+        [s.departmentId, companyId, primaryUserId, ccUserIds, extraEmails]
       );
     }
     res.json({ ok: true });

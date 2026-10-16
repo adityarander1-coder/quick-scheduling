@@ -284,7 +284,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             const deptIds = await getPlanDeptIds(companyId, plan);
             if (deptIds.length) {
               const { rows: dsettings } = await query(
-                'SELECT department_id, primary_user_id, cc_user_ids FROM department_notification_settings WHERE company_id = $1 AND department_id = ANY($2)',
+                'SELECT department_id, primary_user_id, cc_user_ids, extra_emails FROM department_notification_settings WHERE company_id = $1 AND department_id = ANY($2)',
                 [companyId, deptIds]
               );
               const userIds = new Set<string>();
@@ -302,6 +302,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
                 dsettings.forEach((s: any) => {
                   if (s.primary_user_id && emailById[s.primary_user_id]) toAddrs.push(emailById[s.primary_user_id]);
                   (s.cc_user_ids || []).forEach((id: string) => { if (emailById[id]) ccAddrs.push(emailById[id]); });
+                  (s.extra_emails || []).forEach((e: string) => { if (e && e.includes('@')) ccAddrs.push(e); });
                 });
               }
             }
