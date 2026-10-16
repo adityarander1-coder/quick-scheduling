@@ -7781,8 +7781,7 @@
           if (isWorking(dateStr)) {
             btn = '<span style="font-size:0.8rem;color:var(--dim)">You work this day</span>';
           } else if (!roleEligible(st)) {
-            var req = requiredRoleNames(st);
-            btn = '<span style="font-size:0.8rem;color:var(--dim)">Requires: ' + esc(req || 'specific job role') + '</span>';
+            btn = '';
           } else {
             btn = '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>';
           }
