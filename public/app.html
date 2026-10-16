@@ -1336,7 +1336,7 @@
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
-          var draftTag = published ? '' : ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>';
+          var draftTag = published ? '' : '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
@@ -7672,7 +7672,7 @@
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
           var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
-          var draftTag = (s.published === false) ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
+          var draftTag = (s.published === false) ? '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var html = '<div class="shift-grid">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + draftTag + '</div>' +
