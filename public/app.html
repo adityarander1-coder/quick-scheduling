@@ -682,8 +682,13 @@
         #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 2px; min-height: 22px; margin-bottom: 3px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
         @media (min-width: 900px) {
-          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; align-items: start; }
+          body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
+          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.6rem; align-items: start; }
           #tab-schedule .week-grid article.day-row { margin-bottom: 0; }
+          #tab-schedule .sched-control-box { display: flex; align-items: center; gap: 1rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+          #tab-schedule .sched-control-box .sched-h1 { margin: 0; font-size: 1.2rem; white-space: nowrap; }
+          #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 0; flex: 1 1 320px; }
+          #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; flex-wrap: nowrap; }
         }
         #tab-schedule .shift-cat { border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm { background: #ffffff; border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
@@ -833,27 +838,29 @@
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
       </style>
 
-      <h2 id="sched-h1" class="sched-h1">Schedule</h2>
-
       <div id="sched-active-dept" class="active-dept-bar hidden" aria-label="Active department">
         <span style="font-weight:700">Editing:</span>
         <span id="sched-active-dept-ctl"></span>
         <span style="color:var(--dim);font-size:0.82rem">Edits apply to this department only.</span>
       </div>
 
-      <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end"></div>
+      <div class="sched-control-box">
+        <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
-      <div class="sched-toolbar">
-        <div class="view-tabs" role="tablist" aria-label="Schedule view">
-          <button type="button" data-view="day" role="tab">Day</button>
-          <button type="button" data-view="week" role="tab" class="active">Week</button>
-          <button type="button" data-view="month" role="tab">Month</button>
-          <button type="button" data-view="range" role="tab">Range</button>
-        </div>
-        <div class="date-nav">
-          <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
-          <button type="button" id="sched-today" class="btn-secondary">Today</button>
-          <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
+        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end"></div>
+
+        <div class="sched-toolbar">
+          <div class="view-tabs" role="tablist" aria-label="Schedule view">
+            <button type="button" data-view="day" role="tab">Day</button>
+            <button type="button" data-view="week" role="tab" class="active">Week</button>
+            <button type="button" data-view="month" role="tab">Month</button>
+            <button type="button" data-view="range" role="tab">Range</button>
+          </div>
+          <div class="date-nav">
+            <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
+            <button type="button" id="sched-today" class="btn-secondary">Today</button>
+            <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
+          </div>
         </div>
       </div>
 
