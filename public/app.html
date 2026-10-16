@@ -1565,9 +1565,11 @@
           // Group by shift type: show shift name once, list people under it.
           var byType = {};
           dayShifts.forEach(function (s) { (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s); });
-          Object.keys(byType).forEach(function (stId) {
-            var items = byType[stId];
-            var st = shiftTypeById(stId);
+          // Same order as week/day view: shift type sort order from Settings.
+          sched.shiftTypes.forEach(function (st) {
+            if (!shiftTypeVisible(st)) return;
+            var items = byType[st.id] || [];
+            if (!items.length) return;
             var published = isPublished(ds) && items[0].published !== false;
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
@@ -1577,6 +1579,17 @@
               '" title="' + title + '">' +
               '<span class="dot" style="background:' + esc(color) + '"></span>' +
               '<span><strong>' + esc(shiftName) + '</strong><br>' + names + '</span></div>';
+          });
+          // Fallback: shifts whose type is missing from the list still show up.
+          var renderedIds = {};
+          sched.shiftTypes.forEach(function (st) { (byType[st.id] || []).forEach(function (s) { renderedIds[s.id] = true; }); });
+          dayShifts.forEach(function (s) {
+            if (renderedIds[s.id]) return;
+            var st = shiftTypeById(s.shiftTypeId);
+            var color = '#637a8e';
+            html += '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+              '"><span class="dot" style="background:' + esc(color) + '"></span>' +
+              '<span><strong>' + esc(st ? st.name : '') + '</strong><br>' + esc(displayName(s)) + '</span></div>';
           });
           var openTotal = 0;
           sched.shiftTypes.forEach(function (st) {
