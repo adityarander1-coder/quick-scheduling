@@ -2881,11 +2881,17 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       const reqEmail = (plan.source_from || '').trim();
       if (reqEmail && reqEmail.includes('@')) {
         const outcome = allOk ? 'approved and applied' : 'partially applied';
+        const detailText = results.map((r: any, i: number) =>
+          `${i + 1}. [${r.success ? 'Applied' : 'FAILED'}] ${r.action}: ${r.message}`
+        ).join('\n');
+        const detailHtml = results.map((r: any, i: number) =>
+          `<li><strong>${r.success ? 'Applied' : 'Failed'}:</strong> ${escHtml(String(r.message))}</li>`
+        ).join('');
         await sendMail({
           to: reqEmail,
           subject: `Request ${allOk ? 'approved' : 'partially applied'}: ${(plan.plan_summary || '').substring(0, 60)}`,
-          text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><p>— Quick Scheduling</p>`,
+          text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\nDetails:\n${detailText}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><ul>${detailHtml}</ul><p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
