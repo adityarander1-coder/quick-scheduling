@@ -4548,7 +4548,7 @@
                   }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Admin access per department:</p><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:0.6rem">';
+                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Admin access per department:</p><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem">';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     html += '<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
