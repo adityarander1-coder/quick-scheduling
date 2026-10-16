@@ -126,12 +126,8 @@
     // Global department switcher bar (schedulers only): pick which department
     // the admin view is scoped to. Shown when the scheduler has 1+ departments.
     function renderDeptSwitcherBar() {
-      var menu = document.getElementById('admin-dept-menu');
-      var label = document.getElementById('admin-dept-label');
-      var labelBtn = document.getElementById('admin-dept-label-btn');
-      if (!menu || !labelBtn) return;
-      labelBtn.classList.remove('hidden');
-      var bar = labelBtn.parentElement;
+      var sel = document.getElementById('admin-dept-select');
+      if (!sel) return;
       var a = window.qsDeptAccess;
       var isOwner = !!window.isOwner;
       // Retry once if scheduler data isn't ready yet (backend may lag).
@@ -148,7 +144,7 @@
       } else {
         // Diagnostic: show why the bar is hidden (visible to user for troubleshooting).
         if (!a) {
-          menu.innerHTML = '<div style="padding:0.5rem 0.8rem;font-size:0.9rem;color:var(--dim)">Loading departments…</div>';
+          sel.innerHTML = '<option>Loading…</option>';
           return;
         }
         if (window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
@@ -159,61 +155,35 @@
         cur = String(allIds[0]);
         window.qsSetActiveDept(cur);
       }
-      // Update the Admin tab label with current department.
-      if (label) {
-        var curName = cur ? ((window.qsDeptName && window.qsDeptName(cur)) || '') : '';
-        label.textContent = curName || 'All departments';
-      }
-      // Build the dropdown menu.
-      var items = [{ id: '__all', name: 'All departments' }].concat(allIds.map(function (id) {
+      sel.innerHTML = '<option value="__all">All departments</option>' + allIds.map(function (id) {
         var nm = (window.qsDeptName && window.qsDeptName(id)) || id;
         var ro = (!isOwner && a && a.edit.indexOf(id) === -1) ? ' (view only)' : '';
-        return { id: id, name: nm + ro };
-      }));
-      menu.innerHTML = '';
-      items.forEach(function (it) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.style.cssText = 'display:block;width:100%;text-align:left;padding:0.5rem 0.8rem;border:0;background:none;font-size:0.9rem;color:#1e293b;cursor:pointer;border-radius:8px';
-        b.textContent = (String(cur) === String(it.id) || (!cur && it.id === '__all') ? '✓ ' : '') + it.name;
-        b.addEventListener('click', function () {
-          menu.classList.add('hidden');
-          if (it.id === '__all') {
-            window.qsSetActiveDept(null);
-            window.qsDesiredDeptFilter = null;
-          } else {
-            window.qsSetActiveDept(it.id);
-            window.qsDesiredDeptFilter = it.id;
-          }
-          setTimeout(function () {
-            if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
-          }, 300);
-          setTimeout(function () {
-            if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
-          }, 1000);
-          renderDeptSwitcherBar();
-        });
-        b.addEventListener('mouseenter', function () { b.style.background = '#f1f5f9'; });
-        b.addEventListener('mouseleave', function () { b.style.background = 'none'; });
-        menu.appendChild(b);
-      });
+        return '<option value="' + id + '"' + (String(cur) === String(id) ? ' selected' : '') + '>' + esc(nm) + ro + '</option>';
+      }).join('');
+      if (!cur) sel.value = '__all';
     }
+    // Department select inside the Admin tab.
+    document.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'admin-dept-select') {
+        var v = e.target.value;
+        if (v === '__all') {
+          window.qsSetActiveDept(null);
+          window.qsDesiredDeptFilter = null;
+        } else {
+          window.qsSetActiveDept(v);
+          window.qsDesiredDeptFilter = v;
+        }
+        setTimeout(function () {
+          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
+        }, 300);
+        setTimeout(function () {
+          if (window.qsScheduleSetDeptFilter) window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
+        }, 1000);
+      }
+    });
     window.qsRenderDeptSwitcherBar = renderDeptSwitcherBar;
     // Global desired department filter (set by the top-level switcher; schedule tab picks it up on load).
     window.qsDesiredDeptFilter = null;
-    // Admin tab department dropdown: toggle menu, close on outside click.
-    document.addEventListener('click', function (e) {
-      var menu = document.getElementById('admin-dept-menu');
-      var labelBtn = document.getElementById('admin-dept-label-btn');
-      if (!menu || !labelBtn) return;
-      if (labelBtn.contains(e.target)) {
-        e.stopPropagation();
-        if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
-        menu.classList.toggle('hidden');
-      } else if (!menu.classList.contains('hidden') && !menu.contains(e.target)) {
-        menu.classList.add('hidden');
-      }
-    });
     // Default: stored value if still in the edit list, else the first edit department.
     window.qsLoadActiveDept = function () {
       var a = window.qsDeptAccess;
@@ -638,15 +608,11 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <div style="display:flex;flex-direction:column;gap:2px">
-          <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
-            <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
-            <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
-          </div>
-          <div style="position:relative">
-            <button type="button" id="admin-dept-label-btn" class="hidden" style="border:0;background:none;padding:0;font-size:0.78rem;color:var(--dim);cursor:pointer;text-align:left">Department: <span id="admin-dept-label" style="font-weight:600;color:var(--text)"></span> <span style="font-size:0.7em">▾</span> <span style="opacity:0.7">— tap to switch</span></button>
-            <div id="admin-dept-menu" class="hidden" style="position:absolute;top:100%;left:0;z-index:50;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.12);min-width:200px;padding:0.3rem;margin-top:4px"></div>
-          </div>
+        <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
+          <button type="button" data-viewmode="admin" class="active" role="tab" id="admin-tab-btn" style="display:flex;align-items:center;gap:6px">Admin view
+            <select id="admin-dept-select" aria-label="Select department" style="border:1px solid rgba(0,0,0,0.15);border-radius:8px;font-size:0.82rem;padding:2px 4px;background:#fff;color:#1e293b;max-width:150px" onclick="event.stopPropagation()"></select>
+          </button>
+          <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
         </div>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
