@@ -7361,11 +7361,12 @@
         // Demo format: "LastName FirstInitial." (e.g. "Rander Adv.").
         // Name dedup: last name by default; later-added repeat last names show
         // first name; identical full names show nickname.
-        function buildDisplayNames() {
+        var _dnCache = null, _dnCacheFor = null;
+        function buildDisplayNames(list) {
           var map = {};
           var seenLast = {};
           var seenFull = {};
-          (sched.members || []).forEach(function (u) {
+          (list || []).forEach(function (u) {
             var first = (u.firstName || '').trim();
             var last = (u.lastName || '').trim();
             var fullKey = (first + '|' + last).toLowerCase();
@@ -7385,11 +7386,11 @@
           return map;
         }
         function displayName(s) {
-          if (!sched._dnCache || sched._dnCacheFor !== sched.members) {
-            sched._dnCache = buildDisplayNames();
-            sched._dnCacheFor = sched.members;
+          if (!_dnCache || _dnCacheFor !== members) {
+            _dnCache = buildDisplayNames(members);
+            _dnCacheFor = members;
           }
-          if (s.userId && sched._dnCache[s.userId]) return sched._dnCache[s.userId];
+          if (s.userId && _dnCache[s.userId]) return _dnCache[s.userId];
           var last = (s.lastName || '').trim();
           var first = (s.firstName || '').trim();
           if (last) return last;
