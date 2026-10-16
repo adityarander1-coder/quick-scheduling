@@ -4525,7 +4525,7 @@
                 btn.textContent = 'Department access';
                 var panel = document.createElement('div');
                 panel.className = 'hidden';
-                panel.style.cssText = 'margin-top:0.6rem;padding:0.9rem 1rem;border:1px solid var(--border);border-radius:12px;background:#f8fafc;min-width:min(320px,100%)';
+                panel.style.cssText = 'margin-top:0.6rem;padding:0.9rem 1rem;border:1px solid var(--border);border-radius:12px;background:#f8fafc;width:100%;max-width:520px';
                 var loaded = false;
                 btn.addEventListener('click', function () {
                   if (panel.classList.contains('hidden')) {
@@ -4548,7 +4548,7 @@
                   }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;line-height:1.4">Choose what this scheduler can do in each department.</p>';
+                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Access per department:</p>';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     html += '<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
