@@ -612,13 +612,15 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <div id="view-switcher" class="hidden" style="margin:0;display:flex;align-items:center;gap:0.5rem">
-          <span style="font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.9)">Admin view</span>
-          <button type="button" id="view-toggle" role="switch" aria-checked="true" aria-label="Toggle between Admin view and My schedule" style="position:relative;width:52px;height:28px;border-radius:999px;border:1px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.18);cursor:pointer;padding:0;flex-shrink:0">
-            <span id="view-toggle-knob" style="position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;transition:left 0.18s ease"></span>
-          </button>
-          <span style="font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.9)">My schedule</span>
-          <select id="admin-dept-select" aria-label="Select department" class="hidden" style="border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:0.82rem;font-weight:600;padding:4px 6px;background:rgba(255,255,255,0.15);color:#fff;max-width:140px"></select>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <div id="view-switcher" class="hidden" style="margin:0;display:flex;align-items:center;gap:0.5rem">
+            <span style="font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.9)">Admin view</span>
+            <button type="button" id="view-toggle" role="switch" aria-checked="true" aria-label="Toggle between Admin view and My schedule" style="position:relative;width:52px;height:28px;border-radius:999px;border:1px solid rgba(255,255,255,0.35);background:rgba(255,255,255,0.18);cursor:pointer;padding:0;flex-shrink:0">
+              <span id="view-toggle-knob" style="position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;transition:left 0.18s ease"></span>
+            </button>
+            <span style="font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.9)">My schedule</span>
+          </div>
+          <select id="admin-dept-select" aria-label="Select department" class="hidden" style="border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:0.85rem;font-weight:600;padding:5px 8px;background:rgba(255,255,255,0.15);color:#fff;max-width:220px;width:100%"></select>
         </div>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
