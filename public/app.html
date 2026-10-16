@@ -508,6 +508,8 @@
     .settings-section-head h3 { margin: 0; font-size: 18px; line-height: 1.2; font-weight: 850; letter-spacing: -.02em; }
     .settings-section-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .team-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 28px; }
+    .dept-access-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+    @media (min-width: 768px) { .dept-access-grid { grid-template-columns: repeat(3, 1fr); } }
     .team-row { min-height: 82px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; box-shadow: var(--shadow-soft); }
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
@@ -4548,7 +4550,7 @@
                   }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Admin access per department:</p><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem">';
+                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Admin access per department:</p><div class="dept-access-grid">';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     html += '<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
