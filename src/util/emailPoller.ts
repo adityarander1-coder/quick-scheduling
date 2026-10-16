@@ -230,6 +230,15 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
         try {
           const { sendMail } = await import('./mailer.js');
           const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+          // Also notify active schedulers so approvals don't bottleneck on the owner.
+          let ccEmails: string[] = [];
+          try {
+            const { rows: schedulers } = await query(
+              `SELECT email FROM users WHERE company_id = $1 AND role = 'scheduler' AND is_active = true AND email IS NOT NULL AND email != ''`,
+              [companyId]
+            );
+            ccEmails = schedulers.map((r: any) => r.email).filter((e: string) => e.toLowerCase() !== notifyEmail.toLowerCase());
+          } catch { /* non-fatal */ }
           const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
           const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
           const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
@@ -237,6 +246,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
           await sendMail({
             to: notifyEmail,
+            cc: ccEmails.length ? ccEmails : undefined,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
             text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
             html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,

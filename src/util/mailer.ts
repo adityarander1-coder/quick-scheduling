@@ -22,6 +22,7 @@ export function mailFrom(): string {
 
 export interface MailOptions {
   to: string;
+  cc?: string[];
   subject: string;
   text: string;
   html: string;
@@ -46,6 +47,7 @@ export async function sendMail(opts: MailOptions): Promise<void> {
     body: JSON.stringify({
       from: mailFrom(),
       to: [opts.to],
+      ...(opts.cc && opts.cc.length ? { cc: opts.cc } : {}),
       subject: opts.subject,
       text: opts.text,
       html: opts.html,
