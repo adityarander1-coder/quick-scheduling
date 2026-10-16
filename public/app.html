@@ -6255,6 +6255,8 @@
               document.querySelector('[data-subtab="notifications"]').addEventListener('click', function () {
                 if (!loaded) load();
               });
+              // If the tab is already active when this script runs, load immediately.
+              if (document.querySelector('[data-subtab="notifications"]').classList.contains('active')) load();
             })();
             </script>
           </div>
