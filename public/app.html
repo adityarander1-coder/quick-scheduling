@@ -4507,11 +4507,13 @@
                   wrap.innerHTML = '';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
+                    var pair = document.createElement('span');
+                    pair.style.cssText = 'display:inline-flex;align-items:center;gap:4px;white-space:nowrap';
                     var label = document.createElement('span');
-                    label.style.cssText = 'font-size:0.78rem;color:var(--dim);white-space:nowrap';
+                    label.style.cssText = 'font-size:0.78rem;color:var(--dim)';
                     label.textContent = d.name + ':';
                     var sel = document.createElement('select');
-                    sel.style.cssText = 'padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:0.78rem;background:#fff';
+                    sel.style.cssText = 'padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:0.78rem;background:#fff;color:#1e293b';
                     sel.innerHTML = '<option value="none">None</option><option value="view">View</option><option value="edit">Edit</option>';
                     sel.value = val;
                     sel.setAttribute('aria-label', d.name + ' access');
@@ -4527,8 +4529,9 @@
                       });
                     });
                     sel.setAttribute('data-dept', d.id);
-                    wrap.appendChild(label);
-                    wrap.appendChild(sel);
+                    pair.appendChild(label);
+                    pair.appendChild(sel);
+                    wrap.appendChild(pair);
                   });
                 }).catch(function () { wrap.innerHTML = ''; });
                 return wrap;
