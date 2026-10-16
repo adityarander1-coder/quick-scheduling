@@ -3562,6 +3562,7 @@
           <button class="subtab-btn" data-subtab="team">Team members</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
+          <button class="subtab-btn" data-subtab="notifications">Notifications</button>
         </nav>
         <div class="subpanel-container">
           <div id="subtab-rotations" class="sub-panel">
@@ -6194,6 +6195,51 @@
                 };
                 window.addEventListener('hashchange', onHash);
               }
+            })();
+            </script>
+          </div>
+          <div id="subtab-notifications" class="sub-panel">
+            <div class="set-head-row">
+              <h3 class="set-h3" style="margin:0">Email notifications</h3>
+            </div>
+            <p class="set-desc">Who gets the Email AI approve/reject emails. The person who sent the request always gets a confirmation.</p>
+            <label style="display:flex;align-items:center;gap:8px;margin:0.75rem 0;font-size:0.95rem">
+              <input type="checkbox" id="notif-owner" checked> Owner (you) — CC'd on every approve/reject email
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;margin:0.75rem 0;font-size:0.95rem">
+              <input type="checkbox" id="notif-schedulers" checked> All schedulers — primary recipients, can tap approve
+            </label>
+            <button type="button" id="notif-save" class="btn-primary" style="margin-top:0.5rem">Save</button>
+            <span id="notif-msg" style="margin-left:0.75rem;font-size:0.9rem;color:var(--dim)"></span>
+            <script>
+            (function () {
+              var loaded = false;
+              function load() {
+                api('/api/schedule/notification-settings').then(function (r) {
+                  if (r && r.ok) {
+                    $('notif-owner').checked = r.data.notify_owner !== false;
+                    $('notif-schedulers').checked = r.data.notify_schedulers === true;
+                    loaded = true;
+                  }
+                });
+              }
+              $('notif-save').addEventListener('click', function () {
+                var msg = $('notif-msg');
+                msg.textContent = 'Saving...';
+                api('/api/schedule/notification-settings', {
+                  method: 'PUT',
+                  body: JSON.stringify({
+                    notifyOwner: $('notif-owner').checked,
+                    notifySchedulers: $('notif-schedulers').checked
+                  })
+                }).then(function (r) {
+                  msg.textContent = (r && r.ok) ? 'Saved.' : 'Could not save.';
+                }).catch(function () { msg.textContent = 'Could not save.'; });
+              });
+              // Load when the subtab is shown.
+              document.querySelector('[data-subtab="notifications"]').addEventListener('click', function () {
+                if (!loaded) load();
+              });
             })();
             </script>
           </div>

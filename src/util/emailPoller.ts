@@ -226,32 +226,71 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           ]
         );
 
-        // Notify Deepika that a plan is ready for approval
+        // Notify requester that their request was received and is awaiting approval.
+        try {
+          const { sendMail: sendConfirm } = await import('./mailer.js');
+          const reqEmail = (email.from || '').trim();
+          if (reqEmail && reqEmail.includes('@')) {
+            await sendConfirm({
+              to: reqEmail,
+              subject: `Request received: ${plan.summary.substring(0, 60)}`,
+              text: `Hi,\n\nYour request has been received and is awaiting approval.\n\nSummary: ${plan.summary}\n\nYou'll get another email once it's approved or rejected.\n\n— Quick Scheduling`,
+              html: `<p>Hi,</p><p>Your request has been received and is awaiting approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>You'll get another email once it's approved or rejected.</p><p>— Quick Scheduling</p>`,
+            });
+          }
+        } catch { /* non-fatal */ }
+
+        // Notify schedulers (primary) and owner (CC) that a plan is ready for approval
         try {
           const { sendMail } = await import('./mailer.js');
           const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
-          // Also notify active schedulers so approvals don't bottleneck on the owner.
-          let ccEmails: string[] = [];
+          // Per-company notification preferences (owner-only Settings tab).
+          let notifyOwner = true, notifySchedulers = true;
           try {
-            const { rows: schedulers } = await query(
-              `SELECT email FROM users WHERE company_id = $1 AND role = 'scheduler' AND is_active = true AND email IS NOT NULL AND email != ''`,
+            const { rows: nrows } = await query(
+              'SELECT notify_owner, notify_schedulers FROM company_notification_settings WHERE company_id = $1',
               [companyId]
             );
-            ccEmails = schedulers.map((r: any) => r.email).filter((e: string) => e.toLowerCase() !== notifyEmail.toLowerCase());
-          } catch { /* non-fatal */ }
+            if (nrows.length) {
+              notifyOwner = nrows[0].notify_owner !== false;
+              notifySchedulers = nrows[0].notify_schedulers === true;
+            }
+          } catch { /* defaults */ }
+          // CC active schedulers when enabled, so approvals don't bottleneck on the owner.
+          let ccEmails: string[] = [];
+          if (notifySchedulers) {
+            try {
+              const { rows: schedulers } = await query(
+                `SELECT email FROM users WHERE company_id = $1 AND role = 'scheduler' AND is_active = true AND email IS NOT NULL AND email != ''`,
+                [companyId]
+              );
+              ccEmails = schedulers.map((r: any) => r.email).filter((e: string) => e.toLowerCase() !== notifyEmail.toLowerCase());
+            } catch { /* non-fatal */ }
+          }
+          if (!notifyOwner && !ccEmails.length) {
+            console.log('[email-poll] Notifications disabled for company; skipping approve email.');
+          } else {
+            // Schedulers are the primary recipients; owner is CC'd for visibility.
+            const toAddrs = notifySchedulers && ccEmails.length ? ccEmails : [notifyEmail];
+            const ccAddrs: string[] = [];
+            if (notifyOwner && toAddrs[0].toLowerCase() !== notifyEmail.toLowerCase()) ccAddrs.push(notifyEmail);
+            if (notifySchedulers && toAddrs[0].toLowerCase() === notifyEmail.toLowerCase()) ccAddrs.push(...ccEmails);
+            const toAddr = toAddrs[0];
+            const ccRest = [...new Set([...ccAddrs, ...toAddrs.slice(1)])].filter(e => e.toLowerCase() !== toAddr.toLowerCase());
           const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
           const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
           const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
           const fromLine = email.fromName ? `${email.fromName} <${email.from}>` : email.from;
           const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
           await sendMail({
-            to: notifyEmail,
-            cc: ccEmails.length ? ccEmails : undefined,
+            to: toAddr,
+            cc: ccRest.length ? ccRest : undefined,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
             text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
             html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
           });
-          console.log(`[email-poll] Notification sent to ${notifyEmail}`);
+          console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
+          } // end else (notifications enabled)
         } catch (notifyErr: any) {
           console.log(`[email-poll] Notification failed: ${notifyErr.message}`);
           // Don't fail the plan creation if notification fails

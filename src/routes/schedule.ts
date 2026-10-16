@@ -1844,6 +1844,44 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
 });
 
 // ---------------------------------------------------------------------------
+// Notification settings — who gets Email AI approve/reject emails.
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/notification-settings — owner only.
+router.get('/notification-settings', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT notify_owner, notify_schedulers FROM company_notification_settings WHERE company_id = $1',
+      [companyId]
+    );
+    res.json(rows.length ? rows[0] : { notify_owner: true, notify_schedulers: true });
+  } catch (err) {
+    console.error('[schedule] get notification settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/notification-settings — owner only.
+router.put('/notification-settings', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const notifyOwner = req.body.notifyOwner !== false;
+    const notifySchedulers = req.body.notifySchedulers === true;
+    await query(
+      `INSERT INTO company_notification_settings (company_id, notify_owner, notify_schedulers, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (company_id) DO UPDATE SET notify_owner = $2, notify_schedulers = $3, updated_at = now()`,
+      [companyId, notifyOwner, notifySchedulers]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] save notification settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Shift settings — default start/end times per shift type.
 // ---------------------------------------------------------------------------
 
@@ -2802,13 +2840,14 @@ router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Reques
 router.get('/plans/approve/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
-      `SELECT id, company_id, plan, status FROM schedule_plans WHERE approve_token = $1`,
+      `SELECT id, company_id, plan, plan_summary, status, source_from FROM schedule_plans WHERE approve_token = $1`,
       [req.params.token]
     );
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
     const plan = rows[0];
     if (plan.status !== 'pending') {
-      return res.send(`<h1>Already ${escHtml(plan.status)}</h1><p>This plan was already ${escHtml(plan.status)}.</p>`);
+      const when = plan.decided_at ? ` on ${new Date(plan.decided_at).toLocaleString()}` : '';
+      return res.send(`<h1>Already ${escHtml(plan.status)}</h1><p>This plan was already ${escHtml(plan.status)}${escHtml(when)}. No further action needed.</p>`);
     }
     // Execute the plan
     const { executePlan } = await import('../util/planExecutor.js');
@@ -2836,6 +2875,20 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       `<!doctype html><html><body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">` +
       head + `<ul style="list-style:none;padding:0">${itemHtml}</ul></body></html>`
     );
+    // Notify the requester of the outcome.
+    try {
+      const { sendMail } = await import('../util/mailer.js');
+      const reqEmail = (plan.source_from || '').trim();
+      if (reqEmail && reqEmail.includes('@')) {
+        const outcome = allOk ? 'approved and applied' : 'partially applied';
+        await sendMail({
+          to: reqEmail,
+          subject: `Request ${allOk ? 'approved' : 'partially applied'}: ${(plan.plan_summary || '').substring(0, 60)}`,
+          text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><p>— Quick Scheduling</p>`,
+        });
+      }
+    } catch { /* non-fatal */ }
   } catch (err: any) {
     console.error('[schedule] email approve failed:', err);
     res.status(500).send(`<h1>Error</h1><p>${escHtml(err.message)}</p>`);
@@ -2846,12 +2899,25 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
 router.get('/plans/reject/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
-      `SELECT id, status FROM schedule_plans WHERE reject_token = $1`,
+      `SELECT id, status, plan_summary, source_from FROM schedule_plans WHERE reject_token = $1`,
       [req.params.token]
     );
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
     if (rows[0].status !== 'pending') return res.send(`<h1>Already ${rows[0].status}</h1>`);
     await query(`UPDATE schedule_plans SET status = 'rejected', decided_at = now() WHERE id = $1`, [rows[0].id]);
+    // Notify the requester.
+    try {
+      const { sendMail } = await import('../util/mailer.js');
+      const reqEmail = (rows[0].source_from || '').trim();
+      if (reqEmail && reqEmail.includes('@')) {
+        await sendMail({
+          to: reqEmail,
+          subject: `Request rejected: ${(rows[0].plan_summary || '').substring(0, 60)}`,
+          text: `Hi,\n\nYour request was rejected and will not be applied.\n\nSummary: ${rows[0].plan_summary}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request was <strong>rejected</strong> and will not be applied.</p><p><strong>Summary:</strong> ${rows[0].plan_summary}</p><p>— Quick Scheduling</p>`,
+        });
+      }
+    } catch { /* non-fatal */ }
     res.send('<h1>Rejected</h1><p>The plan was rejected and will not be applied.</p>');
   } catch (err) {
     res.status(500).send('<h1>Error</h1>');
