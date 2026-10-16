@@ -4552,7 +4552,7 @@
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.8rem;padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
-                      '<span style="font-size:0.95rem;font-weight:600;flex:1;min-width:0">' + escHtml(d.name) + '</span>' +
+                      '<span style="font-size:0.95rem;font-weight:600;flex:1;min-width:0;word-break:break-word;padding-right:0.5rem">' + escHtml(d.name) + '</span>' +
                       '<select data-acc-dept="' + d.id + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:0.9rem;background:#fff;flex-shrink:0;min-width:110px">' +
                       '<option value="none"' + (val === 'none' ? ' selected' : '') + '>No access</option>' +
                       '<option value="view"' + (val === 'view' ? ' selected' : '') + '>View</option>' +
