@@ -626,14 +626,14 @@
   <header class="app-header">
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
-      <div>
+      <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+        <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
+          <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
+          <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
+        </div>
         <span class="user-chip" id="user-chip"></span>
-        <button type="button" id="logout" class="btn-secondary" style="margin-left:0.5rem;padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
+        <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
-    </div>
-    <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View">
-      <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
-      <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
     </div>
     <div id="dept-switcher-wrap" class="hidden" style="padding:0 1rem 0.4rem">
       <select id="dept-switcher-select" aria-label="Switch department" style="padding:0.4rem 0.6rem;border:1px solid var(--border);border-radius:10px;font-size:0.85rem;background:#fff;max-width:260px;width:100%"></select>
