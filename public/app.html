@@ -4495,16 +4495,37 @@
                   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
               }
 
-              // Owner-only per-scheduler department access — inline compact dropdowns, auto-save on change.
+              // Owner-only per-scheduler department access — button toggles a row of dropdowns, auto-save on change.
+              // Owner-only per-scheduler department access: button toggles a row of dropdowns, auto-save on change.
               function deptAccessPicker(u) {
                 var wrap = document.createElement('div');
-                wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;margin-top:0.3rem';
-                wrap.innerHTML = '<span style="font-size:0.78rem;color:var(--dim)">Loading…</span>';
-                api('/api/users/' + u.id + '/department-access').then(function (r) {
-                  if (!r.ok) { wrap.innerHTML = ''; return; }
+                wrap.style.cssText = 'margin-top:0.3rem';
+                var btn = document.createElement('button');
+                btn.type = 'button'; btn.className = 'btn-secondary';
+                btn.style.cssText = 'padding:0.3rem 0.7rem;font-size:0.82rem';
+                btn.textContent = 'Department access';
+                var panel = document.createElement('div');
+                panel.className = 'hidden';
+                panel.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.6rem;margin-top:0.4rem';
+                var loaded = false;
+                btn.addEventListener('click', function () {
+                  if (panel.classList.contains('hidden')) {
+                    show(panel);
+                    if (!loaded) { loaded = true; loadDeptAccessRow(u.id, panel); }
+                  } else hide(panel);
+                });
+                wrap.appendChild(btn);
+                wrap.appendChild(panel);
+                return wrap;
+              }
+
+              function loadDeptAccessRow(userId, panel) {
+                panel.innerHTML = '<span style="font-size:0.78rem;color:var(--dim)">Loading…</span>';
+                api('/api/users/' + userId + '/department-access').then(function (r) {
+                  if (!r.ok) { panel.innerHTML = ''; return; }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  wrap.innerHTML = '';
+                  panel.innerHTML = '';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
                     var pair = document.createElement('span');
@@ -4517,24 +4538,23 @@
                     sel.innerHTML = '<option value="none">None</option><option value="view">View</option><option value="edit">Edit</option>';
                     sel.value = val;
                     sel.setAttribute('aria-label', d.name + ' access');
+                    sel.setAttribute('data-dept', d.id);
                     sel.addEventListener('change', function () {
                       var access = [];
-                      wrap.querySelectorAll('select').forEach(function (s) {
+                      panel.querySelectorAll('select').forEach(function (s) {
                         if (s.value === 'view' || s.value === 'edit') {
                           access.push({ departmentId: s.getAttribute('data-dept'), accessLevel: s.value });
                         }
                       });
-                      api('/api/users/' + u.id + '/department-access', {
+                      api('/api/users/' + userId + '/department-access', {
                         method: 'PUT', body: JSON.stringify({ access: access })
                       });
                     });
-                    sel.setAttribute('data-dept', d.id);
                     pair.appendChild(label);
                     pair.appendChild(sel);
-                    wrap.appendChild(pair);
+                    panel.appendChild(pair);
                   });
-                }).catch(function () { wrap.innerHTML = ''; });
-                return wrap;
+                }).catch(function () { panel.innerHTML = ''; });
               }
 
               function loadMembers() {
