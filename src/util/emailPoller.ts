@@ -252,6 +252,8 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           const { sendMail: sendConfirm } = await import('./mailer.js');
           const reqEmail = (email.from || '').trim();
           if (reqEmail && reqEmail.includes('@')) {
+            // Include original CC recipients so they follow the request too.
+            const ccList = String(email.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
             const changeList = (plan.changes || []).map((c: any, i: number) => {
               const desc = c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
                 : c.action === 'unassign' ? `Remove ${c.person} on ${c.date}`
@@ -262,6 +264,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             }).join('\n');
             await sendConfirm({
               to: reqEmail,
+              cc: ccList.length ? ccList : undefined,
               subject: `Request received: ${plan.summary.substring(0, 60)}`,
               text: `Hi,\n\nYour request has been received and is awaiting approval.\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.\n\n— Quick Scheduling`,
               html: `<p>Hi,</p><p>Your request has been received and is awaiting approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p><p>— Quick Scheduling</p>`,

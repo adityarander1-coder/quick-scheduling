@@ -2935,7 +2935,7 @@ router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Reques
 router.get('/plans/approve/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
-      `SELECT id, company_id, plan, plan_summary, status, source_from, decided_at FROM schedule_plans WHERE approve_token = $1`,
+      `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, decided_at FROM schedule_plans WHERE approve_token = $1`,
       [req.params.token]
     );
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
@@ -2996,6 +2996,7 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       const reqEmail = (plan.source_from || '').trim();
       if (reqEmail && reqEmail.includes('@')) {
         const outcome = allOk ? 'approved and applied' : 'partially applied';
+        const ccList = String(plan.source_cc || '').split(',').map((s) => s.trim()).filter((s) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
         const detailText = results.map((r: any, i: number) =>
           `${i + 1}. [${r.success ? 'Applied' : 'FAILED'}] ${r.action}: ${r.message}`
         ).join('\n');
@@ -3004,6 +3005,7 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
         ).join('');
         await sendMail({
           to: reqEmail,
+          cc: ccList.length ? ccList : undefined,
           subject: `Request ${allOk ? 'approved' : 'partially applied'}: ${(plan.plan_summary || '').substring(0, 60)}`,
           text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\nDetails:\n${detailText}\n\n— Quick Scheduling`,
           html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><ul>${detailHtml}</ul><p>— Quick Scheduling</p>`,
@@ -3020,7 +3022,7 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
 router.get('/plans/reject/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
-      `SELECT id, status, plan_summary, source_from FROM schedule_plans WHERE reject_token = $1`,
+      `SELECT id, status, plan_summary, source_from, source_cc FROM schedule_plans WHERE reject_token = $1`,
       [req.params.token]
     );
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
@@ -3031,8 +3033,10 @@ router.get('/plans/reject/:token', async (req: Request, res: Response) => {
       const { sendMail } = await import('../util/mailer.js');
       const reqEmail = (rows[0].source_from || '').trim();
       if (reqEmail && reqEmail.includes('@')) {
+        const ccList = String(rows[0].source_cc || '').split(',').map((s) => s.trim()).filter((s) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
         await sendMail({
           to: reqEmail,
+          cc: ccList.length ? ccList : undefined,
           subject: `Request rejected: ${(rows[0].plan_summary || '').substring(0, 60)}`,
           text: `Hi,\n\nYour request was rejected and will not be applied.\n\nSummary: ${rows[0].plan_summary}\n\n— Quick Scheduling`,
           html: `<p>Hi,</p><p>Your request was <strong>rejected</strong> and will not be applied.</p><p><strong>Summary:</strong> ${rows[0].plan_summary}</p><p>— Quick Scheduling</p>`,
