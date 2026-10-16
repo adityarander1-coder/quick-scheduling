@@ -128,9 +128,10 @@
     function renderDeptSwitcherBar() {
       var menu = document.getElementById('admin-dept-menu');
       var label = document.getElementById('admin-dept-label');
-      var btn = document.getElementById('admin-tab-btn');
-      if (!menu || !btn) return;
-      var bar = btn.parentElement; // dropdown wrapper under the Admin tab
+      var labelBtn = document.getElementById('admin-dept-label-btn');
+      if (!menu || !labelBtn) return;
+      labelBtn.classList.remove('hidden');
+      var bar = labelBtn.parentElement;
       var a = window.qsDeptAccess;
       var isOwner = !!window.isOwner;
       // Retry once if scheduler data isn't ready yet (backend may lag).
@@ -161,7 +162,7 @@
       // Update the Admin tab label with current department.
       if (label) {
         var curName = cur ? ((window.qsDeptName && window.qsDeptName(cur)) || '') : '';
-        label.textContent = curName ? '· ' + curName : '';
+        label.textContent = curName || 'All departments';
       }
       // Build the dropdown menu.
       var items = [{ id: '__all', name: 'All departments' }].concat(allIds.map(function (id) {
@@ -203,11 +204,10 @@
     // Admin tab department dropdown: toggle menu, close on outside click.
     document.addEventListener('click', function (e) {
       var menu = document.getElementById('admin-dept-menu');
-      var btn = document.getElementById('admin-tab-btn');
-      if (!menu || !btn) return;
-      if (btn.contains(e.target)) {
+      var labelBtn = document.getElementById('admin-dept-label-btn');
+      if (!menu || !labelBtn) return;
+      if (labelBtn.contains(e.target)) {
         e.stopPropagation();
-        window.qsSetAppView('admin');
         if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
         menu.classList.toggle('hidden');
       } else if (!menu.classList.contains('hidden') && !menu.contains(e.target)) {
@@ -638,12 +638,15 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
+            <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
+            <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
+          </div>
           <div style="position:relative">
-            <button type="button" data-viewmode="admin" class="active" role="tab" id="admin-tab-btn" aria-haspopup="true" title="Tap to switch department">Admin view <span id="admin-dept-label" style="font-weight:400;opacity:0.8"></span> <span style="font-size:0.8em;margin-left:2px">▾</span></button>
+            <button type="button" id="admin-dept-label-btn" class="hidden" style="border:0;background:none;padding:0;font-size:0.78rem;color:var(--dim);cursor:pointer;text-align:left">Department: <span id="admin-dept-label" style="font-weight:600;color:var(--text)"></span> <span style="font-size:0.7em">▾</span> <span style="opacity:0.7">— tap to switch</span></button>
             <div id="admin-dept-menu" class="hidden" style="position:absolute;top:100%;left:0;z-index:50;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.12);min-width:200px;padding:0.3rem;margin-top:4px"></div>
           </div>
-          <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
         </div>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
@@ -8693,7 +8696,7 @@
     };
     document.querySelector('#view-switcher').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('button[data-viewmode]') : null;
-      if (b && b.id !== 'admin-tab-btn') window.qsSetAppView(b.getAttribute('data-viewmode'));
+      if (b) window.qsSetAppView(b.getAttribute('data-viewmode'));
     });
 
     document.querySelector('.main-tabs').addEventListener('click', function (e) {
