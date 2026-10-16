@@ -681,6 +681,10 @@
         #tab-schedule .day-row-body { padding: 0.3rem 0.5rem; }
         #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 2px; min-height: 22px; margin-bottom: 3px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
+        @media (min-width: 900px) {
+          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; align-items: start; }
+          #tab-schedule .week-grid article.day-row { margin-bottom: 0; }
+        }
         #tab-schedule .shift-cat { border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm { background: #ffffff; border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 12px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
         #tab-schedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
@@ -1466,12 +1470,13 @@
 
         function renderWeek(el) {
           var r = viewRange();
-          var html = '';
+          var html = '<div class="week-grid">';
           for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
             var dd = new Date(ms);
             var ds = fmtDate(new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()));
             html += dayRowHtml(ds);
           }
+          html += '</div>';
           el.innerHTML = html;
           bindDayRows(el);
         }
