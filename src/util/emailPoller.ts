@@ -9,6 +9,27 @@ import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
+/** Get department IDs affected by a plan's changes (for per-department notifications). */
+async function getPlanDeptIds(companyId: string, plan: any): Promise<string[]> {
+  const { query } = await import('../db.js');
+  const deptIds = new Set<string>();
+  const changes = plan?.changes || [];
+  for (const c of changes) {
+    if (c.department) {
+      const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, String(c.department).trim()]);
+      if (rows.length) deptIds.add(rows[0].id);
+    }
+    if (c.shiftType) {
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, String(c.shiftType).trim()]);
+      if (stRows.length) {
+        const { rows: drows } = await query('SELECT department_id FROM shift_type_departments WHERE shift_type_id = $1', [stRows[0].id]);
+        drows.forEach((r: any) => { if (r.department_id) deptIds.add(r.department_id); });
+      }
+    }
+  }
+  return [...deptIds];
+}
+
 /** Required-field check for a plan change. Returns a list of problems (empty = complete). */
 function changeProblems(change: any): string[] {
   const problems: string[] = [];
@@ -252,37 +273,43 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
         try {
           const { sendMail } = await import('./mailer.js');
           const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
-          // Per-company notification preferences (owner-only Settings tab).
-          let notifyOwner = true, notifySchedulers = true;
+          // Per-department recipients from the Email AI notification tab.
+          // Primary recipients go in To:, CCs go in Cc:, owner is always CC'd.
+          const toAddrs: string[] = [];
+          const ccAddrs: string[] = [];
           try {
-            const { rows: nrows } = await query(
-              'SELECT notify_owner, notify_schedulers FROM company_notification_settings WHERE company_id = $1',
-              [companyId]
-            );
-            if (nrows.length) {
-              notifyOwner = nrows[0].notify_owner !== false;
-              notifySchedulers = nrows[0].notify_schedulers === true;
-            }
-          } catch { /* defaults */ }
-          // CC active schedulers when enabled, so approvals don't bottleneck on the owner.
-          let ccEmails: string[] = [];
-          if (notifySchedulers) {
-            try {
-              const { rows: schedulers } = await query(
-                `SELECT email FROM users WHERE company_id = $1 AND role = 'scheduler' AND is_active = true AND email IS NOT NULL AND email != ''`,
-                [companyId]
+            const deptIds = await getPlanDeptIds(companyId, plan);
+            if (deptIds.length) {
+              const { rows: dsettings } = await query(
+                'SELECT department_id, primary_user_id, cc_user_ids FROM department_notification_settings WHERE company_id = $1 AND department_id = ANY($2)',
+                [companyId, deptIds]
               );
-              ccEmails = schedulers.map((r: any) => r.email).filter((e: string) => e.toLowerCase() !== notifyEmail.toLowerCase());
-            } catch { /* non-fatal */ }
+              const userIds = new Set<string>();
+              dsettings.forEach((s: any) => {
+                if (s.primary_user_id) userIds.add(s.primary_user_id);
+                (s.cc_user_ids || []).forEach((id: string) => userIds.add(id));
+              });
+              if (userIds.size) {
+                const { rows: urows } = await query(
+                  'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
+                  [[...userIds], companyId]
+                );
+                const emailById: any = {};
+                urows.forEach((u: any) => { emailById[u.id] = u.email; });
+                dsettings.forEach((s: any) => {
+                  if (s.primary_user_id && emailById[s.primary_user_id]) toAddrs.push(emailById[s.primary_user_id]);
+                  (s.cc_user_ids || []).forEach((id: string) => { if (emailById[id]) ccAddrs.push(emailById[id]); });
+                });
+              }
+            }
+          } catch { /* fall through to default */ }
+          // Fallback: owner if no per-department recipients configured.
+          if (!toAddrs.length) toAddrs.push(notifyEmail);
+          // Owner always CC'd for visibility (unless they're already a primary).
+          if (!toAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase()) && !ccAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase())) {
+            ccAddrs.push(notifyEmail);
           }
-          if (!notifyOwner && !ccEmails.length) {
-            console.log('[email-poll] Notifications disabled for company; skipping approve email.');
-          } else {
-            // Schedulers are the primary recipients; owner is CC'd for visibility.
-            const toAddrs = notifySchedulers && ccEmails.length ? ccEmails : [notifyEmail];
-            const ccAddrs: string[] = [];
-            if (notifyOwner && toAddrs[0].toLowerCase() !== notifyEmail.toLowerCase()) ccAddrs.push(notifyEmail);
-            if (notifySchedulers && toAddrs[0].toLowerCase() === notifyEmail.toLowerCase()) ccAddrs.push(...ccEmails);
+          {
             const toAddr = toAddrs[0];
             const ccRest = [...new Set([...ccAddrs, ...toAddrs.slice(1)])].filter(e => e.toLowerCase() !== toAddr.toLowerCase());
           const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';

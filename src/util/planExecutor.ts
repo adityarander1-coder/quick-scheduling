@@ -85,11 +85,17 @@ async function findDepartment(companyId: string, name: string): Promise<{ id: st
     [companyId]
   );
   const lower = name.toLowerCase().trim();
+  // Exact match first.
   for (const d of rows) {
-    if (d.name.toLowerCase() === lower || d.name.toLowerCase().includes(lower) || lower.includes(d.name.toLowerCase())) {
-      return { id: d.id, name: d.name };
-    }
+    if (d.name.toLowerCase() === lower) return { id: d.id, name: d.name };
   }
+  // Substring match only if unambiguous (exactly one candidate).
+  const candidates = rows.filter((d: any) =>
+    d.name.toLowerCase().includes(lower) || lower.includes(d.name.toLowerCase())
+  );
+  if (candidates.length === 1) return { id: candidates[0].id, name: candidates[0].name };
+  // Ambiguous or no match — return null so the plan fails with "not found"
+  // instead of guessing the wrong department.
   return null;
 }
 

@@ -1901,7 +1901,63 @@ router.get('/notification-settings', requireRole('owner'), async (req: Request, 
   }
 });
 
-// PUT /api/schedule/notification-settings — owner only.
+// ---------------------------------------------------------------------------
+// Email AI notification settings — per-department primary + CC recipients.
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/dept-notifications — owner only.
+router.get('/dept-notifications', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: depts } = await query('SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: settings } = await query('SELECT * FROM department_notification_settings WHERE company_id = $1', [companyId]);
+    const byDept: any = {};
+    settings.forEach((s: any) => { byDept[s.department_id] = s; });
+    const { rows: users } = await query(
+      "SELECT id, first_name, last_name, email, role FROM users WHERE company_id = $1 AND is_active = true AND role IN ('owner','scheduler') ORDER BY first_name, last_name",
+      [companyId]
+    );
+    res.json({
+      departments: depts.map((d: any) => ({
+        id: d.id, name: d.name,
+        primaryUserId: byDept[d.id]?.primary_user_id || null,
+        ccUserIds: byDept[d.id]?.cc_user_ids || [],
+      })),
+      users: users.map((u: any) => ({ id: u.id, name: (u.first_name + ' ' + u.last_name).trim(), email: u.email, role: u.role })),
+    });
+  } catch (err) {
+    console.error('[schedule] get dept notifications failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/dept-notifications — owner only.
+router.put('/dept-notifications', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const settings = req.body.settings;
+    if (!Array.isArray(settings)) { res.status(400).json({ error: 'settings must be an array.' }); return; }
+    for (const s of settings) {
+      if (!s.departmentId) continue;
+      const { rows: drows } = await query('SELECT id FROM departments WHERE id = $1 AND company_id = $2', [s.departmentId, companyId]);
+      if (!drows.length) continue;
+      const primaryUserId = s.primaryUserId || null;
+      const ccUserIds = Array.isArray(s.ccUserIds) ? s.ccUserIds.filter(Boolean) : [];
+      await query(
+        `INSERT INTO department_notification_settings (department_id, company_id, primary_user_id, cc_user_ids, updated_at)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (department_id) DO UPDATE SET primary_user_id = $3, cc_user_ids = $4, updated_at = now()`,
+        [s.departmentId, companyId, primaryUserId, ccUserIds]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] save dept notifications failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/notification-settings — owner only (legacy).
 router.put('/notification-settings', requireRole('owner'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;

@@ -3562,7 +3562,7 @@
           <button class="subtab-btn" data-subtab="team">Team members</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
-          <button class="subtab-btn" data-subtab="notifications">Notifications</button>
+          <button class="subtab-btn" data-subtab="notifications">Email AI notification</button>
         </nav>
         <div class="subpanel-container">
           <div id="subtab-rotations" class="sub-panel">
@@ -6200,43 +6200,58 @@
           </div>
           <div id="subtab-notifications" class="sub-panel">
             <div class="set-head-row">
-              <h3 class="set-h3" style="margin:0">Email notifications</h3>
+              <h3 class="set-h3" style="margin:0">Email AI notification</h3>
             </div>
-            <p class="set-desc">Who gets the Email AI approve/reject emails. The person who sent the request always gets a confirmation.</p>
-            <label style="display:flex;align-items:center;gap:8px;margin:0.75rem 0;font-size:0.95rem">
-              <input type="checkbox" id="notif-owner" checked> Owner (you) — CC'd on every approve/reject email
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;margin:0.75rem 0;font-size:0.95rem">
-              <input type="checkbox" id="notif-schedulers" checked> All schedulers — primary recipients, can tap approve
-            </label>
-            <button type="button" id="notif-save" class="btn-primary" style="margin-top:0.5rem">Save</button>
-            <span id="notif-msg" style="margin-left:0.75rem;font-size:0.9rem;color:var(--dim)"></span>
+            <p class="set-desc">For each department, choose who gets the Email AI approve/reject emails. The primary recipient is in To:, CCs are in Cc:. The owner is always CC'd. The person who sent the request always gets a confirmation.</p>
+            <div id="dept-notif-list"></div>
+            <button type="button" id="dept-notif-save" class="btn-primary" style="margin-top:1rem">Save</button>
+            <span id="dept-notif-msg" style="margin-left:0.75rem;font-size:0.9rem;color:var(--dim)"></span>
             <script>
             (function () {
-              var loaded = false;
+              var loaded = false, allUsers = [];
+              function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
               function load() {
-                api('/api/schedule/notification-settings').then(function (r) {
+                api('/api/schedule/dept-notifications').then(function (r) {
                   if (r && r.ok) {
-                    $('notif-owner').checked = r.data.notify_owner !== false;
-                    $('notif-schedulers').checked = r.data.notify_schedulers === true;
+                    allUsers = r.data.users || [];
+                    var html = '';
+                    (r.data.departments || []).forEach(function (d) {
+                      var primaryOpts = '<option value="">— Select —</option>' + allUsers.map(function (u) {
+                        return '<option value="' + u.id + '"' + (d.primaryUserId === u.id ? ' selected' : '') + '>' + esc(u.name) + ' (' + esc(u.role) + ')</option>';
+                      }).join('');
+                      var ccBoxes = allUsers.map(function (u) {
+                        var checked = (d.ccUserIds || []).indexOf(u.id) >= 0 ? ' checked' : '';
+                        return '<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:0.85rem"><input type="checkbox" data-dept="' + d.id + '" data-cc-user="' + u.id + '"' + checked + '> ' + esc(u.name) + '</label>';
+                      }).join('');
+                      html += '<div class="sub-card" style="margin-bottom:1rem"><h4 style="margin:0 0 0.5rem">' + esc(d.name) + '</h4>' +
+                        '<div style="margin-bottom:0.5rem"><label style="font-size:0.9rem;font-weight:600">Primary recipient: </label>' +
+                        '<select data-dept="' + d.id + '" data-primary style="padding:6px;border:1px solid var(--border);border-radius:8px">' + primaryOpts + '</select></div>' +
+                        '<div><span style="font-size:0.9rem;font-weight:600">CC:</span><div style="margin-top:4px">' + ccBoxes + '</div></div></div>';
+                    });
+                    $('dept-notif-list').innerHTML = html || '<p>No departments yet.</p>';
                     loaded = true;
                   }
                 });
               }
-              $('notif-save').addEventListener('click', function () {
-                var msg = $('notif-msg');
+              $('dept-notif-save').addEventListener('click', function () {
+                var msg = $('dept-notif-msg');
                 msg.textContent = 'Saving...';
-                api('/api/schedule/notification-settings', {
+                var settings = [];
+                document.querySelectorAll('#dept-notif-list [data-primary]').forEach(function (sel) {
+                  var deptId = sel.getAttribute('data-dept');
+                  var ccUserIds = [];
+                  document.querySelectorAll('#dept-notif-list [data-cc-user][data-dept="' + deptId + '"]').forEach(function (cb) {
+                    if (cb.checked) ccUserIds.push(cb.getAttribute('data-cc-user'));
+                  });
+                  settings.push({ departmentId: deptId, primaryUserId: sel.value || null, ccUserIds: ccUserIds });
+                });
+                api('/api/schedule/dept-notifications', {
                   method: 'PUT',
-                  body: JSON.stringify({
-                    notifyOwner: $('notif-owner').checked,
-                    notifySchedulers: $('notif-schedulers').checked
-                  })
+                  body: JSON.stringify({ settings: settings })
                 }).then(function (r) {
                   msg.textContent = (r && r.ok) ? 'Saved.' : 'Could not save.';
                 }).catch(function () { msg.textContent = 'Could not save.'; });
               });
-              // Load when the subtab is shown.
               document.querySelector('[data-subtab="notifications"]').addEventListener('click', function () {
                 if (!loaded) load();
               });
