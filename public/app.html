@@ -1059,11 +1059,39 @@
           return fn || u.name || u.email || '';
         }
         // Demo format: "LastName FirstInitial." (e.g. "Rander Adv.") to disambiguate.
+        // Name dedup: last name by default; later-added repeat last names show
+        // first name; identical full names show nickname.
+        function buildDisplayNames() {
+          var map = {};
+          var seenLast = {};
+          var seenFull = {};
+          (sched.members || []).forEach(function (u) {
+            var first = (u.firstName || '').trim();
+            var last = (u.lastName || '').trim();
+            var fullKey = (first + '|' + last).toLowerCase();
+            var lastKey = last.toLowerCase();
+            var disp;
+            if (first && last && seenFull[fullKey]) {
+              disp = (u.nickname || '').trim() || (first + ' ' + last);
+            } else if (last && seenLast[lastKey]) {
+              disp = first || last;
+            } else {
+              disp = last || first || 'Team member';
+              if (last) seenLast[lastKey] = u.id;
+            }
+            if (first && last) seenFull[fullKey] = (seenFull[fullKey] || 0) + 1;
+            map[u.id] = disp;
+          });
+          return map;
+        }
         function displayName(s) {
-          if (s.nickname) return s.nickname;
+          if (!sched._dnCache || sched._dnCacheFor !== sched.members) {
+            sched._dnCache = buildDisplayNames();
+            sched._dnCacheFor = sched.members;
+          }
+          if (s.userId && sched._dnCache[s.userId]) return sched._dnCache[s.userId];
           var last = (s.lastName || '').trim();
           var first = (s.firstName || '').trim();
-          if (last && first) return last + ' ' + first.slice(0, 3) + '.';
           if (last) return last;
           if (first) return first;
           return 'Team member';
@@ -7331,11 +7359,39 @@
           return 'rgb('+r+','+g+','+b+')';
         }
         // Demo format: "LastName FirstInitial." (e.g. "Rander Adv.").
+        // Name dedup: last name by default; later-added repeat last names show
+        // first name; identical full names show nickname.
+        function buildDisplayNames() {
+          var map = {};
+          var seenLast = {};
+          var seenFull = {};
+          (sched.members || []).forEach(function (u) {
+            var first = (u.firstName || '').trim();
+            var last = (u.lastName || '').trim();
+            var fullKey = (first + '|' + last).toLowerCase();
+            var lastKey = last.toLowerCase();
+            var disp;
+            if (first && last && seenFull[fullKey]) {
+              disp = (u.nickname || '').trim() || (first + ' ' + last);
+            } else if (last && seenLast[lastKey]) {
+              disp = first || last;
+            } else {
+              disp = last || first || 'Team member';
+              if (last) seenLast[lastKey] = u.id;
+            }
+            if (first && last) seenFull[fullKey] = (seenFull[fullKey] || 0) + 1;
+            map[u.id] = disp;
+          });
+          return map;
+        }
         function displayName(s) {
-          if (s.nickname) return s.nickname;
+          if (!sched._dnCache || sched._dnCacheFor !== sched.members) {
+            sched._dnCache = buildDisplayNames();
+            sched._dnCacheFor = sched.members;
+          }
+          if (s.userId && sched._dnCache[s.userId]) return sched._dnCache[s.userId];
           var last = (s.lastName || '').trim();
           var first = (s.firstName || '').trim();
-          if (last && first) return last + ' ' + first.slice(0, 3) + '.';
           if (last) return last;
           if (first) return first;
           return 'Team member';
