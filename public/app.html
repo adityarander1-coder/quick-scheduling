@@ -8685,12 +8685,8 @@
       });
       if (admin) handleHash();
       else window.qsSetEmployeeTab('myschedule');
-      // Department switcher bar only shows in Admin view.
-      var deptBar = document.getElementById('dept-switcher-wrap');
-      if (deptBar) {
-        if (!admin) deptBar.classList.add('hidden');
-        else if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
-      }
+      // Department menu renders when in Admin view.
+      if (admin && window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
       // Ask Q-Scheduler content follows the view mode: admin view gets the full
       // admin version; My schedule view gets the employee version (Q&A + email).
       if (window.qsApplyAskVisibility) window.qsApplyAskVisibility(!admin);
