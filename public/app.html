@@ -508,11 +508,6 @@
     .settings-section-head h3 { margin: 0; font-size: 18px; line-height: 1.2; font-weight: 850; letter-spacing: -.02em; }
     .settings-section-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .team-list { display: flex; flex-direction: column; gap: 9px; margin-bottom: 28px; }
-    .dept-access-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
-    @media (min-width: 768px) { .dept-access-grid { grid-template-columns: repeat(3, 1fr); } }
-    .dept-access-grid > div { display: flex; flex-direction: column; }
-    .dept-access-grid > div > div:first-child { flex: 1; }
-    .dept-access-grid select { margin-top: 0.3rem; width: 100%; }
     .team-row { min-height: 82px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; box-shadow: var(--shadow-soft); }
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
@@ -4520,73 +4515,43 @@
                   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
               }
 
-              // Owner-only per-scheduler department access picker (No access / View / Edit).
+              // Owner-only per-scheduler department access — inline compact dropdowns, auto-save on change.
               function deptAccessPicker(u) {
                 var wrap = document.createElement('div');
-                wrap.style.cssText = 'margin-top:0.4rem';
-                var btn = document.createElement('button');
-                btn.type = 'button'; btn.className = 'btn-secondary';
-                btn.style.cssText = 'padding:0.3rem 0.7rem;font-size:0.82rem';
-                btn.textContent = 'Department access';
-                var panel = document.createElement('div');
-                panel.className = 'hidden';
-                panel.style.cssText = 'margin-top:0.6rem;width:100%';
-                var loaded = false;
-                btn.addEventListener('click', function () {
-                  if (panel.classList.contains('hidden')) {
-                    show(panel);
-                    if (!loaded) { loaded = true; loadDeptAccess(u.id, panel); }
-                  } else hide(panel);
-                });
-                wrap.appendChild(btn);
-                wrap.appendChild(panel);
-                return wrap;
-              }
-
-              function loadDeptAccess(userId, panel) {
-                panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">Loading…</p>';
-                api('/api/users/' + userId + '/department-access').then(function (r) {
-                  if (!r.ok) {
-                    panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">' +
-                      escHtml((r.data && r.data.error) || 'Department access settings are not available yet.') + '</p>';
-                    return;
-                  }
+                wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;margin-top:0.3rem';
+                wrap.innerHTML = '<span style="font-size:0.78rem;color:var(--dim)">Loading…</span>';
+                api('/api/users/' + u.id + '/department-access').then(function (r) {
+                  if (!r.ok) { wrap.innerHTML = ''; return; }
                   var current = {};
                   (r.data.departments || []).forEach(function (d) { current[String(d.id)] = d.access; });
-                  var html = '<p style="font-size:0.9rem;color:var(--dim);margin:0 0 0.7rem;white-space:nowrap">Admin access per department:</p><div class="dept-access-grid">';
+                  wrap.innerHTML = '';
                   departments.forEach(function (d) {
                     var val = current[String(d.id)] || 'none';
-                    html += '<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">' +
-                      '<div style="font-size:0.95rem;font-weight:600;margin-bottom:0.3rem">' + escHtml(d.name) + '</div>' +
-                      '<select data-acc-dept="' + d.id + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:0.9rem;background:#fff;min-width:110px">' +
-                      '<option value="none"' + (val === 'none' ? ' selected' : '') + '>No access</option>' +
-                      '<option value="view"' + (val === 'view' ? ' selected' : '') + '>View</option>' +
-                      '<option value="edit"' + (val === 'edit' ? ' selected' : '') + '>Edit</option>' +
-                      '</select></div>';
-                  });
-                  html += '</div>';
-                  html += '<div style="margin-top:0.8rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap"><button type="button" class="btn" data-acc-save style="padding:0.5rem 1.2rem;font-size:0.9rem">Save access</button>' +
-                    '<span data-acc-msg style="font-size:0.9rem"></span></div>';
-                  panel.innerHTML = html;
-                  panel.querySelector('[data-acc-save]').addEventListener('click', function () {
-                    var access = [];
-                    panel.querySelectorAll('select[data-acc-dept]').forEach(function (sel) {
-                      if (sel.value === 'view' || sel.value === 'edit') {
-                        access.push({ departmentId: sel.getAttribute('data-acc-dept'), accessLevel: sel.value });
-                      }
+                    var label = document.createElement('span');
+                    label.style.cssText = 'font-size:0.78rem;color:var(--dim);white-space:nowrap';
+                    label.textContent = d.name + ':';
+                    var sel = document.createElement('select');
+                    sel.style.cssText = 'padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:0.78rem;background:#fff';
+                    sel.innerHTML = '<option value="none">None</option><option value="view">View</option><option value="edit">Edit</option>';
+                    sel.value = val;
+                    sel.setAttribute('aria-label', d.name + ' access');
+                    sel.addEventListener('change', function () {
+                      var access = [];
+                      wrap.querySelectorAll('select').forEach(function (s) {
+                        if (s.value === 'view' || s.value === 'edit') {
+                          access.push({ departmentId: s.getAttribute('data-dept'), accessLevel: s.value });
+                        }
+                      });
+                      api('/api/users/' + u.id + '/department-access', {
+                        method: 'PUT', body: JSON.stringify({ access: access })
+                      });
                     });
-                    var msg = panel.querySelector('[data-acc-msg]');
-                    msg.style.color = 'var(--dim)'; msg.textContent = 'Saving…';
-                    api('/api/users/' + userId + '/department-access', {
-                      method: 'PUT', body: JSON.stringify({ access: access })
-                    }).then(function (pr) {
-                      if (pr.ok) { msg.style.color = 'var(--success)'; msg.textContent = 'Saved.'; }
-                      else { msg.style.color = 'var(--danger)'; msg.textContent = (pr.data && pr.data.error) || 'Could not save.'; }
-                    }).catch(function () { msg.style.color = 'var(--danger)'; msg.textContent = 'Network error.'; });
+                    sel.setAttribute('data-dept', d.id);
+                    wrap.appendChild(label);
+                    wrap.appendChild(sel);
                   });
-                }).catch(function () {
-                  panel.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:0">Could not load department access.</p>';
-                });
+                }).catch(function () { wrap.innerHTML = ''; });
+                return wrap;
               }
 
               function loadMembers() {
