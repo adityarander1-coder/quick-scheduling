@@ -8675,7 +8675,7 @@
       if (admin) handleHash();
       else window.qsSetEmployeeTab('myschedule');
       // Department switcher bar only shows in Admin view.
-      var deptBar = document.getElementById('dept-switcher-bar');
+      var deptBar = document.getElementById('dept-switcher-wrap');
       if (deptBar) {
         if (!admin) deptBar.classList.add('hidden');
         else if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
