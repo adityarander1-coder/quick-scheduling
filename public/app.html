@@ -200,29 +200,18 @@
     window.qsRenderDeptSwitcherBar = renderDeptSwitcherBar;
     // Global desired department filter (set by the top-level switcher; schedule tab picks it up on load).
     window.qsDesiredDeptFilter = null;
-    document.addEventListener('change', function (e) {
-      if (e.target && e.target.id === 'dept-switcher-select') {
-        var v = e.target.value;
-        if (v === '__all') {
-          // "All departments": clear active dept → view everything together.
-          window.qsSetActiveDept(null);
-          window.qsDesiredDeptFilter = null;
-        } else {
-          window.qsSetActiveDept(v);
-          window.qsDesiredDeptFilter = v;
-        }
-        // Stay on the current tab — do not navigate away.
-        // Try to apply now; schedule tab also picks up qsDesiredDeptFilter on load.
-        setTimeout(function () {
-          if (window.qsScheduleSetDeptFilter) {
-            window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
-          }
-        }, 300);
-        setTimeout(function () {
-          if (window.qsScheduleSetDeptFilter) {
-            window.qsScheduleSetDeptFilter(window.qsDesiredDeptFilter);
-          }
-        }, 1500);
+    // Admin tab department dropdown: toggle menu, close on outside click.
+    document.addEventListener('click', function (e) {
+      var menu = document.getElementById('admin-dept-menu');
+      var btn = document.getElementById('admin-tab-btn');
+      if (!menu || !btn) return;
+      if (btn.contains(e.target)) {
+        e.stopPropagation();
+        window.qsSetAppView('admin');
+        if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
+        menu.classList.toggle('hidden');
+      } else if (!menu.classList.contains('hidden') && !menu.contains(e.target)) {
+        menu.classList.add('hidden');
       }
     });
     // Default: stored value if still in the edit list, else the first edit department.
@@ -8708,7 +8697,7 @@
     };
     document.querySelector('#view-switcher').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('button[data-viewmode]') : null;
-      if (b) window.qsSetAppView(b.getAttribute('data-viewmode'));
+      if (b && b.id !== 'admin-tab-btn') window.qsSetAppView(b.getAttribute('data-viewmode'));
     });
 
     document.querySelector('.main-tabs').addEventListener('click', function (e) {
