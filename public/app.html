@@ -3505,6 +3505,25 @@
               if (!res.ok || d.error) { thinking.innerHTML = esc(d.error || 'Sorry, something went wrong.'); return; }
               if (d.needsClarification) {
                 thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.needsClarification);
+                var opts = d.clarificationOptions || [];
+                var origTask = d.originalTask || q;
+                if (opts.length) {
+                  var optWrap = document.createElement('div');
+                  optWrap.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                  opts.forEach(function (o) {
+                    var c = document.createElement('button');
+                    c.type = 'button';
+                    c.className = 'btn-secondary btn-sm';
+                    c.textContent = o;
+                    c.addEventListener('click', function () {
+                      input.value = origTask + ' — ' + o;
+                      sendTask();
+                    });
+                    optWrap.appendChild(c);
+                  });
+                  thinking.appendChild(optWrap);
+                  chat.scrollTop = chat.scrollHeight;
+                }
                 return;
               }
               var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
@@ -3535,12 +3554,16 @@
                         var wrap = addMsg('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
                         var chips = document.createElement('div');
                         chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                        var ctxSummary = d.summary || '';
                         suggs.forEach(function (s) {
                           var c = document.createElement('button');
                           c.type = 'button';
                           c.className = 'btn-secondary btn-sm';
                           c.textContent = s;
-                          c.addEventListener('click', function () { input.value = s; sendTask(); });
+                          c.addEventListener('click', function () {
+                            input.value = ctxSummary ? (s + ' (context: ' + ctxSummary + ')') : s;
+                            sendTask();
+                          });
                           chips.appendChild(c);
                         });
                         wrap.appendChild(chips);

@@ -2924,6 +2924,64 @@ router.post('/agent-suggest', requireRole('owner', 'scheduler'), async (req: Req
 });
 
 // POST /api/schedule/agent-plan — in-app agent: turn a plain-language task into an approvable plan.
+/**
+ * Build a friendly clarification question and tappable options for a missing field.
+ * Returns { question, options } where options are candidate values from the DB.
+ */
+async function buildClarification(
+  change: any,
+  problem: string,
+  companyId: string,
+  query: (text: string, params?: any[]) => Promise<{ rows: any[] }>
+): Promise<{ question: string; options: string[] }> {
+  const p = problem.toLowerCase();
+  const ch = change || {};
+  // Map problem -> what to ask for and which table to pull options from.
+  let question = '';
+  let options: string[] = [];
+  const memberNames = async () => (await query(
+    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+     FROM users WHERE company_id = $1 AND is_active = true AND role = 'employee' ORDER BY first_name LIMIT 20`,
+    [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+  const roleNames = async () => (await query(
+    `SELECT DISTINCT jr.name FROM job_roles jr
+     JOIN departments d ON d.id = jr.department_id
+     WHERE d.company_id = $1 ORDER BY jr.name LIMIT 20`,
+    [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+  const deptNames = async () => (await query(
+    'SELECT name FROM departments WHERE company_id = $1 ORDER BY name LIMIT 20',
+    [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+  const shiftNames = async () => (await query(
+    'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY name LIMIT 20',
+    [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+
+  if (p.includes('person') || p.includes('member')) {
+    const role = ch.jobRoleName ? ` the ${ch.jobRoleName} role` : '';
+    question = ch.action === 'update_team_member' && ch.jobRoleName
+      ? `Which team member should get the ${ch.jobRoleName} role?`
+      : `Which team member${role}?`;
+    options = await memberNames();
+  } else if (p.includes('job role')) {
+    question = 'Which job role?';
+    options = await roleNames();
+  } else if (p.includes('department')) {
+    question = 'Which department?';
+    options = await deptNames();
+  } else if (p.includes('shift')) {
+    question = 'Which shift type?';
+    options = await shiftNames();
+  } else if (p.includes('date')) {
+    question = 'Which date? (e.g. "Oct 25" or "next Monday")';
+  } else if (p.includes('target count') || p.includes('count')) {
+    question = 'How many people are needed? (just type a number)';
+  } else if (p.includes('name')) {
+    question = 'What should it be called?';
+  } else {
+    question = `I need a bit more detail: ${problem}.`;
+  }
+  return { question, options };
+}
+
 router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -2958,10 +3016,17 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
       .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
       .filter((x: any) => x.problems.length > 0);
     if (!plan.changes?.length || incomplete.length || (plan as any).needsClarification) {
-      const detail = incomplete.length
-        ? incomplete.map((x: any) => `Change ${x.i + 1}: ${x.problems.join(', ')}`).join('; ')
-        : ((plan as any).needsClarification || 'I could not understand the task well enough to build a plan.');
-      res.json({ ok: false, needsClarification: detail });
+      // Build a friendly question + tappable options for the first missing detail.
+      let question = (plan as any).needsClarification || 'I could not understand the task well enough to build a plan.';
+      let options: string[] = [];
+      if (incomplete.length) {
+        const ch = plan.changes[incomplete[0].i];
+        const prob = incomplete[0].problems[0];
+        const built = await buildClarification(ch, prob, companyId, query);
+        question = built.question;
+        options = built.options;
+      }
+      res.json({ ok: false, needsClarification: question, clarificationOptions: options, originalTask: task });
       return;
     }
     const { rows } = await query(
