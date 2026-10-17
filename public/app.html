@@ -10,6 +10,11 @@
     function $(id) { return document.getElementById(id); }
     function show(el) { el.classList.remove('hidden'); }
     function hide(el) { el.classList.add('hidden'); }
+    // Days to subtract to reach week start (respects General setting).
+    function weekStartOffset(d) {
+      var monday = (window.qsGeneral && window.qsGeneral.week_start) !== 'sunday';
+      return monday ? ((d.getDay() + 6) % 7) : d.getDay();
+    }
     function api(path, opts) {
       opts = opts || {};
       opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
@@ -233,6 +238,22 @@
       --danger: #bd3d4a;
       --box-ink: #0a0a0a;
       --radius: 22px;
+    }
+    [data-theme="dark"] {
+      --bg: #0d1b2a;
+      --surface: #14293d;
+      --surface-alt: #1b3248;
+      --text: #e8f1f8;
+      --dim: #9db4c8;
+      --border: #2a4a63;
+      --accent: #4da6e8;
+      --accent-hover: #6db8ee;
+      --navy: #0a2036;
+      --navy-soft: #123049;
+      --teal: #2dd4cf;
+      --success: #34d399;
+      --danger: #f87171;
+      --box-ink: #e8f1f8;
       --shadow: 0 20px 54px rgba(8, 47, 79, 0.14);
       --shadow-soft: 0 8px 24px rgba(8, 47, 79, 0.08);
       /* Shift category colors */
@@ -1032,7 +1053,7 @@
         // All state/functions are scoped to this IIFE; shared helpers ($, api,
         // show, hide, pageError, pageSuccess) come from the app shell.
         var sched = {
-          view: 'week',
+          view: (window.qsGeneral && window.qsGeneral.default_view) || 'week',
           anchorDate: new Date(),
           shiftTypes: [],
           members: [],
@@ -1149,7 +1170,7 @@
           if (sched.view === 'day') {
             from = new Date(a); to = new Date(a);
           } else if (sched.view === 'week') {
-            var dow = (a.getDay() + 6) % 7; // Monday start
+            var dow = weekStartOffset(a);
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
@@ -1183,7 +1204,7 @@
           else hide($('sched-range-picker'));
           if (isRange && (!sched.rangeFrom || !sched.rangeTo)) {
             var a = new Date(sched.anchorDate);
-            var dow = (a.getDay() + 6) % 7;
+            var dow = weekStartOffset(a);
             var f = new Date(a); f.setDate(a.getDate() - dow);
             var t = new Date(f); t.setDate(f.getDate() + 13);
             sched.rangeFrom = fmtDate(f); sched.rangeTo = fmtDate(t);
@@ -1651,7 +1672,7 @@
           var r = viewRange();
           var first = parseDate(r.from);
           var gridStart = new Date(first);
-          gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          gridStart.setDate(first.getDate() - weekStartOffset(first));
           var html = '<div class="month-grid">';
           ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
             html += '<div class="month-dow">' + d + '</div>';
@@ -1685,7 +1706,7 @@
           // Mini date grid: tap a date to jump the strip there.
           var html = '<div class="month-mini-grid">';
           var mgStart = new Date(first);
-          mgStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          mgStart.setDate(first.getDate() - weekStartOffset(first));
           ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (dow) {
             html += '<div class="mini-dow">' + dow + '</div>';
           });
@@ -3838,7 +3859,8 @@
       <div class="card">
         <h2>Settings</h2>
         <nav class="sub-tabs" role="tablist">
-          <button class="subtab-btn active" data-subtab="departments">Departments</button>
+          <button class="subtab-btn active" data-subtab="general">General</button>
+          <button class="subtab-btn" data-subtab="departments">Departments</button>
           <button class="subtab-btn" data-subtab="jobroles">Job roles</button>
           <button class="subtab-btn" data-subtab="shifts">Shifts</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
@@ -4490,7 +4512,78 @@
             })();
             </script>
           </div>
-          <div id="subtab-departments" class="sub-panel active">
+          <div id="subtab-general" class="sub-panel active">
+            <div class="sub-card">
+              <h3>General</h3>
+              <p class="set-desc">Customize how the app looks and behaves for your company.</p>
+              <div id="general-error" class="alert alert-error hidden" role="alert"></div>
+              <div id="general-saved" class="alert alert-success hidden" role="status">Saved.</div>
+              <form id="general-form" novalidate>
+                <div class="form-row">
+                  <label for="gs-company-name">Company display name</label>
+                  <input type="text" id="gs-company-name" maxlength="80" placeholder="e.g. Mercy Hospital" autocomplete="off">
+                </div>
+                <div class="form-row">
+                  <label for="gs-timezone">Timezone</label>
+                  <select id="gs-timezone"></select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-week-start">Week starts on</label>
+                  <select id="gs-week-start">
+                    <option value="monday">Monday</option>
+                    <option value="sunday">Sunday</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-date-format">Date format</label>
+                  <select id="gs-date-format">
+                    <option value="mdy">MM/DD/YYYY (10/17/2026)</option>
+                    <option value="dmy">DD/MM/YYYY (17/10/2026)</option>
+                    <option value="ymd">YYYY-MM-DD (2026-10-17)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-time-format">Time format</label>
+                  <select id="gs-time-format">
+                    <option value="12h">12-hour (2:30 PM)</option>
+                    <option value="24h">24-hour (14:30)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-default-view">Default schedule view</label>
+                  <select id="gs-default-view">
+                    <option value="day">Day</option>
+                    <option value="week">Week</option>
+                    <option value="month">Month</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-theme">Appearance</label>
+                  <select id="gs-theme">
+                    <option value="system">System default</option>
+                    <option value="light">Light mode</option>
+                    <option value="dark">Dark mode</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label for="gs-header-color">Header color</label>
+                  <div style="display:flex;gap:0.5rem;align-items:center">
+                    <input type="color" id="gs-header-color" value="#082f4f" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
+                    <button type="button" class="btn-secondary btn-sm" id="gs-header-reset">Reset</button>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label for="gs-footer-color">Footer color</label>
+                  <div style="display:flex;gap:0.5rem;align-items:center">
+                    <input type="color" id="gs-footer-color" value="#082f4f" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
+                    <button type="button" class="btn-secondary btn-sm" id="gs-footer-reset">Reset</button>
+                  </div>
+                </div>
+                <button type="submit" class="btn">Save changes</button>
+              </form>
+            </div>
+          </div>
+          <div id="subtab-departments" class="sub-panel">
             <div class="sub-card">
               <h3>Departments</h3>
               <p class="set-desc">Organize your team into departments (e.g. Emergency, ICU, Pediatrics). Schedulers can be scoped to specific departments.</p>
@@ -4884,6 +4977,101 @@
                   selectEl.appendChild(opt);
                 });
               }
+
+              // ---- General settings ----
+              var GS_TIMEZONES = [
+                'America/Chicago', 'America/New_York', 'America/Denver', 'America/Los_Angeles',
+                'America/Anchorage', 'Pacific/Honolulu', 'America/Phoenix',
+                'America/Toronto', 'America/Vancouver', 'America/Mexico_City',
+                'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+                'Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Asia/Tokyo',
+                'Australia/Sydney', 'Pacific/Auckland', 'UTC'
+              ];
+              var gsLoaded = false;
+              function loadGeneralSettings() {
+                var tzSel = document.getElementById('gs-timezone');
+                if (tzSel && !tzSel.options.length) {
+                  GS_TIMEZONES.forEach(function (tz) {
+                    var o = document.createElement('option');
+                    o.value = tz; o.textContent = tz.replace('_', ' ');
+                    tzSel.appendChild(o);
+                  });
+                }
+                api('/api/schedule/general-settings').then(function (res) {
+                  var s = (res.data && res.data.settings) || {};
+                  document.getElementById('gs-company-name').value = s.company_display_name || '';
+                  if (s.timezone) tzSel.value = s.timezone;
+                  document.getElementById('gs-week-start').value = s.week_start || 'monday';
+                  document.getElementById('gs-date-format').value = s.date_format || 'mdy';
+                  document.getElementById('gs-time-format').value = s.time_format || '12h';
+                  document.getElementById('gs-default-view').value = s.default_view || 'week';
+                  document.getElementById('gs-theme').value = s.theme || 'system';
+                  if (s.header_color) document.getElementById('gs-header-color').value = s.header_color;
+                  if (s.footer_color) document.getElementById('gs-footer-color').value = s.footer_color;
+                  window.qsGeneral = s;
+                  gsLoaded = true;
+                  applyGeneralTheme(s);
+                });
+              }
+              // Apply theme (dark/light/system) + custom header/footer colors app-wide.
+              window.applyGeneralTheme = function (s) {
+                s = s || {};
+                var theme = s.theme || 'system';
+                var dark = theme === 'dark' || (theme === 'system' && window.matchMedia &&
+                  window.matchMedia('(prefers-color-scheme: dark)').matches);
+                document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+                var header = document.querySelector('.app-header');
+                var footer = document.querySelector('.app-footer');
+                if (header) header.style.background = s.header_color || '';
+                if (footer) footer.style.background = s.footer_color || '';
+                var nameEl = document.getElementById('company-name');
+                if (nameEl && s.company_display_name) nameEl.textContent = s.company_display_name;
+              };
+              function applyGeneralTheme(s) { window.applyGeneralTheme(s); }
+              var hrReset = document.getElementById('gs-header-reset');
+              if (hrReset) hrReset.addEventListener('click', function () {
+                document.getElementById('gs-header-color').value = '#082f4f';
+              });
+              var frReset = document.getElementById('gs-footer-reset');
+              if (frReset) frReset.addEventListener('click', function () {
+                document.getElementById('gs-footer-color').value = '#082f4f';
+              });
+              var gsForm = document.getElementById('general-form');
+              if (gsForm) gsForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                var errEl = document.getElementById('general-error');
+                var okEl = document.getElementById('general-saved');
+                errEl.classList.add('hidden'); okEl.classList.add('hidden');
+                var body = {
+                  company_display_name: document.getElementById('gs-company-name').value.trim(),
+                  timezone: document.getElementById('gs-timezone').value,
+                  week_start: document.getElementById('gs-week-start').value,
+                  date_format: document.getElementById('gs-date-format').value,
+                  time_format: document.getElementById('gs-time-format').value,
+                  default_view: document.getElementById('gs-default-view').value,
+                  theme: document.getElementById('gs-theme').value,
+                  header_color: document.getElementById('gs-header-color').value,
+                  footer_color: document.getElementById('gs-footer-color').value,
+                };
+                api('/api/schedule/general-settings', { method: 'PUT', body: JSON.stringify(body) })
+                  .then(function (res) {
+                    if (res.ok) {
+                      window.qsGeneral = body;
+                      applyGeneralTheme(body);
+                      okEl.classList.remove('hidden');
+                      setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
+                    } else {
+                      errEl.textContent = (res.data && res.data.error) || 'Could not save.';
+                      errEl.classList.remove('hidden');
+                    }
+                  })
+                  .catch(function () {
+                    errEl.textContent = 'Network error.';
+                    errEl.classList.remove('hidden');
+                  });
+              });
+              // Load when the Settings tab is first opened.
+              loadGeneralSettings();
 
               function loadDepartments() {
                 api('/api/departments').then(function (result) {
@@ -7722,7 +7910,7 @@
           if (msView === 'day') {
             from = new Date(a); to = new Date(a);
           } else if (msView === 'week') {
-            var dow = (a.getDay() + 6) % 7; // Monday start
+            var dow = weekStartOffset(a);
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (msView === 'range' && rangeFrom && rangeTo) {
@@ -7757,7 +7945,7 @@
           else { rp.classList.add('hidden'); rp.style.display = 'none'; }
           if (msView === 'range' && (!rangeFrom || !rangeTo)) {
             var a = new Date(anchorDate);
-            var dow = (a.getDay() + 6) % 7;
+            var dow = weekStartOffset(a);
             var f = new Date(a); f.setDate(a.getDate() - dow);
             var t = new Date(f); t.setDate(f.getDate() + 13);
             rangeFrom = fmtDate(f); rangeTo = fmtDate(t);
@@ -8096,7 +8284,7 @@
           var r = viewRange();
           var first = parseDate(r.from);
           var gridStart = new Date(first);
-          gridStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          gridStart.setDate(first.getDate() - weekStartOffset(first));
           var html = '<div class="ms-month-grid">';
           ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
             html += '<div class="ms-month-dow">' + d + '</div>';
@@ -8190,7 +8378,7 @@
           // Mini date grid.
           var html = '<div class="ms-month-mini-grid">';
           var mgStart = new Date(first);
-          mgStart.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday start
+          mgStart.setDate(first.getDate() - weekStartOffset(first));
           ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (dow) {
             html += '<div class="ms-mini-dow">' + dow + '</div>';
           });
@@ -9391,6 +9579,21 @@
       window.currentRole = role;
       window.qsUserName = r.data.user.name || '';
       if (window.qsShowAskTabs) window.qsShowAskTabs();
+      // Apply company theme (dark/light, header/footer colors) immediately on login.
+      api('/api/schedule/general-settings').then(function (gr) {
+        var s = (gr.data && gr.data.settings) || {};
+        window.qsGeneral = s;
+        var theme = s.theme || 'system';
+        var dark = theme === 'dark' || (theme === 'system' && window.matchMedia &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        var header = document.querySelector('.app-header');
+        var footer = document.querySelector('.app-footer');
+        if (header && s.header_color) header.style.background = s.header_color;
+        if (footer && s.footer_color) footer.style.background = s.footer_color;
+        var nameEl = document.getElementById('company-name');
+        if (nameEl && s.company_display_name) nameEl.textContent = s.company_display_name;
+      }).catch(function () {});
       window.qsCompanyId = r.data.company && r.data.company.id;
       // Department-scoped access (contract 2026-10-12): owner -> full access;
       // scheduler -> departmentAccess from backend; missing field -> full-access fallback.

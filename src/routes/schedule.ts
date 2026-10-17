@@ -1878,6 +1878,87 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
 // Notification settings — who gets Email AI approve/reject emails.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// General settings — per-company app customization (owner + scheduler).
+// ---------------------------------------------------------------------------
+const GENERAL_DEFAULTS: Record<string, string> = {
+  company_display_name: '',
+  timezone: 'America/Chicago',
+  week_start: 'monday',
+  date_format: 'mdy',      // mdy | dmy | ymd
+  time_format: '12h',      // 12h | 24h
+  default_view: 'week',    // day | week | month
+  header_color: '',        // hex, empty = theme default
+  footer_color: '',        // hex, empty = theme default
+  theme: 'system',         // light | dark | system
+};
+
+// GET /api/schedule/general-settings
+router.get('/general-settings', requireRole('scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT key, value FROM company_settings WHERE company_id = $1', [companyId]);
+    const settings = { ...GENERAL_DEFAULTS };
+    for (const r of rows) settings[r.key] = r.value;
+    res.json({ settings });
+  } catch (err) {
+    console.error('[schedule] get general settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/general-settings — owner + scheduler (admin-level setting).
+router.put('/general-settings', requireRole('scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const body = req.body || {};
+    const allowed = Object.keys(GENERAL_DEFAULTS);
+    // Validate values.
+    if (body.week_start && !['sunday', 'monday'].includes(body.week_start))
+      { res.status(400).json({ error: 'Week start must be sunday or monday.' }); return; }
+    if (body.date_format && !['mdy', 'dmy', 'ymd'].includes(body.date_format))
+      { res.status(400).json({ error: 'Invalid date format.' }); return; }
+    if (body.time_format && !['12h', '24h'].includes(body.time_format))
+      { res.status(400).json({ error: 'Invalid time format.' }); return; }
+    if (body.default_view && !['day', 'week', 'month'].includes(body.default_view))
+      { res.status(400).json({ error: 'Invalid default view.' }); return; }
+    if (body.theme && !['light', 'dark', 'system'].includes(body.theme))
+      { res.status(400).json({ error: 'Invalid theme.' }); return; }
+    if (body.timezone && !/^[A-Za-z_]+\/[A-Za-z_]+$/.test(body.timezone))
+      { res.status(400).json({ error: 'Invalid timezone.' }); return; }
+    for (const ck of ['header_color', 'footer_color']) {
+      if (body[ck] && !/^#[0-9a-fA-F]{6}$/.test(body[ck]))
+        { res.status(400).json({ error: 'Colors must be hex like #1a73e8.' }); return; }
+    }
+    const changed: string[] = [];
+    for (const k of allowed) {
+      if (body[k] !== undefined) {
+        const v = String(body[k]).slice(0, 200);
+        await query(
+          `INSERT INTO company_settings (company_id, key, value, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [companyId, k, v]);
+        changed.push(k);
+      }
+    }
+    try {
+      const { auditLog, todayStr } = await import('../util/audit.js');
+      if (changed.length) await auditLog({
+        companyId, date: todayStr(), action: 'updated',
+        source: 'manual', category: 'settings',
+        changedBy: (req.session as any)?.userId || null,
+        description: `General settings updated: ${changed.join(', ')}`,
+      });
+    } catch {}
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] put general settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // GET /api/schedule/notification-settings — owner only.
 router.get('/notification-settings', requireRole('owner'), async (req: Request, res: Response) => {
   try {
