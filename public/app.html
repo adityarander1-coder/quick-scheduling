@@ -3497,9 +3497,8 @@
             api('/api/schedule/agent-plan', {
               method: 'POST',
               body: JSON.stringify({ task: q }),
-            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
-            .then(function (res) {
-              var d = res.data;
+            }).then(function (res) {
+              var d = res.data || {};
               if (!res.ok || d.error) { thinking.innerHTML = esc(d.error || 'Sorry, something went wrong.'); return; }
               if (d.needsClarification) {
                 thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.needsClarification);
@@ -3515,10 +3514,9 @@
               thinking.querySelector('[data-approve]').addEventListener('click', function () {
                 var b = this; b.disabled = true; b.textContent = 'Applying…';
                 api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' })
-                  .then(function (r2) { return r2.json().then(function (d2) { return { ok: r2.ok, data: d2 }; }); })
                   .then(function (res2) {
                     if (res2.ok) {
-                      var n = (res2.data.results || []).length;
+                      var n = ((res2.data && res2.data.results) || []).length;
                       thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
                       addMsg('<i style="color:var(--dim)">Give me another command any time.</i>', 'ai');
                     } else {
