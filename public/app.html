@@ -3344,16 +3344,31 @@
     <section id="tab-ask" class="tab-panel">
       <div class="card">
         <h2>Ask Q-Scheduler</h2>
-        <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
-        <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
-          <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
-          <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
-          <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
+        <p style="color:var(--dim)">Q-Scheduler is your built-in scheduling assistant.</p>
+        <div class="sub-tabs" id="ask-subtabs" style="display:none;border-bottom:none;padding-bottom:0;margin-bottom:1rem">
+          <button type="button" class="subtab-btn active" data-asktab="ask">Ask</button>
+          <button type="button" class="subtab-btn" data-asktab="task">Command</button>
         </div>
-        <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
-        <div style="display:flex;gap:0.5rem">
-          <input type="text" id="ask-input" placeholder='Try "who&#39;s on Friday night?"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
-          <button type="button" id="ask-send" class="btn">Ask</button>
+        <div id="ask-about-view">
+          <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
+          <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
+            <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
+            <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
+            <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
+          </div>
+          <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
+          <div style="display:flex;gap:0.5rem">
+            <input type="text" id="ask-input" placeholder='Try "who&#39;s on Friday night?"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+            <button type="button" id="ask-send" class="btn">Ask</button>
+          </div>
+        </div>
+        <div id="ask-task-view" style="display:none">
+          <p style="color:var(--dim)">Command Q-Scheduler in plain language — it builds a plan and you approve it right here.</p>
+          <div id="agent-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
+          <div style="display:flex;gap:0.5rem">
+            <input type="text" id="agent-input" placeholder='Try "put Priya on day hospitalist Oct 20-22"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+            <button type="button" id="agent-send" class="btn">Send</button>
+          </div>
         </div>
       </div>
       <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
@@ -3416,6 +3431,106 @@
         }
         $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
         $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
+        // Ask / Command sub-tabs (admins only).
+        (function initAskTabs() {
+          var tabs = document.querySelectorAll('#ask-subtabs [data-asktab]');
+          if (!tabs.length) return;
+          var role = window.currentRole;
+          if (role !== 'owner' && role !== 'scheduler') return;
+          $('ask-subtabs').style.display = '';
+          tabs.forEach(function (t) {
+            t.addEventListener('click', function () {
+              tabs.forEach(function (x) { x.classList.toggle('active', x === t); });
+              var isTask = t.getAttribute('data-asktab') === 'task';
+              $('ask-about-view').style.display = isTask ? 'none' : '';
+              $('ask-task-view').style.display = isTask ? '' : 'none';
+            });
+          });
+        })();
+        // Command chat — in-app agent: plan, approve, done.
+        (function initAgentChat() {
+          var chat = $('agent-chat'), input = $('agent-input'), sendBtn = $('agent-send');
+          if (!chat || sendBtn.dataset.init) return;
+          sendBtn.dataset.init = '1';
+          function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+          function addMsg(html, who) {
+            var div = document.createElement('div');
+            div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;' +
+              (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+            div.innerHTML = html;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+          }
+          function describeChange(c) {
+            switch (c.action) {
+              case 'assign': return 'Assign ' + c.person + ' → ' + c.shiftType + ' on ' + c.date;
+              case 'unassign': return 'Remove ' + c.person + ' from ' + c.date;
+              case 'move': return 'Move ' + c.fromPerson + ' → ' + c.toPerson + ' on ' + (c.date || c.fromDate);
+              case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
+              case 'add_job_role': return 'Add job role "' + c.jobRoleName + '"' + (c.department ? ' to ' + c.department : '');
+              case 'rename_job_role': return 'Rename role "' + c.jobRoleName + '" → "' + c.newJobRoleName + '"';
+              case 'add_department': return 'Add department "' + c.department + '"';
+              case 'rename_department': return 'Rename department "' + c.department + '" → "' + c.newDepartment + '"';
+              case 'add_team_member': return 'Add team member ' + c.firstName + ' ' + c.lastName + (c.department ? ' to ' + c.department : '');
+              case 'update_team_member': return 'Update ' + c.person + (c.jobRoleName ? ' → role ' + c.jobRoleName : '') + (c.department ? ' → ' + c.department : '');
+              case 'add_shift_type': return 'Add shift type "' + c.shiftType + '"' + (c.department ? ' to ' + c.department : '');
+              case 'rename_shift_type': return 'Rename shift "' + c.shiftType + '" → "' + c.newShiftType + '"';
+              case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
+              case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
+              case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
+              default: return c.action;
+            }
+          }
+          function sendTask() {
+            var q = (input.value || '').trim();
+            if (!q) return;
+            addMsg(esc(q), 'you');
+            input.value = '';
+            var thinking = addMsg('<i style="color:var(--dim)">Building a plan…</i>', 'ai');
+            api('/api/schedule/agent-plan', {
+              method: 'POST',
+              body: JSON.stringify({ task: q }),
+            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+            .then(function (res) {
+              var d = res.data;
+              if (!res.ok || d.error) { thinking.innerHTML = esc(d.error || 'Sorry, something went wrong.'); return; }
+              if (d.needsClarification) {
+                thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.needsClarification);
+                return;
+              }
+              var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
+                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
+                d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + '</li>'; }).join('') +
+                '</ol><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                '<button type="button" class="btn btn-sm" data-approve="' + d.planId + '">Approve</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-reject="' + d.planId + '">Reject</button></div>';
+              thinking.innerHTML = html;
+              thinking.querySelector('[data-approve]').addEventListener('click', function () {
+                var b = this; b.disabled = true; b.textContent = 'Applying…';
+                api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' })
+                  .then(function (r2) { return r2.json().then(function (d2) { return { ok: r2.ok, data: d2 }; }); })
+                  .then(function (res2) {
+                    if (res2.ok) {
+                      var n = (res2.data.results || []).length;
+                      thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
+                      addMsg('<i style="color:var(--dim)">Give me another command any time.</i>', 'ai');
+                    } else {
+                      thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
+                    }
+                  }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+              });
+              thinking.querySelector('[data-reject]').addEventListener('click', function () {
+                var b = this; b.disabled = true;
+                api('/api/schedule/plans/' + d.planId + '/reject', { method: 'POST' }).then(function () {
+                  thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
+                }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+              });
+            }).catch(function () { thinking.innerHTML = 'Sorry, something went wrong.'; });
+          }
+          sendBtn.addEventListener('click', sendTask);
+          input.addEventListener('keydown', function (e) { if (e.key === 'Enter') sendTask(); });
+        })();
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
         });

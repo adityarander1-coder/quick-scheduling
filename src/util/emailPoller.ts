@@ -31,7 +31,7 @@ async function getPlanDeptIds(companyId: string, plan: any): Promise<string[]> {
 }
 
 /** Required-field check for a plan change. Returns a list of problems (empty = complete). */
-function changeProblems(change: any): string[] {
+export function changeProblems(change: any): string[] {
   const problems: string[] = [];
   const missing = (v: any) => v === null || v === undefined || v === '';
   switch (change.action) {

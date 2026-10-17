@@ -2879,6 +2879,54 @@ router.post('/help-ask', requireRole('owner', 'scheduler', 'employee'), async (r
   }
 });
 
+
+// POST /api/schedule/agent-plan — in-app agent: turn a plain-language task into an approvable plan.
+router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const task = String(req.body?.task || '').slice(0, 1000);
+    if (!task.trim()) { res.status(400).json({ error: 'Describe the task.' }); return; }
+    const { planFromEmail } = await import('../util/gemini.js');
+    const { rows: stRows } = await query(
+      'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
+    const { rows: uRows } = await query(
+      `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+       FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
+    const { rows: dRows } = await query(
+      'SELECT name FROM departments WHERE company_id = $1', [companyId]);
+    const today = new Date().toISOString().slice(0, 10);
+    const plan = await planFromEmail(task, 'In-app agent task', {
+      shiftTypes: stRows.map((r: any) => r.name),
+      members: uRows.map((r: any) => r.name),
+      today,
+    });
+    // Attach department names for settings actions.
+    (plan as any).departments = dRows.map((r: any) => r.name);
+    // Validate completeness.
+    const { changeProblems } = await import('../util/emailPoller.js');
+    const incomplete = (plan.changes || [])
+      .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
+      .filter((x: any) => x.problems.length > 0);
+    if (!plan.changes?.length || incomplete.length || (plan as any).needsClarification) {
+      const detail = incomplete.length
+        ? incomplete.map((x: any) => `Change ${x.i + 1}: ${x.problems.join(', ')}`).join('; ')
+        : ((plan as any).needsClarification || 'I could not understand the task well enough to build a plan.');
+      res.json({ ok: false, needsClarification: detail });
+      return;
+    }
+    const { rows } = await query(
+      `INSERT INTO schedule_plans
+       (company_id, source_subject, source_body, plan_summary, plan, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'pending', NOW()) RETURNING id`,
+      [companyId, 'In-app agent task', task, plan.summary, JSON.stringify(plan)]
+    );
+    res.json({ ok: true, planId: rows[0].id, summary: plan.summary, changes: plan.changes });
+  } catch (err) {
+    console.error('[schedule] agent-plan failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Schedule change plans — AI-proposed changes awaiting approval
 // ---------------------------------------------------------------------------
