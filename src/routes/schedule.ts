@@ -1894,7 +1894,7 @@ const GENERAL_DEFAULTS: Record<string, string> = {
 };
 
 // GET /api/schedule/general-settings
-router.get('/general-settings', requireRole('scheduler'), async (req: Request, res: Response) => {
+router.get('/general-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const { rows } = await query(
@@ -1909,7 +1909,7 @@ router.get('/general-settings', requireRole('scheduler'), async (req: Request, r
 });
 
 // PUT /api/schedule/general-settings — owner + scheduler (admin-level setting).
-router.put('/general-settings', requireRole('scheduler'), async (req: Request, res: Response) => {
+router.put('/general-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const body = req.body || {};
