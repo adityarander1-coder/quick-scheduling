@@ -11,9 +11,11 @@
     function show(el) { el.classList.remove('hidden'); }
     function hide(el) { el.classList.add('hidden'); }
     // Days to subtract to reach week start (respects General setting).
+    var WEEK_DAYS = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
     function weekStartOffset(d) {
-      var monday = (window.qsGeneral && window.qsGeneral.week_start) !== 'sunday';
-      return monday ? ((d.getDay() + 6) % 7) : d.getDay();
+      var startName = (window.qsGeneral && window.qsGeneral.week_start) || 'monday';
+      var start = WEEK_DAYS[startName] !== undefined ? WEEK_DAYS[startName] : 1;
+      return (d.getDay() - start + 7) % 7;
     }
     function api(path, opts) {
       opts = opts || {};
@@ -4533,6 +4535,11 @@
                   <label for="gs-week-start">Week starts on</label>
                   <select id="gs-week-start">
                     <option value="monday">Monday</option>
+                    <option value="tuesday">Tuesday</option>
+                    <option value="wednesday">Wednesday</option>
+                    <option value="thursday">Thursday</option>
+                    <option value="friday">Friday</option>
+                    <option value="saturday">Saturday</option>
                     <option value="sunday">Sunday</option>
                   </select>
                 </div>

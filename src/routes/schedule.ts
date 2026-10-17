@@ -1919,8 +1919,8 @@ router.put('/general-settings', requireRole('owner', 'scheduler'), async (req: R
     const body = req.body || {};
     const allowed = Object.keys(GENERAL_DEFAULTS);
     // Validate values.
-    if (body.week_start && !['sunday', 'monday'].includes(body.week_start))
-      { res.status(400).json({ error: 'Week start must be sunday or monday.' }); return; }
+    if (body.week_start && !['sunday','monday','tuesday','wednesday','thursday','friday','saturday'].includes(body.week_start))
+      { res.status(400).json({ error: 'Invalid week start day.' }); return; }
     if (body.date_format && !['mdy', 'dmy', 'ymd'].includes(body.date_format))
       { res.status(400).json({ error: 'Invalid date format.' }); return; }
     if (body.time_format && !['12h', '24h'].includes(body.time_format))
