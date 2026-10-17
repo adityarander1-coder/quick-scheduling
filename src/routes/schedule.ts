@@ -2903,21 +2903,28 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
     const task = String(req.body?.task || '').slice(0, 1000);
     if (!task.trim()) { res.status(400).json({ error: 'Describe the task.' }); return; }
     const { planFromEmail } = await import('../util/gemini.js');
-    const { rows: stRows } = await query(
-      'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
-    const { rows: uRows } = await query(
-      `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
-       FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
-    const { rows: dRows } = await query(
-      'SELECT name FROM departments WHERE company_id = $1', [companyId]);
-    const today = new Date().toISOString().slice(0, 10);
-    const plan = await planFromEmail(task, 'In-app agent task', {
-      shiftTypes: stRows.map((r: any) => r.name),
-      members: uRows.map((r: any) => r.name),
-      today,
-    });
-    // Attach department names for settings actions.
-    (plan as any).departments = dRows.map((r: any) => r.name);
+    let plan: any;
+    try {
+      const { rows: stRows } = await query(
+        'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
+      const { rows: uRows } = await query(
+        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+         FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
+      const { rows: dRows } = await query(
+        'SELECT name FROM departments WHERE company_id = $1', [companyId]);
+      const today = new Date().toISOString().slice(0, 10);
+      plan = await planFromEmail(task, 'In-app agent task', {
+        shiftTypes: stRows.map((r: any) => r.name),
+        members: uRows.map((r: any) => r.name),
+        today,
+      });
+      // Attach department names for settings actions.
+      (plan as any).departments = dRows.map((r: any) => r.name);
+    } catch (planErr: any) {
+      console.error('[schedule] agent-plan parse failed:', planErr?.message);
+      res.json({ ok: false, needsClarification: 'I had trouble understanding that task. Try rephrasing it, e.g. "delete the secretary job role from internal medicine".' });
+      return;
+    }
     // Validate completeness.
     const { changeProblems } = await import('../util/emailPoller.js');
     const incomplete = (plan.changes || [])
