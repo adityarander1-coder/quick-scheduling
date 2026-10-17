@@ -240,20 +240,20 @@
       --radius: 22px;
     }
     [data-theme="dark"] {
-      --bg: #0d1b2a;
-      --surface: #14293d;
-      --surface-alt: #1b3248;
-      --text: #e8f1f8;
-      --dim: #9db4c8;
-      --border: #2a4a63;
-      --accent: #4da6e8;
-      --accent-hover: #6db8ee;
-      --navy: #0a2036;
-      --navy-soft: #123049;
-      --teal: #2dd4cf;
+      --bg: #0b0f1a;
+      --surface: #151b2e;
+      --surface-alt: #1c2440;
+      --text: #f0f4ff;
+      --dim: #a8b8d8;
+      --border: #2e3a5c;
+      --accent: #6c8cff;
+      --accent-hover: #8ba4ff;
+      --navy: #0d1326;
+      --navy-soft: #182040;
+      --teal: #2dd4bf;
       --success: #34d399;
-      --danger: #f87171;
-      --box-ink: #e8f1f8;
+      --danger: #fb7185;
+      --box-ink: #f0f4ff;
       --shadow: 0 20px 54px rgba(8, 47, 79, 0.14);
       --shadow-soft: 0 8px 24px rgba(8, 47, 79, 0.08);
       /* Shift category colors */
@@ -4519,6 +4519,8 @@
               <div id="general-error" class="alert alert-error hidden" role="alert"></div>
               <div id="general-saved" class="alert alert-success hidden" role="status">Saved.</div>
               <form id="general-form" novalidate>
+                <h4 style="margin:0 0 0.6rem">Company</h4>
+                <p class="set-desc" style="margin-bottom:0.8rem">Applies to everyone in your company.</p>
                 <div class="form-row">
                   <label for="gs-company-name">Company display name</label>
                   <input type="text" id="gs-company-name" maxlength="80" placeholder="e.g. Mercy Hospital" autocomplete="off">
@@ -4557,6 +4559,8 @@
                     <option value="month">Month</option>
                   </select>
                 </div>
+                <h4 style="margin:1.2rem 0 0.6rem">My appearance</h4>
+                <p class="set-desc" style="margin-bottom:0.8rem">Just for you — each admin picks their own.</p>
                 <div class="form-row">
                   <label for="gs-theme">Appearance</label>
                   <select id="gs-theme">
@@ -5005,29 +5009,37 @@
                   document.getElementById('gs-date-format').value = s.date_format || 'mdy';
                   document.getElementById('gs-time-format').value = s.time_format || '12h';
                   document.getElementById('gs-default-view').value = s.default_view || 'week';
-                  document.getElementById('gs-theme').value = s.theme || 'system';
-                  if (s.header_color) document.getElementById('gs-header-color').value = s.header_color;
-                  if (s.footer_color) document.getElementById('gs-footer-color').value = s.footer_color;
                   window.qsGeneral = s;
                   gsLoaded = true;
-                  applyGeneralTheme(s);
                 });
+                // Personal appearance (per admin).
+                api('/api/schedule/personal-settings').then(function (res) {
+                  var p = (res.data && res.data.settings) || {};
+                  document.getElementById('gs-theme').value = p.theme || 'system';
+                  if (p.header_color) document.getElementById('gs-header-color').value = p.header_color;
+                  if (p.footer_color) document.getElementById('gs-footer-color').value = p.footer_color;
+                  window.qsPersonal = p;
+                  applyPersonalTheme(p);
+                }).catch(function () {});
               }
-              // Apply theme (dark/light/system) + custom header/footer colors app-wide.
-              window.applyGeneralTheme = function (s) {
-                s = s || {};
-                var theme = s.theme || 'system';
+              // Apply personal theme (dark/light/system) + custom header/footer colors.
+              window.applyPersonalTheme = function (p) {
+                p = p || {};
+                var theme = p.theme || 'system';
                 var dark = theme === 'dark' || (theme === 'system' && window.matchMedia &&
                   window.matchMedia('(prefers-color-scheme: dark)').matches);
                 document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
                 var header = document.querySelector('.app-header');
                 var footer = document.querySelector('.app-footer');
-                if (header) header.style.background = s.header_color || '';
-                if (footer) footer.style.background = s.footer_color || '';
-                var nameEl = document.getElementById('company-name');
-                if (nameEl && s.company_display_name) nameEl.textContent = s.company_display_name;
+                if (header) header.style.background = p.header_color || '';
+                if (footer) footer.style.background = p.footer_color || '';
               };
-              function applyGeneralTheme(s) { window.applyGeneralTheme(s); }
+              function applyPersonalTheme(p) { window.applyPersonalTheme(p); }
+              // Company display name applies app-wide.
+              window.applyCompanyName = function (name) {
+                var nameEl = document.getElementById('company-name');
+                if (nameEl && name) nameEl.textContent = name;
+              };
               var hrReset = document.getElementById('gs-header-reset');
               if (hrReset) hrReset.addEventListener('click', function () {
                 document.getElementById('gs-header-color').value = '#082f4f';
@@ -5042,26 +5054,35 @@
                 var errEl = document.getElementById('general-error');
                 var okEl = document.getElementById('general-saved');
                 errEl.classList.add('hidden'); okEl.classList.add('hidden');
-                var body = {
+                var companyBody = {
                   company_display_name: document.getElementById('gs-company-name').value.trim(),
                   timezone: document.getElementById('gs-timezone').value,
                   week_start: document.getElementById('gs-week-start').value,
                   date_format: document.getElementById('gs-date-format').value,
                   time_format: document.getElementById('gs-time-format').value,
                   default_view: document.getElementById('gs-default-view').value,
+                };
+                var personalBody = {
                   theme: document.getElementById('gs-theme').value,
                   header_color: document.getElementById('gs-header-color').value,
                   footer_color: document.getElementById('gs-footer-color').value,
                 };
-                api('/api/schedule/general-settings', { method: 'PUT', body: JSON.stringify(body) })
-                  .then(function (res) {
-                    if (res.ok) {
-                      window.qsGeneral = body;
-                      applyGeneralTheme(body);
+                Promise.all([
+                  api('/api/schedule/general-settings', { method: 'PUT', body: JSON.stringify(companyBody) }),
+                  api('/api/schedule/personal-settings', { method: 'PUT', body: JSON.stringify(personalBody) }),
+                ]).then(function (results) {
+                    var okCompany = results[0] && results[0].ok;
+                    var okPersonal = results[1] && results[1].ok;
+                    if (okCompany && okPersonal) {
+                      window.qsGeneral = companyBody;
+                      window.qsPersonal = personalBody;
+                      window.applyCompanyName(companyBody.company_display_name);
+                      applyPersonalTheme(personalBody);
                       okEl.classList.remove('hidden');
                       setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
                     } else {
-                      errEl.textContent = (res.data && res.data.error) || 'Could not save.';
+                      var r = !okCompany ? results[0] : results[1];
+                      errEl.textContent = (r.data && r.data.error) || 'Could not save.';
                       errEl.classList.remove('hidden');
                     }
                   })
@@ -9579,20 +9600,24 @@
       window.currentRole = role;
       window.qsUserName = r.data.user.name || '';
       if (window.qsShowAskTabs) window.qsShowAskTabs();
-      // Apply company theme (dark/light, header/footer colors) immediately on login.
+      // Apply company name + personal appearance immediately on login.
       api('/api/schedule/general-settings').then(function (gr) {
         var s = (gr.data && gr.data.settings) || {};
         window.qsGeneral = s;
-        var theme = s.theme || 'system';
+        var nameEl = document.getElementById('company-name');
+        if (nameEl && s.company_display_name) nameEl.textContent = s.company_display_name;
+      }).catch(function () {});
+      api('/api/schedule/personal-settings').then(function (pr) {
+        var p = (pr.data && pr.data.settings) || {};
+        window.qsPersonal = p;
+        var theme = p.theme || 'system';
         var dark = theme === 'dark' || (theme === 'system' && window.matchMedia &&
           window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
         var header = document.querySelector('.app-header');
         var footer = document.querySelector('.app-footer');
-        if (header && s.header_color) header.style.background = s.header_color;
-        if (footer && s.footer_color) footer.style.background = s.footer_color;
-        var nameEl = document.getElementById('company-name');
-        if (nameEl && s.company_display_name) nameEl.textContent = s.company_display_name;
+        if (header && p.header_color) header.style.background = p.header_color;
+        if (footer && p.footer_color) footer.style.background = p.footer_color;
       }).catch(function () {});
       window.qsCompanyId = r.data.company && r.data.company.id;
       // Department-scoped access (contract 2026-10-12): owner -> full access;

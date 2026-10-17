@@ -1888,9 +1888,13 @@ const GENERAL_DEFAULTS: Record<string, string> = {
   date_format: 'mdy',      // mdy | dmy | ymd
   time_format: '12h',      // 12h | 24h
   default_view: 'week',    // day | week | month
+};
+
+// Personal per-user settings (each person chooses their own).
+const PERSONAL_DEFAULTS: Record<string, string> = {
+  theme: 'system',         // light | dark | system
   header_color: '',        // hex, empty = theme default
   footer_color: '',        // hex, empty = theme default
-  theme: 'system',         // light | dark | system
 };
 
 // GET /api/schedule/general-settings
@@ -1923,14 +1927,8 @@ router.put('/general-settings', requireRole('owner', 'scheduler'), async (req: R
       { res.status(400).json({ error: 'Invalid time format.' }); return; }
     if (body.default_view && !['day', 'week', 'month'].includes(body.default_view))
       { res.status(400).json({ error: 'Invalid default view.' }); return; }
-    if (body.theme && !['light', 'dark', 'system'].includes(body.theme))
-      { res.status(400).json({ error: 'Invalid theme.' }); return; }
     if (body.timezone && !/^[A-Za-z_]+\/[A-Za-z_]+$/.test(body.timezone))
       { res.status(400).json({ error: 'Invalid timezone.' }); return; }
-    for (const ck of ['header_color', 'footer_color']) {
-      if (body[ck] && !/^#[0-9a-fA-F]{6}$/.test(body[ck]))
-        { res.status(400).json({ error: 'Colors must be hex like #1a73e8.' }); return; }
-    }
     const changed: string[] = [];
     for (const k of allowed) {
       if (body[k] !== undefined) {
@@ -1955,6 +1953,54 @@ router.put('/general-settings', requireRole('owner', 'scheduler'), async (req: R
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] put general settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Personal settings — per-user appearance (theme, header/footer colors).
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/personal-settings — owner/scheduler only.
+router.get('/personal-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const { rows } = await query(
+      'SELECT key, value FROM user_settings WHERE user_id = $1', [userId]);
+    const settings = { ...PERSONAL_DEFAULTS };
+    for (const r of rows) settings[r.key] = r.value;
+    res.json({ settings });
+  } catch (err) {
+    console.error('[schedule] get personal settings failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/personal-settings — owner/scheduler only.
+router.put('/personal-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const body = req.body || {};
+    if (body.theme && !['light', 'dark', 'system'].includes(body.theme))
+      { res.status(400).json({ error: 'Invalid theme.' }); return; }
+    for (const ck of ['header_color', 'footer_color']) {
+      if (body[ck] && !/^#[0-9a-fA-F]{6}$/.test(body[ck]))
+        { res.status(400).json({ error: 'Colors must be hex like #1a73e8.' }); return; }
+    }
+    const allowed = Object.keys(PERSONAL_DEFAULTS);
+    for (const k of allowed) {
+      if (body[k] !== undefined) {
+        const v = String(body[k]).slice(0, 200);
+        await query(
+          `INSERT INTO user_settings (user_id, key, value, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [userId, k, v]);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] put personal settings failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
