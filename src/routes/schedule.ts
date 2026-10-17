@@ -2859,6 +2859,22 @@ router.post('/ask', requireRole('owner', 'scheduler', 'employee'), async (req: R
   }
 });
 
+
+// POST /api/schedule/help-ask — help assistant: how-to questions about using the app.
+router.post('/help-ask', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const question = String(req.body?.question || '').slice(0, 500);
+    if (!question.trim()) { res.status(400).json({ error: 'Ask a question.' }); return; }
+    const role = req.session.role === 'employee' ? 'employee' : 'admin/scheduler';
+    const { answerHelpQuestion } = await import('../util/gemini.js');
+    const answer = await answerHelpQuestion(question, role);
+    res.json({ answer });
+  } catch (err) {
+    console.error('[schedule] help-ask failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Schedule change plans — AI-proposed changes awaiting approval
 // ---------------------------------------------------------------------------

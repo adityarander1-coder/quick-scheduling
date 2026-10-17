@@ -7102,10 +7102,15 @@
       <div class="card">
         <h2>Help & How-to</h2>
         <p style="color:var(--dim)">Pick your role to see the right guidance.</p>
-        <div class="sub-tabs" style="border-bottom:none;padding-bottom:0;margin-bottom:0">
+        <div class="sub-tabs" style="border-bottom:none;padding-bottom:0;margin-bottom:1rem">
           <button type="button" class="subtab-btn active" data-helprole="admin">Admin / Scheduler</button>
           <button type="button" class="subtab-btn" data-helprole="employee">Employee</button>
         </div>
+        <div style="display:flex;gap:0.6rem;align-items:center">
+          <input type="text" id="help-ask-input" placeholder="Ask how to do something… e.g. how do I swap a shift?" style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+          <button type="button" id="help-ask-btn" class="btn">Ask</button>
+        </div>
+        <div id="help-ask-answer" style="display:none;margin-top:0.8rem;padding:0.9rem 1rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;font-size:0.95rem;line-height:1.5;white-space:pre-wrap"></div>
       </div>
 
       <div id="help-admin">
@@ -8707,6 +8712,34 @@
     } else {
       initHelpRoleToggle();
     }
+
+    // Help tab Q&A — ask how to do something, get guidance.
+    (function initHelpAsk() {
+      var input = document.getElementById('help-ask-input');
+      var btn = document.getElementById('help-ask-btn');
+      var ans = document.getElementById('help-ask-answer');
+      if (!input || !btn || btn.dataset.init) return;
+      btn.dataset.init = '1';
+      function ask() {
+        var q = input.value.trim();
+        if (!q) return;
+        btn.disabled = true; btn.textContent = 'Thinking…';
+        ans.style.display = 'block'; ans.textContent = 'Finding the answer…';
+        fetch('/api/schedule/help-ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          btn.disabled = false; btn.textContent = 'Ask';
+          ans.textContent = d.answer || d.error || 'Sorry, something went wrong.';
+        }).catch(function () {
+          btn.disabled = false; btn.textContent = 'Ask';
+          ans.textContent = 'Network error. Try again.';
+        });
+      }
+      btn.addEventListener('click', ask);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') ask(); });
+    })();
 
     var routes = {
       'schedule': function() { activateTab('schedule'); },
