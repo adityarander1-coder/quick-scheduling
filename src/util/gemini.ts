@@ -247,9 +247,13 @@ Rules:
         }),
       }
     );
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.log(`[gemini] suggestFollowUps HTTP ${res.status}`);
+      return [];
+    }
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log(`[gemini] suggestFollowUps raw: ${text.slice(0, 300)}`);
     const arrMatch = text.match(/\[[\s\S]*\]/);
     if (!arrMatch) return [];
     const parsed = JSON.parse(arrMatch[0]);
