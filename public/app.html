@@ -3476,6 +3476,7 @@
               case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
               case 'add_job_role': return 'Add job role "' + c.jobRoleName + '"' + (c.department ? ' to ' + c.department : '');
               case 'rename_job_role': return 'Rename role "' + c.jobRoleName + '" → "' + c.newJobRoleName + '"';
+              case 'delete_job_role': return 'Delete job role "' + c.jobRoleName + '"' + (c.department ? ' from ' + c.department : '');
               case 'add_department': return 'Add department "' + c.department + '"';
               case 'rename_department': return 'Rename department "' + c.department + '" → "' + c.newDepartment + '"';
               case 'add_team_member': return 'Add team member ' + c.firstName + ' ' + c.lastName + (c.department ? ' to ' + c.department : '');

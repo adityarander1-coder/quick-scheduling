@@ -3,7 +3,7 @@
 import { query } from '../db.js';
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
           'add_department' | 'rename_department' |
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
@@ -355,6 +355,24 @@ export async function executePlan(
           );
           results.push({ action: 'add_job_role', success: true, message: `Added job role "${change.jobRoleName}" to ${dept.name}` });
         }
+      } else if (change.action === 'delete_job_role' && change.jobRoleName && change.department) {
+        const dept = await findDepartment(companyId, change.department);
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        const { rows: roleRows } = await query(
+          'SELECT id FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, dept.id, change.jobRoleName.trim()]
+        );
+        if (!roleRows.length) throw new Error(`Job role not found: ${change.jobRoleName}`);
+        const roleId = roleRows[0].id;
+        // Clear the role from team members and shift-type eligibility, then delete.
+        await query('UPDATE users SET job_role_id = NULL WHERE company_id = $1 AND job_role_id = $2', [companyId, roleId]);
+        await query(
+          `UPDATE shift_types SET eligible_job_role_ids = array_remove(eligible_job_role_ids, $2)
+           WHERE company_id = $1 AND $2 = ANY(eligible_job_role_ids)`,
+          [companyId, roleId]
+        );
+        await query('DELETE FROM job_roles WHERE id = $1 AND company_id = $2', [roleId, companyId]);
+        results.push({ action: 'delete_job_role', success: true, message: `Deleted job role "${change.jobRoleName}" from ${dept.name}` });
       } else if (change.action === 'rename_job_role' && change.jobRoleName && change.newJobRoleName && change.department) {
         const dept = await findDepartment(companyId, change.department);
         if (!dept) throw new Error(`Department not found: ${change.department}`);

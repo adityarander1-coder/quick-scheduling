@@ -44,7 +44,7 @@ async function discoverModel(apiKey: string): Promise<string> {
 }
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
           'add_department' | 'rename_department' |
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
@@ -155,6 +155,7 @@ Rules:
 - For "settings_change": fill in "changes" with settings actions. Supported actions:
   - "add_job_role": needs jobRoleName + department. Example: "Add PGY4 role to IM Residency" → jobRoleName "PGY4", department "IM Residency".
   - "rename_job_role": needs jobRoleName + newJobRoleName + department.
+  - "delete_job_role": needs jobRoleName + department. Example: "Delete secretary from internal medicine" → jobRoleName "secretary", department "internal medicine".
   - "add_department": needs department. Example: "Add Cardiology department" → department "Cardiology".
   - "rename_department": needs department + newDepartment.
   - "add_team_member": needs firstName + lastName; department and jobRoleName optional. Example: "Add John Smith to IM Residency as PGY2" → firstName "John", lastName "Smith", department "IM Residency", jobRoleName "PGY2".

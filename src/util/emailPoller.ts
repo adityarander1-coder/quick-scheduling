@@ -58,6 +58,10 @@ export function changeProblems(change: any): string[] {
       if (missing(change.jobRoleName)) problems.push('no job role name given');
       if (missing(change.department)) problems.push('no department given');
       break;
+    case 'delete_job_role':
+      if (missing(change.jobRoleName)) problems.push('no job role name given');
+      if (missing(change.department)) problems.push('no department given');
+      break;
     case 'rename_job_role':
       if (missing(change.jobRoleName)) problems.push('no job role name given');
       if (missing(change.newJobRoleName)) problems.push('no new job role name given');
