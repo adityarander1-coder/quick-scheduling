@@ -7106,11 +7106,12 @@
           <button type="button" class="subtab-btn active" data-helprole="admin">Admin / Scheduler</button>
           <button type="button" class="subtab-btn" data-helprole="employee">Employee</button>
         </div>
+        <div id="help-ask-thread" style="display:none;margin-bottom:0.8rem;max-height:420px;overflow-y:auto"></div>
         <div style="display:flex;gap:0.6rem;align-items:center">
           <input type="text" id="help-ask-input" placeholder="Ask how to do something… e.g. how do I swap a shift?" style="flex:1;padding:10px 14px;border:1px solid var(--border);border-radius:10px;font-size:1rem">
           <button type="button" id="help-ask-btn" class="btn">Ask</button>
+          <button type="button" id="help-ask-new" class="btn-secondary" style="display:none">New question</button>
         </div>
-        <div id="help-ask-answer" style="display:none;margin-top:0.8rem;padding:0.9rem 1rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:10px;font-size:0.95rem;line-height:1.5;white-space:pre-wrap"></div>
       </div>
 
       <div id="help-admin">
@@ -8713,32 +8714,80 @@
       initHelpRoleToggle();
     }
 
-    // Help tab Q&A — ask how to do something, get guidance.
+    // Help tab Q&A — ask how to do something, get guidance, ask follow-ups.
     (function initHelpAsk() {
       var input = document.getElementById('help-ask-input');
       var btn = document.getElementById('help-ask-btn');
-      var ans = document.getElementById('help-ask-answer');
+      var newBtn = document.getElementById('help-ask-new');
+      var thread = document.getElementById('help-ask-thread');
       if (!input || !btn || btn.dataset.init) return;
       btn.dataset.init = '1';
+      var history = [];
+      function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+      function addMsg(who, text, visuals) {
+        thread.style.display = 'block';
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'margin-bottom:0.7rem;padding:0.8rem 1rem;border-radius:10px;font-size:0.95rem;line-height:1.5;white-space:pre-wrap;' +
+          (who === 'q' ? 'background:#eef4ff;border:1px solid #c9dcff;margin-left:2rem;' : 'background:var(--surface-alt);border:1px solid var(--border);margin-right:2rem;');
+        wrap.innerHTML = (who === 'q' ? '<b>You:</b> ' : '') + esc(text);
+        if (visuals && visuals.length) {
+          var vw = document.createElement('div');
+          vw.style.cssText = 'display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.6rem;white-space:normal;';
+          visuals.forEach(function (v) {
+            var img = document.createElement('img');
+            img.src = 'help-img/' + v; img.alt = 'Visual guide';
+            img.style.cssText = 'max-width:220px;border:1px solid var(--border);border-radius:8px;cursor:zoom-in;';
+            img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+            vw.appendChild(img);
+          });
+          wrap.appendChild(vw);
+        }
+        thread.appendChild(wrap);
+        thread.scrollTop = thread.scrollHeight;
+        return wrap;
+      }
       function ask() {
         var q = input.value.trim();
         if (!q) return;
+        input.value = '';
         btn.disabled = true; btn.textContent = 'Thinking…';
-        ans.style.display = 'block'; ans.textContent = 'Finding the answer…';
+        addMsg('q', q);
+        var thinking = addMsg('a', 'Finding the answer…');
         fetch('/api/schedule/help-ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: q })
+          body: JSON.stringify({ question: q, history: history })
         }).then(function (r) { return r.json(); }).then(function (d) {
           btn.disabled = false; btn.textContent = 'Ask';
-          ans.textContent = d.answer || d.error || 'Sorry, something went wrong.';
+          var answer = d.answer || d.error || 'Sorry, something went wrong.';
+          thinking.innerHTML = esc(answer);
+          if (d.visuals && d.visuals.length) {
+            var vw = document.createElement('div');
+            vw.style.cssText = 'display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.6rem;';
+            d.visuals.forEach(function (v) {
+              var img = document.createElement('img');
+              img.src = 'help-img/' + v; img.alt = 'Visual guide';
+              img.style.cssText = 'max-width:220px;border:1px solid var(--border);border-radius:8px;cursor:zoom-in;';
+              img.addEventListener('click', function () { window.open(img.src, '_blank'); });
+              vw.appendChild(img);
+            });
+            thinking.appendChild(vw);
+          }
+          history.push({ q: q, a: answer });
+          newBtn.style.display = '';
+          input.placeholder = 'Ask a follow-up…';
+          input.focus();
         }).catch(function () {
           btn.disabled = false; btn.textContent = 'Ask';
-          ans.textContent = 'Network error. Try again.';
+          thinking.textContent = 'Network error. Try again.';
         });
       }
       btn.addEventListener('click', ask);
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') ask(); });
+      newBtn.addEventListener('click', function () {
+        history = []; thread.innerHTML = ''; thread.style.display = 'none';
+        newBtn.style.display = 'none'; input.placeholder = 'Ask how to do something… e.g. how do I swap a shift?';
+      });
     })();
 
     var routes = {

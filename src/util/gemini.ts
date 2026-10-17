@@ -239,11 +239,46 @@ ADMIN / SCHEDULER (Schedule tab + Settings):
 - Email AI: forward schedule emails and the app drafts a plan; you Approve or Reject before anything runs. Notification recipients are configured per department in Settings.
 `;
 
-export async function answerHelpQuestion(question: string, role: string): Promise<string> {
+const HELP_VISUALS = `
+Available screenshot guides (use the file names exactly):
+- help-schedule-week.png — Admin schedule week view with tabs and filters
+- help-ask.png — Ask Q-Scheduler (admin)
+- help-emp-schedule-week.png — Employee week view
+- help-emp-schedule-month.png — Employee month view
+- help-emp-month-phone.png — Employee month view on phone
+- help-emp-available.png — Available shifts list with Pick up buttons
+- help-emp-requests.png — Shift requests tab (swap/cover status)
+- help-emp-fab.png — Floating Email AI button
+- help-emp-email-dialog.png — Email dialog
+- help-settings-shifts.png — Settings → Shifts (shift types, colors, order)
+- help-settings-staffing.png — Settings → Staffing targets
+- help-settings-team.png — Team members list
+- help-settings-invite.png — Inviting new team members
+- help-settings-rotations.png — Settings → Rotations
+- help-share-links.png — Share Links (schedule, availability, open slots)
+- help-employee-schedule.png — Employee schedule overview
+- help-employee-availability.png — Employee availability
+`;
+
+export async function answerHelpQuestion(
+  question: string,
+  role: string,
+  history: Array<{ q: string; a: string }> = []
+): Promise<{ answer: string; visuals: string[] }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('Gemini API key not configured.');
   const model = await discoverModel(apiKey);
-  const prompt = `${HELP_KNOWLEDGE}\nThe person asking is a(n) ${role}. Their question: ${question}\n\nAnswer in 2-6 short steps. No preamble.`;
+  const histText = history.length
+    ? 'Earlier in this conversation:\n' + history.map(h => `Q: ${h.q}\nA: ${h.a}`).join('\n') + '\n\n'
+    : '';
+  const prompt = `${HELP_KNOWLEDGE}
+${HELP_VISUALS}
+The person asking is a(n) ${role}.
+${histText}Their question: ${question}
+
+Answer in 2-6 short steps. No preamble. If one or two screenshots from the list above would help illustrate the answer, end your response with a line exactly like:
+VISUAL: file1.png, file2.png
+Only list files from the catalog above. If no screenshot fits, omit the VISUAL line.`;
   const res = await fetch(
     `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -257,5 +292,16 @@ export async function answerHelpQuestion(question: string, role: string): Promis
   );
   if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
   const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Sorry, I could not answer that. Try rephrasing.';
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Sorry, I could not answer that. Try rephrasing.';
+  const visuals: string[] = [];
+  const m = text.match(/^VISUAL:\s*(.+)$/m);
+  let answer = text;
+  if (m) {
+    answer = text.replace(m[0], '').trim();
+    m[1].split(',').forEach((f: string) => {
+      const name = f.trim();
+      if (/^help-[a-z0-9-]+\.png$/.test(name)) visuals.push(name);
+    });
+  }
+  return { answer, visuals };
 }

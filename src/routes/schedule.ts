@@ -2866,9 +2866,13 @@ router.post('/help-ask', requireRole('owner', 'scheduler', 'employee'), async (r
     const question = String(req.body?.question || '').slice(0, 500);
     if (!question.trim()) { res.status(400).json({ error: 'Ask a question.' }); return; }
     const role = req.session.role === 'employee' ? 'employee' : 'admin/scheduler';
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-6).map((h: any) => ({
+      q: String(h.q || '').slice(0, 500),
+      a: String(h.a || '').slice(0, 2000),
+    })) : [];
     const { answerHelpQuestion } = await import('../util/gemini.js');
-    const answer = await answerHelpQuestion(question, role);
-    res.json({ answer });
+    const { answer, visuals } = await answerHelpQuestion(question, role, history);
+    res.json({ answer, visuals });
   } catch (err) {
     console.error('[schedule] help-ask failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
