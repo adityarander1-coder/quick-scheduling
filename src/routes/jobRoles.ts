@@ -11,6 +11,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db';
+import { auditLog, todayStr } from '../util/audit.js';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { getDepartmentAccess, requireActiveDepartment } from '../util/departmentAccess';
 
@@ -103,6 +104,14 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
          VALUES ($1, $2, $3, $4) RETURNING id, name, department_id, created_at`,
         [id, companyId, deptId, clean]
       );
+      const { rows: deptRows } = await query(
+        'SELECT name FROM departments WHERE id = $1 AND company_id = $2', [deptId, companyId]);
+      const deptName = deptRows.length ? deptRows[0].name : '';
+      await auditLog({
+        companyId, date: todayStr(), action: 'created', category: 'settings',
+        source: 'manual', changedBy: req.session.userId!,
+        description: `Added job role "${clean}"${deptName ? ` to ${deptName}` : ''}`,
+      });
       res.status(201).json({ jobRole: publicRole(rows[0]) });
     } catch (err: any) {
       if (err?.code === '23505') {
@@ -131,7 +140,7 @@ router.patch('/:id', requireRole('owner', 'scheduler'), async (req: Request, res
       return;
     }
     const { rows: existing } = await query(
-      'SELECT id, department_id FROM job_roles WHERE id = $1 AND company_id = $2',
+      'SELECT id, department_id, name FROM job_roles WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
     );
     if (!existing.length) {
@@ -152,6 +161,14 @@ router.patch('/:id', requireRole('owner', 'scheduler'), async (req: Request, res
         `UPDATE users SET job_role = $1 WHERE job_role_id = $2 AND company_id = $3`,
         [clean, req.params.id, companyId]
       );
+      const oldRoleName = existing[0].name;
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings',
+        source: 'manual', changedBy: req.session.userId!,
+        description: oldRoleName !== clean
+          ? `Renamed job role "${oldRoleName}" to "${clean}"`
+          : `Updated job role "${clean}"`,
+      });
       res.json({ jobRole: publicRole(rows[0]) });
     } catch (err: any) {
       if (err?.code === '23505') {
@@ -173,7 +190,9 @@ router.delete('/:id', requireRole('owner', 'scheduler'), async (req: Request, re
   try {
     const companyId = req.session.companyId!;
     const { rows: existing } = await query(
-      'SELECT id, department_id FROM job_roles WHERE id = $1 AND company_id = $2',
+      `SELECT jr.id, jr.department_id, jr.name, d.name AS dept_name
+       FROM job_roles jr LEFT JOIN departments d ON d.id = jr.department_id
+       WHERE jr.id = $1 AND jr.company_id = $2`,
       [req.params.id, companyId]
     );
     if (!existing.length) {
@@ -196,6 +215,11 @@ router.delete('/:id', requireRole('owner', 'scheduler'), async (req: Request, re
       res.status(404).json({ error: 'Job role not found.' });
       return;
     }
+    await auditLog({
+      companyId, date: todayStr(), action: 'deleted', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Deleted job role "${existing[0].name}"${existing[0].dept_name ? ` from ${existing[0].dept_name}` : ''}`,
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error('[job-roles] delete failed:', err);

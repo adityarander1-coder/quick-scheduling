@@ -3363,6 +3363,7 @@
           <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
           <div style="display:flex;gap:0.5rem">
             <input type="text" id="ask-input" placeholder='Try "who&#39;s on Friday night?"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+            <button type="button" id="ask-mic" class="btn-secondary" title="Speak your question" aria-label="Speak your question" style="padding:0.7rem 0.9rem">🎤</button>
             <button type="button" id="ask-send" class="btn">Ask</button>
           </div>
         </div>
@@ -3371,6 +3372,7 @@
           <div id="agent-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
           <div style="display:flex;gap:0.5rem">
             <input type="text" id="agent-input" placeholder='Try "put Priya on day hospitalist Oct 20-22"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+            <button type="button" id="agent-mic" class="btn-secondary" title="Speak your task" aria-label="Speak your task" style="padding:0.7rem 0.9rem">🎤</button>
             <button type="button" id="agent-send" class="btn">Send</button>
           </div>
         </div>
@@ -3560,6 +3562,65 @@
           }
           sendBtn.addEventListener('click', sendTask);
           input.addEventListener('keydown', function (e) { if (e.key === 'Enter') sendTask(); });
+          // Voice input: speech-to-text via the browser's built-in recognition.
+          (function initMic(btnId, inputEl) {
+            var btn = $(btnId);
+            if (!btn || btn.dataset.micInit) return;
+            btn.dataset.micInit = '1';
+            var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Rec) { btn.style.display = 'none'; return; }
+            var rec = new Rec();
+            rec.lang = 'en-US';
+            rec.interimResults = false;
+            rec.maxAlternatives = 1;
+            var listening = false;
+            rec.onresult = function (e) {
+              var text = e.results[0][0].transcript;
+              inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
+              inputEl.focus();
+            };
+            rec.onerror = function (e) {
+              listening = false;
+              btn.textContent = '🎤';
+              if (e.error === 'not-allowed') {
+                addMsg('<i style="color:var(--dim)">Microphone blocked — allow mic access in your browser settings to use voice input.</i>', 'ai');
+              }
+            };
+            rec.onend = function () {
+              listening = false;
+              btn.textContent = '🎤';
+            };
+            btn.addEventListener('click', function () {
+              if (listening) { rec.stop(); return; }
+              try {
+                rec.start();
+                listening = true;
+                btn.textContent = '🔴';
+              } catch (err) { /* already started */ }
+            });
+          })('agent-mic', input);
+          (function initAskMic() {
+            var btn = $('ask-mic'), askInput = $('ask-input');
+            if (!btn || btn.dataset.micInit) return;
+            btn.dataset.micInit = '1';
+            var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Rec) { btn.style.display = 'none'; return; }
+            var rec = new Rec();
+            rec.lang = 'en-US';
+            rec.interimResults = false;
+            rec.maxAlternatives = 1;
+            var listening = false;
+            rec.onresult = function (e) {
+              askInput.value = (askInput.value ? askInput.value + ' ' : '') + e.results[0][0].transcript;
+              askInput.focus();
+            };
+            rec.onerror = function () { listening = false; btn.textContent = '🎤'; };
+            rec.onend = function () { listening = false; btn.textContent = '🎤'; };
+            btn.addEventListener('click', function () {
+              if (listening) { rec.stop(); return; }
+              try { rec.start(); listening = true; btn.textContent = '🔴'; } catch (err) {}
+            });
+          })();
         })();
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
@@ -8680,8 +8741,8 @@
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
     <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
-      <h3 style="margin-top:0">Schedule changes</h3>
-      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule, what changed, and whether it was manual or from a rotation.</p>
+      <h3 style="margin-top:0">Change report</h3>
+      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
         <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
         <label><input type="radio" name="audit-mode" value="range"> Date range</label>
@@ -9119,19 +9180,33 @@
             box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started today — past changes are not available.</p>';
             return;
           }
-          var actionWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
+          var actionWords = { created: 'Added', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
+          var scheduleWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
           var html = '';
           var lastDate = '';
+          var lastCat = '';
           r.data.entries.forEach(function (e) {
-            if (e.date !== lastDate) {
-              html += '<h4 style="margin:0.75rem 0 0.25rem">' + e.date + '</h4>';
+            var cat = e.category || 'schedule';
+            if (e.date !== lastDate || cat !== lastCat) {
+              if (cat !== lastCat) {
+                html += '<h4 style="margin:0.75rem 0 0.25rem;color:var(--primary)">' +
+                  (cat === 'settings' ? '⚙️ Settings changes' : '📅 Schedule changes') + '</h4>';
+              } else {
+                html += '<h4 style="margin:0.75rem 0 0.25rem">' + e.date + '</h4>';
+              }
               lastDate = e.date;
+              lastCat = cat;
             }
-            var what = e.personName ? (e.personName + (e.shiftTypeName ? ' — ' + e.shiftTypeName : '')) : 'Schedule';
-            var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '') : 'manual';
+            var words = cat === 'settings' ? actionWords : scheduleWords;
+            var what = e.description ? esc(e.description)
+              : (e.personName ? (esc(e.personName) + (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) : '')) : 'Schedule');
+            var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '')
+              : e.source === 'agent' ? 'via Q-Scheduler Task'
+              : e.source === 'email' ? 'via Email Q-Scheduler'
+              : 'manual';
             var when = new Date(e.changedAt).toLocaleString();
             html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
-              '<strong>' + (actionWords[e.action] || e.action) + '</strong>: ' + esc(what) +
+              '<strong>' + (words[e.action] || e.action) + '</strong>: ' + what +
               ' <span style="color:var(--dim)">(' + via + ')</span><br>' +
               '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' on ' + when + '</span></div>';
           });

@@ -12,6 +12,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db';
+import { auditLog, todayStr } from '../util/audit.js';
 import { requireAuth, requireRole, Role } from '../middleware/auth';
 import { getDepartmentAccess, requireActiveDepartment } from '../util/departmentAccess';
 import { splitName, joinName } from '../util/names';
@@ -240,6 +241,13 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
     const { inviteLink } = await issueInvite(userId, req.session.companyId!);
 
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [userId]);
+    const newName = `${first} ${last}`.trim();
+    await auditLog({
+      companyId: req.session.companyId!, date: todayStr(), action: 'created',
+      category: 'settings', source: 'manual', changedBy: req.session.userId!,
+      personName: newName,
+      description: `Added team member "${newName}"${role ? ` as ${role}` : ''}`,
+    });
     res.status(201).json({ user: publicProfile(rows[0]), inviteLink });
   } catch (err) {
     console.error('[users] create failed:', err);
@@ -423,6 +431,18 @@ router.patch('/:id', async (req: Request, res: Response) => {
     await query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
 
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
+    const targetName = `${target.first_name || ''} ${target.last_name || ''}`.trim() || 'Team member';
+    const fieldNames = sets.map((s: string) => s.split('=')[0].trim());
+    const deactivated = fieldNames.includes('is_active') && body.is_active === false;
+    await auditLog({
+      companyId, date: todayStr(),
+      action: deactivated ? 'deleted' : 'updated',
+      category: 'settings', source: 'manual', changedBy: callerId,
+      personName: targetName,
+      description: deactivated
+        ? `Deactivated team member "${targetName}"`
+        : `Updated team member "${targetName}" (${fieldNames.join(', ')})`,
+    });
     res.json({ user: publicProfile(rows[0]) });
   } catch (err) {
     console.error('[users] update failed:', err);

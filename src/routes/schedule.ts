@@ -15,6 +15,7 @@ import {
   requireActiveDepartment,
 } from '../util/departmentAccess';
 import { escHtml } from '../util/mailer';
+import { auditLog, todayStr } from '../util/audit.js';
 
 const router = Router();
 
@@ -57,48 +58,6 @@ async function getPlanDepartmentIds(companyId: string, plan: any): Promise<strin
   return [...deptIds];
 }
 
-// ---------------------------------------------------------------------------
-// Audit log helper — records who changed what on the schedule.
-// ---------------------------------------------------------------------------
-interface AuditEntry {
-  companyId: string;
-  date: string; // YYYY-MM-DD
-  action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded';
-  personName?: string | null;
-  shiftTypeName?: string | null;
-  source?: 'manual' | 'rotation' | 'agent' | 'email';
-  rotationName?: string | null;
-  changedBy?: string | null; // user id
-  details?: any;
-}
-async function auditLog(e: AuditEntry): Promise<void> {
-  try {
-    let changedByName: string | null = null;
-    if (e.changedBy) {
-      const { rows } = await query(
-        'SELECT first_name, last_name, nickname FROM users WHERE id = $1',
-        [e.changedBy]
-      );
-      if (rows.length) {
-        const u = rows[0];
-        changedByName = u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || null;
-      }
-    }
-    await query(
-      `INSERT INTO schedule_audit_log
-         (company_id, date, action, person_name, shift_type_name, source, rotation_name, changed_by, changed_by_name, details)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [e.companyId, e.date, e.action,
-       e.personName || null, e.shiftTypeName || null,
-       e.source || 'manual', e.rotationName || null,
-       e.changedBy || null, changedByName,
-       e.details ? JSON.stringify(e.details) : null]
-    );
-  } catch (err) {
-    // Audit logging must never break the main operation.
-    console.error('[audit] log failed:', err);
-  }
-}
 
 /** Look up display names for a shift (person + shift type). */
 async function shiftDisplayNames(companyId: string, userId: string, shiftTypeId: string) {
@@ -376,6 +335,12 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
         [id, dd]
       );
     }
+    await auditLog({
+      companyId, date: todayStr(), action: 'created', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      shiftTypeName: String(name).trim(),
+      description: `Added shift type "${String(name).trim()}"`,
+    });
     res.status(201).json({ id });
   } catch (err: any) {
     if (err?.code === '23505') {
@@ -1552,15 +1517,15 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
         } catch { /* skip duplicates/invalid refs */ }
       }
     }
-    res.status(201).json({ id });
     // Audit: rotation created.
-    auditLog({
-      companyId, date: new Date().toISOString().slice(0, 10), action: 'created',
-      shiftTypeName: `Rotation "${String(name).trim()}"`,
-      source: 'rotation', rotationName: String(name).trim(),
+    await auditLog({
+      companyId, date: todayStr(), action: 'created', category: 'settings',
+      source: 'manual', rotationName: String(name).trim(),
       changedBy: req.session.userId!,
+      description: `Created rotation "${String(name).trim()}"`,
       details: { rotationId: id, kind: 'rotation' },
     });
+    res.status(201).json({ id });
   } catch (err) {
     console.error('[schedule] create rotation failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1641,14 +1606,15 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
       res.status(404).json({ error: 'Rotation not found.' });
       return;
     }
-    res.json({ ok: true });
-    auditLog({
-      companyId, date: new Date().toISOString().slice(0, 10), action: 'deleted',
-      shiftTypeName: rrows[0] ? `Rotation "${rrows[0].name}"` : 'Rotation',
-      source: 'rotation', rotationName: rrows[0]?.name || null,
+    const rotName = rrows[0]?.name || 'Rotation';
+    await auditLog({
+      companyId, date: todayStr(), action: 'deleted', category: 'settings',
+      source: 'manual', rotationName: rrows[0]?.name || null,
       changedBy: req.session.userId!,
+      description: `Deleted rotation "${rotName}"`,
       details: { rotationId: req.params.id, kind: 'rotation' },
     });
+    res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete rotation failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1674,6 +1640,14 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
       res.status(404).json({ error: 'Rotation not found.' });
       return;
     }
+    const { rows: rnRows } = await query(
+      'SELECT name FROM rotations WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const tglName = rnRows.length ? rnRows[0].name : 'Rotation';
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', rotationName: tglName, changedBy: req.session.userId!,
+      description: `${isActive ? 'Activated' : 'Paused'} rotation "${tglName}"`,
+    });
     res.json({ ok: true, rotation: rows[0] });
   } catch (err) {
     console.error('[schedule] toggle rotation failed:', err);
@@ -1863,6 +1837,7 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
       req, res,
       await shiftTypesDepartmentIds(targets.map((t: any) => t?.shiftTypeId), companyId)
     ))) return;
+    const savedNames: string[] = [];
     for (const t of targets) {
       const count = Math.min(20, Math.max(0, parseInt(t.targetCount) || 0));
       await query(
@@ -1874,6 +1849,23 @@ router.put('/staffing-targets', requireRole('owner', 'scheduler'), async (req: R
          Array.isArray(t.weekdays) ? t.weekdays : [0,1,2,3,4,5,6],
          t.startDate || null, t.endDate || null]
       );
+      savedNames.push(`${t.shiftTypeId}:${count}`);
+    }
+    if (targets.length) {
+      const { rows: stNames } = await query(
+        `SELECT id, name FROM shift_types WHERE id = ANY($1) AND company_id = $2`,
+        [targets.map((t: any) => t.shiftTypeId), companyId]
+      );
+      const nameById: any = {};
+      stNames.forEach((r: any) => { nameById[r.id] = r.name; });
+      const desc = targets.map((t: any) =>
+        `"${nameById[t.shiftTypeId] || 'shift'}" → ${Math.min(20, Math.max(0, parseInt(t.targetCount) || 0))}`
+      ).join(', ');
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings',
+        source: 'manual', changedBy: req.session.userId!,
+        description: `Set staffing targets: ${desc}`,
+      });
     }
     res.json({ ok: true });
   } catch (err) {
@@ -1972,6 +1964,11 @@ router.put('/dept-notifications', requireRole('owner', 'scheduler'), async (req:
         [s.departmentId, companyId, primaryUserId, ccUserIds, extraEmails]
       );
     }
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: 'Updated Email Q-Scheduler notification recipients',
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] save dept notifications failed:', err);
@@ -1991,6 +1988,11 @@ router.put('/notification-settings', requireRole('owner'), async (req: Request, 
        ON CONFLICT (company_id) DO UPDATE SET notify_owner = $2, notify_schedulers = $3, updated_at = now()`,
       [companyId, notifyOwner, notifySchedulers]
     );
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: 'Updated notification settings',
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] save notification settings failed:', err);
@@ -2075,14 +2077,15 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
         );
       }
     }
-    res.json({ ok: true });
     const { rows: strows } = await query('SELECT name FROM shift_types WHERE id = $1', [req.params.id]);
-    auditLog({
-      companyId, date: new Date().toISOString().slice(0, 10), action: 'updated',
-      shiftTypeName: strows[0] ? `Shift type "${strows[0].name}"` : 'Shift type',
-      source: 'manual', changedBy: req.session.userId!,
+    const stName = strows[0] ? strows[0].name : 'Shift type';
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      shiftTypeName: stName, source: 'manual', changedBy: req.session.userId!,
+      description: `Updated shift type "${stName}"`,
       details: { shiftTypeId: req.params.id, kind: 'shift_type' },
     });
+    res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] update shift type failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -2103,17 +2106,30 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
       'SELECT id FROM shifts WHERE shift_type_id = $1 AND company_id = $2 LIMIT 1',
       [req.params.id, companyId]
     );
+    const { rows: stNameRows } = await query(
+      'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const delName = stNameRows.length ? stNameRows[0].name : 'Shift type';
     if (rows.length) {
       await query(
         'UPDATE shift_types SET is_active = false WHERE id = $1 AND company_id = $2',
         [req.params.id, companyId]
       );
+      await auditLog({
+        companyId, date: todayStr(), action: 'deleted', category: 'settings',
+        shiftTypeName: delName, source: 'manual', changedBy: req.session.userId!,
+        description: `Deactivated shift type "${delName}" (in use)`,
+      });
     } else {
       const { rowCount } = await query(
         'DELETE FROM shift_types WHERE id = $1 AND company_id = $2',
         [req.params.id, companyId]
       );
       if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+      await auditLog({
+        companyId, date: todayStr(), action: 'deleted', category: 'settings',
+        shiftTypeName: delName, source: 'manual', changedBy: req.session.userId!,
+        description: `Deleted shift type "${delName}"`,
+      });
     }
     res.json({ ok: true });
   } catch (err) {
@@ -2136,6 +2152,14 @@ router.post('/shift-types/:id/restore', requireRole('owner', 'scheduler'), async
       [req.params.id, companyId]
     );
     if (!rowCount) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    const { rows: rsRows } = await query(
+      'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const rsName = rsRows.length ? rsRows[0].name : 'Shift type';
+    await auditLog({
+      companyId, date: todayStr(), action: 'created', category: 'settings',
+      shiftTypeName: rsName, source: 'manual', changedBy: req.session.userId!,
+      description: `Restored shift type "${rsName}"`,
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] restore shift type failed:', err);
@@ -2791,10 +2815,12 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
       return;
     }
     const { rows } = await query(
-      `SELECT a.date::text AS date, a.action, a.person_name AS "personName",
+      `SELECT a.date::text AS date, a.action, a.category, a.person_name AS "personName",
               a.shift_type_name AS "shiftTypeName", a.source,
               a.rotation_name AS "rotationName",
               a.changed_by_name AS "changedBy",
+              a.details AS "details",
+              a.details->>'description' AS "description",
               a.created_at AS "changedAt"
        FROM schedule_audit_log a
        WHERE a.company_id = $1${where}
@@ -3003,21 +3029,27 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       try {
         const planSrc = plan.source_subject === 'In-app agent task' ? 'agent' : 'email';
         const changes = (plan.plan && (plan.plan as any).changes) || [];
+        const settingsActions = new Set(['add_job_role', 'rename_job_role', 'delete_job_role',
+          'add_department', 'rename_department', 'add_team_member', 'update_team_member',
+          'add_shift_type', 'rename_shift_type', 'set_staffing_target']);
         for (let i = 0; i < changes.length; i++) {
           const c = changes[i];
           const r = (results as any[])[i];
           if (!r || r.success === false) continue;
+          const isSettings = settingsActions.has(c.action);
           await auditLog({
             companyId,
-            date: c.date || c.fromDate || new Date().toISOString().slice(0, 10),
+            date: c.date || c.fromDate || todayStr(),
             action: (c.action === 'unassign' || c.action.startsWith('delete')) ? 'deleted'
               : (c.action === 'bulk_publish') ? 'published'
               : (c.action === 'bulk_unpublish') ? 'unpublished'
               : (c.action.startsWith('add')) ? 'created' : 'updated',
-            personName: c.person || c.toPerson || null,
+            category: isSettings ? 'settings' : 'schedule',
+            personName: c.person || c.toPerson || c.firstName || null,
             shiftTypeName: c.shiftType || null,
             source: planSrc as any,
             changedBy: req.session.userId!,
+            description: r.message || plan.plan_summary || null,
             details: { planId: plan.id, action: c.action, summary: plan.plan_summary },
           });
         }
