@@ -478,6 +478,10 @@
       border-radius: 8px;
       white-space: nowrap;
     }
+    .ask-subtabs {
+      display: flex; gap: 0.25rem; overflow-x: auto; padding-bottom: 0.5rem;
+      border-bottom: 2px solid var(--border); margin-bottom: 1.25rem;
+    }
     .subtab-btn.active {
       background: #eaf3fb;
       color: var(--accent);
@@ -3345,7 +3349,7 @@
       <div class="card">
         <h2>Ask Q-Scheduler</h2>
         <p style="color:var(--dim)">Q-Scheduler is your built-in scheduling assistant.</p>
-        <div class="sub-tabs" id="ask-subtabs" style="display:none;border-bottom:none;padding-bottom:0;margin-bottom:1rem">
+        <div class="ask-subtabs" id="ask-subtabs" style="display:none;margin-bottom:1rem">
           <button type="button" class="subtab-btn active" data-asktab="ask">Ask</button>
           <button type="button" class="subtab-btn" data-asktab="task">Task</button>
         </div>
@@ -9035,9 +9039,9 @@
       var btn = e.target.closest('[data-etab]');
       if (btn) window.qsSetEmployeeTab(btn.getAttribute('data-etab'));
     });
-    document.querySelector('.sub-tabs').addEventListener('click', function (e) {
+    document.querySelector('#tab-settings .sub-tabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.subtab-btn');
-      if (btn) window.location.hash = 'settings/' + btn.getAttribute('data-subtab');
+      if (btn && btn.getAttribute('data-subtab')) window.location.hash = 'settings/' + btn.getAttribute('data-subtab');
     });
     window.addEventListener('hashchange', handleHash);
 
