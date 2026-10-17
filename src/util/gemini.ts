@@ -236,19 +236,29 @@ Rules:
 
   try {
     const model = await discoverModel(apiKey);
-    const res = await fetch(
-      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
-        }),
+    let res: Response | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      res = await fetch(
+        `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
+          }),
+        }
+      );
+      if (res.ok) break;
+      if (res.status === 503 && attempt < 3) {
+        console.log(`[gemini] suggestFollowUps 503, retrying (attempt ${attempt}/3)`);
+        await new Promise(r => setTimeout(r, attempt * 8000));
+        continue;
       }
-    );
-    if (!res.ok) {
-      console.log(`[gemini] suggestFollowUps HTTP ${res.status}`);
+      break;
+    }
+    if (!res || !res.ok) {
+      console.log(`[gemini] suggestFollowUps HTTP ${res?.status || 'no response'}`);
       return [];
     }
     const data = await res.json();
