@@ -3372,13 +3372,13 @@
         </div>
       </div>
       <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Email AI scheduler</h3>
+        <h3 style="margin-top:0">Email Q-Scheduler</h3>
         <p style="color:var(--dim);font-size:0.9rem">Need a quick approval? The AI scheduler reads your email and sends a plan to your schedulers for approval.</p>
-        <button type="button" id="ask-email-open" class="btn">Email AI scheduler</button>
+        <button type="button" id="ask-email-open" class="btn">Email Q-Scheduler</button>
       </div>
       <div id="ask-email-dialog" class="modal-backdrop hidden">
         <div class="modal" style="max-width:420px">
-          <h3>Email AI scheduler</h3>
+          <h3>Email Q-Scheduler</h3>
           <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="ask-email-to"></p>
           <textarea id="ask-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
           <div class="modal-actions" style="margin-top:0.8rem">
@@ -3730,7 +3730,7 @@
           <button class="subtab-btn" data-subtab="team">Team members</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
-          <button class="subtab-btn" data-subtab="notifications">Email AI notification</button>
+          <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
         </nav>
         <div class="subpanel-container">
           <div id="subtab-rotations" class="sub-panel">
@@ -6395,9 +6395,9 @@
           </div>
           <div id="subtab-notifications" class="sub-panel">
             <div class="set-head-row">
-              <h3 class="set-h3" style="margin:0">Email AI notification</h3>
+              <h3 class="set-h3" style="margin:0">Email Q-Scheduler notifications</h3>
             </div>
-            <p class="set-desc">For each department, choose who gets the Email AI approve/reject emails. The primary recipient is in To:, CCs are in Cc:. The owner is always CC'd. The person who sent the request always gets a confirmation.</p>
+            <p class="set-desc">For each department, choose who gets the Email Q-Scheduler approve/reject emails. The primary recipient is in To:, CCs are in Cc:. The owner is always CC'd. The person who sent the request always gets a confirmation.</p>
             <div id="dept-notif-list"></div>
             <button type="button" id="dept-notif-save" class="btn-primary" style="margin-top:1rem">Save</button>
             <span id="dept-notif-msg" style="margin-left:0.75rem;font-size:0.9rem;color:var(--dim)"></span>
@@ -8622,16 +8622,16 @@
             <div class="cap">Ask Q-Scheduler — plain-language questions, instant answers</div>
           </div>
           <div class="help-carousel-slide">
-            <img src="help-img/help-emp-email-dialog.png" alt="Email AI scheduler dialog">
-            <div class="cap">Email AI scheduler — write your request, it opens your email app</div>
+            <img src="help-img/help-emp-email-dialog.png" alt="Email Q-Scheduler dialog">
+            <div class="cap">Email Q-Scheduler — write your request, it opens your email app</div>
           </div>
           <div class="help-carousel-slide">
-            <img src="help-img/help-emp-fab.png" alt="Floating Email AI button">
-            <div class="cap">The Email AI button floats at the bottom-right of every screen</div>
+            <img src="help-img/help-emp-fab.png" alt="Floating Email Q-Scheduler button">
+            <div class="cap">The Email Q-Scheduler button floats at the bottom-right of every screen</div>
           </div>
         </div></div>
         <p>Ask plain-language questions about the schedule, like <em>"Who's working on October 14?"</em> or <em>"Am I scheduled next weekend?"</em></p>
-        <p>The <strong>Email AI</strong> button (also floating at the bottom-right of every screen) opens your email app addressed to the AI scheduler — write what you need (a day off, a swap, a question) and the system builds a plan and sends it to your scheduler for approval.</p>
+        <p>The <strong>Email Q-Scheduler</strong> button (also floating at the bottom-right of every screen) opens your email app addressed to the AI scheduler — write what you need (a day off, a swap, a question) and the system builds a plan and sends it to your scheduler for approval.</p>
       </div>
     </section>
 
@@ -9302,7 +9302,7 @@
     });
   </script>
   <style>
-    /* Floating Email AI scheduler button — visible on every tab, all roles. */
+    /* Floating Email Q-Scheduler button — visible on every tab, all roles. */
     #fab-email-ai {
       position: fixed; right: 1.1rem; bottom: 1.1rem;
       display: flex; align-items: center; gap: 0.45rem;
@@ -9324,13 +9324,13 @@
     #fab-email-dialog .modal h3 { margin-top: 0; color: var(--text); }
     #fab-email-dialog .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
   </style>
-  <button type="button" id="fab-email-ai" title="Email AI scheduler" aria-label="Email AI scheduler">
+  <button type="button" id="fab-email-ai" title="Email Q-Scheduler" aria-label="Email Q-Scheduler">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
-    <span>Email AI</span>
+    <span>Email Q-Scheduler</span>
   </button>
   <div id="fab-email-dialog" class="hidden">
     <div class="modal">
-      <h3>Email AI scheduler</h3>
+      <h3>Email Q-Scheduler</h3>
       <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="fab-email-to"></p>
       <textarea id="fab-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
       <div class="modal-actions">
@@ -9341,7 +9341,7 @@
   </div>
   <script>
   (function () {
-    // Floating Email AI scheduler: one-tap access from any tab, all roles.
+    // Floating Email Q-Scheduler: one-tap access from any tab, all roles.
     // Opens the user's own email app via mailto, addressed to the AI scheduler inbox.
     var fab = $('fab-email-ai');
     var dlg = $('fab-email-dialog');
