@@ -66,7 +66,7 @@ interface AuditEntry {
   action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded';
   personName?: string | null;
   shiftTypeName?: string | null;
-  source?: 'manual' | 'rotation';
+  source?: 'manual' | 'rotation' | 'agent' | 'email';
   rotationName?: string | null;
   changedBy?: string | null; // user id
   details?: any;
@@ -2999,6 +2999,31 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
          decided_by = $2, executed_at = now() WHERE id = $1`,
         [plan.id, req.session.userId!]
       );
+      // Audit: record each applied change (agent + email plans).
+      try {
+        const planSrc = plan.source_subject === 'In-app agent task' ? 'agent' : 'email';
+        const changes = (plan.plan && (plan.plan as any).changes) || [];
+        for (let i = 0; i < changes.length; i++) {
+          const c = changes[i];
+          const r = (results as any[])[i];
+          if (!r || r.success === false) continue;
+          await auditLog({
+            companyId,
+            date: c.date || c.fromDate || new Date().toISOString().slice(0, 10),
+            action: (c.action === 'unassign' || c.action.startsWith('delete')) ? 'deleted'
+              : (c.action === 'bulk_publish') ? 'published'
+              : (c.action === 'bulk_unpublish') ? 'unpublished'
+              : (c.action.startsWith('add')) ? 'created' : 'updated',
+            personName: c.person || c.toPerson || null,
+            shiftTypeName: c.shiftType || null,
+            source: planSrc as any,
+            changedBy: req.session.userId!,
+            details: { planId: plan.id, action: c.action, summary: plan.plan_summary },
+          });
+        }
+      } catch (auditErr) {
+        console.error('[schedule] plan audit log failed:', (auditErr as any)?.message);
+      }
       res.json({ ok: true, results });
     } catch (execErr: any) {
       await query(
