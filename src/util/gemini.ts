@@ -210,6 +210,54 @@ Rules:
   return parsed;
 }
 
+
+/**
+ * Suggest logical next tasks after a completed agent task.
+ * Returns 1-3 short plain-language task suggestions (each directly sendable as a new task).
+ */
+export async function suggestFollowUps(
+  task: string,
+  planSummary: string
+): Promise<string[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return [];
+  const prompt = `You are Q-Scheduler, a hospital employee scheduling assistant. The admin just completed this task via chat:
+
+Task: "${task}"
+What was done: "${planSummary}"
+
+Suggest 1-3 logical NEXT tasks the admin would likely want to do now, as short plain-language commands (each under 12 words, written as a direct command like "Assign Priya to night shift Oct 20").
+Rules:
+- Only suggest tasks this scheduling app can do: assign/unassign/move/swap shifts, add/rename departments, job roles, team members, shift types, set staffing targets, publish/unpublish shifts.
+- Make them specific follow-ups to what was just done (e.g. after adding a job role → assign it to people; after removing someone → fill the gap).
+- If nothing logically follows, return an empty list.
+- Return ONLY a JSON array of strings, no other text. Example: ["Assign the Night NP role to Priya", "Set staffing target for Night shift"]`;
+
+  try {
+    const model = await discoverModel(apiKey);
+    const res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
+        }),
+      }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const arrMatch = text.match(/\[[\s\S]*\]/);
+    if (!arrMatch) return [];
+    const parsed = JSON.parse(arrMatch[0]);
+    return Array.isArray(parsed) ? parsed.filter((s: any) => typeof s === 'string').slice(0, 3) : [];
+  } catch {
+    return [];
+  }
+}
+
 const HELP_KNOWLEDGE = `
 You are the in-app help assistant for "Quick Scheduling", a hospital employee scheduling app. Answer the user's question about how to use the app. Be concise, plain-spoken, and give numbered steps. Refer to exact tab and button names. If the question is not about using the app, say so briefly.
 

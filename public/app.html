@@ -3518,7 +3518,32 @@
                     if (res2.ok) {
                       var n = ((res2.data && res2.data.results) || []).length;
                       thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
-                      addMsg('<i style="color:var(--dim)">Give me another command any time.</i>', 'ai');
+                      // Suggest logical next tasks as tappable chips.
+                      api('/api/schedule/agent-suggest', {
+                        method: 'POST',
+                        body: JSON.stringify({ task: q, planSummary: d.summary || '' }),
+                      }).then(function (res3) {
+                        var suggs = (res3.data && res3.data.suggestions) || [];
+                        if (!suggs.length) {
+                          addMsg('<i style="color:var(--dim)">Give me another task any time.</i>', 'ai');
+                          return;
+                        }
+                        var wrap = addMsg('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
+                        var chips = document.createElement('div');
+                        chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                        suggs.forEach(function (s) {
+                          var c = document.createElement('button');
+                          c.type = 'button';
+                          c.className = 'btn-secondary btn-sm';
+                          c.textContent = s;
+                          c.addEventListener('click', function () { input.value = s; sendTask(); });
+                          chips.appendChild(c);
+                        });
+                        wrap.appendChild(chips);
+                        chat.scrollTop = chat.scrollHeight;
+                      }).catch(function () {
+                        addMsg('<i style="color:var(--dim)">Give me another task any time.</i>', 'ai');
+                      });
                     } else {
                       thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
                     }

@@ -2880,6 +2880,22 @@ router.post('/help-ask', requireRole('owner', 'scheduler', 'employee'), async (r
 });
 
 
+
+// POST /api/schedule/agent-suggest — suggest logical next tasks after a completed agent task.
+router.post('/agent-suggest', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const task = String(req.body?.task || '').slice(0, 1000);
+    const planSummary = String(req.body?.planSummary || '').slice(0, 1000);
+    if (!task.trim()) { res.json({ suggestions: [] }); return; }
+    const { suggestFollowUps } = await import('../util/gemini.js');
+    const suggestions = await suggestFollowUps(task, planSummary);
+    res.json({ suggestions });
+  } catch (err) {
+    console.error('[schedule] agent-suggest failed:', err);
+    res.json({ suggestions: [] });
+  }
+});
+
 // POST /api/schedule/agent-plan — in-app agent: turn a plain-language task into an approvable plan.
 router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
