@@ -3431,12 +3431,13 @@
         }
         $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
         $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
-        // Ask / Command sub-tabs (admins only).
-        (function initAskTabs() {
+        // Ask / Task sub-tabs (admins only). Role loads async, so this runs when called.
+        window.qsShowAskTabs = function () {
           var tabs = document.querySelectorAll('#ask-subtabs [data-asktab]');
-          if (!tabs.length) return;
+          if (!tabs.length || $('ask-subtabs').dataset.shown) return;
           var role = window.currentRole;
           if (role !== 'owner' && role !== 'scheduler') return;
+          $('ask-subtabs').dataset.shown = '1';
           $('ask-subtabs').style.display = '';
           tabs.forEach(function (t) {
             t.addEventListener('click', function () {
@@ -3446,7 +3447,8 @@
               $('ask-task-view').style.display = isTask ? '' : 'none';
             });
           });
-        })();
+        };
+        window.qsShowAskTabs();
         // Command chat — in-app agent: plan, approve, done.
         (function initAgentChat() {
           var chat = $('agent-chat'), input = $('agent-input'), sendBtn = $('agent-send');
@@ -9261,6 +9263,7 @@
       window.isOwner = (role === 'owner');
       window.currentRole = role;
       window.qsUserName = r.data.user.name || '';
+      if (window.qsShowAskTabs) window.qsShowAskTabs();
       window.qsCompanyId = r.data.company && r.data.company.id;
       // Department-scoped access (contract 2026-10-12): owner -> full access;
       // scheduler -> departmentAccess from backend; missing field -> full-access fallback.
