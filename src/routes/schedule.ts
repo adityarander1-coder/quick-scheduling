@@ -2912,9 +2912,10 @@ router.post('/agent-suggest', requireRole('owner', 'scheduler'), async (req: Req
   try {
     const task = String(req.body?.task || '').slice(0, 1000);
     const planSummary = String(req.body?.planSummary || '').slice(0, 1000);
+    const action = String(req.body?.action || '').slice(0, 50);
     if (!task.trim()) { res.json({ suggestions: [] }); return; }
     const { suggestFollowUps } = await import('../util/gemini.js');
-    const suggestions = await suggestFollowUps(task, planSummary);
+    const suggestions = await suggestFollowUps(task, planSummary, action);
     res.json({ suggestions });
   } catch (err) {
     console.error('[schedule] agent-suggest failed:', err);

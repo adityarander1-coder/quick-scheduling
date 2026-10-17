@@ -3522,9 +3522,10 @@
                       var n = ((res2.data && res2.data.results) || []).length;
                       thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
                       // Suggest logical next tasks as tappable chips.
+                      var firstAction = (d.changes && d.changes[0] && d.changes[0].action) || '';
                       api('/api/schedule/agent-suggest', {
                         method: 'POST',
-                        body: JSON.stringify({ task: q, planSummary: d.summary || '' }),
+                        body: JSON.stringify({ task: q, planSummary: d.summary || '', action: firstAction }),
                       }).then(function (res3) {
                         var suggs = (res3.data && res3.data.suggestions) || [];
                         if (!suggs.length) {

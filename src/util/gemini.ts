@@ -216,12 +216,40 @@ Rules:
  * Suggest logical next tasks after a completed agent task.
  * Returns 1-3 short plain-language task suggestions (each directly sendable as a new task).
  */
+/**
+ * Rule-based fallback suggestions when the AI returns nothing.
+ * Keyed off the completed action type.
+ */
+function fallbackSuggestions(action: string, task: string): string[] {
+  const t = task.toLowerCase();
+  if (action.includes('job_role')) {
+    if (action.includes('delete')) return ['Add a replacement job role', 'Reassign affected team members'];
+    return ['Assign this role to a team member', 'Allow this role on a shift type'];
+  }
+  if (action.includes('team_member')) {
+    if (action.includes('delete')) return ['Reassign their shifts to someone else'];
+    return ['Assign them to a shift', 'Set their job role'];
+  }
+  if (action.includes('department')) {
+    return ['Add a job role to this department', 'Add a team member to this department'];
+  }
+  if (action.includes('shift_type')) {
+    return ['Set the staffing target for this shift', 'Assign someone to this shift'];
+  }
+  if (action === 'assign') return ['Assign another person to this shift', 'Publish this shift'];
+  if (action === 'unassign') return ['Find a replacement for this shift', 'Publish the updated day'];
+  if (action.includes('publish')) return ['Check the schedule for gaps'];
+  if (action.includes('staffing')) return ['Check if any days are short-staffed'];
+  return ['Check the schedule for gaps', 'Publish the updated shifts'];
+}
+
 export async function suggestFollowUps(
   task: string,
-  planSummary: string
+  planSummary: string,
+  action?: string
 ): Promise<string[]> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) return fallbackSuggestions(action || '', task);
   const prompt = `You are Q-Scheduler, a hospital employee scheduling assistant. The admin just completed this task via chat:
 
 Task: "${task}"
@@ -259,17 +287,23 @@ Rules:
     }
     if (!res || !res.ok) {
       console.log(`[gemini] suggestFollowUps HTTP ${res?.status || 'no response'}`);
-      return [];
+      return fallbackSuggestions(action || '', task);
     }
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log(`[gemini] suggestFollowUps raw: ${text.slice(0, 300)}`);
     const arrMatch = text.match(/\[[\s\S]*\]/);
-    if (!arrMatch) return [];
-    const parsed = JSON.parse(arrMatch[0]);
-    return Array.isArray(parsed) ? parsed.filter((s: any) => typeof s === 'string').slice(0, 3) : [];
-  } catch {
-    return [];
+    if (!arrMatch) return fallbackSuggestions(action || '', task);
+    try {
+      const parsed = JSON.parse(arrMatch[0]);
+      const list = Array.isArray(parsed) ? parsed.filter((s: any) => typeof s === 'string').slice(0, 3) : [];
+      return list.length ? list : fallbackSuggestions(action || '', task);
+    } catch {
+      return fallbackSuggestions(action || '', task);
+    }
+  } catch (e) {
+    console.log('[gemini] suggestFollowUps error:', (e as any)?.message);
+    return fallbackSuggestions(action || '', task);
   }
 }
 
