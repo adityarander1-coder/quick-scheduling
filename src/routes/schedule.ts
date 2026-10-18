@@ -14,6 +14,7 @@ import {
   rotationRelevantDepartments,
   requireActiveDepartment,
 } from '../util/departmentAccess';
+import bcrypt from 'bcryptjs';
 import { escHtml } from '../util/mailer';
 import { auditLog, todayStr } from '../util/audit.js';
 
@@ -2738,89 +2739,116 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/pickup/:token/claim — public: pick up an open slot. Body: { userId, date, shiftTypeId }
-router.post('/pickup/:token/claim', async (req: Request, res: Response) => {
+// POST /api/schedule/pickup/:token/request — public: request one or more open
+// shifts. Verifies the requester's password (anti-impersonation for group-shared
+// links), holds each slot as an unpublished shift, and creates an 'open_pickup'
+// shift request for scheduler/owner approval. Body: { userId, password, items: [{date, shiftTypeId}] }
+router.post('/pickup/:token/request', async (req: Request, res: Response) => {
   try {
     const { rows: links } = await query(
-      'SELECT company_id FROM pickup_links WHERE token_hash = $1',
+      `SELECT company_id, from_date::text AS "from", to_date::text AS "to"
+       FROM pickup_links WHERE token_hash = $1`,
       [hashShareToken(req.params.token)]
     );
     if (!links.length) { res.status(404).json({ error: 'This link is not valid.' }); return; }
     const companyId = links[0].company_id;
-    const { userId, date, shiftTypeId } = req.body ?? {};
-    if (!isValidDate(date) || typeof shiftTypeId !== 'string' || typeof userId !== 'string') {
-      res.status(400).json({ error: 'Please pick your name, a date, and a shift.' }); return;
+    const { userId, password, items } = req.body ?? {};
+    if (typeof userId !== 'string' || typeof password !== 'string' ||
+        !Array.isArray(items) || !items.length || items.length > 10) {
+      res.status(400).json({ error: 'Select at least one shift, pick your name, and enter your password.' });
+      return;
     }
     const { rows: urows } = await query(
-      `SELECT id, job_role_id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true AND role = 'employee'`,
+      `SELECT id, password_hash AS "passwordHash"
+       FROM users WHERE id = $1 AND company_id = $2 AND is_active = true AND role = 'employee'`,
       [userId, companyId]);
     if (!urows.length) { res.status(403).json({ error: 'Name not recognized.' }); return; }
-    const { rows: trows } = await query(
-      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
-      [shiftTypeId, companyId]);
-    if (!trows.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
-    const elig = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
-    if (!elig.ok) { res.status(403).json({ error: elig.error }); return; }
-    // Reuse the atomic claim logic: decrement extra slot or fill target gap.
-    const shiftId = crypto.randomUUID();
-    let claimed = false;
-    try {
-      await withTransaction(async (tx) => {
-        const { rows: slotRows } = await tx.query(
-          `UPDATE extra_open_slots SET count = count - 1
-           WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
-           RETURNING count`,
-          [companyId, date, shiftTypeId]);
-        if (slotRows.length) {
-          if (Number(slotRows[0].count) <= 0) {
-            await tx.query('DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    const user = urows[0];
+    let pwOk = false;
+    try { pwOk = !!user.passwordHash && await bcrypt.compare(String(password), user.passwordHash); }
+    catch { pwOk = false; }
+    if (!pwOk) {
+      res.status(403).json({ error: 'Password does not match. If you never set a password, accept your invite email first.' });
+      return;
+    }
+    const requested: any[] = [];
+    const failed: any[] = [];
+    for (const item of items) {
+      const date = item && item.date;
+      const shiftTypeId = item && item.shiftTypeId;
+      if (!isValidDate(date) || typeof shiftTypeId !== 'string' ||
+          date < links[0].from || date > links[0].to) {
+        failed.push({ date, shiftTypeId, error: 'Invalid shift.' });
+        continue;
+      }
+      const { rows: trows } = await query(
+        'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [shiftTypeId, companyId]);
+      if (!trows.length) { failed.push({ date, shiftTypeId, error: 'Shift not found.' }); continue; }
+      const elig = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      if (!elig.ok) { failed.push({ date, shiftTypeId, error: elig.error }); continue; }
+      const shiftId = crypto.randomUUID();
+      let held = false;
+      try {
+        await withTransaction(async (tx) => {
+          const { rows: slotRows } = await tx.query(
+            `UPDATE extra_open_slots SET count = count - 1
+             WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
+             RETURNING count`,
+            [companyId, date, shiftTypeId]);
+          if (slotRows.length) {
+            if (Number(slotRows[0].count) <= 0) {
+              await tx.query('DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+                [companyId, date, shiftTypeId]);
+            }
+          } else {
+            const { rows: crows } = await tx.query(
+              'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
               [companyId, date, shiftTypeId]);
+            if (crows.length) return;
+            const { rows: tgrows } = await tx.query(
+              `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+               FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
+              [companyId, shiftTypeId]);
+            if (!tgrows.length) return;
+            const t = tgrows[0];
+            const dow = new Date(date + 'T00:00:00').getDay();
+            if ((t.weekdays || [0,1,2,3,4,5,6]).indexOf(dow) === -1) return;
+            if ((t.start_date && date < t.start_date) || (t.end_date && date > t.end_date)) return;
+            const { rows: frows } = await tx.query(
+              'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+              [companyId, date, shiftTypeId]);
+            if (frows[0].n >= (t.target_count || 0)) return;
           }
+          // Hold the slot as an unpublished shift assigned to the requester.
           await tx.query(
             `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
-             VALUES ($1, $2, $3, $4, $5, true, $6)`,
+             VALUES ($1, $2, $3, $4, $5, false, $6)`,
             [shiftId, companyId, userId, shiftTypeId, date, userId]);
-          claimed = true; return;
-        }
-        const { rows: crows } = await tx.query(
-          'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-          [companyId, date, shiftTypeId]);
-        if (crows.length) return;
-        const { rows: tgrows } = await tx.query(
-          `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
-           FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
-          [companyId, shiftTypeId]);
-        if (!tgrows.length) return;
-        const t = tgrows[0];
-        const dow = new Date(date + 'T00:00:00').getDay();
-        if ((t.weekdays || [0,1,2,3,4,5,6]).indexOf(dow) === -1) return;
-        if ((t.start_date && date < t.start_date) || (t.end_date && date > t.end_date)) return;
-        const { rows: frows } = await tx.query(
-          'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-          [companyId, date, shiftTypeId]);
-        if (frows[0].n >= (t.target_count || 0)) return;
-        await tx.query(
-          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
-           VALUES ($1, $2, $3, $4, $5, true, $6)`,
-          [shiftId, companyId, userId, shiftTypeId, date, userId]);
-        claimed = true;
-      });
-    } catch (txErr) {
-      console.error('[schedule] pickup claim tx failed:', txErr);
+          await tx.query(
+            `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
+             VALUES ($1, $2, 'open_pickup', $3, $4, NULL, 'pending')`,
+            [crypto.randomUUID(), companyId, shiftId, userId]);
+          held = true;
+        });
+      } catch (txErr) {
+        console.error('[schedule] pickup request tx failed:', txErr);
+      }
+      if (held) requested.push({ date, shiftTypeId });
+      else failed.push({ date, shiftTypeId, error: 'That shift was just filled.' });
     }
-    if (!claimed) { res.status(409).json({ error: 'That shift was just filled.' }); return; }
     try {
-      const { auditLog, todayStr } = await import('../util/audit.js');
+      const { rows: nm } = await query(
+        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1`, [userId]);
       await auditLog({
         companyId, date: todayStr(), action: 'created',
-        source: 'manual', category: 'schedule',
-        changedBy: userId,
-        description: `Picked up open shift via share link (${date})`,
+        source: 'manual', category: 'schedule', changedBy: userId,
+        description: `Pickup request via share link (${requested.length} shift${requested.length === 1 ? '' : 's'}) by ${(nm[0] && nm[0].name) || 'staff'}`,
       });
     } catch {}
-    res.json({ ok: true });
+    res.json({ ok: true, requested, failed });
   } catch (err) {
-    console.error('[schedule] pickup claim failed:', err);
+    console.error('[schedule] pickup request failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -4046,8 +4074,12 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
       res.status(403).json({ error: 'Your account is not active.' });
       return;
     }
-    if (r.requestType === 'pickup' && r.requesterId === me) {
-      res.status(400).json({ error: 'You cannot pick up your own shift — cancel the request instead.' });
+    if (r.requestType === 'open_pickup' && !isPrivileged) {
+      res.status(403).json({ error: 'Only a scheduler or owner can approve open-shift pickups.' });
+      return;
+    }
+    if ((r.requestType === 'pickup' || r.requestType === 'open_pickup') && r.requesterId === me) {
+      res.status(400).json({ error: 'You cannot approve your own request — ask a scheduler instead.' });
       return;
     }
 
@@ -4064,7 +4096,17 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
           throw new RequestError(409, 'This request was just decided by someone else.');
         }
         const lr = locked[0];
-        if (lr.requestType === 'pickup') {
+        if (lr.requestType === 'open_pickup') {
+          const { rows: srows } = await tx.query(
+            'SELECT id, user_id AS "userId", published FROM shifts WHERE id = $1 FOR UPDATE',
+            [lr.shiftId]
+          );
+          if (!srows.length) throw new RequestError(409, 'The shift no longer exists.');
+          if (srows[0].userId !== lr.requesterId) {
+            throw new RequestError(409, 'The shift changed hands since the request was made.');
+          }
+          await tx.query('UPDATE shifts SET published = true WHERE id = $1', [lr.shiftId]);
+        } else if (lr.requestType === 'pickup') {
           const { rows: srows } = await tx.query(
             'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
             [lr.shiftId]
@@ -4168,6 +4210,11 @@ router.post('/shift-requests/:id/decline', requireRole('owner', 'scheduler', 'em
       res.status(403).json({ error: 'You are not allowed to decline this request.' });
       return;
     }
+    const { rows: dr } = await query(
+      `SELECT request_type AS "requestType", shift_id AS "shiftId"
+       FROM shift_requests WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
     const { rowCount } = await query(
       "UPDATE shift_requests SET status = 'declined', decided_at = now() WHERE id = $1 AND status = 'pending'",
       [id]
@@ -4175,6 +4222,10 @@ router.post('/shift-requests/:id/decline', requireRole('owner', 'scheduler', 'em
     if (!rowCount) {
       res.status(409).json({ error: 'This request has already been decided.' });
       return;
+    }
+    if (dr.length && dr[0].requestType === 'open_pickup') {
+      // Release the held slot: delete the unpublished shift.
+      await query('DELETE FROM shifts WHERE id = $1 AND published = false', [dr[0].shiftId]);
     }
     res.json({ ok: true, status: 'declined' });
   } catch (err) {

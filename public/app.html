@@ -8774,6 +8774,8 @@
         function reqPending(r) { return String(reqGet(r, ['status'])).toLowerCase() === 'pending'; }
         function reqActionable(r) {
           if (isPrivileged()) return true;
+          var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
+          if (kind === 'open_pickup') return false; // schedulers/owner only
           var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
           var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
           return !!openToAnyone || !targetId || (me && String(targetId) === String(me.id));
@@ -8805,9 +8807,9 @@
           var theirSt = reqGet(th, ['shiftTypeName', 'shift_type_name']);
           var mine = reqMine(r);
           var actionable = reqActionable(r);
-          var title = kind === 'swap' ? 'Swap request' : 'Pickup request';
+          var title = kind === 'swap' ? 'Swap request' : (kind === 'open_pickup' ? 'Open-shift pickup' : 'Pickup request');
           var desc = (who ? esc(who) : 'Someone') +
-            (kind === 'swap' ? ' wants to swap' : ' asked for cover on') +
+            (kind === 'swap' ? ' wants to swap' : (kind === 'open_pickup' ? ' wants to pick up' : ' asked for cover on')) +
             ' <strong>' + esc(date) + (stName ? ' · ' + stName : '') + '</strong>' +
             (kind === 'swap' && theirDate ? ' for <strong>' + esc(theirDate) + (theirSt ? ' · ' + theirSt : '') + '</strong>' : '') +
             (target && kind !== 'swap' ? ' (for ' + esc(target) + ')' : '');

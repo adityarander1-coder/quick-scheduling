@@ -6,24 +6,38 @@
 <title>Pick Up Open Shifts</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, system-ui, sans-serif; background: #f1f5f9; color: #1e293b; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f1f5f9; color: #1e293b; padding-bottom: 90px; }
   header { background: #1e3a5f; color: #fff; padding: 1rem; text-align: center; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 1.2rem; }
   header p { font-size: 0.85rem; opacity: 0.8; margin-top: 2px; }
-  .who { background: #fff; margin: 0.8rem; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-  .who label { display: block; font-weight: 700; margin-bottom: 0.4rem; font-size: 0.95rem; }
-  .who select { width: 100%; padding: 0.6rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem; }
+  .hint { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; margin: 0.8rem; border-radius: 12px; padding: 0.8rem 1rem; font-size: 0.85rem; }
   .day { background: #fff; margin: 0.8rem; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   .day h3 { font-size: 1rem; margin-bottom: 0.6rem; color: #1e3a5f; }
-  .slot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.6rem 0.7rem; border-radius: 8px; margin-bottom: 0.4rem; font-size: 0.9rem; background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .slot { display: flex; align-items: center; gap: 0.7rem; padding: 0.7rem; border-radius: 10px; margin-bottom: 0.4rem; font-size: 0.9rem; background: #f0fdf4; border: 2px solid #bbf7d0; cursor: pointer; }
+  .slot.selected { border-color: #15803d; background: #dcfce7; }
+  .slot .box { width: 22px; height: 22px; border: 2px solid #15803d; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 14px; }
+  .slot.selected .box { background: #15803d; }
+  .slot.selected .box::after { content: '✓'; }
   .slot .info strong { font-weight: 700; }
   .slot .info .count { color: #15803d; font-size: 0.82rem; }
-  .slot button { background: #15803d; color: #fff; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.9rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
-  .slot button:disabled { background: #94a3b8; cursor: default; }
+  .footer { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #e2e8f0; padding: 0.8rem 1rem; display: flex; justify-content: center; z-index: 20; }
+  .footer button { background: #15803d; color: #fff; border: none; border-radius: 10px; padding: 0.8rem 2.5rem; font-size: 1rem; font-weight: 700; cursor: pointer; }
+  .footer button:disabled { background: #94a3b8; cursor: default; }
   .empty { text-align: center; padding: 3rem 1rem; color: #64748b; }
   .error { text-align: center; padding: 3rem 1rem; color: #991b1b; }
   .loading { text-align: center; padding: 3rem 1rem; color: #64748b; }
-  .toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: #1e293b; color: #fff; padding: 0.7rem 1.2rem; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 4px 14px rgba(0,0,0,0.25); z-index: 50; }
+  .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 1rem; }
+  .modal { background: #fff; border-radius: 14px; padding: 1.5rem; width: 100%; max-width: 380px; }
+  .modal h3 { margin-bottom: 0.4rem; }
+  .modal p { font-size: 0.85rem; color: #64748b; margin-bottom: 1rem; }
+  .modal label { display: block; font-weight: 700; font-size: 0.9rem; margin: 0.8rem 0 0.3rem; }
+  .modal select, .modal input { width: 100%; padding: 0.6rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem; }
+  .modal .row { display: flex; gap: 0.6rem; margin-top: 1.2rem; }
+  .modal .row button { flex: 1; padding: 0.7rem; border-radius: 10px; font-size: 1rem; font-weight: 700; cursor: pointer; border: none; }
+  .modal .confirm { background: #1e3a5f; color: #fff; }
+  .modal .cancel { background: #e2e8f0; color: #1e293b; }
+  .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #1e293b; color: #fff; padding: 0.7rem 1.2rem; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 4px 14px rgba(0,0,0,0.25); z-index: 60; max-width: 90%; text-align: center; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -31,17 +45,36 @@
   <h1 id="company-name">Open Shifts</h1>
   <p id="range-label">Pick up a shift — no login needed</p>
 </header>
-<div class="who">
-  <label for="who">Who's picking up?</label>
-  <select id="who"><option value="">— Select your name —</option></select>
-</div>
+<div class="hint">Tap the shifts you want, then submit. You'll confirm with your name and password, and a scheduler approves it.</div>
 <div id="content"><div class="loading">Loading open shifts…</div></div>
+<div class="footer hidden" id="footer">
+  <button id="submit-btn" disabled>Submit</button>
+</div>
+<div class="modal-back hidden" id="modal">
+  <div class="modal">
+    <h3>Confirm it's you</h3>
+    <p>Enter your name and account password. The password must match your account — this stops anyone else picking up under your name.</p>
+    <label for="who">Your name</label>
+    <select id="who"><option value="">— Select your name —</option></select>
+    <label for="pw">Password</label>
+    <input type="password" id="pw" autocomplete="current-password" placeholder="Your account password">
+    <div class="row">
+      <button class="cancel" id="cancel-btn">Cancel</button>
+      <button class="confirm" id="confirm-btn">Submit request</button>
+    </div>
+  </div>
+</div>
 <script>
 (function () {
   var params = new URLSearchParams(window.location.search);
   var token = params.get('t');
   var content = document.getElementById('content');
+  var footer = document.getElementById('footer');
+  var submitBtn = document.getElementById('submit-btn');
+  var modal = document.getElementById('modal');
   var whoSel = document.getElementById('who');
+  var pwInput = document.getElementById('pw');
+  var selected = {}; // key: date|shiftTypeId -> slot
 
   if (!token) {
     content.innerHTML = '<div class="error">This link is not valid.</div>';
@@ -61,39 +94,49 @@
     t.className = 'toast';
     t.textContent = msg;
     document.body.appendChild(t);
-    setTimeout(function () { t.remove(); }, 3000);
+    setTimeout(function () { t.remove(); }, 3500);
+  }
+  function updateFooter() {
+    var n = Object.keys(selected).length;
+    footer.classList.toggle('hidden', false);
+    submitBtn.disabled = n === 0;
+    submitBtn.textContent = n === 0 ? 'Select shifts above' : 'Submit (' + n + ' shift' + (n === 1 ? '' : 's') + ')';
   }
 
   var data = null;
 
-  fetch('/api/schedule/pickup/' + encodeURIComponent(token))
-    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-    .then(function (res) {
-      if (!res.ok) {
-        content.innerHTML = '<div class="error">' + esc(res.j.error || 'This link is not valid.') + '</div>';
-        return;
-      }
-      data = res.j;
-      document.getElementById('company-name').textContent = data.companyName || 'Open Shifts';
-      var rl = document.getElementById('range-label');
-      rl.textContent = (data.label ? data.label + ' · ' : '') + prettyDate(data.from) + ' – ' + prettyDate(data.to);
-      data.members.forEach(function (m) {
-        var o = document.createElement('option');
-        o.value = m.id; o.textContent = m.name;
-        whoSel.appendChild(o);
+  function load() {
+    fetch('/api/schedule/pickup/' + encodeURIComponent(token))
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          content.innerHTML = '<div class="error">' + esc(res.j.error || 'This link is not valid.') + '</div>';
+          return;
+        }
+        data = res.j;
+        document.getElementById('company-name').textContent = data.companyName || 'Open Shifts';
+        var rl = document.getElementById('range-label');
+        rl.textContent = (data.label ? data.label + ' · ' : '') + prettyDate(data.from) + ' – ' + prettyDate(data.to);
+        whoSel.innerHTML = '<option value="">— Select your name —</option>';
+        data.members.forEach(function (m) {
+          var o = document.createElement('option');
+          o.value = m.id; o.textContent = m.name;
+          whoSel.appendChild(o);
+        });
+        render();
+      })
+      .catch(function () {
+        content.innerHTML = '<div class="error">Could not load. Check your connection.</div>';
       });
-      render();
-    })
-    .catch(function () {
-      content.innerHTML = '<div class="error">Could not load. Check your connection.</div>';
-    });
+  }
 
   function render() {
+    selected = {};
     if (!data.openSlots.length) {
       content.innerHTML = '<div class="empty">No open shifts in this date range right now.</div>';
+      footer.classList.add('hidden');
       return;
     }
-    // Group by date.
     var byDate = {};
     data.openSlots.forEach(function (s) {
       (byDate[s.date] = byDate[s.date] || []).push(s);
@@ -102,48 +145,74 @@
     Object.keys(byDate).sort().forEach(function (ds) {
       html += '<div class="day"><h3>' + esc(prettyDate(ds)) + '</h3>';
       byDate[ds].forEach(function (s) {
-        html += '<div class="slot"><div class="info"><strong>' + esc(s.shiftTypeName) + '</strong>' +
-          '<div class="count">' + s.open + ' open</div></div>' +
-          '<button data-date="' + esc(s.date) + '" data-st="' + esc(s.shiftTypeId) + '">Pick up</button></div>';
+        var key = s.date + '|' + s.shiftTypeId;
+        html += '<div class="slot" data-key="' + esc(key) + '" data-date="' + esc(s.date) + '" data-st="' + esc(s.shiftTypeId) + '">' +
+          '<div class="box"></div>' +
+          '<div class="info"><strong>' + esc(s.shiftTypeName) + '</strong>' +
+          '<div class="count">' + s.open + ' open</div></div></div>';
       });
       html += '</div>';
     });
     content.innerHTML = html;
-    content.querySelectorAll('button[data-st]').forEach(function (b) {
-      b.addEventListener('click', function () { claim(b); });
+    content.querySelectorAll('.slot').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var key = el.getAttribute('data-key');
+        if (selected[key]) { delete selected[key]; el.classList.remove('selected'); }
+        else {
+          selected[key] = { date: el.getAttribute('data-date'), shiftTypeId: el.getAttribute('data-st') };
+          el.classList.add('selected');
+        }
+        updateFooter();
+      });
     });
+    updateFooter();
   }
 
-  function claim(btn) {
+  submitBtn.addEventListener('click', function () {
+    if (!Object.keys(selected).length) return;
+    pwInput.value = '';
+    modal.classList.remove('hidden');
+  });
+  document.getElementById('cancel-btn').addEventListener('click', function () {
+    modal.classList.add('hidden');
+  });
+
+  document.getElementById('confirm-btn').addEventListener('click', function () {
     var userId = whoSel.value;
-    if (!userId) { toast('Please select your name first.'); whoSel.focus(); return; }
+    var pw = pwInput.value;
+    if (!userId) { toast('Please select your name.'); return; }
+    if (!pw) { toast('Please enter your password.'); pwInput.focus(); return; }
+    var btn = document.getElementById('confirm-btn');
     btn.disabled = true;
-    btn.textContent = 'Picking up…';
-    fetch('/api/schedule/pickup/' + encodeURIComponent(token) + '/claim', {
+    btn.textContent = 'Submitting…';
+    var items = Object.keys(selected).map(function (k) { return selected[k]; });
+    fetch('/api/schedule/pickup/' + encodeURIComponent(token) + '/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: userId, date: btn.getAttribute('data-date'), shiftTypeId: btn.getAttribute('data-st') }),
+      body: JSON.stringify({ userId: userId, password: pw, items: items }),
     })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }); })
       .then(function (res) {
+        btn.disabled = false;
+        btn.textContent = 'Submit request';
         if (res.ok) {
-          toast('Shift picked up!');
-          // Refresh the list.
-          fetch('/api/schedule/pickup/' + encodeURIComponent(token))
-            .then(function (r) { return r.json(); })
-            .then(function (j) { data.openSlots = j.openSlots || []; render(); });
+          modal.classList.add('hidden');
+          var n = (res.j.requested || []).length;
+          var f = (res.j.failed || []).length;
+          toast(n ? 'Request sent for ' + n + ' shift' + (n === 1 ? '' : 's') + ' — a scheduler will approve it.' + (f ? ' (' + f + ' could not be held.)' : '') : 'Could not hold those shifts — they may be filled.');
+          load();
         } else {
-          toast(res.j.error || 'Could not pick up.');
-          btn.disabled = false;
-          btn.textContent = 'Pick up';
+          toast(res.j.error || 'Could not submit.');
         }
       })
       .catch(function () {
-        toast('Network error.');
         btn.disabled = false;
-        btn.textContent = 'Pick up';
+        btn.textContent = 'Submit request';
+        toast('Network error.');
       });
-  }
+  });
+
+  load();
 })();
 </script>
 </body>
