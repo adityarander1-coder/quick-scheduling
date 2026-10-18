@@ -2892,7 +2892,7 @@ async function multiDmDisplayName(companyId: string, me: string, dmkey: string):
 
 async function visibleDepartmentIds(companyId: string, userId: string, role: string): Promise<string[]> {
   if (role === 'owner') {
-    const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND is_active = true ORDER BY name', [companyId]);
+    const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
     return rows.map((r: any) => r.id);
   }
   if (role === 'scheduler') {
