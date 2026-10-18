@@ -2874,6 +2874,22 @@ function dmKey(a: string, b: string): string {
   return [a, b].sort().join('|');
 }
 
+function multiDmKey(me: string, others: string[]): string {
+  return [me, ...others].sort().join('|');
+}
+
+async function multiDmDisplayName(companyId: string, me: string, dmkey: string): Promise<string> {
+  const ids = dmkey.split('|').filter((id) => id !== me);
+  if (!ids.length) return 'Group message';
+  const { rows } = await query(
+    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+     FROM users WHERE id = ANY($1::uuid[]) AND company_id = $2`,
+    [ids, companyId]);
+  const names = rows.map((r: any) => r.name).filter(Boolean);
+  if (names.length <= 2) return names.join(', ');
+  return names.slice(0, 2).join(', ') + ' +' + (names.length - 2);
+}
+
 async function visibleDepartmentIds(companyId: string, userId: string, role: string): Promise<string[]> {
   if (role === 'owner') {
     const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND is_active = true ORDER BY name', [companyId]);
@@ -2942,6 +2958,18 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
       dms.push({ key, name: p.name, kind: 'dm', userId: p.id,
         unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [dmKey(me, p.id)]) });
     }
+    // Multi-person DM threads I'm part of.
+    const { rows: mdms } = await query(
+      `SELECT DISTINCT dm_key AS "dmKey" FROM messages
+       WHERE company_id = $1 AND kind = 'dm'
+         AND array_length(string_to_array(dm_key, '|'), 1) > 2
+         AND string_to_array(dm_key, '|') @> ARRAY[$2]`,
+      [companyId, me]);
+    for (const md of mdms) {
+      const key = 'dmg:' + md.dmKey.split('|').filter((id: string) => id !== me).sort().join(',');
+      dms.push({ key, name: await multiDmDisplayName(companyId, me, md.dmKey), kind: 'dmg',
+        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [md.dmKey]) });
+    }
     res.json({ channels, dms });
   } catch (err) {
     console.error('[schedule] message channels failed:', err);
@@ -2976,6 +3004,15 @@ router.get('/messages', requireRole('owner', 'scheduler', 'employee'), async (re
       if (!grows.length) { res.status(403).json({ error: 'Not allowed.' }); return; }
       params.push(groupId);
       where = `kind = 'group' AND group_id = $${params.length}`;
+    } else if (channel.startsWith('dmg:')) {
+      const others = channel.slice(4).split(',').filter(Boolean);
+      if (others.length < 2 || others.includes(me)) { res.status(400).json({ error: 'Invalid channel.' }); return; }
+      const { rows: orows } = await query(
+        'SELECT id FROM users WHERE id = ANY($1::uuid[]) AND company_id = $2 AND is_active = true',
+        [others, companyId]);
+      if (orows.length !== others.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+      params.push(multiDmKey(me, others));
+      where = `kind = 'dm' AND dm_key = $${params.length}`;
     } else if (channel.startsWith('dm:')) {
       const otherId = channel.slice(3);
       const { rows: orows } = await query(
@@ -3033,6 +3070,14 @@ router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (r
         [groupId, companyId, me]);
       if (!grows.length) { res.status(403).json({ error: 'Not allowed.' }); return; }
       kind = 'group';
+    } else if (channel.startsWith('dmg:')) {
+      const others = channel.slice(4).split(',').filter(Boolean);
+      if (others.length < 2 || others.includes(me)) { res.status(400).json({ error: 'Invalid recipients.' }); return; }
+      const { rows: orows } = await query(
+        'SELECT id FROM users WHERE id = ANY($1::uuid[]) AND company_id = $2 AND is_active = true',
+        [others, companyId]);
+      if (orows.length !== others.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+      kind = 'dm'; dmkey = multiDmKey(me, others);
     } else if (channel.startsWith('dm:')) {
       const otherId = channel.slice(3);
       if (otherId === me) { res.status(400).json({ error: 'Invalid recipient.' }); return; }
@@ -3057,6 +3102,37 @@ router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (r
     res.status(201).json({ id: rows[0].id, createdAt: rows[0].createdAt });
   } catch (err) {
     console.error('[schedule] send message failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/messages/dm — start a multi-person direct message.
+// Body: { userIds: string[] } (2+ other people). Returns the channel key + name.
+router.post('/messages/dm', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const userIds = Array.isArray((req.body ?? {}).userIds)
+      ? (req.body.userIds as any[]).filter((x) => typeof x === 'string' && x !== me)
+      : [];
+    const unique = [...new Set(userIds)].slice(0, 20);
+    if (!unique.length) { res.status(400).json({ error: 'Pick at least one person.' }); return; }
+    const { rows } = await query(
+      'SELECT id FROM users WHERE id = ANY($1::uuid[]) AND company_id = $2 AND is_active = true',
+      [unique, companyId]);
+    if (rows.length !== unique.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+    if (unique.length === 1) {
+      const { rows: nm } = await query(
+        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1`,
+        [unique[0]]);
+      res.json({ key: 'dm:' + unique[0], name: nm[0]?.name || 'Direct message' });
+      return;
+    }
+    const dmkey = multiDmKey(me, unique);
+    const name = await multiDmDisplayName(companyId, me, dmkey);
+    res.json({ key: 'dmg:' + unique.sort().join(','), name });
+  } catch (err) {
+    console.error('[schedule] start dm failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

@@ -9053,10 +9053,12 @@
             html += '<h4>Direct messages</h4>';
             (r.data.dms || []).forEach(function (c) {
               total += c.unread || 0;
+              var dmIcon = c.kind === 'dmg' ? '👥 ' : '💬 ';
               html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span>💬 ' + esc(c.name) + '</span>' +
+                '<span>' + dmIcon + esc(c.name) + '</span>' +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
             });
+            html += '<button type="button" class="msg-ch" id="new-dm-btn" style="color:var(--accent);font-weight:700"><span>＋ New message</span></button>';
             box.innerHTML = html;
             updateTabBadge(total);
             box.querySelectorAll('[data-ch]').forEach(function (b) {
@@ -9077,6 +9079,8 @@
             });
             var ngb = $('new-group-btn');
             if (ngb) ngb.addEventListener('click', openGroupModal);
+            var ndb = $('new-dm-btn');
+            if (ndb) ndb.addEventListener('click', openDmModal);
             if (selectFirst && !activeChannel) {
               var first = box.querySelector('[data-ch]');
               if (first) selectChannel(first.getAttribute('data-ch'), first.getAttribute('data-name'));
@@ -9252,6 +9256,61 @@
               pg.appendChild(lbl);
             });
           }).catch(function () {});
+          m.classList.remove('hidden');
+        }
+        var dmPeopleCache = null;
+        function openDmModal() {
+          var m = $('dm-modal');
+          if (!m) {
+            var wrap = document.createElement('div');
+            wrap.innerHTML =
+              '<div class="modal-back hidden" id="dm-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:1rem">' +
+              '<div style="background:var(--surface);border-radius:14px;padding:1.4rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
+              '<h3 style="margin-top:0">New message</h3>' +
+              '<p style="color:var(--dim);font-size:0.85rem">Pick one or more people.</p>' +
+              '<div id="dm-people" style="display:flex;gap:0.4rem;flex-wrap:wrap;max-height:240px;overflow-y:auto"></div>' +
+              '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
+              '<button type="button" id="dm-cancel" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Cancel</button>' +
+              '<button type="button" id="dm-start" class="btn" style="flex:1;padding:0.7rem;border-radius:10px">Start</button>' +
+              '</div></div></div>';
+            document.body.appendChild(wrap.firstChild);
+            m = $('dm-modal');
+            $('dm-cancel').addEventListener('click', function () { m.classList.add('hidden'); });
+            $('dm-start').addEventListener('click', function () {
+              var ids = [];
+              m.querySelectorAll('.dm-person:checked').forEach(function (cb) { ids.push(cb.value); });
+              if (!ids.length) { pageError('Pick at least one person.'); return; }
+              api('/api/schedule/messages/dm', { method: 'POST', body: JSON.stringify({ userIds: ids }) })
+                .then(function (r) {
+                  if (r.ok) {
+                    m.classList.add('hidden');
+                    loadChannels(false);
+                    selectChannel(r.data.key, r.data.name);
+                  } else pageError((r.data && r.data.error) || 'Could not start conversation.');
+                }).catch(function () { pageError('Could not start conversation.'); });
+            });
+          }
+          var pg = $('dm-people');
+          function renderPeople(people) {
+            pg.innerHTML = '';
+            people.forEach(function (p) {
+              if (p.kind === 'dmg') return; // only 1:1 entries carry userId
+              var lbl = document.createElement('label');
+              lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
+              var cb = document.createElement('input');
+              cb.type = 'checkbox'; cb.value = p.userId; cb.className = 'dm-person';
+              lbl.appendChild(cb); lbl.appendChild(document.createTextNode(p.name));
+              pg.appendChild(lbl);
+            });
+          }
+          if (dmPeopleCache) { renderPeople(dmPeopleCache); }
+          else {
+            pg.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">Loading…</span>';
+            api('/api/schedule/messages/channels').then(function (r) {
+              dmPeopleCache = (r.ok && r.data.dms) || [];
+              renderPeople(dmPeopleCache);
+            }).catch(function () { pg.innerHTML = ''; });
+          }
           m.classList.remove('hidden');
         }
         window.qsLoadMessagesTab = function () { loadChannels(true); };
