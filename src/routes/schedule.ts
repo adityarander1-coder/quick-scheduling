@@ -2576,7 +2576,7 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
 router.post('/pickup-links', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { from, to, departmentId, shiftTypeId, label } = req.body ?? {};
+    const { from, to, departmentId, shiftTypeId, shiftTypeIds, label } = req.body ?? {};
     if (!isValidDate(from) || !isValidDate(to) || from > to) {
       res.status(400).json({ error: 'Valid from/to dates are required.' }); return;
     }
@@ -2589,17 +2589,21 @@ router.post('/pickup-links', requireRole('owner', 'scheduler'), async (req: Requ
       if (!drows.length) { res.status(404).json({ error: 'Department not found.' }); return; }
       deptId = drows[0].id;
     }
-    let stId: string | null = null;
-    if (shiftTypeId) {
-      const { rows: srows } = await query('SELECT id FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true', [shiftTypeId, companyId]);
-      if (!srows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
-      stId = srows[0].id;
+    let stIds: string[] = [];
+    const rawIds: string[] = Array.isArray(shiftTypeIds) && shiftTypeIds.length ? shiftTypeIds : (shiftTypeId ? [shiftTypeId] : []);
+    if (rawIds.length) {
+      const { rows: srows } = await query(
+        'SELECT id FROM shift_types WHERE id = ANY($1::uuid[]) AND company_id = $2 AND is_active = true',
+        [rawIds, companyId]);
+      stIds = srows.map((r: any) => r.id);
+      if (!stIds.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
     }
     const token = crypto.randomBytes(32).toString('hex');
     const { rows } = await query(
-      `INSERT INTO pickup_links (company_id, token_hash, label, from_date, to_date, department_id, shift_type_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [companyId, hashShareToken(token), label ? String(label).slice(0, 120) : null, from, to, deptId, stId]
+      `INSERT INTO pickup_links (company_id, token_hash, label, from_date, to_date, department_id, shift_type_id, shift_type_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [companyId, hashShareToken(token), label ? String(label).slice(0, 120) : null, from, to, deptId,
+       stIds.length === 1 ? stIds[0] : null, stIds.length ? stIds : null]
     );
     const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
     res.status(201).json({ id: rows[0].id, pickupLink: `${base}/pickup.html?t=${token}` });
@@ -2616,7 +2620,12 @@ router.get('/pickup-links', requireRole('owner', 'scheduler'), async (req: Reque
     const { rows } = await query(
       `SELECT p.id, p.label, p.from_date::text AS "from", p.to_date::text AS "to",
               p.created_at AS "createdAt",
-              d.name AS "departmentName", st.name AS "shiftTypeName"
+              d.name AS "departmentName",
+              COALESCE(
+                (SELECT string_agg(st2.name, ', ' ORDER BY st2.sort_order)
+                 FROM shift_types st2 WHERE st2.id = ANY(p.shift_type_ids)),
+                st.name
+              ) AS "shiftTypeName"
        FROM pickup_links p
        LEFT JOIN departments d ON d.id = p.department_id
        LEFT JOIN shift_types st ON st.id = p.shift_type_id
@@ -2647,7 +2656,7 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
   try {
     const { rows: links } = await query(
       `SELECT company_id, from_date::text AS "from", to_date::text AS "to",
-              department_id, shift_type_id, label
+              department_id, shift_type_id, shift_type_ids, label
        FROM pickup_links WHERE token_hash = $1`,
       [hashShareToken(req.params.token)]
     );
@@ -2657,7 +2666,9 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
     // Shift types (optionally filtered).
     const typeParams: any[] = [companyId];
     let typeFilter = '';
-    if (pl.shift_type_id) { typeParams.push(pl.shift_type_id); typeFilter = 'AND st.id = $2'; }
+    const effTypeIds: string[] = Array.isArray(pl.shift_type_ids) && pl.shift_type_ids.length
+      ? pl.shift_type_ids : (pl.shift_type_id ? [pl.shift_type_id] : []);
+    if (effTypeIds.length) { typeParams.push(effTypeIds); typeFilter = 'AND st.id = ANY($2::uuid[])'; }
     const { rows: types } = await query(
       `SELECT st.id, st.name, st.sort_order AS "sortOrder" FROM shift_types st
        WHERE st.company_id = $1 AND st.is_active = true ${typeFilter}
