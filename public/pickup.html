@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pick Up Open Shifts</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f1f5f9; color: #1e293b; }
+  header { background: #1e3a5f; color: #fff; padding: 1rem; text-align: center; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 1.2rem; }
+  header p { font-size: 0.85rem; opacity: 0.8; margin-top: 2px; }
+  .who { background: #fff; margin: 0.8rem; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .who label { display: block; font-weight: 700; margin-bottom: 0.4rem; font-size: 0.95rem; }
+  .who select { width: 100%; padding: 0.6rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 1rem; }
+  .day { background: #fff; margin: 0.8rem; border-radius: 12px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .day h3 { font-size: 1rem; margin-bottom: 0.6rem; color: #1e3a5f; }
+  .slot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.6rem 0.7rem; border-radius: 8px; margin-bottom: 0.4rem; font-size: 0.9rem; background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .slot .info strong { font-weight: 700; }
+  .slot .info .count { color: #15803d; font-size: 0.82rem; }
+  .slot button { background: #15803d; color: #fff; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.9rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  .slot button:disabled { background: #94a3b8; cursor: default; }
+  .empty { text-align: center; padding: 3rem 1rem; color: #64748b; }
+  .error { text-align: center; padding: 3rem 1rem; color: #991b1b; }
+  .loading { text-align: center; padding: 3rem 1rem; color: #64748b; }
+  .toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: #1e293b; color: #fff; padding: 0.7rem 1.2rem; border-radius: 10px; font-size: 0.9rem; box-shadow: 0 4px 14px rgba(0,0,0,0.25); z-index: 50; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="company-name">Open Shifts</h1>
+  <p id="range-label">Pick up a shift — no login needed</p>
+</header>
+<div class="who">
+  <label for="who">Who's picking up?</label>
+  <select id="who"><option value="">— Select your name —</option></select>
+</div>
+<div id="content"><div class="loading">Loading open shifts…</div></div>
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var token = params.get('t');
+  var content = document.getElementById('content');
+  var whoSel = document.getElementById('who');
+
+  if (!token) {
+    content.innerHTML = '<div class="error">This link is not valid.</div>';
+    return;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function prettyDate(ds) {
+    var d = new Date(ds + 'T00:00:00');
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  function toast(msg) {
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 3000);
+  }
+
+  var data = null;
+
+  fetch('/api/pickup/' + encodeURIComponent(token))
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+    .then(function (res) {
+      if (!res.ok) {
+        content.innerHTML = '<div class="error">' + esc(res.j.error || 'This link is not valid.') + '</div>';
+        return;
+      }
+      data = res.j;
+      document.getElementById('company-name').textContent = data.companyName || 'Open Shifts';
+      var rl = document.getElementById('range-label');
+      rl.textContent = (data.label ? data.label + ' · ' : '') + prettyDate(data.from) + ' – ' + prettyDate(data.to);
+      data.members.forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m.id; o.textContent = m.name;
+        whoSel.appendChild(o);
+      });
+      render();
+    })
+    .catch(function () {
+      content.innerHTML = '<div class="error">Could not load. Check your connection.</div>';
+    });
+
+  function render() {
+    if (!data.openSlots.length) {
+      content.innerHTML = '<div class="empty">No open shifts in this date range right now.</div>';
+      return;
+    }
+    // Group by date.
+    var byDate = {};
+    data.openSlots.forEach(function (s) {
+      (byDate[s.date] = byDate[s.date] || []).push(s);
+    });
+    var html = '';
+    Object.keys(byDate).sort().forEach(function (ds) {
+      html += '<div class="day"><h3>' + esc(prettyDate(ds)) + '</h3>';
+      byDate[ds].forEach(function (s) {
+        html += '<div class="slot"><div class="info"><strong>' + esc(s.shiftTypeName) + '</strong>' +
+          '<div class="count">' + s.open + ' open</div></div>' +
+          '<button data-date="' + esc(s.date) + '" data-st="' + esc(s.shiftTypeId) + '">Pick up</button></div>';
+      });
+      html += '</div>';
+    });
+    content.innerHTML = html;
+    content.querySelectorAll('button[data-st]').forEach(function (b) {
+      b.addEventListener('click', function () { claim(b); });
+    });
+  }
+
+  function claim(btn) {
+    var userId = whoSel.value;
+    if (!userId) { toast('Please select your name first.'); whoSel.focus(); return; }
+    btn.disabled = true;
+    btn.textContent = 'Picking up…';
+    fetch('/api/pickup/' + encodeURIComponent(token) + '/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId, date: btn.getAttribute('data-date'), shiftTypeId: btn.getAttribute('data-st') }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (res.ok) {
+          toast('Shift picked up!');
+          // Refresh the list.
+          fetch('/api/pickup/' + encodeURIComponent(token))
+            .then(function (r) { return r.json(); })
+            .then(function (j) { data.openSlots = j.openSlots || []; render(); });
+        } else {
+          toast(res.j.error || 'Could not pick up.');
+          btn.disabled = false;
+          btn.textContent = 'Pick up';
+        }
+      })
+      .catch(function () {
+        toast('Network error.');
+        btn.disabled = false;
+        btn.textContent = 'Pick up';
+      });
+  }
+})();
+</script>
+</body>
+</html>

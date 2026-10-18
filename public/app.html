@@ -7170,6 +7170,18 @@
         </div>
       </div>
       <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Pickup link — open shifts to pick up</h3>
+        <p style="color:var(--dim)">Shareable link showing <strong>only</strong> open shifts in a date range. Staff pick their name and tap to pick up — no login, no full schedule visible.</p>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
+          <label>From <input type="date" id="pk-from"></label>
+          <label>To <input type="date" id="pk-to"></label>
+          <label>Label (optional) <input type="text" id="pk-label" placeholder="e.g. Weekend pickups" style="min-width:160px"></label>
+          <button type="button" id="pk-generate" class="btn">Generate link</button>
+        </div>
+        <div id="pk-list" style="margin-top:0.5rem"></div>
+        <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Copy the link right after generating — it can't be shown again later.</p>
+      </div>
+      <div class="card" style="margin-top:1rem">
         <h3 style="margin-top:0">Availability link</h3>
         <p style="color:var(--dim)">Ask staff to tap the dates they're available. Share the link in group chats.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
@@ -7516,6 +7528,48 @@
             });
           }).catch(function () {});
         }
+        // ---- Pickup links ----
+        function loadPkList() {
+          api('/api/schedule/pickup-links').then(function (r) {
+            var list = $('pk-list');
+            if (!r.ok || !(r.data.links || []).length) {
+              list.innerHTML = '<p style="color:var(--dim);font-size:0.85rem">No pickup links yet.</p>';
+              return;
+            }
+            list.innerHTML = r.data.links.map(function (l) {
+              return '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem">' +
+                '<strong>' + esc(l.label || 'Pickup link') + '</strong>' +
+                '<span style="color:var(--dim);font-size:0.85rem">' + esc(l.from) + ' → ' + esc(l.to) + '</span>' +
+                (l.departmentName ? '<span style="color:var(--dim);font-size:0.85rem">' + esc(l.departmentName) + '</span>' : '') +
+                '<button type="button" class="btn-secondary btn-sm" data-pkdel="' + l.id + '">Disable</button></div>';
+            }).join('');
+            list.querySelectorAll('[data-pkdel]').forEach(function (b) {
+              b.addEventListener('click', function () {
+                api('/api/schedule/pickup-links/' + b.getAttribute('data-pkdel'), { method: 'DELETE' })
+                  .then(function () { loadPkList(); });
+              });
+            });
+          });
+        }
+        $('pk-generate').addEventListener('click', function () {
+          var f = $('pk-from').value, t = $('pk-to').value;
+          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
+          api('/api/schedule/pickup-links', {
+            method: 'POST',
+            body: JSON.stringify({ from: f, to: t, label: $('pk-label').value.trim() }),
+          }).then(function (r) {
+            if (r.ok) {
+              loadPkList();
+              var link = r.data.pickupLink;
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(link).then(function () {
+                  pageSuccess('Pickup link generated and copied — share it in your group chat.');
+                }, function () { prompt('Copy this link:', link); });
+              } else { prompt('Copy this link:', link); }
+            } else pageError((r.data && r.data.error) || 'Could not generate link.');
+          }).catch(function () { pageError('Could not generate link.'); });
+        });
+        loadPkList();
         $('av-generate').addEventListener('click', function () {
           var f = $('av-from').value, t = $('av-to').value;
           if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
