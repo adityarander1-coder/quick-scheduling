@@ -9021,7 +9021,12 @@
         }
         function loadChannels(selectFirst) {
           api('/api/schedule/messages/channels').then(function (r) {
-            if (!r.ok) return;
+            if (!r.ok) {
+              $('msg-channels').innerHTML = '<div style="padding:1rem;color:#991b1b">Couldn\'t load messages. <a href="#" id="msg-retry" style="color:var(--accent)">Tap to retry</a></div>';
+              var rt = $('msg-retry');
+              if (rt) rt.addEventListener('click', function (e) { e.preventDefault(); $('msg-channels').innerHTML = '<div style="padding:1rem;color:var(--dim)">Loading…</div>'; loadChannels(true); });
+              return;
+            }
             var box = $('msg-channels');
             var total = 0, html = '';
             html += '<h4>Channels</h4>';
@@ -9065,7 +9070,9 @@
               var first = box.querySelector('[data-ch]');
               if (first) selectChannel(first.getAttribute('data-ch'), first.getAttribute('data-name'));
             }
-          }).catch(function () {});
+          }).catch(function () {
+            $('msg-channels').innerHTML = '<div style="padding:1rem;color:#991b1b">Couldn\'t load messages. Check your connection and reopen the tab.</div>';
+          });
         }
         function selectChannel(key, name) {
           activeChannel = key; activeName = name; hasMore = true; oldest = null;
