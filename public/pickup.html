@@ -66,7 +66,7 @@
 
   var data = null;
 
-  fetch('/api/pickup/' + encodeURIComponent(token))
+  fetch('/api/schedule/pickup/' + encodeURIComponent(token))
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
     .then(function (res) {
       if (!res.ok) {
@@ -119,7 +119,7 @@
     if (!userId) { toast('Please select your name first.'); whoSel.focus(); return; }
     btn.disabled = true;
     btn.textContent = 'Picking up…';
-    fetch('/api/pickup/' + encodeURIComponent(token) + '/claim', {
+    fetch('/api/schedule/pickup/' + encodeURIComponent(token) + '/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: userId, date: btn.getAttribute('data-date'), shiftTypeId: btn.getAttribute('data-st') }),
@@ -129,7 +129,7 @@
         if (res.ok) {
           toast('Shift picked up!');
           // Refresh the list.
-          fetch('/api/pickup/' + encodeURIComponent(token))
+          fetch('/api/schedule/pickup/' + encodeURIComponent(token))
             .then(function (r) { return r.json(); })
             .then(function (j) { data.openSlots = j.openSlots || []; render(); });
         } else {
