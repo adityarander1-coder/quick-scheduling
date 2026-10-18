@@ -2733,7 +2733,7 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
     // Team member names for the pickup picker (no other details).
     const { rows: members } = await query(
       `SELECT id, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
-       FROM users WHERE company_id = $1 AND is_active = true AND role = 'employee'
+       FROM users WHERE company_id = $1 AND is_active = true
        ORDER BY first_name, last_name`,
       [companyId]);
     const { rows: comp } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
@@ -2771,7 +2771,7 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
     }
     const { rows: urows } = await query(
       `SELECT id, password_hash AS "passwordHash"
-       FROM users WHERE id = $1 AND company_id = $2 AND is_active = true AND role = 'employee'`,
+       FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`,
       [userId, companyId]);
     if (!urows.length) { res.status(403).json({ error: 'Name not recognized.' }); return; }
     const user = urows[0];
