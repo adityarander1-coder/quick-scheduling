@@ -2864,6 +2864,194 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// In-app messaging — company channel, department channels, direct messages.
+// Anyone can message anyone. Unread badges via per-user read cursors.
+// Channel keys: 'company', 'dept:<uuid>', 'dm:<userId>'.
+// ---------------------------------------------------------------------------
+
+function dmKey(a: string, b: string): string {
+  return [a, b].sort().join('|');
+}
+
+async function visibleDepartmentIds(companyId: string, userId: string, role: string): Promise<string[]> {
+  if (role === 'owner') {
+    const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND is_active = true ORDER BY name', [companyId]);
+    return rows.map((r: any) => r.id);
+  }
+  if (role === 'scheduler') {
+    const access = await getDepartmentAccess(userId, companyId);
+    return access.view || [];
+  }
+  const { rows } = await query(
+    'SELECT department_id FROM users WHERE id = $1 AND company_id = $2',
+    [userId, companyId]);
+  return rows[0] && rows[0].department_id ? [rows[0].department_id] : [];
+}
+
+// GET /api/schedule/messages/channels — channel list with unread counts.
+router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const { rows: reads } = await query(
+      'SELECT channel_key AS "channelKey", last_read_at AS "lastReadAt" FROM message_reads WHERE user_id = $1',
+      [me]);
+    const readMap = new Map(reads.map((r: any) => [r.channelKey, new Date(r.lastReadAt).getTime()]));
+    async function unread(channelKey: string, where: string, params: any[]): Promise<number> {
+      const since = readMap.get(channelKey) || 0;
+      const { rows } = await query(
+        `SELECT COUNT(*)::int AS n FROM messages
+         WHERE company_id = $1 AND sender_id <> $2 AND ${where} AND created_at > to_timestamp($3 / 1000.0)`,
+        [companyId, me, since, ...params]);
+      return rows[0].n;
+    }
+    const channels: any[] = [{ key: 'company', name: 'Everyone', kind: 'company',
+      unread: await unread('company', "kind = 'company'", []) }];
+    const deptIds = await visibleDepartmentIds(companyId, me, role);
+    if (deptIds.length) {
+      const { rows: depts } = await query(
+        'SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) ORDER BY name', [deptIds]);
+      for (const d of depts) {
+        channels.push({ key: 'dept:' + d.id, name: d.name, kind: 'department',
+          unread: await unread('dept:' + d.id, 'kind = \'department\' AND department_id = $4', [d.id]) });
+      }
+    }
+    // DM contacts: every other active member.
+    const { rows: people } = await query(
+      `SELECT id, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name, role
+       FROM users WHERE company_id = $1 AND is_active = true AND id <> $2
+       ORDER BY first_name, last_name`,
+      [companyId, me]);
+    const dms = [];
+    for (const p of people) {
+      if (!p.name) continue;
+      const key = 'dm:' + p.id;
+      dms.push({ key, name: p.name, kind: 'dm', userId: p.id,
+        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [dmKey(me, p.id)]) });
+    }
+    res.json({ channels, dms });
+  } catch (err) {
+    console.error('[schedule] message channels failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/messages?channel=<key>&before=<iso> — latest 50, paginated.
+router.get('/messages', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const channel = String(req.query.channel || '');
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    let where = '';
+    const params: any[] = [companyId];
+    if (channel === 'company') {
+      where = "kind = 'company'";
+    } else if (channel.startsWith('dept:')) {
+      const deptId = channel.slice(5);
+      const visible = await visibleDepartmentIds(companyId, me, role);
+      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      params.push(deptId);
+      where = `kind = 'department' AND department_id = $${params.length}`;
+    } else if (channel.startsWith('dm:')) {
+      const otherId = channel.slice(3);
+      const { rows: orows } = await query(
+        'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [otherId, companyId]);
+      if (!orows.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+      params.push(dmKey(me, otherId));
+      where = `kind = 'dm' AND dm_key = $${params.length}`;
+    } else {
+      res.status(400).json({ error: 'Invalid channel.' }); return;
+    }
+    if (before && !isNaN(before.getTime())) {
+      params.push(before.toISOString());
+      where += ` AND created_at < $${params.length}`;
+    }
+    const { rows } = await query(
+      `SELECT m.id, m.sender_id AS "senderId", m.body,
+              m.created_at AS "createdAt",
+              TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS "senderName",
+              (m.sender_id = $${params.length + 1}) AS "mine"
+       FROM messages m JOIN users u ON u.id = m.sender_id
+       WHERE m.company_id = $1 AND ${where}
+       ORDER BY m.created_at DESC LIMIT 51`,
+      [...params, me]);
+    const hasMore = rows.length > 50;
+    const msgs = rows.slice(0, 50).reverse();
+    res.json({ messages: msgs, hasMore });
+  } catch (err) {
+    console.error('[schedule] get messages failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/messages — send. Body: { channel, body }
+router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const channel = String((req.body ?? {}).channel || '');
+    const body = String((req.body ?? {}).body || '').trim().slice(0, 2000);
+    if (!body) { res.status(400).json({ error: 'Message is empty.' }); return; }
+    let kind = '', departmentId: string | null = null, dmkey: string | null = null;
+    if (channel === 'company') {
+      kind = 'company';
+    } else if (channel.startsWith('dept:')) {
+      const deptId = channel.slice(5);
+      const visible = await visibleDepartmentIds(companyId, me, role);
+      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      kind = 'department'; departmentId = deptId;
+    } else if (channel.startsWith('dm:')) {
+      const otherId = channel.slice(3);
+      if (otherId === me) { res.status(400).json({ error: 'Invalid recipient.' }); return; }
+      const { rows: orows } = await query(
+        'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [otherId, companyId]);
+      if (!orows.length) { res.status(404).json({ error: 'Person not found.' }); return; }
+      kind = 'dm'; dmkey = dmKey(me, otherId);
+    } else {
+      res.status(400).json({ error: 'Invalid channel.' }); return;
+    }
+    const { rows } = await query(
+      `INSERT INTO messages (company_id, kind, department_id, dm_key, sender_id, body)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, created_at AS "createdAt"`,
+      [companyId, kind, departmentId, dmkey, me, body]);
+    // Sending marks the channel read for the sender.
+    await query(
+      `INSERT INTO message_reads (user_id, company_id, channel_key, last_read_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, channel_key) DO UPDATE SET last_read_at = now()`,
+      [me, companyId, channel]);
+    res.status(201).json({ id: rows[0].id, createdAt: rows[0].createdAt });
+  } catch (err) {
+    console.error('[schedule] send message failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/messages/read — mark channel read. Body: { channel }
+router.post('/messages/read', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const channel = String((req.body ?? {}).channel || '');
+    if (!channel) { res.status(400).json({ error: 'Invalid channel.' }); return; }
+    await query(
+      `INSERT INTO message_reads (user_id, company_id, channel_key, last_read_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, channel_key) DO UPDATE SET last_read_at = now()`,
+      [me, companyId, channel]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] mark read failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // Availability links — staff submit availability via shareable link (no login)
 // ---------------------------------------------------------------------------
 

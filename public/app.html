@@ -653,6 +653,7 @@
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule">Schedule</button>
       <button class="tab-btn" data-tab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
+      <button class="tab-btn" data-tab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
       <button class="tab-btn" data-tab="ask">Ask Q-Scheduler</button>
       <button class="tab-btn" data-tab="link">Share Links</button>
@@ -663,6 +664,7 @@
     <nav id="employee-tabs" class="main-tabs hidden" role="tablist" aria-label="Employee">
       <button type="button" class="tab-btn active" data-etab="myschedule">My schedule</button>
       <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
+      <button type="button" class="tab-btn" data-etab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
       <button type="button" class="tab-btn" data-etab="ehelp">Help</button>
     </nav>
@@ -8960,6 +8962,207 @@
       </script>
     </section>
 
+    <!-- Messages — company channel, department channels, direct messages. -->
+    <section id="tab-messages" class="tab-panel">
+      <style>
+        .msg-wrap { display: flex; gap: 1rem; height: 65vh; min-height: 420px; }
+        .msg-channels { width: 260px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-y: auto; padding: 0.5rem; }
+        .msg-channels h4 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); margin: 0.6rem 0.4rem 0.3rem; }
+        .msg-ch { display: flex; align-items: center; justify-content: space-between; width: 100%; text-align: left; border: none; background: transparent; padding: 0.55rem 0.6rem; border-radius: 8px; cursor: pointer; font-size: 0.92rem; color: var(--text); }
+        .msg-ch:hover { background: var(--bg); }
+        .msg-ch.active { background: var(--accent); color: #fff; }
+        .msg-ch .ubadge { background: #dc2626; color: #fff; font-size: 0.7rem; font-weight: 700; border-radius: 10px; padding: 1px 7px; }
+        .msg-thread { flex: 1; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+        .msg-thread-head { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); font-weight: 700; }
+        .msg-list { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+        .msg { max-width: 75%; padding: 0.5rem 0.8rem; border-radius: 12px; font-size: 0.92rem; }
+        .msg .meta { font-size: 0.72rem; opacity: 0.7; margin-bottom: 2px; }
+        .msg.them { background: var(--bg); align-self: flex-start; border: 1px solid var(--border); }
+        .msg.mine { background: var(--accent); color: #fff; align-self: flex-end; }
+        .msg-input { display: flex; gap: 0.5rem; padding: 0.7rem; border-top: 1px solid var(--border); }
+        .msg-input input { flex: 1; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 20px; font-size: 0.95rem; }
+        .msg-input button { border: none; background: var(--accent); color: #fff; border-radius: 20px; padding: 0.6rem 1.2rem; font-weight: 700; cursor: pointer; }
+        @media (max-width: 700px) {
+          .msg-wrap { flex-direction: column; height: auto; }
+          .msg-channels { width: 100%; max-height: 180px; }
+          .msg-thread { min-height: 50vh; }
+        }
+      </style>
+      <div class="msg-wrap">
+        <div class="msg-channels" id="msg-channels"><div style="padding:1rem;color:var(--dim)">Loading…</div></div>
+        <div class="msg-thread">
+          <div class="msg-thread-head" id="msg-thread-head">Select a conversation</div>
+          <div class="msg-list" id="msg-list"></div>
+          <div class="msg-input">
+            <input type="text" id="msg-text" placeholder="Type a message…" maxlength="2000" autocomplete="off">
+            <button type="button" id="msg-send">Send</button>
+          </div>
+        </div>
+      </div>
+      <script>
+      (function () {
+        var activeChannel = null, activeName = '', pollTimer = null, loadingMore = false, hasMore = true, oldest = null;
+        function esc(s) {
+          return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function fmtTime(iso) {
+          var d = new Date(iso);
+          var now = new Date();
+          var sameDay = d.toDateString() === now.toDateString();
+          var t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          return sameDay ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
+        }
+        function updateTabBadge(total) {
+          document.querySelectorAll('[data-msg-badge]').forEach(function (el) {
+            if (total > 0) { el.textContent = '(' + total + ')'; el.hidden = false; }
+            else { el.textContent = ''; el.hidden = true; }
+          });
+        }
+        function loadChannels(selectFirst) {
+          api('/api/schedule/messages/channels').then(function (r) {
+            if (!r.ok) return;
+            var box = $('msg-channels');
+            var total = 0, html = '';
+            html += '<h4>Channels</h4>';
+            (r.data.channels || []).forEach(function (c) {
+              total += c.unread || 0;
+              html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
+                '<span>' + (c.kind === 'company' ? '📢 ' : c.kind === 'department' ? '🏥 ' : '') + esc(c.name) + '</span>' +
+                (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
+            });
+            html += '<h4>Direct messages</h4>';
+            (r.data.dms || []).forEach(function (c) {
+              total += c.unread || 0;
+              html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
+                '<span>💬 ' + esc(c.name) + '</span>' +
+                (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
+            });
+            box.innerHTML = html;
+            updateTabBadge(total);
+            box.querySelectorAll('[data-ch]').forEach(function (b) {
+              b.addEventListener('click', function () { selectChannel(b.getAttribute('data-ch'), b.getAttribute('data-name')); });
+            });
+            if (selectFirst && !activeChannel) {
+              var first = box.querySelector('[data-ch]');
+              if (first) selectChannel(first.getAttribute('data-ch'), first.getAttribute('data-name'));
+            }
+          }).catch(function () {});
+        }
+        function selectChannel(key, name) {
+          activeChannel = key; activeName = name; hasMore = true; oldest = null;
+          $('msg-thread-head').textContent = name;
+          $('msg-list').innerHTML = '';
+          document.querySelectorAll('#msg-channels [data-ch]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-ch') === key);
+          });
+          loadMessages(false);
+          markRead();
+          restartPoll();
+        }
+        function renderMsgs(msgs, prepend) {
+          var list = $('msg-list');
+          var html = msgs.map(function (m) {
+            return '<div class="msg ' + (m.mine ? 'mine' : 'them') + '">' +
+              (m.mine ? '' : '<div class="meta">' + esc(m.senderName) + ' · ' + esc(fmtTime(m.createdAt)) + '</div>') +
+              (m.mine ? '<div class="meta">' + esc(fmtTime(m.createdAt)) + '</div>' : '') +
+              '<div>' + esc(m.body).replace(/\n/g, '<br>') + '</div></div>';
+          }).join('');
+          if (prepend) {
+            var sc = list.scrollHeight - list.scrollTop;
+            list.insertAdjacentHTML('afterbegin', html);
+            list.scrollTop = list.scrollHeight - sc;
+          } else {
+            list.insertAdjacentHTML('beforeend', html);
+            list.scrollTop = list.scrollHeight;
+          }
+        }
+        function loadMessages(more) {
+          if (!activeChannel || loadingMore) return;
+          if (more && !hasMore) return;
+          loadingMore = true;
+          var url = '/api/schedule/messages?channel=' + encodeURIComponent(activeChannel);
+          if (more && oldest) url += '&before=' + encodeURIComponent(oldest);
+          api(url).then(function (r) {
+            loadingMore = false;
+            if (!r.ok) return;
+            var msgs = r.data.messages || [];
+            hasMore = !!r.data.hasMore;
+            if (msgs.length) {
+              if (!more) oldest = msgs[0].createdAt;
+              else oldest = msgs[0].createdAt;
+              renderMsgs(msgs, more);
+            }
+          }).catch(function () { loadingMore = false; });
+        }
+        function markRead() {
+          if (!activeChannel) return;
+          api('/api/schedule/messages/read', {
+            method: 'POST', body: JSON.stringify({ channel: activeChannel }),
+          }).then(function () { loadChannels(false); }).catch(function () {});
+        }
+        function restartPoll() {
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = setInterval(function () {
+            if (!activeChannel) return;
+            var list = $('msg-list');
+            var last = list.querySelector('.msg:last-child');
+            api('/api/schedule/messages?channel=' + encodeURIComponent(activeChannel)).then(function (r) {
+              if (!r.ok) return;
+              // Simple refresh: replace if count differs.
+              var msgs = r.data.messages || [];
+              var current = list.querySelectorAll('.msg').length;
+              if (msgs.length !== current) {
+                list.innerHTML = '';
+                oldest = msgs.length ? msgs[0].createdAt : null;
+                renderMsgs(msgs, false);
+                markRead();
+              }
+            }).catch(function () {});
+          }, 10000);
+        }
+        $('msg-list').addEventListener('scroll', function () {
+          if ($('msg-list').scrollTop < 60) loadMessages(true);
+        });
+        function send() {
+          var input = $('msg-text');
+          var body = input.value.trim();
+          if (!body || !activeChannel) return;
+          input.value = '';
+          api('/api/schedule/messages', {
+            method: 'POST', body: JSON.stringify({ channel: activeChannel, body: body }),
+          }).then(function (r) {
+            if (r.ok) {
+              api('/api/schedule/messages?channel=' + encodeURIComponent(activeChannel)).then(function (rr) {
+                if (!rr.ok) return;
+                var msgs = rr.data.messages || [];
+                $('msg-list').innerHTML = '';
+                oldest = msgs.length ? msgs[0].createdAt : null;
+                hasMore = !!rr.data.hasMore;
+                renderMsgs(msgs, false);
+                loadChannels(false);
+              }).catch(function () {});
+            } else pageError((r.data && r.data.error) || 'Could not send.');
+          }).catch(function () { pageError('Could not send.'); });
+        }
+        $('msg-send').addEventListener('click', send);
+        $('msg-text').addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') send();
+        });
+        window.qsLoadMessagesTab = function () { loadChannels(true); };
+        // Badge refresh every 30s even when tab isn't open.
+        setInterval(function () {
+          api('/api/schedule/messages/channels').then(function (r) {
+            if (!r.ok) return;
+            var total = 0;
+            (r.data.channels || []).concat(r.data.dms || []).forEach(function (c) { total += c.unread || 0; });
+            updateTabBadge(total);
+          }).catch(function () {});
+        }, 30000);
+      })();
+      </script>
+    </section>
+
     <!-- Employee Help — visible in the employee tab bar (and My schedule view for
          owner/scheduler). Covers employee functions only. -->
     <section id="tab-ehelp" class="tab-panel">
@@ -9349,6 +9552,7 @@
     var routes = {
       'schedule': function() { activateTab('schedule'); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
+      'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
       'ask': function() { activateTab('ask'); },
       'settings': function(sub) { activateTab('settings', sub || 'departments'); },
       'bulk': function() { activateTab('bulk'); },
@@ -9364,7 +9568,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', requests: 'Shift requests', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
@@ -9420,6 +9624,7 @@
       });
       if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
       else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
+      else if (t === 'messages') { if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); }
     };
 
     // --- Ask Q-Scheduler visibility by role (2026-10-12) ---
