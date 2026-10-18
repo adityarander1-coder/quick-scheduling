@@ -2909,14 +2909,15 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
     }
     const channels: any[] = [{ key: 'company', name: 'Everyone', kind: 'company',
       unread: await unread('company', "kind = 'company'", []) }];
-    const deptIds = await visibleDepartmentIds(companyId, me, role);
-    if (deptIds.length) {
-      const { rows: depts } = await query(
-        'SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) ORDER BY name', [deptIds]);
-      for (const d of depts) {
-        channels.push({ key: 'dept:' + d.id, name: d.name, kind: 'department',
-          unread: await unread('dept:' + d.id, 'kind = \'department\' AND department_id = $4', [d.id]) });
-      }
+    // Custom groups (replaces department channels).
+    const { rows: groups } = await query(
+      `SELECT g.id, g.name FROM message_groups g
+       JOIN message_group_members m ON m.group_id = g.id
+       WHERE g.company_id = $1 AND m.user_id = $2 ORDER BY g.name`,
+      [companyId, me]);
+    for (const g of groups) {
+      channels.push({ key: 'group:' + g.id, name: g.name, kind: 'group',
+        unread: await unread('group:' + g.id, "kind = 'group' AND group_id = $4", [g.id]) });
     }
     // DM contacts: every other active member.
     const { rows: people } = await query(
@@ -2950,12 +2951,15 @@ router.get('/messages', requireRole('owner', 'scheduler', 'employee'), async (re
     const params: any[] = [companyId];
     if (channel === 'company') {
       where = "kind = 'company'";
-    } else if (channel.startsWith('dept:')) {
-      const deptId = channel.slice(5);
-      const visible = await visibleDepartmentIds(companyId, me, role);
-      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
-      params.push(deptId);
-      where = `kind = 'department' AND department_id = $${params.length}`;
+    } else if (channel.startsWith('group:')) {
+      const groupId = channel.slice(6);
+      const { rows: grows } = await query(
+        `SELECT g.id FROM message_groups g JOIN message_group_members m ON m.group_id = g.id
+         WHERE g.id = $1 AND g.company_id = $2 AND m.user_id = $3`,
+        [groupId, companyId, me]);
+      if (!grows.length) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      params.push(groupId);
+      where = `kind = 'group' AND group_id = $${params.length}`;
     } else if (channel.startsWith('dm:')) {
       const otherId = channel.slice(3);
       const { rows: orows } = await query(
@@ -2997,14 +3001,17 @@ router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (r
     const channel = String((req.body ?? {}).channel || '');
     const body = String((req.body ?? {}).body || '').trim().slice(0, 2000);
     if (!body) { res.status(400).json({ error: 'Message is empty.' }); return; }
-    let kind = '', departmentId: string | null = null, dmkey: string | null = null;
+    let kind = '', departmentId: string | null = null, dmkey: string | null = null, groupId: string | null = null;
     if (channel === 'company') {
       kind = 'company';
-    } else if (channel.startsWith('dept:')) {
-      const deptId = channel.slice(5);
-      const visible = await visibleDepartmentIds(companyId, me, role);
-      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
-      kind = 'department'; departmentId = deptId;
+    } else if (channel.startsWith('group:')) {
+      groupId = channel.slice(6);
+      const { rows: grows } = await query(
+        `SELECT g.id FROM message_groups g JOIN message_group_members m ON m.group_id = g.id
+         WHERE g.id = $1 AND g.company_id = $2 AND m.user_id = $3`,
+        [groupId, companyId, me]);
+      if (!grows.length) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      kind = 'group';
     } else if (channel.startsWith('dm:')) {
       const otherId = channel.slice(3);
       if (otherId === me) { res.status(400).json({ error: 'Invalid recipient.' }); return; }
@@ -3016,10 +3023,10 @@ router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (r
       res.status(400).json({ error: 'Invalid channel.' }); return;
     }
     const { rows } = await query(
-      `INSERT INTO messages (company_id, kind, department_id, dm_key, sender_id, body)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO messages (company_id, kind, department_id, dm_key, group_id, sender_id, body)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, created_at AS "createdAt"`,
-      [companyId, kind, departmentId, dmkey, me, body]);
+      [companyId, kind, departmentId, dmkey, groupId, me, body]);
     // Sending marks the channel read for the sender.
     await query(
       `INSERT INTO message_reads (user_id, company_id, channel_key, last_read_at)
@@ -3048,6 +3055,73 @@ router.post('/messages/read', requireRole('owner', 'scheduler', 'employee'), asy
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] mark read failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/messages/groups — create a group.
+// Body: { name, memberIds?: string[], departmentIds?: string[] }
+// Department ids expand to all active members of those departments.
+router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { name, memberIds, departmentIds } = req.body ?? {};
+    const gname = String(name || '').trim().slice(0, 80);
+    if (!gname) { res.status(400).json({ error: 'Give the group a name.' }); return; }
+    const memberSet = new Set<string>([me]);
+    if (Array.isArray(memberIds)) {
+      const { rows } = await query(
+        'SELECT id FROM users WHERE id = ANY($1::uuid[]) AND company_id = $2 AND is_active = true',
+        [memberIds.filter((x: any) => typeof x === 'string'), companyId]);
+      rows.forEach((r: any) => memberSet.add(r.id));
+    }
+    if (Array.isArray(departmentIds) && departmentIds.length) {
+      const { rows } = await query(
+        `SELECT u.id FROM users u JOIN departments d ON d.id = u.department_id
+         WHERE d.id = ANY($1::uuid[]) AND d.company_id = $2 AND u.company_id = $2 AND u.is_active = true`,
+        [departmentIds.filter((x: any) => typeof x === 'string'), companyId]);
+      rows.forEach((r: any) => memberSet.add(r.id));
+    }
+    if (memberSet.size < 2) {
+      res.status(400).json({ error: 'Add at least one other person or department.' }); return;
+    }
+    const groupId = crypto.randomUUID();
+    await withTransaction(async (tx) => {
+      await tx.query(
+        'INSERT INTO message_groups (id, company_id, name, created_by) VALUES ($1, $2, $3, $4)',
+        [groupId, companyId, gname, me]);
+      for (const uid of memberSet) {
+        await tx.query(
+          'INSERT INTO message_group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [groupId, uid]);
+      }
+    });
+    res.status(201).json({ id: groupId, name: gname });
+  } catch (err) {
+    console.error('[schedule] create group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/messages/groups/:id — creator, scheduler, or owner.
+router.delete('/messages/groups/:id', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
+    const { rows } = await query(
+      'SELECT id, created_by AS "createdBy" FROM message_groups WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Group not found.' }); return; }
+    const privileged = role === 'owner' || role === 'scheduler';
+    if (!privileged && rows[0].createdBy !== me) {
+      res.status(403).json({ error: 'Only the creator or a scheduler can delete this group.' }); return;
+    }
+    await query('DELETE FROM message_groups WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete group failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

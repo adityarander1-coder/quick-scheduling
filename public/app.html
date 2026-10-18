@@ -9027,10 +9027,13 @@
             html += '<h4>Channels</h4>';
             (r.data.channels || []).forEach(function (c) {
               total += c.unread || 0;
+              var icon = c.kind === 'company' ? '📢 ' : c.kind === 'group' ? '👥 ' : '';
+              var del = c.kind === 'group' ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
               html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span>' + (c.kind === 'company' ? '📢 ' : c.kind === 'department' ? '🏥 ' : '') + esc(c.name) + '</span>' +
+                '<span>' + icon + esc(c.name) + del + '</span>' +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
             });
+            html += '<button type="button" class="msg-ch" id="new-group-btn" style="color:var(--accent);font-weight:700"><span>＋ New group</span></button>';
             html += '<h4>Direct messages</h4>';
             (r.data.dms || []).forEach(function (c) {
               total += c.unread || 0;
@@ -9041,8 +9044,23 @@
             box.innerHTML = html;
             updateTabBadge(total);
             box.querySelectorAll('[data-ch]').forEach(function (b) {
-              b.addEventListener('click', function () { selectChannel(b.getAttribute('data-ch'), b.getAttribute('data-name')); });
+              b.addEventListener('click', function (e) {
+                var del = e.target.closest('[data-grpdel]');
+                if (del) {
+                  e.stopPropagation();
+                  if (!confirm('Delete this group? Messages will be removed.')) return;
+                  api('/api/schedule/messages/groups/' + encodeURIComponent(del.getAttribute('data-grpdel')), { method: 'DELETE' })
+                    .then(function (rr) {
+                      if (rr.ok) { if (activeChannel === 'group:' + del.getAttribute('data-grpdel')) { activeChannel = null; $('msg-list').innerHTML = ''; $('msg-thread-head').textContent = 'Select a conversation'; } loadChannels(true); }
+                      else pageError((rr.data && rr.data.error) || 'Could not delete.');
+                    }).catch(function () { pageError('Could not delete.'); });
+                  return;
+                }
+                selectChannel(b.getAttribute('data-ch'), b.getAttribute('data-name'));
+              });
             });
+            var ngb = $('new-group-btn');
+            if (ngb) ngb.addEventListener('click', openGroupModal);
             if (selectFirst && !activeChannel) {
               var first = box.querySelector('[data-ch]');
               if (first) selectChannel(first.getAttribute('data-ch'), first.getAttribute('data-name'));
@@ -9149,6 +9167,75 @@
         $('msg-text').addEventListener('keydown', function (e) {
           if (e.key === 'Enter') send();
         });
+        function openGroupModal() {
+          // Lazy-build the modal once.
+          var m = $('group-modal');
+          if (!m) {
+            var wrap = document.createElement('div');
+            wrap.innerHTML =
+              '<div class="modal-back hidden" id="group-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:1rem">' +
+              '<div style="background:var(--surface);border-radius:14px;padding:1.4rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
+              '<h3 style="margin-top:0">New group</h3>' +
+              '<label style="display:block;font-weight:700;font-size:0.9rem;margin:0.6rem 0 0.3rem">Group name</label>' +
+              '<input type="text" id="grp-name" placeholder="e.g. Weekend crew" maxlength="80" style="width:100%;padding:0.6rem;border:1px solid var(--border);border-radius:8px;font-size:1rem">' +
+              '<label style="display:block;font-weight:700;font-size:0.9rem;margin:0.9rem 0 0.3rem">Departments (adds everyone in them)</label>' +
+              '<div id="grp-depts" style="display:flex;gap:0.4rem;flex-wrap:wrap"></div>' +
+              '<label style="display:block;font-weight:700;font-size:0.9rem;margin:0.9rem 0 0.3rem">People</label>' +
+              '<div id="grp-people" style="display:flex;gap:0.4rem;flex-wrap:wrap;max-height:180px;overflow-y:auto"></div>' +
+              '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
+              '<button type="button" id="grp-cancel" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Cancel</button>' +
+              '<button type="button" id="grp-create" class="btn" style="flex:1;padding:0.7rem;border-radius:10px">Create group</button>' +
+              '</div></div></div>';
+            document.body.appendChild(wrap.firstChild);
+            m = $('group-modal');
+            $('grp-cancel').addEventListener('click', function () { m.classList.add('hidden'); });
+            $('grp-create').addEventListener('click', function () {
+              var name = $('grp-name').value.trim();
+              if (!name) { pageError('Give the group a name.'); return; }
+              var memberIds = [], departmentIds = [];
+              m.querySelectorAll('.grp-person:checked').forEach(function (cb) { memberIds.push(cb.value); });
+              m.querySelectorAll('.grp-dept:checked').forEach(function (cb) { departmentIds.push(cb.value); });
+              api('/api/schedule/messages/groups', {
+                method: 'POST',
+                body: JSON.stringify({ name: name, memberIds: memberIds, departmentIds: departmentIds }),
+              }).then(function (r) {
+                if (r.ok) {
+                  m.classList.add('hidden');
+                  $('grp-name').value = '';
+                  loadChannels(false);
+                  selectChannel('group:' + r.data.id, r.data.name);
+                } else pageError((r.data && r.data.error) || 'Could not create group.');
+              }).catch(function () { pageError('Could not create group.'); });
+            });
+          }
+          // Populate departments + people.
+          var dg = $('grp-depts'), pg = $('grp-people');
+          dg.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">Loading…</span>'; pg.innerHTML = '';
+          api('/api/departments').then(function (r) {
+            dg.innerHTML = '';
+            ((r.ok && r.data.departments) || []).forEach(function (d) {
+              var lbl = document.createElement('label');
+              lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
+              var cb = document.createElement('input');
+              cb.type = 'checkbox'; cb.value = d.id; cb.className = 'grp-dept';
+              lbl.appendChild(cb); lbl.appendChild(document.createTextNode(d.name));
+              dg.appendChild(lbl);
+            });
+            if (!dg.children.length) dg.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">No departments.</span>';
+          }).catch(function () {});
+          api('/api/schedule/messages/channels').then(function (r) {
+            pg.innerHTML = '';
+            ((r.ok && r.data.dms) || []).forEach(function (p) {
+              var lbl = document.createElement('label');
+              lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
+              var cb = document.createElement('input');
+              cb.type = 'checkbox'; cb.value = p.userId; cb.className = 'grp-person';
+              lbl.appendChild(cb); lbl.appendChild(document.createTextNode(p.name));
+              pg.appendChild(lbl);
+            });
+          }).catch(function () {});
+          m.classList.remove('hidden');
+        }
         window.qsLoadMessagesTab = function () { loadChannels(true); };
         // Badge refresh every 30s even when tab isn't open.
         setInterval(function () {
