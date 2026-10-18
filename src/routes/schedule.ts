@@ -2909,7 +2909,17 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
     }
     const channels: any[] = [{ key: 'company', name: 'Everyone', kind: 'company',
       unread: await unread('company', "kind = 'company'", []) }];
-    // Custom groups (replaces department channels).
+    // Department channels.
+    const deptIds = await visibleDepartmentIds(companyId, me, role);
+    if (deptIds.length) {
+      const { rows: depts } = await query(
+        'SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) ORDER BY name', [deptIds]);
+      for (const d of depts) {
+        channels.push({ key: 'dept:' + d.id, name: d.name, kind: 'department',
+          unread: await unread('dept:' + d.id, "kind = 'department' AND department_id = $4", [d.id]) });
+      }
+    }
+    // Custom groups.
     const { rows: groups } = await query(
       `SELECT g.id, g.name FROM message_groups g
        JOIN message_group_members m ON m.group_id = g.id
@@ -2951,6 +2961,12 @@ router.get('/messages', requireRole('owner', 'scheduler', 'employee'), async (re
     const params: any[] = [companyId];
     if (channel === 'company') {
       where = "kind = 'company'";
+    } else if (channel.startsWith('dept:')) {
+      const deptId = channel.slice(5);
+      const visible = await visibleDepartmentIds(companyId, me, role);
+      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      params.push(deptId);
+      where = `kind = 'department' AND department_id = $${params.length}`;
     } else if (channel.startsWith('group:')) {
       const groupId = channel.slice(6);
       const { rows: grows } = await query(
@@ -3004,6 +3020,11 @@ router.post('/messages', requireRole('owner', 'scheduler', 'employee'), async (r
     let kind = '', departmentId: string | null = null, dmkey: string | null = null, groupId: string | null = null;
     if (channel === 'company') {
       kind = 'company';
+    } else if (channel.startsWith('dept:')) {
+      const deptId = channel.slice(5);
+      const visible = await visibleDepartmentIds(companyId, me, role);
+      if (!visible.includes(deptId)) { res.status(403).json({ error: 'Not allowed.' }); return; }
+      kind = 'department'; departmentId = deptId;
     } else if (channel.startsWith('group:')) {
       groupId = channel.slice(6);
       const { rows: grows } = await query(

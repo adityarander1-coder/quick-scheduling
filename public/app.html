@@ -9029,15 +9029,26 @@
             }
             var box = $('msg-channels');
             var total = 0, html = '';
-            html += '<h4>Channels</h4>';
-            (r.data.channels || []).forEach(function (c) {
+            function chBtn(c) {
               total += c.unread || 0;
-              var icon = c.kind === 'company' ? '📢 ' : c.kind === 'group' ? '👥 ' : '';
+              var icon = c.kind === 'company' ? '📢 ' : c.kind === 'group' ? '👥 ' : c.kind === 'department' ? '🏥 ' : '';
               var del = c.kind === 'group' ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
-              html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
+              return '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
                 '<span>' + icon + esc(c.name) + del + '</span>' +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
-            });
+            }
+            var chans = r.data.channels || [];
+            var company = chans.filter(function (c) { return c.kind === 'company'; });
+            var depts = chans.filter(function (c) { return c.kind === 'department'; });
+            var groups = chans.filter(function (c) { return c.kind === 'group'; });
+            html += '<h4>Channels</h4>';
+            company.forEach(function (c) { html += chBtn(c); });
+            if (depts.length) {
+              html += '<h4>Departments</h4>';
+              depts.forEach(function (c) { html += chBtn(c); });
+            }
+            html += '<h4>Groups</h4>';
+            groups.forEach(function (c) { html += chBtn(c); });
             html += '<button type="button" class="msg-ch" id="new-group-btn" style="color:var(--accent);font-weight:700"><span>＋ New group</span></button>';
             html += '<h4>Direct messages</h4>';
             (r.data.dms || []).forEach(function (c) {
