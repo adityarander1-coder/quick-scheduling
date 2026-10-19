@@ -7218,6 +7218,7 @@
           <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap">
             <button type="button" id="pay-copy" class="btn-secondary">Copy report</button>
             <button type="button" id="pay-pdf" class="btn-secondary">Download PDF</button>
+            <button type="button" id="pay-csv" class="btn-secondary">Download CSV</button>
           </div>
           <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;align-items:flex-end">
             <label>Email <input type="email" id="pay-email" placeholder="payroll@company.com" style="min-width:180px"></label>
@@ -7428,6 +7429,24 @@
               document.body.appendChild(a); a.click(); a.remove();
             });
           }).catch(function () { pageError('Could not generate PDF.'); });
+        });
+        $('pay-csv').addEventListener('click', function () {
+          var p = payParams();
+          if (!p.from || !p.to || p.from > p.to) { pageError('Pick a valid from/to range.'); return; }
+          fetch('/api/schedule/payroll-report.csv', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(p),
+          }).then(function (r) {
+            if (!r.ok) { pageError('Could not generate CSV.'); return; }
+            return r.blob().then(function (b) {
+              var a = document.createElement('a');
+              a.href = URL.createObjectURL(b);
+              a.download = 'payroll-' + p.from + '-to-' + p.to + '.csv';
+              document.body.appendChild(a); a.click(); a.remove();
+            });
+          }).catch(function () { pageError('Could not generate CSV.'); });
         });
         $('pay-send').addEventListener('click', function () {
           var p = payParams();

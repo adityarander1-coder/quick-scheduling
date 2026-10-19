@@ -3438,6 +3438,36 @@ router.post('/payroll-report', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+// POST /api/schedule/payroll-report.csv — download CSV (owner/scheduler).
+// One row per shift worked: Employee, Date, Shift type, Hours. Imports into Gusto/QuickBooks.
+router.post('/payroll-report.csv', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { from, to, personId } = req.body ?? {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    const data = await getPayrollData(companyId, from, to, personId || null);
+    const esc = (v: any): string => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = ['Employee,Date,Shift type,Hours'];
+    for (const d of data.dates) {
+      for (const e of d.entries) {
+        lines.push([esc(e.name), esc(d.date), esc(e.shift), e.hours].join(','));
+      }
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}.csv"`);
+    res.send('\uFEFF' + lines.join('\n'));
+  } catch (err) {
+    console.error('[schedule] payroll-report.csv failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/payroll-report.pdf — download PDF (owner/scheduler).
 router.post('/payroll-report.pdf', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
