@@ -3420,6 +3420,213 @@ async function getPayrollData(companyId: string, from: string, to: string, perso
   return { message: lines.join('\n'), people, dates, totalHours };
 }
 
+// ---------------------------------------------------------------------------
+// Onboarding: industry templates + Q-Scheduler setup interview (owner only).
+// ---------------------------------------------------------------------------
+
+interface OnboardingTemplate {
+  label: string;
+  departments: { name: string; jobRoles: string[] }[];
+  shiftTypes: { name: string }[];
+}
+
+const ONBOARDING_TEMPLATES: Record<string, OnboardingTemplate> = {
+  hospital: {
+    label: 'Hospital',
+    departments: [
+      { name: 'Emergency', jobRoles: ['Physician', 'Nurse', 'Technician'] },
+      { name: 'Intensive Care', jobRoles: ['Physician', 'Nurse'] },
+      { name: 'Internal Medicine', jobRoles: ['Physician', 'Nurse Practitioner', 'Secretary'] },
+      { name: 'Surgery', jobRoles: ['Surgeon', 'Nurse', 'Technician'] },
+      { name: 'Pediatrics', jobRoles: ['Physician', 'Nurse'] },
+    ],
+    shiftTypes: [{ name: 'Day Shift' }, { name: 'Night Shift' }],
+  },
+  clinic: {
+    label: 'Clinic',
+    departments: [
+      { name: 'Front Office', jobRoles: ['Receptionist', 'Biller'] },
+      { name: 'Clinical', jobRoles: ['Provider', 'Medical Assistant', 'Nurse'] },
+    ],
+    shiftTypes: [{ name: 'Morning' }, { name: 'Afternoon' }, { name: 'Full Day' }],
+  },
+  dental: {
+    label: 'Dental Office',
+    departments: [
+      { name: 'Hygiene', jobRoles: ['Hygienist', 'Dental Assistant'] },
+      { name: 'Restorative', jobRoles: ['Dentist', 'Dental Assistant'] },
+      { name: 'Front Office', jobRoles: ['Receptionist'] },
+    ],
+    shiftTypes: [{ name: 'Morning' }, { name: 'Afternoon' }, { name: 'Full Day' }],
+  },
+  salon: {
+    label: 'Salon & Spa',
+    departments: [
+      { name: 'Hair', jobRoles: ['Stylist', 'Colorist'] },
+      { name: 'Nails', jobRoles: ['Nail Technician'] },
+      { name: 'Spa', jobRoles: ['Esthetician', 'Massage Therapist'] },
+      { name: 'Front Desk', jobRoles: ['Receptionist'] },
+    ],
+    shiftTypes: [{ name: 'Morning' }, { name: 'Evening' }],
+  },
+  restaurant: {
+    label: 'Restaurant',
+    departments: [
+      { name: 'Kitchen', jobRoles: ['Chef', 'Cook'] },
+      { name: 'Front of House', jobRoles: ['Server', 'Host', 'Bartender'] },
+    ],
+    shiftTypes: [{ name: 'Lunch' }, { name: 'Dinner' }],
+  },
+  retail: {
+    label: 'Retail Store',
+    departments: [
+      { name: 'Sales Floor', jobRoles: ['Sales Associate', 'Cashier'] },
+      { name: 'Stockroom', jobRoles: ['Stocker'] },
+    ],
+    shiftTypes: [{ name: 'Morning' }, { name: 'Evening' }],
+  },
+};
+
+// Create departments, job roles, and shift types for a new company.
+// Skips departments/shift types whose names already exist (case-insensitive).
+async function applyOnboardingSetup(
+  companyId: string,
+  setup: { departments: { name: string; jobRoles: string[] }[]; shiftTypes: { name: string; departmentNames?: string[] }[] }
+): Promise<{ departments: number; jobRoles: number; shiftTypes: number }> {
+  const { rows: existingDepts } = await query(
+    'SELECT id, lower(name) AS lname FROM departments WHERE company_id = $1', [companyId]);
+  const deptByName = new Map(existingDepts.map((d: any) => [d.lname, d.id]));
+  const { rows: existingTypes } = await query(
+    'SELECT lower(name) AS lname FROM shift_types WHERE company_id = $1', [companyId]);
+  const typeNames = new Set(existingTypes.map((t: any) => t.lname));
+
+  let deptCount = 0, roleCount = 0, typeCount = 0;
+  const deptIds: string[] = [];
+  for (const d of setup.departments || []) {
+    const name = String(d.name || '').trim();
+    if (!name) continue;
+    let deptId = deptByName.get(name.toLowerCase());
+    if (!deptId) {
+      deptId = crypto.randomUUID();
+      await query('INSERT INTO departments (id, company_id, name) VALUES ($1, $2, $3)',
+        [deptId, companyId, name]);
+      deptByName.set(name.toLowerCase(), deptId);
+      deptCount++;
+    }
+    deptIds.push(deptId);
+    const { rows: existingRoles } = await query(
+      'SELECT lower(name) AS lname FROM job_roles WHERE company_id = $1 AND department_id = $2',
+      [companyId, deptId]);
+    const roleNames = new Set(existingRoles.map((r: any) => r.lname));
+    for (const rn of d.jobRoles || []) {
+      const roleName = String(rn || '').trim();
+      if (!roleName || roleNames.has(roleName.toLowerCase())) continue;
+      await query('INSERT INTO job_roles (id, company_id, department_id, name) VALUES ($1, $2, $3, $4)',
+        [crypto.randomUUID(), companyId, deptId, roleName]);
+      roleNames.add(roleName.toLowerCase());
+      roleCount++;
+    }
+  }
+  let sortOrder = 0;
+  const { rows: maxSort } = await query(
+    'SELECT COALESCE(MAX(sort_order), 0) AS m FROM shift_types WHERE company_id = $1', [companyId]);
+  sortOrder = Number(maxSort[0]?.m || 0);
+  for (const st of setup.shiftTypes || []) {
+    const name = String(st.name || '').trim();
+    if (!name || typeNames.has(name.toLowerCase())) continue;
+    const wanted = (st.departmentNames || []).map((n) => deptByName.get(String(n).toLowerCase())).filter(Boolean);
+    const linkDeptIds = wanted.length ? wanted : deptIds;
+    sortOrder++;
+    const stId = crypto.randomUUID();
+    await query(
+      `INSERT INTO shift_types (id, company_id, name, sort_order, department_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [stId, companyId, name, sortOrder, linkDeptIds[0] || null]);
+    for (const dd of linkDeptIds) {
+      await query(
+        'INSERT INTO shift_type_departments (shift_type_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [stId, dd]);
+    }
+    typeNames.add(name.toLowerCase());
+    typeCount++;
+  }
+  await auditLog({
+    companyId, date: todayStr(), action: 'created', category: 'settings',
+    description: `Onboarding setup wizard: ${deptCount} departments, ${typeCount} shift types, ${roleCount} job roles`,
+    source: 'manual',
+  });
+  return { departments: deptCount, jobRoles: roleCount, shiftTypes: typeCount };
+}
+
+// GET /api/schedule/onboarding/templates — list available industry templates.
+router.get('/onboarding/templates', requireRole('owner'), async (_req: Request, res: Response) => {
+  res.json({
+    templates: Object.entries(ONBOARDING_TEMPLATES).map(([key, t]) => ({
+      key, label: t.label,
+      departments: t.departments.map((d) => d.name),
+      shiftTypes: t.shiftTypes.map((s) => s.name),
+    })),
+  });
+});
+
+// POST /api/schedule/onboarding/template — apply an industry template (owner only).
+// Body: { template: 'hospital' | 'clinic' | 'dental' | 'salon' | 'restaurant' | 'retail' }
+router.post('/onboarding/template', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const key = String((req.body ?? {}).template || '');
+    const tpl = ONBOARDING_TEMPLATES[key];
+    if (!tpl) { res.status(400).json({ error: 'Unknown template.' }); return; }
+    const counts = await applyOnboardingSetup(companyId, tpl);
+    res.json({ ok: true, label: tpl.label, ...counts });
+  } catch (err) {
+    console.error('[schedule] onboarding template failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/onboarding/interview — one Q-Scheduler interview turn (owner only).
+// Body: { message: string, history: [{ role: 'user'|'assistant', text: string }] }
+// Returns { question } or { proposal, summary }.
+router.post('/onboarding/interview', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const { message, history } = req.body ?? {};
+    const hist = Array.isArray(history) ? history.slice(-10) : [];
+    const msg = String(message || '').trim();
+    if (msg) hist.push({ role: 'user', text: msg });
+    if (!hist.length) { res.status(400).json({ error: 'Say something to get started.' }); return; }
+    const { onboardingInterview } = await import('../util/gemini.js');
+    const result = await onboardingInterview(hist);
+    res.json(result);
+  } catch (err: any) {
+    console.error('[schedule] onboarding interview failed:', err);
+    const friendly = /GEMINI_API_KEY|not configured/i.test(err?.message || '')
+      ? 'AI setup is not available right now — try an industry template instead.'
+      : 'Something went wrong. Please try again.';
+    res.status(500).json({ error: friendly });
+  }
+});
+
+// POST /api/schedule/onboarding/apply — apply an interview proposal (owner only).
+// Body: { proposal: { departments: [{ name, jobRoles[] }], shiftTypes: [{ name, departmentNames[] }] } }
+router.post('/onboarding/apply', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const proposal = (req.body ?? {}).proposal;
+    if (!proposal || !Array.isArray(proposal.departments) || !proposal.departments.length) {
+      res.status(400).json({ error: 'A proposal with departments is required.' }); return;
+    }
+    const counts = await applyOnboardingSetup(companyId, {
+      departments: proposal.departments,
+      shiftTypes: Array.isArray(proposal.shiftTypes) ? proposal.shiftTypes : [],
+    });
+    res.json({ ok: true, ...counts });
+  } catch (err) {
+    console.error('[schedule] onboarding apply failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/payroll-report — hours worked for a date range (owner/scheduler).
 // Body: { from, to, personId?: uuid | null }
 router.post('/payroll-report', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {

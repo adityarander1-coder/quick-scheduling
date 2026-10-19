@@ -402,3 +402,81 @@ Only list files from the catalog above. If no screenshot fits, omit the VISUAL l
   }
   return { answer, visuals };
 }
+
+export interface OnboardingProposal {
+  departments: { name: string; jobRoles: string[] }[];
+  shiftTypes: { name: string; departmentNames: string[] }[];
+}
+
+export interface OnboardingInterviewResult {
+  question?: string;          // one follow-up question, when more info is needed
+  proposal?: OnboardingProposal;
+  summary?: string;           // plain-language summary of the proposal
+}
+
+/**
+ * Conversational onboarding: given the chat history, either ask one follow-up
+ * question or return a complete setup proposal (departments, shift types, job roles).
+ */
+export async function onboardingInterview(
+  history: { role: 'user' | 'assistant'; text: string }[]
+): Promise<OnboardingInterviewResult> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('Gemini API key not configured.');
+
+  const convo = history
+    .map((h) => `${h.role === 'user' ? 'Owner' : 'Q-Scheduler'}: ${h.text}`)
+    .join('\n');
+
+  const prompt = `You are Q-Scheduler, a friendly onboarding assistant for a staff scheduling app. A new business owner is setting up their company. Your job: learn enough to propose their initial setup — departments, shift types, and job roles.
+
+Conversation so far:
+${convo || '(just started — greet them and ask what kind of business they run)'}
+
+Rules:
+- Ask AT MOST 3 questions total across the conversation. Prefer asking one clear question per turn.
+- You need: (1) what kind of business/industry, (2) their departments or teams, (3) shift patterns (names/times, e.g. day/night or morning/evening), (4) job roles per department. Infer sensible defaults from the industry when the owner is vague — don't interrogate.
+- When you have enough (or after 3 questions), return a complete proposal. Every department needs 1-4 job roles. Shift types need names; departmentNames lists which departments use each shift type (use [] for all departments).
+- Keep names short and plain (e.g. "Emergency", "Day Shift", "Nurse").
+
+Respond with JSON only, no other text. Exactly one of these shapes:
+{ "question": "your single follow-up question" }
+or
+{
+  "proposal": {
+    "departments": [ { "name": "Emergency", "jobRoles": ["Physician", "Nurse"] } ],
+    "shiftTypes": [ { "name": "Day Shift", "departmentNames": [] } ]
+  },
+  "summary": "2-3 sentence plain-language summary of what you'll set up"
+}`;
+
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 1500 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise((r) => setTimeout(r, attempt * 10000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) throw new Error(`Gemini API error: ${res?.status || 'no response'}`);
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('Gemini did not return valid JSON.');
+  const parsed = JSON.parse(jsonMatch[0]) as OnboardingInterviewResult;
+  if (!parsed.question && !parsed.proposal) throw new Error('Gemini returned no question or proposal.');
+  return parsed;
+}
