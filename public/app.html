@@ -10269,9 +10269,9 @@
     });
   })();
   </script>
-  <!-- Setup wizard (onboarding) -->
+  <!-- Setup wizard (onboarding) — multi-step with resume -->
   <div class="modal-back hidden" id="setup-wizard" style="position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem">
-    <div style="background:var(--surface);border-radius:16px;padding:1.6rem;width:100%;max-width:520px;max-height:88vh;overflow-y:auto">
+    <div style="background:var(--surface);border-radius:16px;padding:1.6rem;width:100%;max-width:560px;max-height:88vh;overflow-y:auto">
       <div id="sw-body"></div>
     </div>
   </div>
@@ -10280,43 +10280,95 @@
     var modal = document.getElementById('setup-wizard');
     var body = document.getElementById('sw-body');
     var interviewHistory = [];
+    var STEPS = ['structure', 'team', 'staffing', 'company', 'invites'];
+    var STEP_LABELS = { structure: 'Structure', team: 'Team', staffing: 'Staffing', company: 'Company', invites: 'Invites' };
 
     function show(html) { body.innerHTML = html; }
     function close() { modal.classList.add('hidden'); }
-    window.openSetupWizard = function () {
-      interviewHistory = [];
-      showStep1();
-      modal.classList.remove('hidden');
-    };
     modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
 
-    function skipRow() {
-      return '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
-        '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" data-swskip>Skip for now</button></div>';
-    }
-    function wireSkip() {
-      var s = body.querySelector('[data-swskip]');
-      if (s) s.addEventListener('click', close);
+    function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+    // Open at the first incomplete step (detected from real data + local flags).
+    window.openSetupWizard = function () {
+      api('/api/schedule/onboarding/status').then(function (r) {
+        var s = (r.ok && r.data.steps) || {};
+        if (!s.structure) return openStep('structure');
+        if (!s.team) return openStep('team');
+        if (!s.staffing) return openStep('staffing');
+        if (!lsGet('qs-setup-company')) return openStep('company');
+        if (!s.invites) return openStep('invites');
+        openStep('done');
+      }).catch(function () { openStep('structure'); });
+    };
+
+    function progressHtml(current) {
+      var idx = STEPS.indexOf(current);
+      var html = '<div style="display:flex;gap:0.3rem;margin-bottom:1rem">';
+      STEPS.forEach(function (st, i) {
+        var done = i < idx;
+        html += '<div title="' + STEP_LABELS[st] + '" style="flex:1;height:6px;border-radius:3px;background:' +
+          (done ? 'var(--accent)' : (i === idx ? 'var(--accent)' : 'var(--border)')) + ';opacity:' + (i === idx ? '1' : (done ? '1' : '0.5')) + '"></div>';
+      });
+      html += '</div><p style="color:var(--dim);font-size:0.8rem;margin:-0.5rem 0 1rem">Step ' + (idx + 1) + ' of ' + STEPS.length + ' — ' + STEP_LABELS[current] + '</p>';
+      return html;
     }
 
-    // ---- Step 1: choose path ----
-    function showStep1() {
-      show(
-        '<h2 style="margin-top:0">Welcome! Let\'s set up your company 🎉</h2>' +
-        '<p style="color:var(--dim)">Q-Scheduler can build your departments, shift types, and job roles for you. Pick how:</p>' +
+    function navRow(backFn, nextLabel, nextFn, skipFn) {
+      return '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
+        (backFn ? '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back">Back</button>' : '') +
+        '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-skip">Skip</button>' +
+        '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-next">' + (nextLabel || 'Continue') + '</button></div>';
+    }
+    function wireNav(backFn, nextFn, skipFn) {
+      var b = document.getElementById('sw-back');
+      if (b && backFn) b.addEventListener('click', backFn);
+      document.getElementById('sw-skip').addEventListener('click', function () { if (skipFn) skipFn(); else nextStepAfter(currentStep()); });
+      document.getElementById('sw-next').addEventListener('click', nextFn);
+    }
+    var _current = 'structure';
+    function currentStep() { return _current; }
+    function openStep(step) {
+      _current = step;
+      interviewHistory = [];
+      if (step === 'structure') showStructure();
+      else if (step === 'team') showTeam();
+      else if (step === 'staffing') showStaffing();
+      else if (step === 'company') showCompany();
+      else if (step === 'invites') showInvites();
+      else showDone();
+      modal.classList.remove('hidden');
+    }
+    function nextStepAfter(step) {
+      var i = STEPS.indexOf(step);
+      if (i < 0 || i === STEPS.length - 1) { showDone(); return; }
+      openStep(STEPS[i + 1]);
+    }
+    function prevStepBefore(step) {
+      var i = STEPS.indexOf(step);
+      if (i <= 0) { showStructure(); return; }
+      openStep(STEPS[i - 1]);
+    }
+
+    // ---------- Step 1: Structure (templates or interview) ----------
+    function showStructure() {
+      show(progressHtml('structure') +
+        '<h2 style="margin-top:0">Let\'s build your structure 🏗️</h2>' +
+        '<p style="color:var(--dim)">Q-Scheduler can set up your departments, shift types, and job roles. Pick how:</p>' +
         '<button type="button" id="sw-tpl" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-bottom:0.6rem">📋 Start from an industry template</button>' +
         '<button type="button" id="sw-ai" class="btn" style="width:100%;padding:0.9rem;border-radius:12px">💬 Describe my workplace to Q-Scheduler</button>' +
-        skipRow()
+        '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-skip1">Skip for now</button></div>'
       );
-      wireSkip();
+      document.getElementById('sw-skip1').addEventListener('click', function () { nextStepAfter('structure'); });
       document.getElementById('sw-tpl').addEventListener('click', showTemplates);
       document.getElementById('sw-ai').addEventListener('click', showInterview);
     }
 
-    // ---- Step 2a: templates ----
     function showTemplates() {
-      show('<h2 style="margin-top:0">Pick your industry</h2><p style="color:var(--dim)">One tap sets up departments, shift types, and job roles. You can tweak everything afterwards.</p><div id="sw-tpls"><p style="color:var(--dim)">Loading…</p></div>' + skipRow());
-      wireSkip();
+      show(progressHtml('structure') + '<h2 style="margin-top:0">Pick your industry</h2><p style="color:var(--dim)">One tap sets up departments, shift types, and job roles. You can tweak everything afterwards.</p><div id="sw-tpls"><p style="color:var(--dim)">Loading…</p></div>' +
+        '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back2">Back</button></div>');
+      document.getElementById('sw-back2').addEventListener('click', showStructure);
       api('/api/schedule/onboarding/templates').then(function (r) {
         var box = document.getElementById('sw-tpls');
         if (!r.ok) { box.innerHTML = '<p style="color:#991b1b">Could not load templates.</p>'; return; }
@@ -10327,8 +10379,7 @@
           card.style.cssText = 'display:block;width:100%;text-align:left;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.6rem;cursor:pointer';
           card.innerHTML = '<strong style="font-size:1.05rem">' + esc(t.label) + '</strong>' +
             '<div style="color:var(--dim);font-size:0.85rem;margin-top:0.3rem">' +
-            esc(t.departments.join(' · ')) + '<br>' +
-            'Shifts: ' + esc(t.shiftTypes.join(', ')) + '</div>';
+            esc(t.departments.join(' · ')) + '<br>Shifts: ' + esc(t.shiftTypes.join(', ')) + '</div>';
           card.addEventListener('click', function () { applyTemplate(t); });
           box.appendChild(card);
         });
@@ -10338,37 +10389,43 @@
     }
 
     function applyTemplate(t) {
-      show('<h2 style="margin-top:0">' + esc(t.label) + '</h2>' +
-        '<p>This will create:</p><ul>' +
-        '<li><strong>' + t.departments.length + ' departments:</strong> ' + esc(t.departments.join(', ')) + '</li>' +
-        '<li><strong>' + t.shiftTypes.length + ' shift types:</strong> ' + esc(t.shiftTypes.join(', ')) + '</li>' +
-        '</ul><p style="color:var(--dim);font-size:0.9rem">Existing items with the same names are kept as-is.</p>' +
+      show(progressHtml('structure') + '<h2 style="margin-top:0">' + esc(t.label) + '</h2>' +
+        '<p>This will create:</p><ul><li><strong>' + t.departments.length + ' departments:</strong> ' + esc(t.departments.join(', ')) + '</li>' +
+        '<li><strong>' + t.shiftTypes.length + ' shift types:</strong> ' + esc(t.shiftTypes.join(', ')) + '</li></ul>' +
+        '<p style="color:var(--dim);font-size:0.9rem">Existing items with the same names are kept as-is.</p>' +
         '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
-        '<button type="button" id="sw-back" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Back</button>' +
-        '<button type="button" id="sw-apply" class="btn" style="flex:1;padding:0.7rem;border-radius:10px">Set it up</button></div>');
-      document.getElementById('sw-back').addEventListener('click', showTemplates);
+        '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back3">Back</button>' +
+        '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-apply">Set it up</button></div>');
+      document.getElementById('sw-back3').addEventListener('click', showTemplates);
       document.getElementById('sw-apply').addEventListener('click', function () {
-        show('<p style="color:var(--dim)">Setting things up…</p>');
+        show(progressHtml('structure') + '<p style="color:var(--dim)">Setting things up…</p>');
         api('/api/schedule/onboarding/template', { method: 'POST', body: JSON.stringify({ template: t.key }) })
           .then(function (r) {
-            if (r.ok) showSuccess(r.data);
-            else { show('<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>' + skipRow()); wireSkip(); }
-          }).catch(function () { show('<p style="color:#991b1b">Something went wrong.</p>' + skipRow()); wireSkip(); });
+            if (r.ok) { showStepDone('structure', 'Created ' + r.data.departments + ' departments, ' + r.data.shiftTypes + ' shift types, and ' + r.data.jobRoles + ' job roles.'); }
+            else show(progressHtml('structure') + '<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>');
+          }).catch(function () { show(progressHtml('structure') + '<p style="color:#991b1b">Something went wrong.</p>'); });
       });
     }
 
-    // ---- Step 2b: Q-Scheduler interview ----
+    function showStepDone(step, msg) {
+      show(progressHtml(step) + '<h2 style="margin-top:0">Nice! ✅</h2><p>' + esc(msg) + '</p>' +
+        '<button type="button" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-top:0.6rem" id="sw-cont">Continue setup →</button>' +
+        '<button type="button" class="btn-secondary" style="width:100%;padding:0.7rem;border-radius:10px;margin-top:0.5rem" id="sw-later">I\'ll finish later</button>');
+      document.getElementById('sw-cont').addEventListener('click', function () { nextStepAfter(step); });
+      document.getElementById('sw-later').addEventListener('click', close);
+    }
+
+    // Interview (same as before, ends with proposal → apply → step done)
     function showInterview() {
-      show(
+      show(progressHtml('structure') +
         '<h2 style="margin-top:0">Describe your workplace 💬</h2>' +
         '<p style="color:var(--dim)">Tell Q-Scheduler about your business — I\'ll build your setup from it.</p>' +
-        '<div id="sw-chat" style="background:var(--bg);border-radius:12px;padding:0.8rem;min-height:160px;max-height:300px;overflow-y:auto;margin-bottom:0.8rem"></div>' +
+        '<div id="sw-chat" style="background:var(--bg);border-radius:12px;padding:0.8rem;min-height:160px;max-height:280px;overflow-y:auto;margin-bottom:0.8rem"></div>' +
         '<div style="display:flex;gap:0.5rem">' +
         '<input type="text" id="sw-input" placeholder="e.g. We\'re a dental office with 2 departments…" style="flex:1;padding:0.7rem;border-radius:10px;border:1px solid var(--border)">' +
         '<button type="button" id="sw-send" class="btn" style="padding:0.7rem 1.2rem;border-radius:10px">Send</button></div>' +
-        skipRow()
-      );
-      wireSkip();
+        '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back4">Back</button></div>');
+      document.getElementById('sw-back4').addEventListener('click', showStructure);
       addMsg('assistant', "Hi! I'm Q-Scheduler. What kind of business are you setting up?");
       var input = document.getElementById('sw-input');
       function send() {
@@ -10376,36 +10433,23 @@
         if (!text) return;
         addMsg('user', text);
         interviewHistory.push({ role: 'user', text: text });
-        input.value = '';
-        input.disabled = true;
+        input.value = ''; input.disabled = true;
         document.getElementById('sw-send').disabled = true;
         addMsg('assistant', 'Thinking…');
-        api('/api/schedule/onboarding/interview', {
-          method: 'POST',
-          body: JSON.stringify({ message: '', history: interviewHistory }),
-        }).then(function (r) {
-          var chat = document.getElementById('sw-chat');
-          if (chat && chat.lastChild) chat.removeChild(chat.lastChild);
-          input.disabled = false;
-          document.getElementById('sw-send').disabled = false;
-          if (!r.ok) {
-            addMsg('assistant', (r.data && r.data.error) || 'Something went wrong. Try again?');
-            return;
-          }
-          if (r.data.question) {
-            interviewHistory.push({ role: 'assistant', text: r.data.question });
-            addMsg('assistant', r.data.question);
-          } else if (r.data.proposal) {
-            interviewHistory.push({ role: 'assistant', text: r.data.summary || 'Here is your setup.' });
-            showProposal(r.data.proposal, r.data.summary);
-          }
-        }).catch(function () {
-          var chat = document.getElementById('sw-chat');
-          if (chat && chat.lastChild) chat.removeChild(chat.lastChild);
-          input.disabled = false;
-          document.getElementById('sw-send').disabled = false;
-          addMsg('assistant', 'Something went wrong. Try again?');
-        });
+        api('/api/schedule/onboarding/interview', { method: 'POST', body: JSON.stringify({ message: '', history: interviewHistory }) })
+          .then(function (r) {
+            var chat = document.getElementById('sw-chat');
+            if (chat && chat.lastChild) chat.removeChild(chat.lastChild);
+            input.disabled = false; document.getElementById('sw-send').disabled = false;
+            if (!r.ok) { addMsg('assistant', (r.data && r.data.error) || 'Something went wrong. Try again?'); return; }
+            if (r.data.question) { interviewHistory.push({ role: 'assistant', text: r.data.question }); addMsg('assistant', r.data.question); }
+            else if (r.data.proposal) { interviewHistory.push({ role: 'assistant', text: r.data.summary || 'Here is your setup.' }); showProposal(r.data.proposal, r.data.summary); }
+          }).catch(function () {
+            var chat = document.getElementById('sw-chat');
+            if (chat && chat.lastChild) chat.removeChild(chat.lastChild);
+            input.disabled = false; document.getElementById('sw-send').disabled = false;
+            addMsg('assistant', 'Something went wrong. Try again?');
+          });
       }
       document.getElementById('sw-send').addEventListener('click', send);
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
@@ -10417,48 +10461,212 @@
       if (!chat) return;
       var d = document.createElement('div');
       d.style.cssText = 'margin-bottom:0.5rem;padding:0.5rem 0.75rem;border-radius:10px;max-width:90%;' +
-        (who === 'user'
-          ? 'background:var(--accent);color:#fff;margin-left:auto'
-          : 'background:var(--surface);border:1px solid var(--border)');
+        (who === 'user' ? 'background:var(--accent);color:#fff;margin-left:auto' : 'background:var(--surface);border:1px solid var(--border)');
       d.textContent = text;
       chat.appendChild(d);
       chat.scrollTop = chat.scrollHeight;
     }
 
     function showProposal(p, summary) {
-      var html = '<h2 style="margin-top:0">Here\'s your setup ✨</h2>';
+      var html = progressHtml('structure') + '<h2 style="margin-top:0">Here\'s your setup ✨</h2>';
       if (summary) html += '<p>' + esc(summary) + '</p>';
       (p.departments || []).forEach(function (d) {
-        html += '<div style="background:var(--bg);border-radius:10px;padding:0.7rem;margin-bottom:0.5rem">' +
-          '<strong>' + esc(d.name) + '</strong>' +
+        html += '<div style="background:var(--bg);border-radius:10px;padding:0.7rem;margin-bottom:0.5rem"><strong>' + esc(d.name) + '</strong>' +
           '<div style="color:var(--dim);font-size:0.85rem">' + esc((d.jobRoles || []).join(', ')) + '</div></div>';
       });
-      if ((p.shiftTypes || []).length) {
-        html += '<p style="margin-bottom:0.3rem"><strong>Shift types:</strong> ' + esc(p.shiftTypes.map(function (s) { return s.name; }).join(', ')) + '</p>';
-      }
+      if ((p.shiftTypes || []).length) html += '<p><strong>Shift types:</strong> ' + esc(p.shiftTypes.map(function (s) { return s.name; }).join(', ')) + '</p>';
       html += '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
-        '<button type="button" id="sw-redo" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Start over</button>' +
-        '<button type="button" id="sw-ok" class="btn" style="flex:1;padding:0.7rem;border-radius:10px">Looks good — set it up</button></div>';
+        '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-redo">Start over</button>' +
+        '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-ok">Looks good — set it up</button></div>';
       show(html);
       document.getElementById('sw-redo').addEventListener('click', function () { interviewHistory = []; showInterview(); });
       document.getElementById('sw-ok').addEventListener('click', function () {
-        show('<p style="color:var(--dim)">Setting things up…</p>');
+        show(progressHtml('structure') + '<p style="color:var(--dim)">Setting things up…</p>');
         api('/api/schedule/onboarding/apply', { method: 'POST', body: JSON.stringify({ proposal: p }) })
           .then(function (r) {
-            if (r.ok) showSuccess(r.data);
-            else { show('<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>' + skipRow()); wireSkip(); }
-          }).catch(function () { show('<p style="color:#991b1b">Something went wrong.</p>' + skipRow()); wireSkip(); });
+            if (r.ok) showStepDone('structure', 'Created ' + r.data.departments + ' departments, ' + r.data.shiftTypes + ' shift types, and ' + r.data.jobRoles + ' job roles.');
+            else show(progressHtml('structure') + '<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>');
+          }).catch(function () { show(progressHtml('structure') + '<p style="color:#991b1b">Something went wrong.</p>'); });
       });
     }
 
-    function showSuccess(data) {
-      show(
-        '<h2 style="margin-top:0">You\'re all set! 🎉</h2>' +
-        '<p>Created ' + (data.departments || 0) + ' departments, ' + (data.shiftTypes || 0) + ' shift types, and ' + (data.jobRoles || 0) + ' job roles.</p>' +
-        '<p style="color:var(--dim)">Next: add your team members under Settings → Team members, then invite them.</p>' +
-        '<button type="button" id="sw-done" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-top:0.6rem">Start scheduling</button>'
-      );
+    // ---------- Step 2: Team ----------
+    var swDepts = [], swRoles = [];
+    function showTeam() {
+      show(progressHtml('team') + '<h2 style="margin-top:0">Add your team 👥</h2>' +
+        '<p style="color:var(--dim)">Add team members now — you can invite them at the end.</p>' +
+        '<div id="sw-members" style="margin-bottom:0.8rem"></div>' +
+        '<div style="background:var(--bg);border-radius:12px;padding:0.9rem">' +
+        '<div style="display:flex;gap:0.5rem;flex-wrap:wrap">' +
+        '<input type="text" id="sw-fn" placeholder="First name" style="flex:1;min-width:100px;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
+        '<input type="text" id="sw-ln" placeholder="Last name" style="flex:1;min-width:100px;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
+        '</div><div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">' +
+        '<input type="email" id="sw-em" placeholder="Email" style="flex:2;min-width:140px;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
+        '<select id="sw-dept" style="flex:1;min-width:110px;padding:0.6rem;border-radius:8px;border:1px solid var(--border)"><option value="">Department</option></select>' +
+        '</div><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+        '<select id="sw-role" style="flex:1;padding:0.6rem;border-radius:8px;border:1px solid var(--border)"><option value="">Job role (optional)</option></select>' +
+        '<button type="button" id="sw-add" class="btn" style="padding:0.6rem 1.2rem;border-radius:8px">Add</button>' +
+        '</div></div>' +
+        navRow(function () { prevStepBefore('team'); }, 'Continue', function () { nextStepAfter('team'); }, null));
+      wireNav(function () { prevStepBefore('team'); }, function () { nextStepAfter('team'); }, null);
+      renderMembers([]);
+      api('/api/departments').then(function (r) {
+        swDepts = (r.ok && r.data.departments) || [];
+        var sel = document.getElementById('sw-dept');
+        if (sel) swDepts.forEach(function (d) {
+          var o = document.createElement('option'); o.value = d.id; o.textContent = d.name; sel.appendChild(o);
+        });
+      }).catch(function () {});
+      api('/api/job-roles/all').then(function (r) {
+        var list = (r.ok && (r.data.jobRoles || r.data.roles)) || [];
+        swRoles = list;
+      }).catch(function () { swRoles = []; });
+      var deptSel = document.getElementById('sw-dept');
+      if (deptSel) deptSel.addEventListener('change', function () {
+        var rs = document.getElementById('sw-role');
+        rs.innerHTML = '<option value="">Job role (optional)</option>';
+        swRoles.filter(function (x) { return x.department_id === deptSel.value || x.departmentId === deptSel.value; })
+          .forEach(function (x) { var o = document.createElement('option'); o.value = x.id; o.textContent = x.name; rs.appendChild(o); });
+      });
+      document.getElementById('sw-add').addEventListener('click', function () {
+        var fn = document.getElementById('sw-fn').value.trim();
+        var em = document.getElementById('sw-em').value.trim();
+        if (!fn || !em) { pageError('First name and email are required.'); return; }
+        var payload = {
+          firstName: fn, lastName: document.getElementById('sw-ln').value.trim(),
+          email: em, role: 'employee',
+          departmentId: document.getElementById('sw-dept').value || null,
+          jobRoleId: document.getElementById('sw-role').value || null,
+        };
+        api('/api/users', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
+          if (!r.ok) { pageError((r.data && r.data.error) || 'Could not add member.'); return; }
+          document.getElementById('sw-fn').value = ''; document.getElementById('sw-ln').value = '';
+          document.getElementById('sw-em').value = '';
+          refreshMemberList();
+          pageSuccess(fn + ' added.');
+        }).catch(function () { pageError('Could not add member.'); });
+      });
+      refreshMemberList();
+    }
+    function refreshMemberList() {
+      api('/api/users').then(function (r) {
+        var users = ((r.ok && (r.data.users || r.data)) || []).filter(function (u) { return u.role !== 'owner'; });
+        renderMembers(users);
+      }).catch(function () {});
+    }
+    function renderMembers(users) {
+      var box = document.getElementById('sw-members');
+      if (!box) return;
+      if (!users.length) { box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No team members yet.</p>'; return; }
+      box.innerHTML = users.map(function (u) {
+        var nm = esc((u.first_name || u.firstName || '') + ' ' + (u.last_name || u.lastName || ''));
+        return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg);border-radius:8px;padding:0.5rem 0.75rem;margin-bottom:0.4rem"><span><strong>' + nm + '</strong> <span style="color:var(--dim);font-size:0.85rem">' + esc(u.email || '') + '</span></span></div>';
+      }).join('');
+    }
+
+    // ---------- Step 3: Staffing ----------
+    function showStaffing() {
+      show(progressHtml('staffing') + '<h2 style="margin-top:0">Staffing targets 🎯</h2>' +
+        '<p style="color:var(--dim)">How many people do you need on each shift? This powers the "who\'s short" alerts.</p>' +
+        '<div id="sw-targets"><p style="color:var(--dim)">Loading…</p></div>' +
+        navRow(function () { prevStepBefore('staffing'); }, 'Save & continue', saveStaffing, null));
+      wireNav(function () { prevStepBefore('staffing'); }, saveStaffing, null);
+      api('/api/schedule/shift-types').then(function (r) {
+        var types = (r.ok && (r.data.shiftTypes || r.data)) || [];
+        var box = document.getElementById('sw-targets');
+        if (!types.length) { box.innerHTML = '<p style="color:var(--dim)">No shift types yet — skipping this step is fine.</p>'; return; }
+        box.innerHTML = types.map(function (t) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg);border-radius:8px;padding:0.6rem 0.75rem;margin-bottom:0.4rem">' +
+            '<strong>' + esc(t.name) + '</strong>' +
+            '<label style="display:flex;align-items:center;gap:0.5rem;color:var(--dim);font-size:0.9rem">Needed <input type="number" min="0" max="20" value="1" data-stid="' + t.id + '" style="width:64px;padding:0.4rem;border-radius:8px;border:1px solid var(--border)"></label></div>';
+        }).join('');
+      }).catch(function () { document.getElementById('sw-targets').innerHTML = '<p style="color:#991b1b">Could not load shift types.</p>'; });
+    }
+    function saveStaffing() {
+      var targets = [];
+      document.querySelectorAll('#sw-targets input[data-stid]').forEach(function (inp) {
+        targets.push({ shiftTypeId: inp.getAttribute('data-stid'), targetCount: parseInt(inp.value, 10) || 0 });
+      });
+      if (!targets.length) { nextStepAfter('staffing'); return; }
+      api('/api/schedule/staffing-targets', { method: 'PUT', body: JSON.stringify({ targets: targets }) })
+        .then(function (r) {
+          if (r.ok) { pageSuccess('Staffing targets saved.'); nextStepAfter('staffing'); }
+          else pageError((r.data && r.data.error) || 'Could not save targets.');
+        }).catch(function () { pageError('Could not save targets.'); });
+    }
+
+    // ---------- Step 4: Company ----------
+    function showCompany() {
+      var tzs = ['America/Chicago', 'America/New_York', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Anchorage', 'Pacific/Honolulu', 'America/Toronto', 'Europe/London', 'Europe/Paris', 'Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney', 'UTC'];
+      show(progressHtml('company') + '<h2 style="margin-top:0">Company settings ⚙️</h2>' +
+        '<p style="color:var(--dim)">The basics — you can change these anytime in Settings.</p>' +
+        '<label style="display:block;margin-bottom:0.7rem">Timezone<br><select id="sw-tz" style="width:100%;padding:0.7rem;border-radius:10px;border:1px solid var(--border);margin-top:0.3rem">' +
+        tzs.map(function (z) { return '<option value="' + z + '"' + (z === 'America/Chicago' ? ' selected' : '') + '>' + z.replace('_', ' ') + '</option>'; }).join('') + '</select></label>' +
+        '<label style="display:block;margin-bottom:0.7rem">Week starts on<br><select id="sw-ws" style="width:100%;padding:0.7rem;border-radius:10px;border:1px solid var(--border);margin-top:0.3rem">' +
+        ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].map(function (d) { return '<option value="' + d + '"' + (d === 'monday' ? ' selected' : '') + '>' + d.charAt(0).toUpperCase() + d.slice(1) + '</option>'; }).join('') + '</select></label>' +
+        navRow(function () { prevStepBefore('company'); }, 'Save & continue', saveCompany, null));
+      wireNav(function () { prevStepBefore('company'); }, saveCompany, null);
+    }
+    function saveCompany() {
+      api('/api/schedule/general-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ timezone: document.getElementById('sw-tz').value, week_start: document.getElementById('sw-ws').value }),
+      }).then(function (r) {
+        if (r.ok) { lsSet('qs-setup-company', '1'); pageSuccess('Company settings saved.'); nextStepAfter('company'); }
+        else pageError((r.data && r.data.error) || 'Could not save settings.');
+      }).catch(function () { pageError('Could not save settings.'); });
+    }
+
+    // ---------- Step 5: Invites ----------
+    function showInvites() {
+      show(progressHtml('invites') + '<h2 style="margin-top:0">Invite your team ✉️</h2>' +
+        '<p style="color:var(--dim)">Send login invites so your team can get started.</p>' +
+        '<div id="sw-invlist"><p style="color:var(--dim)">Loading…</p></div>' +
+        navRow(function () { prevStepBefore('invites'); }, 'Finish', function () { showDone(); }, null));
+      wireNav(function () { prevStepBefore('invites'); }, function () { showDone(); }, null);
+      api('/api/users').then(function (r) {
+        var users = ((r.ok && (r.data.users || r.data)) || []).filter(function (u) { return u.role !== 'owner'; });
+        var box = document.getElementById('sw-invlist');
+        if (!users.length) { box.innerHTML = '<p style="color:var(--dim)">No team members to invite yet — add them in the Team step first.</p>'; return; }
+        box.innerHTML = users.map(function (u) {
+          var nm = esc((u.first_name || u.firstName || '') + ' ' + (u.last_name || u.lastName || ''));
+          return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg);border-radius:8px;padding:0.6rem 0.75rem;margin-bottom:0.4rem">' +
+            '<span><strong>' + nm + '</strong><br><span style="color:var(--dim);font-size:0.85rem">' + esc(u.email || '') + '</span></span>' +
+            '<button type="button" class="btn-secondary btn-sm" data-invite="' + u.id + '">Send invite</button></div>';
+        }).join('') +
+        '<button type="button" class="btn" style="width:100%;padding:0.8rem;border-radius:10px;margin-top:0.6rem" id="sw-invite-all">Send all invites</button>';
+        function sendOne(id, btn) {
+          if (btn) btn.disabled = true;
+          api('/api/users/' + id + '/send-invite', { method: 'POST' }).then(function (rr) {
+            if (rr.ok) { if (btn) { btn.textContent = 'Sent ✓'; } }
+            else { if (btn) btn.disabled = false; pageError((rr.data && rr.data.error) || 'Could not send invite.'); }
+          }).catch(function () { if (btn) btn.disabled = false; pageError('Could not send invite.'); });
+        }
+        box.querySelectorAll('[data-invite]').forEach(function (b) {
+          b.addEventListener('click', function () { sendOne(b.getAttribute('data-invite'), b); });
+        });
+        document.getElementById('sw-invite-all').addEventListener('click', function () {
+          var btns = Array.prototype.slice.call(box.querySelectorAll('[data-invite]'));
+          (function next(i) {
+            if (i >= btns.length) { pageSuccess('Invites sent.'); return; }
+            var b = btns[i];
+            if (b.textContent.indexOf('Sent') === 0) return next(i + 1);
+            api('/api/users/' + b.getAttribute('data-invite') + '/send-invite', { method: 'POST' })
+              .then(function (rr) { if (rr.ok) b.textContent = 'Sent ✓'; next(i + 1); })
+              .catch(function () { next(i + 1); });
+          })(0);
+        });
+      }).catch(function () { document.getElementById('sw-invlist').innerHTML = '<p style="color:#991b1b">Could not load team.</p>'; });
+    }
+
+    // ---------- Done ----------
+    function showDone() {
+      _current = 'done';
       try { localStorage.setItem('qs-setup-done', '1'); } catch (e) {}
+      hideNudge();
+      show('<h2 style="margin-top:0">You\'re all set! 🎉</h2>' +
+        '<p>Your company is ready. Add shifts on the Schedule tab to get going.</p>' +
+        '<button type="button" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-top:0.6rem" id="sw-done">Start scheduling</button>');
       document.getElementById('sw-done').addEventListener('click', function () {
         close();
         window.location.hash = '#schedule';
@@ -10466,21 +10674,51 @@
       });
     }
 
-    // ---- Auto-show for new companies (owner, no departments yet) ----
-    function maybeShow() {
-      try { if (localStorage.getItem('qs-setup-done')) return; } catch (e) {}
+    // ---------- "Finish setup" nudge banner ----------
+    function hideNudge() { var n = document.getElementById('sw-nudge'); if (n) n.remove(); }
+    window.qsSetupNudge = function () {
+      hideNudge();
       api('/api/auth/me').then(function (r) {
         if (!r.ok || !r.data.user || r.data.user.role !== 'owner') return;
-        api('/api/departments').then(function (dr) {
-          var depts = (dr.ok && dr.data.departments) || [];
-          if (!depts.length) window.openSetupWizard();
+        api('/api/schedule/onboarding/status').then(function (sr) {
+          var s = (sr.ok && sr.data.steps) || {};
+          var doneCount = ['structure', 'team', 'staffing', 'invites'].filter(function (k) { return s[k]; }).length + (lsGet('qs-setup-company') ? 1 : 0);
+          if (doneCount >= 5 || lsGet('qs-setup-done')) return;
+          if (lsGet('qs-setup-nudge-off')) return;
+          var bar = document.createElement('div');
+          bar.id = 'sw-nudge';
+          bar.style.cssText = 'background:linear-gradient(90deg,var(--accent),#7c3aed);color:#fff;padding:0.55rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:0.8rem;font-size:0.9rem';
+          bar.innerHTML = '<span>🧙 Finish setting up your company (' + doneCount + ' of 5 steps)</span>' +
+            '<span style="display:flex;gap:0.5rem;align-items:center"><button type="button" id="sw-nudge-go" style="background:#fff;color:#111;border:none;border-radius:8px;padding:0.35rem 0.9rem;font-weight:700;cursor:pointer">Continue</button>' +
+            '<button type="button" id="sw-nudge-x" style="background:transparent;color:#fff;border:none;font-size:1.1rem;cursor:pointer">×</button></span>';
+          var header = document.querySelector('header');
+          if (header && header.parentNode) header.parentNode.insertBefore(bar, header.nextSibling);
+          else document.body.insertBefore(bar, document.body.firstChild);
+          document.getElementById('sw-nudge-go').addEventListener('click', function () { window.openSetupWizard(); });
+          document.getElementById('sw-nudge-x').addEventListener('click', function () { lsSet('qs-setup-nudge-off', '1'); hideNudge(); });
+        }).catch(function () {});
+      }).catch(function () {});
+    };
+
+    // ---- Auto-show for new companies ----
+    function maybeShow() {
+      api('/api/auth/me').then(function (r) {
+        if (!r.ok || !r.data.user || r.data.user.role !== 'owner') return;
+        api('/api/schedule/onboarding/status').then(function (sr) {
+          var s = (sr.ok && sr.data.steps) || {};
+          var incomplete = !s.structure || !s.team || !s.staffing || !lsGet('qs-setup-company') || !s.invites;
+          if (incomplete && !lsGet('qs-setup-done')) window.openSetupWizard();
+          else window.qsSetupNudge();
         }).catch(function () {});
       }).catch(function () {});
     }
     if (document.readyState === 'complete') setTimeout(maybeShow, 1500);
     else window.addEventListener('load', function () { setTimeout(maybeShow, 1500); });
+    // Also refresh the nudge when navigating.
+    window.addEventListener('hashchange', function () { setTimeout(function () { if (modal.classList.contains('hidden')) window.qsSetupNudge(); }, 800); });
   })();
   </script>
+
 
 </body>
 </html>

@@ -3558,6 +3558,35 @@ async function applyOnboardingSetup(
   return { departments: deptCount, jobRoles: roleCount, shiftTypes: typeCount };
 }
 
+// GET /api/schedule/onboarding/status — which setup steps are complete (owner only).
+// Detects real state so the wizard resumes correctly on any device.
+router.get('/onboarding/status', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: deptRows } = await query(
+      'SELECT COUNT(*) AS c FROM departments WHERE company_id = $1', [companyId]);
+    const { rows: userRows } = await query(
+      `SELECT COUNT(*) AS c FROM users WHERE company_id = $1 AND role <> 'owner' AND is_active = true`,
+      [companyId]);
+    const { rows: targetRows } = await query(
+      'SELECT COUNT(*) AS c FROM staffing_targets WHERE company_id = $1', [companyId]);
+    const { rows: inviteRows } = await query(
+      `SELECT COUNT(*) AS c FROM invites WHERE company_id = $1 AND sent_at IS NOT NULL`,
+      [companyId]);
+    res.json({
+      steps: {
+        structure: Number(deptRows[0].c) > 0,
+        team: Number(userRows[0].c) > 0,
+        staffing: Number(targetRows[0].c) > 0,
+        invites: Number(inviteRows[0].c) > 0,
+      },
+    });
+  } catch (err) {
+    console.error('[schedule] onboarding status failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // GET /api/schedule/onboarding/templates — list available industry templates.
 router.get('/onboarding/templates', requireRole('owner'), async (_req: Request, res: Response) => {
   res.json({
