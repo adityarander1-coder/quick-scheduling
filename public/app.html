@@ -656,6 +656,7 @@
       <button class="tab-btn" data-tab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
       <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
       <button class="tab-btn" data-tab="ask">Ask Q-Scheduler</button>
+      <button class="tab-btn" data-tab="academic">Academic</button>
       <button class="tab-btn" data-tab="link">Share Links</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="billing">Billing</button>
@@ -3370,6 +3371,55 @@
     </section>
 
     <!-- Ask Q-Scheduler tab -->
+    <section id="tab-academic" class="tab-panel">
+      <style>
+        #tab-academic .ac-head { display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        #tab-academic .ac-h1 { margin: 0; font-size: 1.5rem; color: var(--text); }
+        #tab-academic .ac-date { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 0.45rem 1rem; font-weight: 600; font-size: 0.9rem; }
+        #tab-academic .ac-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; margin-bottom: 1rem; }
+        #tab-academic .ac-stat { background: var(--surface); border-radius: 14px; padding: 1rem 1.1rem; box-shadow: 0 1px 3px rgba(15,23,42,.06); }
+        #tab-academic .ac-stat .k { font-size: 0.72rem; color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+        #tab-academic .ac-stat .v { font-size: 1.9rem; font-weight: 800; margin-top: 0.2rem; }
+        #tab-academic .ac-stat .t { font-size: 0.78rem; color: var(--dim); margin-top: 0.15rem; }
+        #tab-academic .ac-stat.warn .v { color: #dc2626; }
+        #tab-academic .ac-cols { display: grid; grid-template-columns: 1.5fr 1fr; gap: 0.8rem; }
+        #tab-academic .ac-card { background: var(--surface); border-radius: 14px; padding: 1.1rem 1.2rem; box-shadow: 0 1px 3px rgba(15,23,42,.06); margin-bottom: 0.8rem; }
+        #tab-academic .ac-card h3 { margin: 0 0 0.6rem; font-size: 1.05rem; }
+        #tab-academic .ac-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0; border-bottom: 1px solid var(--bg); cursor: pointer; }
+        #tab-academic .ac-row:last-child { border-bottom: none; }
+        #tab-academic .ac-row:hover { background: var(--bg); border-radius: 8px; }
+        #tab-academic .ac-time { background: #eff6ff; color: #1d4ed8; font-weight: 700; font-size: 0.75rem; border-radius: 8px; padding: 0.35rem 0.5rem; min-width: 96px; text-align: center; flex-shrink: 0; }
+        #tab-academic .ac-nm { font-weight: 700; }
+        #tab-academic .ac-meta { font-size: 0.82rem; color: var(--dim); }
+        #tab-academic .ac-tag { margin-left: auto; font-size: 0.7rem; font-weight: 700; border-radius: 999px; padding: 0.25rem 0.65rem; flex-shrink: 0; }
+        #tab-academic .ac-tag.live { background: #dcfce7; color: #15803d; }
+        #tab-academic .ac-tag.soon { background: #fef3c7; color: #b45309; }
+        #tab-academic .ac-tag.sub { background: #fee2e2; color: #b91c1c; }
+        #tab-academic .ac-tag.done { background: #e2e8f0; color: #475569; }
+        #tab-academic .ac-line { display: flex; justify-content: space-between; align-items: center; padding: 0.55rem 0; border-bottom: 1px solid var(--bg); font-size: 0.92rem; }
+        #tab-academic .ac-line:last-child { border-bottom: none; }
+        #tab-academic .ac-avail { font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.25rem 0.65rem; }
+        #tab-academic .ac-avail.free { background: #dcfce7; color: #15803d; }
+        #tab-academic .ac-avail.busy { background: #e2e8f0; color: #475569; }
+        #tab-academic .ac-ev { padding: 0.55rem 0; border-bottom: 1px solid var(--bg); font-size: 0.92rem; cursor: pointer; }
+        #tab-academic .ac-ev:last-child { border-bottom: none; }
+        #tab-academic .ac-ev .d { font-size: 0.72rem; color: var(--dim); font-weight: 700; text-transform: uppercase; }
+        #tab-academic .ac-empty { color: var(--dim); font-size: 0.9rem; padding: 0.6rem 0; }
+        @media (max-width: 700px) {
+          #tab-academic .ac-stats { grid-template-columns: repeat(2, 1fr); }
+          #tab-academic .ac-cols { grid-template-columns: 1fr; }
+        }
+      </style>
+      <div class="ac-head">
+        <h1 class="ac-h1">🎓 Academic</h1>
+        <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+          <span class="ac-date" id="ac-date"></span>
+          <button type="button" class="btn" id="ac-add" style="padding:0.6rem 1.1rem;border-radius:10px">＋ Add session</button>
+        </div>
+      </div>
+      <div id="ac-body"></div>
+    </section>
+
     <section id="tab-ask" class="tab-panel">
       <div class="card">
         <h2>Ask Q-Scheduler</h2>
@@ -9758,11 +9808,210 @@
       });
     })();
 
+    // ---------- Academic tab ----------
+    // Lectures / teaching sessions. Lecturers are the same team members as the
+    // schedule — picked from the roster (GET /api/users), never re-entered.
+    (function () {
+      var acUsers = [], acDepts = [], acSessions = [];
+      var loaded = false;
+
+      function fmtD(d) {
+        var m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+        return d.getFullYear() + '-' + m + '-' + day;
+      }
+      function fmtTime(t) {
+        if (!t) return '';
+        var parts = String(t).split(':'); var h = parseInt(parts[0], 10), min = parts[1] || '00';
+        var ap = h >= 12 ? 'PM' : 'AM'; var h12 = h % 12 === 0 ? 12 : h % 12;
+        return h12 + ':' + min + ' ' + ap;
+      }
+      function nowMin() { var n = new Date(); return n.getHours() * 60 + n.getMinutes(); }
+      function toMin(t) { if (!t) return null; var p = String(t).split(':'); return parseInt(p[0], 10) * 60 + parseInt(p[1] || '0', 10); }
+      function sessionTag(s) {
+        if (!s.lecturerUserId) return '<span class="ac-tag sub">Needs lecturer</span>';
+        var st = toMin(s.startTime), en = toMin(s.endTime), nw = nowMin();
+        if (st !== null && st > nw) return '<span class="ac-tag soon">Starts soon</span>';
+        if (st !== null && en !== null && nw >= st && nw <= en) return '<span class="ac-tag live">In session</span>';
+        if (en !== null && nw > en) return '<span class="ac-tag done">Done</span>';
+        return '<span class="ac-tag live">Today</span>';
+      }
+      function lecturerName(s) { return s.lecturerName || '—'; }
+
+      window.qsLoadAcademicTab = function () { load(); };
+
+      function load() {
+        var today = new Date();
+        var to = new Date(); to.setDate(to.getDate() + 14);
+        var fromS = fmtD(today), toS = fmtD(to);
+        document.getElementById('ac-date').textContent = '📅 ' + today.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+        Promise.all([
+          api('/api/schedule/academic-sessions?from=' + fromS + '&to=' + toS),
+          api('/api/users'),
+          api('/api/departments'),
+        ]).then(function (rs) {
+          if (!rs[0].ok) { pageError('Could not load the academic dashboard.'); return; }
+          acSessions = rs[0].data.sessions || [];
+          acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
+          acDepts = (rs[2].ok && rs[2].data.departments) || [];
+          loaded = true;
+          render();
+        }).catch(function () { pageError('Could not load the academic dashboard.'); });
+      }
+
+      function render() {
+        var today = fmtD(new Date());
+        var todays = acSessions.filter(function (s) { return s.date === today && s.kind === 'session'; });
+        var upcoming = acSessions.filter(function (s) { return s.date > today || (s.date === today && s.kind === 'event'); });
+        var lecturersToday = {};
+        todays.forEach(function (s) { if (s.lecturerUserId) lecturersToday[s.lecturerUserId] = s.lecturerName; });
+        var needLect = todays.filter(function (s) { return !s.lecturerUserId; });
+        var locsToday = {};
+        todays.forEach(function (s) { if (s.location) locsToday[s.location] = true; });
+
+        var html = '<div class="ac-stats">' +
+          statCard('Sessions today', todays.length, upcoming.length + ' more in next 14 days', false) +
+          statCard('Lecturers on', Object.keys(lecturersToday).length, 'from your team roster', false) +
+          statCard('Need a lecturer', needLect.length, needLect.length ? esc(needLect[0].title) : 'All covered', needLect.length > 0) +
+          statCard('Locations in use', Object.keys(locsToday).length, 'today', false) +
+          '</div><div class="ac-cols"><div><div class="ac-card"><h3>Today\'s sessions</h3>' +
+          (todays.length ? todays.map(rowHtml).join('') : '<div class="ac-empty">No sessions today. Tap ＋ Add session to plan one.</div>') +
+          '</div><div class="ac-card"><h3>Upcoming</h3>' +
+          (upcoming.length ? upcoming.map(evHtml).join('') : '<div class="ac-empty">Nothing scheduled in the next 14 days.</div>') +
+          '</div></div><div><div class="ac-card"><h3>Lecturer load today</h3>' + loadHtml(todays) +
+          '</div><div class="ac-card"><h3>Locations today</h3>' + locsHtml(todays) +
+          '</div></div></div>';
+        document.getElementById('ac-body').innerHTML = html;
+        document.querySelectorAll('#ac-body [data-acedit]').forEach(function (el) {
+          el.addEventListener('click', function () { openForm(el.getAttribute('data-acedit')); });
+        });
+      }
+
+      function statCard(k, v, t, warn) {
+        return '<div class="ac-stat' + (warn ? ' warn' : '') + '"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="t">' + t + '</div></div>';
+      }
+      function rowHtml(s) {
+        var time = s.startTime ? (fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '')) : 'All day';
+        return '<div class="ac-row" data-acedit="' + s.id + '"><div class="ac-time">' + esc(time) + '</div>' +
+          '<div><div class="ac-nm">' + esc(s.title) + '</div><div class="ac-meta">' + esc(lecturerName(s)) +
+          (s.location ? ' · ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + '</div></div>' +
+          sessionTag(s) + '</div>';
+      }
+      function evHtml(s) {
+        var d = new Date(s.date + 'T12:00:00');
+        return '<div class="ac-ev" data-acedit="' + s.id + '"><div class="d">' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + (s.kind === 'event' ? ' · Event' : ' · Session') + '</div>' +
+          '<strong>' + esc(s.title) + '</strong>' +
+          '<div class="ac-meta">' + (s.startTime ? fmtTime(s.startTime) + ' · ' : '') + esc(lecturerName(s)) + (s.location ? ' · ' + esc(s.location) : '') + '</div></div>';
+      }
+      function loadHtml(todays) {
+        var counts = {};
+        todays.forEach(function (s) { if (s.lecturerUserId) counts[s.lecturerUserId] = (counts[s.lecturerUserId] || 0) + 1; });
+        var names = {};
+        todays.forEach(function (s) { if (s.lecturerUserId) names[s.lecturerUserId] = s.lecturerName; });
+        var ids = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+        if (!ids.length) return '<div class="ac-empty">No lecturers assigned yet today.</div>';
+        return ids.map(function (id) {
+          return '<div class="ac-line"><span>' + esc(names[id] || '') + '</span><span class="ac-avail busy">' + counts[id] + ' session' + (counts[id] === 1 ? '' : 's') + '</span></div>';
+        }).join('');
+      }
+      function locsHtml(todays) {
+        var byLoc = {};
+        todays.forEach(function (s) { if (s.location) { (byLoc[s.location] = byLoc[s.location] || []).push(s); } });
+        var locs = Object.keys(byLoc).sort();
+        if (!locs.length) return '<div class="ac-empty">No locations used today.</div>';
+        var nw = nowMin();
+        return locs.map(function (loc) {
+          var live = byLoc[loc].some(function (s) {
+            var st = toMin(s.startTime), en = toMin(s.endTime);
+            return st !== null && en !== null && nw >= st && nw <= en;
+          });
+          var first = byLoc[loc][0];
+          return '<div class="ac-line"><span>' + esc(loc) + '</span>' +
+            (live ? '<span class="ac-avail busy">' + esc(first.title) + ' in session</span>'
+                  : '<span class="ac-avail free">' + byLoc[loc].length + ' session' + (byLoc[loc].length === 1 ? '' : 's') + ' today</span>') + '</div>';
+        }).join('');
+      }
+
+      // ---------- Add / edit form ----------
+      function openForm(id) {
+        var s = id ? acSessions.find(function (x) { return x.id === id; }) : null;
+        var old = document.getElementById('ac-modal');
+        if (old) old.remove();
+        var lecturerOpts = '<option value="">— Needs a lecturer —</option>' + acUsers
+          .filter(function (u) { return u.role !== 'owner'; })
+          .map(function (u) {
+            var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
+            return '<option value="' + u.id + '"' + (s && s.lecturerUserId === u.id ? ' selected' : '') + '>' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
+          }).join('');
+        var deptOpts = '<option value="">No department</option>' + acDepts.map(function (d) {
+          return '<option value="' + d.id + '"' + (s && s.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+        }).join('');
+        var m = document.createElement('div');
+        m.id = 'ac-modal';
+        m.className = 'modal-back';
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem';
+        m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:520px;max-height:88vh;overflow-y:auto">' +
+          '<h2 style="margin-top:0">' + (s ? 'Edit session' : 'Add session') + '</h2>' +
+          '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Kind<br><select id="acf-kind" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"><option value="session"' + (s && s.kind === 'session' ? ' selected' : '') + '>Session / lecture</option><option value="event"' + (s && s.kind === 'event' ? ' selected' : '') + '>Event</option></select></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Lecturer (from team members)<br><select id="acf-lecturer" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem">' + lecturerOpts + '</select></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Department<br><select id="acf-dept" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem">' + deptOpts + '</select></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : fmtD(new Date())) + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          '<label style="flex:1">End<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label></div>' +
+          '<label style="display:block;margin-bottom:0.7rem">Location<br><input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          '<label style="display:block;margin-bottom:1rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
+          '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-save">Save</button></div>' +
+          (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete session</button>' : '') +
+          '</div>';
+        document.body.appendChild(m);
+        m.querySelector('#acf-cancel').addEventListener('click', function () { m.remove(); });
+        m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
+        m.querySelector('#acf-save').addEventListener('click', function () {
+          var payload = {
+            title: m.querySelector('#acf-title').value.trim(),
+            kind: m.querySelector('#acf-kind').value,
+            lecturerUserId: m.querySelector('#acf-lecturer').value || null,
+            departmentId: m.querySelector('#acf-dept').value || null,
+            date: m.querySelector('#acf-date').value,
+            startTime: m.querySelector('#acf-start').value || null,
+            endTime: m.querySelector('#acf-end').value || null,
+            location: m.querySelector('#acf-loc').value.trim() || null,
+            notes: m.querySelector('#acf-notes').value.trim() || null,
+          };
+          if (!payload.title) { pageError('A title is required.'); return; }
+          if (!payload.date) { pageError('Pick a date.'); return; }
+          var req = s
+            ? api('/api/schedule/academic-sessions/' + s.id, { method: 'PUT', body: JSON.stringify(payload) })
+            : api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) });
+          req.then(function (r) {
+            if (r.ok) { m.remove(); pageSuccess(s ? 'Session updated.' : 'Session added.'); load(); }
+            else pageError((r.data && r.data.error) || 'Could not save.');
+          }).catch(function () { pageError('Could not save.'); });
+        });
+        var del = m.querySelector('#acf-del');
+        if (del) del.addEventListener('click', function () {
+          if (!confirm('Delete this session?')) return;
+          api('/api/schedule/academic-sessions/' + s.id, { method: 'DELETE' }).then(function (r) {
+            if (r.ok) { m.remove(); pageSuccess('Session deleted.'); load(); }
+            else pageError((r.data && r.data.error) || 'Could not delete.');
+          }).catch(function () { pageError('Could not delete.'); });
+        });
+      }
+
+      var addBtn = document.getElementById('ac-add');
+      if (addBtn) addBtn.addEventListener('click', function () {
+        if (!loaded) { load(); setTimeout(function () { openForm(null); }, 600); }
+        else openForm(null);
+      });
+    })();
+
     var routes = {
       'schedule': function() { activateTab('schedule'); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
       'ask': function() { activateTab('ask'); },
+      'academic': function() { activateTab('academic'); if (window.qsLoadAcademicTab) window.qsLoadAcademicTab(); },
       'settings': function(sub) { activateTab('settings', sub || 'departments'); },
       'bulk': function() { activateTab('bulk'); },
       'link': function() { activateTab('link'); },
@@ -9777,7 +10026,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);

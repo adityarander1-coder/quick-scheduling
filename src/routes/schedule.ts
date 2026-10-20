@@ -5081,6 +5081,157 @@ router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'emp
   }
 });
 
+// ---------- Academic dashboard ----------
+// Lecturers are team members from the same roster database (users table) — no
+// duplicate people entry; the Academic tab reads lecturers straight from Team.
+function academicRow(r: any) {
+  return {
+    id: r.id,
+    title: r.title,
+    lecturerUserId: r.lecturer_user_id,
+    lecturerName: [r.first_name, r.last_name].filter(Boolean).join(' ') || (r.lecturer_user_id ? '—' : null),
+    lecturerActive: r.lecturer_active !== false,
+    departmentId: r.department_id,
+    departmentName: r.department_name || null,
+    date: r.session_date instanceof Date ? r.session_date.toISOString().slice(0, 10) : r.session_date,
+    startTime: r.start_time,
+    endTime: r.end_time,
+    location: r.location,
+    kind: r.kind,
+    notes: r.notes,
+    createdAt: r.created_at,
+  };
+}
+
+async function academicVisibleDeptIds(req: Request): Promise<string[] | null> {
+  const companyId = req.session.companyId!;
+  const role = req.session.role!;
+  if (role === 'owner') return null; // null = all
+  const access = await getDepartmentAccess(req.session.userId!, companyId);
+  const ids = access.view || [];
+  if (role === 'scheduler') return ids;
+  const { rows } = await query('SELECT department_id FROM users WHERE id = $1 AND company_id = $2',
+    [req.session.userId!, companyId]);
+  return rows[0] && rows[0].department_id ? [rows[0].department_id] : [];
+}
+
+// GET /api/schedule/academic-sessions?from=YYYY-MM-DD&to=YYYY-MM-DD — all roles, department-scoped.
+router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const ids = await academicVisibleDeptIds(req);
+    const clauses = ['s.company_id = $1'];
+    const params: any[] = [companyId];
+    if (ids) {
+      params.push(ids);
+      clauses.push(`(s.department_id = ANY($${params.length}) )`);
+    }
+    if (req.query.from) { params.push(String(req.query.from)); clauses.push(`s.session_date >= $${params.length}`); }
+    if (req.query.to) { params.push(String(req.query.to)); clauses.push(`s.session_date <= $${params.length}`); }
+    const { rows } = await query(
+      `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name
+       FROM academic_sessions s
+       LEFT JOIN users u ON u.id = s.lecturer_user_id
+       LEFT JOIN departments d ON d.id = s.department_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY s.session_date, s.start_time NULLS LAST, s.title`,
+      params);
+    res.json({ sessions: rows.map(academicRow) });
+  } catch (err) {
+    console.error('[schedule] academic sessions list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+async function academicDeptCheck(req: Request, res: Response, departmentId: string | null): Promise<boolean> {
+  const role = req.session.role!;
+  if (role === 'owner') return true;
+  if (role !== 'scheduler') { res.status(403).json({ error: 'You do not have permission to do that.' }); return false; }
+  if (!departmentId) { res.status(403).json({ error: 'Only the owner can add sessions without a department.' }); return false; }
+  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+  if (!access.edit.includes(departmentId)) {
+    res.status(403).json({ error: 'You do not have Edit access to that department.' });
+    return false;
+  }
+  return true;
+}
+
+// POST /api/schedule/academic-sessions — owner or scheduler (edit-scoped).
+router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const title = String(b.title || '').trim();
+    if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
+    const departmentId = b.departmentId ? String(b.departmentId) : null;
+    if (!(await academicDeptCheck(req, res, departmentId))) return;
+    if (b.lecturerUserId) {
+      const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
+      if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
+    }
+    const kind = b.kind === 'event' ? 'event' : 'session';
+    const { rows } = await query(
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [crypto.randomUUID(), companyId, title, b.lecturerUserId || null, departmentId,
+       b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
+       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!]);
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('[schedule] academic session create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/academic-sessions/:id — owner or scheduler (edit-scoped).
+router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const cur = rows[0];
+    const b = req.body ?? {};
+    const departmentId = b.departmentId !== undefined ? (b.departmentId ? String(b.departmentId) : null) : cur.department_id;
+    if (!(await academicDeptCheck(req, res, departmentId))) return;
+    if (b.lecturerUserId) {
+      const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
+      if (!lu.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
+    }
+    const title = b.title !== undefined ? String(b.title).trim() : cur.title;
+    if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
+    const kind = b.kind !== undefined ? (b.kind === 'event' ? 'event' : 'session') : cur.kind;
+    await query(
+      `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9 WHERE id=$10`,
+      [title, b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id,
+       departmentId, b.date || cur.session_date,
+       b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
+       b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
+       b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
+       kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
+       req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] academic session update failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/academic-sessions/:id — owner or scheduler (edit-scoped).
+router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT department_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    if (!(await academicDeptCheck(req, res, rows[0].department_id))) return;
+    await query('DELETE FROM academic_sessions WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] academic session delete failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 export default router;
 
 // POST /api/schedule/scheduled-promotions — schedule future role promotions (owner/scheduler).
