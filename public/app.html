@@ -1543,7 +1543,7 @@
             if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="ev-claim-btn" data-evclaim="' + e.id + '" title="Pick up this session">✋ Pick it up — I\'ll present</button>';
             else if (sched.myId && e.lecturerUserId === sched.myId) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
             if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
-            return '<div class="shift-grid dash-ev-box">' +
+            return '<div class="shift-grid dash-ev-box" data-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer">' +
               '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
               '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div>' +
               '</div>';
@@ -3012,6 +3012,18 @@
             else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
           });
         }, true);
+        // Clicking a session box (not its pickup button) jumps to that
+        // session's dashboard, opened on its date in Day view.
+        $('sched-view').addEventListener('click', function (ev) {
+          if (ev.target.closest('[data-evclaim],[data-evunclaim]')) return;
+          var box = ev.target.closest('[data-evopen]');
+          if (!box) return;
+          var parts = (box.getAttribute('data-evopen') || '').split('|');
+          if (parts[0] && window.qsOpenDashboardAt) {
+            window.qsOpenDashboardAt(parts[0], parts[1]);
+            try { location.hash = '#dash/' + parts[0]; } catch (e) {}
+          }
+        });
         var evtTgl = $('sched-events-toggle');
         if (evtTgl) {
           evtTgl.checked = sched.showDashEvents;
@@ -10122,6 +10134,14 @@
         load();
       };
 
+      // Open a dashboard on a specific date in Day view — used when a
+      // session box is clicked on the main schedule (Deepika, 2026-10-20).
+      window.qsOpenDashboardAt = function (id, dateStr) {
+        if (dateStr) { var p = String(dateStr).split('-'); acAnchor = new Date(+p[0], +p[1] - 1, +p[2]); }
+        acView = 'day';
+        window.qsOpenDashboard(id);
+      };
+
       function load() {
         if (!curDash) return;
         var r = viewRange();
@@ -10152,9 +10172,11 @@
         var t = s.startTime ? fmtTime(s.startTime) : '';
         var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">↻</span>' : '';
         var conflict = acConflicts[s.id] ? ' box-shadow:0 0 0 2px #dc2626 inset;' : '';
-        return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + '" title="' + esc(s.title) + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
+        var mine = acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId);
+        var mineStyle = mine ? ' outline:2px solid #f59e0b; outline-offset:-2px;' : '';
+        return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '" title="' + esc(s.title) + (mine ? ' — ⭐ your session' : '') + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
           '<span class="ac-dot" style="background:' + color + '"></span>' +
-          '<span class="ac-chip-text"><strong>' + esc(s.title) + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
+          '<span class="ac-chip-text"><strong>' + esc(s.title) + (mine ? ' ⭐' : '') + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
           (s.lecturerName ? '<span class="ac-chip-who">' + esc(s.lecturerName) + '</span>' : '<span class="ac-chip-who ac-need">Needs presenter</span>') +
           (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
           (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') + '</span></div>';
@@ -10286,10 +10308,13 @@
           var claimBtn = '';
           if (!s.lecturerUserId) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
           else if (acMyId && s.lecturerUserId === acMyId) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
-          html += '<div class="ac-drow" data-acedit="' + s.id + '">' +
+          var mineTag = '', rowStyle = '';
+          if (acMyId && s.lecturerUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
+          else if (acMyId && s.supervisorUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re supervising</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
+          html += '<div class="ac-drow" data-acedit="' + s.id + '"' + rowStyle + '>' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + claimBtn + '</div></div></div>';
+            '<div class="ac-meta">' + mineTag + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + claimBtn + '</div></div></div>';
         });
         return html + '</div></div>';
       }
