@@ -3945,6 +3945,17 @@
               <div id="dash-new-depts" class="checklist" style="display:flex;flex-wrap:wrap;gap:0.5rem"></div>
             </div>
             <button type="button" class="btn" id="dash-new-save">＋ Add dashboard</button>
+            <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
+            <p class="muted">Rooms you can book sessions into. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and the session form will warn you when the room is already booked at that time.</p>
+            <div id="room-list"></div>
+            <h4>Add a room</h4>
+            <div class="form-row">
+              <input type="text" id="room-new-name" placeholder="Room name (e.g. Lecture Hall A)" style="max-width:340px">
+            </div>
+            <div class="form-row">
+              <input type="text" id="room-new-ics" placeholder="Calendar link (ICS) — optional" style="max-width:520px">
+            </div>
+            <button type="button" class="btn" id="room-new-save">＋ Add room</button>
           </div>
           <div id="subtab-rotations" class="sub-panel">
             <div class="set-head-row">
@@ -9892,6 +9903,51 @@
         }).join('') || '<span class="muted">No departments yet.</span>';
       }
 
+      // --- Rooms manager (same sub-tab) ---
+      function loadRooms() {
+        api('/api/schedule/rooms').then(function (r) {
+          var rooms = (r.ok && r.data.rooms) || [];
+          var wrap = el('room-list');
+          if (!wrap) return;
+          if (!rooms.length) { wrap.innerHTML = '<p class="muted">No rooms yet.</p>'; return; }
+          wrap.innerHTML = rooms.map(function (rm) {
+            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(rm.name) + '</strong>' +
+              (rm.hasFeed ? '<span style="background:#dcfce7;color:#166534;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">📅 Calendar linked</span>' : '<span style="background:#f1f5f9;color:#64748b;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">No calendar link</span>') +
+              '<button type="button" data-room-del="' + rm.id + '" style="margin-left:auto;padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></div>' +
+              '<div style="margin-top:0.55rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.icsUrl || '') + '" data-room-ics="' + rm.id + '" placeholder="Calendar link (ICS) — optional" style="flex:1;min-width:280px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
+              '<button type="button" class="btn-secondary" data-room-save="' + rm.id + '" style="padding:0.5rem 0.9rem;border-radius:8px">Save link</button></div></div>';
+          }).join('');
+          wrap.querySelectorAll('[data-room-del]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              if (!confirm('Delete this room? Sessions keep their location text.')) return;
+              api('/api/schedule/rooms/' + b.getAttribute('data-room-del'), { method: 'DELETE' }).then(function (r) {
+                if (r.ok) { pageSuccess('Room deleted.'); loadRooms(); } else pageError((r.data && r.data.error) || 'Could not delete.');
+              });
+            });
+          });
+          wrap.querySelectorAll('[data-room-save]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var id = b.getAttribute('data-room-save');
+              var url = wrap.querySelector('[data-room-ics="' + id + '"]').value.trim();
+              api('/api/schedule/rooms/' + id, { method: 'PUT', body: JSON.stringify({ icsUrl: url || null }) }).then(function (r) {
+                if (r.ok) { pageSuccess('Room updated.'); loadRooms(); } else pageError((r.data && r.data.error) || 'Could not save.');
+              });
+            });
+          });
+        }).catch(function () {});
+      }
+      var roomSave = el('room-new-save');
+      if (roomSave) roomSave.addEventListener('click', function () {
+        var name = el('room-new-name').value.trim();
+        if (!name) { pageError('Give the room a name.'); return; }
+        var url = el('room-new-ics').value.trim();
+        api('/api/schedule/rooms', { method: 'POST', body: JSON.stringify({ name: name, icsUrl: url || null }) }).then(function (r) {
+          if (r.ok) { pageSuccess('Room added.'); el('room-new-name').value = ''; el('room-new-ics').value = ''; loadRooms(); }
+          else pageError((r.data && r.data.error) || 'Could not add.');
+        });
+      });
+
       var save = el('dash-new-save');
       if (save) save.addEventListener('click', function () {
         var name = el('dash-new-name').value.trim();
@@ -9912,6 +9968,7 @@
       document.querySelector('[data-subtab="dashboards"]').addEventListener('click', function () {
         if (!dashLoaded) { dashLoaded = true; load(); }
         else load();
+        loadRooms();
       });
     })();
 
@@ -10216,7 +10273,9 @@
           '</div>' +
           '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start time<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="' + IN + '"></label>' +
           '<label style="flex:1">End time<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="' + IN + '"></label></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Location<br><input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
+          '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
+          '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
           '<label style="display:block;margin-bottom:1rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
           '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-save">Save</button></div>' +
@@ -10349,6 +10408,63 @@
         recurSel.addEventListener('change', syncRotationUI);
         dateInput.addEventListener('change', syncRotationUI);
         syncRotationUI();
+
+        // Room picker + availability (linked calendar + our sessions).
+        var roomSel = m.querySelector('#acf-room');
+        var locInput = m.querySelector('#acf-loc');
+        var roomInfo = m.querySelector('#acf-roominfo');
+        function fmtBlockTime(iso) {
+          var d = new Date(iso);
+          return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+        function checkRoom() {
+          var roomId = roomSel.value;
+          var date = dateInput.value;
+          if (!roomId || !date) { roomInfo.innerHTML = ''; return; }
+          roomInfo.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">Checking room calendar…</span>';
+          api('/api/schedule/room-availability?roomId=' + roomId + '&date=' + date).then(function (r) {
+            if (!r.ok) { roomInfo.innerHTML = ''; return; }
+            var d = r.data;
+            var st = m.querySelector('#acf-start').value, et = m.querySelector('#acf-end').value;
+            var overlap = null;
+            var lines = (d.busy || []).filter(function (b) { return !(s && b.sessionId === s.id); }).map(function (b) {
+              var when, bStart = null, bEnd = null;
+              if (b.allDay) { when = 'All day'; }
+              else if (b.start) { when = fmtBlockTime(b.start) + '–' + fmtBlockTime(b.end); bStart = new Date(b.start); bEnd = new Date(b.end); }
+              else { when = (b.startTime || '') + (b.endTime ? '–' + b.endTime : ''); }
+              if (st && bStart && bEnd) {
+                var p = date.split('-');
+                var sD = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), parseInt(st.split(':')[0], 10), parseInt(st.split(':')[1] || '0', 10));
+                var eD = et ? new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), parseInt(et.split(':')[0], 10), parseInt(et.split(':')[1] || '0', 10)) : new Date(sD.getTime() + 3600000);
+                if (sD < bEnd && eD > bStart) overlap = b;
+              }
+              return '<div style="font-size:0.85rem;padding:0.3rem 0">🕐 ' + esc(when) + ' — ' + esc(b.title || 'Booked') + (b.source === 'calendar' ? ' <span style="color:var(--dim)">(room calendar)</span>' : ' <span style="color:var(--dim)">(session here)</span>') + '</div>';
+            });
+            var warn = overlap ? '<div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.5rem 0.7rem;font-size:0.88rem;margin-bottom:0.4rem">⚠ This room is already booked at that time: ' + esc(overlap.title || 'Busy') + '</div>' : '';
+            var err = d.feedError ? '<div style="font-size:0.82rem;color:#b45309">Could not read the room calendar link — showing sessions only.</div>' : '';
+            roomInfo.innerHTML = warn + (lines.length ? '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:0.5rem 0.7rem"><div style="font-weight:600;font-size:0.85rem;margin-bottom:0.2rem">Booked in ' + esc(d.room.name) + ' that day:</div>' + lines.join('') + '</div>' : '<div style="font-size:0.85rem;color:#15803d">✓ ' + esc(d.room.name) + ' looks free that day.</div>') + err;
+          }).catch(function () { roomInfo.innerHTML = ''; });
+        }
+        api('/api/schedule/rooms').then(function (r) {
+          var rooms = (r.ok && r.data.rooms) || [];
+          rooms.forEach(function (rm) {
+            var o = document.createElement('option');
+            o.value = rm.id; o.textContent = rm.name + (rm.hasFeed ? ' 📅' : '');
+            roomSel.appendChild(o);
+          });
+          if (s && s.location) {
+            var match = rooms.filter(function (rm) { return rm.name.toLowerCase() === String(s.location).toLowerCase(); })[0];
+            if (match) { roomSel.value = match.id; checkRoom(); }
+          }
+        }).catch(function () {});
+        roomSel.addEventListener('change', function () {
+          var opt = roomSel.options[roomSel.selectedIndex];
+          if (roomSel.value) locInput.value = opt.textContent.replace(' 📅', '');
+          checkRoom();
+        });
+        dateInput.addEventListener('change', checkRoom);
+        m.querySelector('#acf-start').addEventListener('change', checkRoom);
+        m.querySelector('#acf-end').addEventListener('change', checkRoom);
 
         m.querySelector('#acf-cancel').addEventListener('click', function () { m.remove(); });
         m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });

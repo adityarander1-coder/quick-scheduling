@@ -5081,6 +5081,275 @@ router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'emp
   }
 });
 
+// ---------- Rooms / locations ----------
+// Rooms are company locations for dashboard sessions. A room can link an
+// external calendar feed (ICS — Outlook/Google room calendars can publish
+// one) so the session form can warn when the room is already booked.
+function roomRow(r: any) {
+  return { id: r.id, name: r.name, hasFeed: !!r.ics_url, icsUrl: r.ics_url || null, createdAt: r.created_at };
+}
+
+router.get('/rooms', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query('SELECT * FROM rooms WHERE company_id = $1 ORDER BY name', [req.session.companyId!]);
+    res.json({ rooms: rows.map(roomRow) });
+  } catch (err) {
+    console.error('[schedule] list rooms failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/rooms', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const name = b.name ? String(b.name).trim() : '';
+    if (!name) { res.status(400).json({ error: 'A room name is required.' }); return; }
+    const icsUrl = b.icsUrl ? String(b.icsUrl).trim() : null;
+    if (icsUrl && !/^https?:\/\//i.test(icsUrl)) { res.status(400).json({ error: 'The calendar link must start with http:// or https://' }); return; }
+    const companyId = req.session.companyId!;
+    const { rows: dupe } = await query('SELECT id FROM rooms WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+    if (dupe.length) { res.status(400).json({ error: 'A room with that name already exists.' }); return; }
+    const id = crypto.randomUUID();
+    await query('INSERT INTO rooms (id, company_id, name, ics_url, created_by) VALUES ($1,$2,$3,$4,$5)',
+      [id, companyId, name, icsUrl, req.session.userId!]);
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[schedule] create room failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.put('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT * FROM rooms WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Room not found.' }); return; }
+    const name = b.name !== undefined ? String(b.name).trim() : rows[0].name;
+    if (!name) { res.status(400).json({ error: 'A room name is required.' }); return; }
+    const icsUrl = b.icsUrl !== undefined ? (b.icsUrl ? String(b.icsUrl).trim() : null) : rows[0].ics_url;
+    if (icsUrl && !/^https?:\/\//i.test(icsUrl)) { res.status(400).json({ error: 'The calendar link must start with http:// or https://' }); return; }
+    await query('UPDATE rooms SET name = $1, ics_url = $2 WHERE id = $3', [name, icsUrl, req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update room failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    await query('DELETE FROM rooms WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete room failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// --- ICS feed parsing (small, purpose-built) ---
+type IcsEvent = { start: Date; end: Date; summary: string; rrule: string | null; allDay: boolean };
+const icsCache = new Map<string, { at: number; events: IcsEvent[] }>();
+
+function zonedToUtc(y: number, mo: number, d: number, h: number, mi: number, s: number, tz: string): Date {
+  const guess = Date.UTC(y, mo - 1, d, h, mi, s);
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const parts = dtf.formatToParts(new Date(guess));
+    const get = (t: string) => +(parts.find((p) => p.type === t)!.value);
+    const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+    return new Date(guess - (asUtc - guess));
+  } catch { return new Date(guess); }
+}
+
+function parseIcsDate(val: string, tzid: string | null): Date | null {
+  const m = val.trim().match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/);
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  if (m[4] === undefined) return new Date(Date.UTC(y, mo - 1, d));
+  const h = +m[4], mi = +m[5], s = +(m[6] || 0);
+  if (m[7]) return new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  if (tzid) return zonedToUtc(y, mo, d, h, mi, s, tzid);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+}
+
+function parseIcs(text: string): IcsEvent[] {
+  const unfolded = text.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const events: IcsEvent[] = [];
+  let cur: any = null;
+  for (const line of unfolded.split(/\r?\n/)) {
+    if (line === 'BEGIN:VEVENT') cur = {};
+    else if (line === 'END:VEVENT') {
+      if (cur && cur.start && cur.end) events.push({ start: cur.start, end: cur.end, summary: cur.summary || 'Busy', rrule: cur.rrule || null, allDay: !!cur.allDay });
+      cur = null;
+    } else if (cur) {
+      const idx = line.indexOf(':');
+      if (idx < 0) continue;
+      const head = line.slice(0, idx);
+      const key = head.split(';')[0];
+      const val = line.slice(idx + 1);
+      const tzM = /TZID=([^;:]+)/.exec(head);
+      if (key === 'DTSTART') { cur.start = parseIcsDate(val, tzM ? tzM[1] : null); cur.allDay = !val.includes('T'); }
+      else if (key === 'DTEND') cur.end = parseIcsDate(val, tzM ? tzM[1] : null);
+      else if (key === 'SUMMARY') cur.summary = val.replace(/\\,/g, ',').replace(/\\n/g, ' ').trim();
+      else if (key === 'RRULE') cur.rrule = val.trim();
+    }
+  }
+  return events;
+}
+
+async function fetchIcsEvents(url: string): Promise<IcsEvent[]> {
+  const hit = icsCache.get(url);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.events;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 7000);
+  try {
+    const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'QuickScheduling/1.0' } });
+    if (!resp.ok) throw new Error('feed returned ' + resp.status);
+    const events = parseIcs(await resp.text());
+    icsCache.set(url, { at: Date.now(), events });
+    return events;
+  } finally { clearTimeout(timer); }
+}
+
+// Busy blocks of one ICS event on one UTC day (recurrence expanded simply).
+function icsBlocksOn(ev: IcsEvent, dayStart: Date, dayEnd: Date): Array<{ start: Date; end: Date }> {
+  const dur = ev.end.getTime() - ev.start.getTime();
+  if (!ev.rrule) {
+    return ev.start < dayEnd && ev.end > dayStart ? [{ start: ev.start, end: ev.end }] : [];
+  }
+  const parts: Record<string, string> = {};
+  for (const kv of ev.rrule.split(';')) { const [k, v] = kv.split('='); if (k && v) parts[k] = v; }
+  const freq = parts.FREQ || '';
+  const interval = Math.max(1, parseInt(parts.INTERVAL || '1', 10) || 1);
+  const countMax = parts.COUNT ? parseInt(parts.COUNT, 10) : Infinity;
+  const until = parts.UNTIL ? parseIcsDate(parts.UNTIL, null) : null;
+  const byday = parts.BYDAY ? parts.BYDAY.split(',').map((x) => x.replace(/[^A-Z]/g, '')) : null;
+  const dayNames = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  const out: Array<{ start: Date; end: Date }> = [];
+  let count = 0;
+  const cur = new Date(ev.start);
+  for (let step = 0; step < 4000; step++) {
+    if (cur >= dayEnd) break;
+    if (until && cur > until) break;
+    let isOcc = false;
+    const daysDiff = Math.round((Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth(), cur.getUTCDate()) - Date.UTC(ev.start.getUTCFullYear(), ev.start.getUTCMonth(), ev.start.getUTCDate())) / 86400000);
+    if (freq === 'DAILY') isOcc = daysDiff % interval === 0;
+    else if (freq === 'WEEKLY') isOcc = Math.floor(daysDiff / 7) % interval === 0 && (byday ? byday.includes(dayNames[cur.getUTCDay()]) : cur.getUTCDay() === ev.start.getUTCDay());
+    else if (freq === 'MONTHLY') {
+      const monthsDiff = (cur.getUTCFullYear() - ev.start.getUTCFullYear()) * 12 + (cur.getUTCMonth() - ev.start.getUTCMonth());
+      const dim = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
+      isOcc = monthsDiff % interval === 0 && cur.getUTCDate() === Math.min(ev.start.getUTCDate(), dim);
+    } else if (freq === 'YEARLY') {
+      const yearsDiff = cur.getUTCFullYear() - ev.start.getUTCFullYear();
+      const dim = new Date(Date.UTC(cur.getUTCFullYear(), ev.start.getUTCMonth() + 1, 0)).getUTCDate();
+      isOcc = yearsDiff % interval === 0 && cur.getUTCMonth() === ev.start.getUTCMonth() && cur.getUTCDate() === Math.min(ev.start.getUTCDate(), dim);
+    }
+    if (isOcc) {
+      count++;
+      if (count > countMax) break;
+      const occEnd = new Date(cur.getTime() + dur);
+      if (cur < dayEnd && occEnd > dayStart) out.push({ start: new Date(cur), end: occEnd });
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+// Does one of our sessions (possibly a rotation) land on dateStr?
+function sessionOccursOn(base: any, dateStr: string): boolean {
+  if (base.date === dateStr) return true;
+  const rule = base.recurRule;
+  if (!rule || rule === 'none' || dateStr < base.date) return false;
+  if (base.recurUntil && dateStr > base.recurUntil) return false;
+  const interval = Math.max(1, base.recurInterval || 1);
+  const maxCount = base.recurCount || Infinity;
+  const start = new Date(base.date + 'T00:00:00Z');
+  const target = new Date(dateStr + 'T00:00:00Z');
+  const days: number[] = base.recurDays && base.recurDays.length ? base.recurDays : [start.getUTCDay()];
+  const week0 = new Date(start); week0.setUTCDate(week0.getUTCDate() - week0.getUTCDay());
+  let count = 0;
+  const cur = new Date(start);
+  for (let step = 0; step < 4000 && cur <= target; step++) {
+    const daysDiff = Math.round((cur.getTime() - start.getTime()) / 86400000);
+    let isOcc = false;
+    if (rule === 'daily') isOcc = daysDiff % interval === 0;
+    else if (rule === 'weekly') isOcc = days.includes(cur.getUTCDay()) && Math.floor((cur.getTime() - week0.getTime()) / (7 * 86400000)) % interval === 0;
+    else if (rule === 'monthly') {
+      const monthsDiff = (cur.getUTCFullYear() - start.getUTCFullYear()) * 12 + (cur.getUTCMonth() - start.getUTCMonth());
+      const dim = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
+      isOcc = daysDiff === 0 || (monthsDiff % interval === 0 && monthsDiff > 0 && cur.getUTCDate() === Math.min(start.getUTCDate(), dim));
+    } else if (rule === 'monthly-weekday') {
+      const monthsDiff = (cur.getUTCFullYear() - start.getUTCFullYear()) * 12 + (cur.getUTCMonth() - start.getUTCMonth());
+      const wd = start.getUTCDay();
+      const nth = Math.floor((start.getUTCDate() - 1) / 7) + 1;
+      const dimStart = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+      const isLast = start.getUTCDate() + 7 > dimStart;
+      let want = 0;
+      if (cur.getUTCDay() === wd) {
+        const dim = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
+        if (isLast) want = dim - ((new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth(), dim)).getUTCDay() - wd + 7) % 7);
+        else { const firstOcc = 1 + ((wd - new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth(), 1)).getUTCDay() + 7) % 7); want = firstOcc + (nth - 1) * 7; }
+      }
+      isOcc = daysDiff === 0 || (monthsDiff % interval === 0 && monthsDiff > 0 && want !== 0 && cur.getUTCDate() === want);
+    } else if (rule === 'yearly') {
+      const yearsDiff = cur.getUTCFullYear() - start.getUTCFullYear();
+      const dim = new Date(Date.UTC(cur.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+      isOcc = daysDiff === 0 || (yearsDiff % interval === 0 && yearsDiff > 0 && cur.getUTCMonth() === start.getUTCMonth() && cur.getUTCDate() === Math.min(start.getUTCDate(), dim));
+    }
+    if (isOcc) {
+      count++;
+      if (count > maxCount) return false;
+      if (cur.getTime() === target.getTime()) return true;
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return false;
+}
+
+router.get('/room-availability', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const roomId = String(req.query.roomId || '');
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A date (YYYY-MM-DD) is required.' }); return; }
+    const { rows } = await query('SELECT * FROM rooms WHERE id = $1 AND company_id = $2', [roomId, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Room not found.' }); return; }
+    const room = rows[0];
+    const busy: any[] = [];
+    let feedError: string | null = null;
+    if (room.ics_url) {
+      try {
+        const events = await fetchIcsEvents(room.ics_url);
+        const dayStart = new Date(date + 'T00:00:00Z');
+        const dayEnd = new Date(dayStart.getTime() + 86400000);
+        for (const ev of events) {
+          for (const b of icsBlocksOn(ev, dayStart, dayEnd)) {
+            busy.push({ start: b.start.toISOString(), end: b.end.toISOString(), title: ev.summary, source: 'calendar', allDay: ev.allDay });
+          }
+        }
+      } catch (e) {
+        feedError = 'Could not read the room calendar link.';
+      }
+    }
+    // Our own sessions booked into this room that day.
+    const { rows: sessRows } = await query(
+      `SELECT * FROM academic_sessions WHERE company_id = $1 AND lower(location) = lower($2) AND session_date <= $3`,
+      [companyId, room.name, date]);
+    for (const r of sessRows) {
+      const base = academicRow(r);
+      if (sessionOccursOn(base, date)) {
+        busy.push({ start: null, end: null, startTime: base.startTime, endTime: base.endTime, title: base.title, source: 'session', allDay: false, sessionId: base.id });
+      }
+    }
+    busy.sort((a: any, b: any) => String(a.start || a.startTime || '').localeCompare(String(b.start || b.startTime || '')));
+    res.json({ room: { id: room.id, name: room.name, hasFeed: !!room.ics_url }, feedError, busy });
+  } catch (err) {
+    console.error('[schedule] room-availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------- Custom dashboards ----------
 // Option 1: named calendar dashboards created in Settings. Each dashboard gets
 // a nav tab with a Day/Week/Month calendar of sessions.
