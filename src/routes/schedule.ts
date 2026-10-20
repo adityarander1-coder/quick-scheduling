@@ -5195,23 +5195,42 @@ router.delete('/dashboards/:id', requireRole('owner'), async (req: Request, res:
 });
 
 // GET /api/schedule/working-on?date=YYYY-MM-DD&departmentId=&shiftTypeId=
-// Team members actually working that day (from the main schedule) — used to
-// auto-assign presenters on dashboards. Owner/scheduler only.
+// Team members actually working that day — mirrors GET /shifts: stored shifts
+// PLUS rotation-generated shifts (minus pauses, exclusions, ended members),
+// because most staff appear on the schedule through rotations, not stored
+// rows. Owner/scheduler only. departmentId only ranks (inDepartment flag).
 router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const date = String(req.query.date || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A date (YYYY-MM-DD) is required.' }); return; }
-    const params: any[] = [companyId, date];
-    const clauses = ['sh.company_id = $1', 'sh.date = $2', 'u.is_active IS NOT FALSE'];
     const wantDept = req.query.departmentId ? String(req.query.departmentId) : null;
-    if (req.query.shiftTypeId) { params.push(String(req.query.shiftTypeId)); clauses.push(`sh.shift_type_id = $${params.length}`); }
+    const wantShift = req.query.shiftTypeId ? String(req.query.shiftTypeId) : null;
+    let viewDepts: string[] | null = null;
     if (req.session.role === 'scheduler') {
       const access = await getDepartmentAccess(req.session.userId!, companyId);
-      params.push(access.view || []);
-      clauses.push(`st.department_id = ANY($${params.length})`);
+      viewDepts = access.view || [];
     }
-    const { rows } = await query(
+
+    const byUser = new Map<string, any>();
+    const addShift = function (u: any, shiftTypeId: string, shiftName: string, departmentId: string | null, departmentName: string | null) {
+      if (!byUser.has(u.user_id)) {
+        byUser.set(u.user_id, {
+          userId: u.user_id,
+          name: [u.first_name, u.last_name].filter(Boolean).join(' ') || u.name,
+          jobRole: u.job_role || null,
+          inDepartment: false,
+          shifts: [],
+        });
+      }
+      const cand = byUser.get(u.user_id);
+      if (!cand.shifts.some((x: any) => x.shiftTypeId === shiftTypeId)) {
+        cand.shifts.push({ shiftTypeId, shiftName, departmentId, departmentName });
+      }
+    };
+
+    // 1) Stored shifts for the day.
+    const { rows: manualRows } = await query(
       `SELECT u.id AS user_id, u.first_name, u.last_name, u.name, jr.name AS job_role,
               st.id AS shift_type_id, st.name AS shift_name, st.department_id, d.name AS department_name
        FROM shifts sh
@@ -5219,24 +5238,64 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        JOIN shift_types st ON st.id = sh.shift_type_id
        LEFT JOIN departments d ON d.id = st.department_id
        LEFT JOIN job_roles jr ON jr.id = u.job_role_id
-       WHERE ${clauses.join(' AND ')}
-       ORDER BY st.name, u.last_name, u.first_name`, params);
-    const byUser = new Map<string, any>();
-    for (const r of rows) {
-      if (!byUser.has(r.user_id)) {
-        byUser.set(r.user_id, {
-          userId: r.user_id,
-          name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.name,
-          jobRole: r.job_role || null,
-          inDepartment: !wantDept,
-          shifts: [],
-        });
+       WHERE sh.company_id = $1 AND sh.date = $2 AND u.is_active IS NOT FALSE
+       ORDER BY st.name, u.last_name, u.first_name`, [companyId, date]);
+    const manualKeys = new Set(manualRows.map((r: any) => r.user_id + '|' + r.shift_type_id));
+
+    // 2) Rotation-generated shifts for the day (same rules as GET /shifts).
+    const { rows: pauseRows } = await query(
+      `SELECT rotation_id, start_date::text AS start_date, end_date::text AS end_date
+       FROM rotation_pauses WHERE company_id = $1 AND end_date >= $2 AND start_date <= $2`, [companyId, date]);
+    const pausedRotIds = new Set(pauseRows.filter((p: any) => date >= p.start_date && date <= p.end_date).map((p: any) => p.rotation_id));
+    const { rows: exclRows } = await query(
+      `SELECT rotation_id, user_id, shift_type_id FROM rotation_shift_exclusions
+       WHERE company_id = $1 AND date = $2`, [companyId, date]);
+    const exclSet = new Set(exclRows.map((e: any) => e.rotation_id + '|' + e.user_id + '|' + e.shift_type_id));
+    const { rows: rotations } = await query(
+      `SELECT id, cycle_days, start_date::text AS start_date FROM rotations
+       WHERE company_id = $1 AND is_active = true`, [companyId]);
+    const userPaused = new Set<string>();
+    const target = new Date(date + 'T00:00:00');
+    for (const rot of rotations) {
+      const { rows: assigns } = await query(
+        `SELECT ra.user_id, ra.cycle_day, ra.shift_type_id, u.first_name, u.last_name, u.name,
+                u.end_date, jr.name AS job_role, st.name AS shift_name, st.department_id, d.name AS department_name
+         FROM rotation_assignments ra
+         JOIN users u ON u.id = ra.user_id AND u.is_active = true
+         JOIN shift_types st ON st.id = ra.shift_type_id
+         LEFT JOIN departments d ON d.id = st.department_id
+         LEFT JOIN job_roles jr ON jr.id = u.job_role_id
+         WHERE ra.rotation_id = $1`, [rot.id]);
+      if (!assigns.length) continue;
+      const paused = pausedRotIds.has(rot.id);
+      if (paused) { for (const a of assigns) userPaused.add(a.user_id); continue; }
+      const startDate = new Date(rot.start_date + 'T00:00:00');
+      if (target < startDate) continue;
+      const daysSince = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
+      const cycleDay = (daysSince % rot.cycle_days) + 1;
+      for (const a of assigns) {
+        if (a.cycle_day !== cycleDay) continue;
+        if (a.end_date && date > String(a.end_date).slice(0, 10)) continue;
+        if (exclSet.has(rot.id + '|' + a.user_id + '|' + a.shift_type_id)) continue;
+        if (manualKeys.has(a.user_id + '|' + a.shift_type_id)) continue; // manual takes precedence
+        addShift(a, a.shift_type_id, a.shift_name, a.department_id, a.department_name);
       }
-      const cand = byUser.get(r.user_id);
-      if (wantDept && r.department_id === wantDept) cand.inDepartment = true;
-      cand.shifts.push({ shiftTypeId: r.shift_type_id, shiftName: r.shift_name, departmentId: r.department_id, departmentName: r.department_name });
     }
-    const candidates = Array.from(byUser.values());
+    // Manual shifts last, skipping members paused that day (mirrors main view).
+    for (const r of manualRows) {
+      if (userPaused.has(r.user_id)) continue;
+      addShift(r, r.shift_type_id, r.shift_name, r.department_id, r.department_name);
+    }
+
+    // 3) Filters + department ranking.
+    let candidates = Array.from(byUser.values());
+    if (wantShift) {
+      candidates = candidates.map((c: any) => ({ ...c, shifts: c.shifts.filter((x: any) => x.shiftTypeId === wantShift) })).filter((c: any) => c.shifts.length);
+    }
+    if (viewDepts) {
+      candidates = candidates.map((c: any) => ({ ...c, shifts: c.shifts.filter((x: any) => x.departmentId && viewDepts!.includes(x.departmentId)) })).filter((c: any) => c.shifts.length);
+    }
+    for (const c of candidates) c.inDepartment = !wantDept || c.shifts.some((x: any) => x.departmentId === wantDept);
     if (wantDept) candidates.sort(function (a: any, b: any) { return (b.inDepartment ? 1 : 0) - (a.inDepartment ? 1 : 0) || String(a.name).localeCompare(String(b.name)); });
     res.json({ candidates });
   } catch (err) {
