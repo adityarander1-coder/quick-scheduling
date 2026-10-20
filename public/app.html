@@ -10249,7 +10249,7 @@
           '<label style="display:block;margin-bottom:0.7rem">Presenter (from team members)<br><select id="acf-lecturer" style="' + IN + '">' + personOpts(s ? s.lecturerUserId : null, '— Needs a presenter —') + '</select></label>' +
           '<label style="display:block;margin-bottom:0.7rem">Supervisor (from team members)<br><select id="acf-supervisor" style="' + IN + '">' + personOpts(s ? s.supervisorUserId : null, '— No supervisor —') + '</select></label>' +
           '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
-            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 Auto-assign presenter — who is working that day?</div>' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 Auto-assign — who is working that day?</div>' +
             '<div style="display:flex;gap:0.6rem;align-items:flex-end;flex-wrap:wrap"><label style="flex:1;min-width:160px">Shift (optional)<br><select id="acf-wshift" style="' + IN + '"><option value="">Any shift</option></select></label>' +
             '<button type="button" class="btn-secondary" id="acf-find" style="padding:0.6rem 1rem;border-radius:8px">Find working team</button></div>' +
             '<div id="acf-cands" style="margin-top:0.6rem"></div>' +
@@ -10361,6 +10361,8 @@
                   var c = byId[b.getAttribute('data-cand-p')];
                   setPerson(lecSel, c);
                   markBtn('data-cand-p', c.userId);
+                  var n = box.querySelector('#acf-picked');
+                  if (n) n.innerHTML = '✓ ' + esc(c.name) + ' set as <strong>presenter</strong>.';
                 });
               });
               box.querySelectorAll('[data-cand-s]').forEach(function (b) {
@@ -10368,6 +10370,8 @@
                   var c = byId[b.getAttribute('data-cand-s')];
                   setPerson(supSel, c);
                   markBtn('data-cand-s', c.userId);
+                  var n = box.querySelector('#acf-picked');
+                  if (n) n.innerHTML = '✓ ' + esc(c.name) + ' set as <strong>supervisor</strong>.';
                 });
               });
             }
@@ -10406,7 +10410,7 @@
               if (b === 'No department') return -1;
               return a.localeCompare(b);
             });
-            box.innerHTML = note + keys.map(function (k) {
+            box.innerHTML = note + '<div id="acf-picked" style="color:#15803d;font-weight:600;font-size:0.88rem;margin-bottom:0.3rem"></div>' + keys.map(function (k) {
               return '<div style="font-size:0.85rem;font-weight:700;margin:0.55rem 0 0.4rem">🏥 ' + esc(k) + '</div>' + groups.get(k).map(candRow).join('');
             }).join('');
             wireBtns();
