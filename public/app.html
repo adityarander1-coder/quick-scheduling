@@ -10160,6 +10160,10 @@
           return '<option value="' + d.id + '"' + (sel ? ' selected' : '') + '>' + esc(d.name) + '</option>';
         }).join('');
         var rule = s && s.recurRule ? s.recurRule : 'none';
+        var freq0 = rule === 'monthly-weekday' ? 'monthly' : rule;
+        var mkind0 = rule === 'monthly-weekday' ? 'monthly-weekday' : 'monthly';
+        var interval0 = s && s.recurInterval ? s.recurInterval : 1;
+        var ends0 = s && s.recurCount ? 'count' : (s && s.recurUntil ? 'date' : 'never');
         var people = acUsers.filter(function (u) { return u.role !== 'owner'; });
         function personOpts(selectedId, emptyLabel) {
           return '<option value="">' + emptyLabel + '</option>' + people.map(function (u) {
@@ -10193,15 +10197,23 @@
             '<button type="button" class="btn-secondary" id="acf-find" style="padding:0.6rem 1rem;border-radius:8px">Find working team</button></div>' +
             '<div id="acf-cands" style="margin-top:0.6rem"></div>' +
           '</div>' +
-          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="' + IN + '"></label>' +
-          '<label style="flex:1">End date (rotation)<br><input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(s.recurUntil) : '') + '" style="' + IN + '"></label></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Rotation<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (rule === 'none' ? ' selected' : '') + '>No rotation (one time)</option><option value="weekly"' + (rule === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="biweekly"' + (rule === 'biweekly' ? ' selected' : '') + '>Every 2 weeks</option><option value="monthly"' + (rule === 'monthly' ? ' selected' : '') + '>Monthly — same date</option><option value="monthly-weekday"' + (rule === 'monthly-weekday' ? ' selected' : '') + '>Monthly — same weekday (e.g. 3rd Thursday)</option></select></label>' +
-          '<div id="acf-daysrow" style="display:none;margin-bottom:0.7rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
+          '<label style="display:block;margin-bottom:0.7rem">Start date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="' + IN + '"></label>' +
+          '<div style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Rotation</div>' +
+          '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
+          '<div id="acf-everyrow" style="display:none;margin-bottom:0.6rem"><label>Every <input id="acf-interval" type="number" min="1" max="52" value="' + interval0 + '" style="width:4.5rem;padding:0.45rem;border:1px solid var(--border);border-radius:8px"> <span id="acf-unit">weeks</span></label></div>' +
+          '<div id="acf-daysrow" style="display:none;margin-bottom:0.6rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
           ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (dn, di) {
             var on = s && s.recurDays && s.recurDays.includes(di);
             return '<label style="border:1px solid var(--border);border-radius:8px;padding:0.35rem 0.6rem;font-size:0.85rem;cursor:pointer"><input type="checkbox" class="acf-day" value="' + di + '"' + (on ? ' checked' : '') + '> ' + dn + '</label>';
           }).join('') + '</div></div>' +
-          '<div id="acf-monthly-hint" style="display:none;margin-bottom:0.7rem;font-size:0.88rem;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.5rem 0.7rem"></div>' +
+          '<div id="acf-monthopts" style="display:none;margin-bottom:0.6rem">' +
+            '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-mkind" value="monthly"' + (mkind0 === 'monthly' ? ' checked' : '') + '> <span id="acf-mo-date">On the same date</span></label>' +
+            '<label style="display:block;cursor:pointer"><input type="radio" name="acf-mkind" value="monthly-weekday"' + (mkind0 === 'monthly-weekday' ? ' checked' : '') + '> <span id="acf-mo-wd">On the same weekday</span></label></div>' +
+          '<div id="acf-endsrow" style="display:none"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">Ends</div>' +
+            '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="never"' + (ends0 === 'never' ? ' checked' : '') + '> Never</label>' +
+            '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="date"' + (ends0 === 'date' ? ' checked' : '') + '> On date <input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(String(s.recurUntil).slice(0, 10)) : '') + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"></label>' +
+            '<label style="display:block;cursor:pointer"><input type="radio" name="acf-ends" value="count"' + (ends0 === 'count' ? ' checked' : '') + '> After <input id="acf-count" type="number" min="1" max="500" value="' + (s && s.recurCount ? s.recurCount : 10) + '" style="width:4.5rem;padding:0.4rem;border:1px solid var(--border);border-radius:8px"> times</label></div>' +
+          '</div>' +
           '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start time<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="' + IN + '"></label>' +
           '<label style="flex:1">End time<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="' + IN + '"></label></div>' +
           '<label style="display:block;margin-bottom:0.7rem">Location<br><input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + '"></label>' +
@@ -10264,17 +10276,26 @@
           var q = '/api/schedule/working-on?date=' + date + (dept ? '&departmentId=' + dept : '') + (shift ? '&shiftTypeId=' + shift : '');
           api(q).then(function (r) {
             var cands = (r.ok && r.data.candidates) || [];
-            if (!cands.length) { box.innerHTML = '<span style="color:var(--dim)">Nobody from the team is scheduled to work that day' + (dept ? ' in that department' : '') + '.</span>'; return; }
+            if (!cands.length) { box.innerHTML = '<span style="color:var(--dim)">Nobody from the team is scheduled to work that day.</span>'; return; }
             if (cands.length === 1) {
               lecSel.value = cands[0].userId;
               box.innerHTML = '<span style="color:#15803d;font-weight:600">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</span>';
               return;
             }
-            box.innerHTML = '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + ' people working that day — tap one to make them the presenter:</div>' +
-              cands.map(function (c) {
-                var shifts = c.shifts.map(function (x) { return x.shiftName; }).join(', ');
-                return '<button type="button" class="btn-secondary" data-cand="' + c.userId + '" style="margin:0 0.4rem 0.4rem 0;padding:0.45rem 0.8rem;border-radius:999px;font-size:0.85rem">' + esc(c.name) + (c.jobRole ? ' (' + esc(c.jobRole) + ')' : '') + ' · ' + esc(shifts) + '</button>';
-              }).join('');
+            function candBtn(c) {
+              var shifts = c.shifts.map(function (x) { return x.shiftName; }).join(', ');
+              return '<button type="button" class="btn-secondary" data-cand="' + c.userId + '" style="margin:0 0.4rem 0.4rem 0;padding:0.45rem 0.8rem;border-radius:999px;font-size:0.85rem">' + esc(c.name) + (c.jobRole ? ' (' + esc(c.jobRole) + ')' : '') + ' · ' + esc(shifts) + '</button>';
+            }
+            var hasOthers = dept && cands.some(function (c) { return c.inDepartment === false; });
+            if (hasOthers) {
+              var inDept = cands.filter(function (c) { return c.inDepartment; });
+              var others = cands.filter(function (c) { return !c.inDepartment; });
+              box.innerHTML =
+                (inDept.length ? '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + inDept.length + ' working in this department — tap one to make them the presenter:</div>' + inDept.map(candBtn).join('') : '') +
+                '<div style="font-size:0.85rem;margin:0.4rem 0">Also working that day (other departments / no department):</div>' + others.map(candBtn).join('');
+            } else {
+              box.innerHTML = '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + ' people working that day — tap one to make them the presenter:</div>' + cands.map(candBtn).join('');
+            }
             box.querySelectorAll('[data-cand]').forEach(function (b) {
               b.addEventListener('click', function () {
                 lecSel.value = b.getAttribute('data-cand');
@@ -10285,10 +10306,13 @@
           }).catch(function () { box.innerHTML = '<span style="color:#b91c1c">Could not check the schedule.</span>'; });
         });
 
-        // Rotation UI: weekday checkboxes for weekly/biweekly; monthly-weekday hint.
+        // Rotation UI: frequency + every-N + weekday/monthly options + ends.
         var recurSel = m.querySelector('#acf-recur');
         var daysRow = m.querySelector('#acf-daysrow');
-        var hintBox = m.querySelector('#acf-monthly-hint');
+        var everyRow = m.querySelector('#acf-everyrow');
+        var unitEl = m.querySelector('#acf-unit');
+        var monthOpts = m.querySelector('#acf-monthopts');
+        var endsRow = m.querySelector('#acf-endsrow');
         var dateInput = m.querySelector('#acf-date');
         function ordinalLabel(ds) {
           if (!ds) return '';
@@ -10299,16 +10323,24 @@
           var nth = Math.floor((d.getDate() - 1) / 7);
           var dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
           var isLast = d.getDate() + 7 > dim;
-          return 'Repeats on the ' + (isLast ? 'last' : ords[nth]) + ' ' + names[d.getDay()] + ' of each month';
+          return 'the ' + (isLast ? 'last' : ords[nth]) + ' ' + names[d.getDay()];
         }
         function syncRotationUI() {
           var v = recurSel.value;
-          daysRow.style.display = (v === 'weekly' || v === 'biweekly') ? '' : 'none';
-          hintBox.style.display = v === 'monthly-weekday' ? '' : 'none';
-          if (v === 'monthly-weekday') hintBox.textContent = '↻ ' + ordinalLabel(dateInput.value);
-          if ((v === 'weekly' || v === 'biweekly') && dateInput.value) {
+          var on = v !== 'none';
+          everyRow.style.display = on ? '' : 'none';
+          endsRow.style.display = on ? '' : 'none';
+          daysRow.style.display = v === 'weekly' ? '' : 'none';
+          monthOpts.style.display = v === 'monthly' ? '' : 'none';
+          unitEl.textContent = v === 'daily' ? 'days' : v === 'weekly' ? 'weeks' : v === 'monthly' ? 'months' : v === 'yearly' ? 'years' : '';
+          if (v === 'monthly' && dateInput.value) {
             var p = dateInput.value.split('-');
-            var wd = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)).getDay();
+            m.querySelector('#acf-mo-date').textContent = 'On day ' + parseInt(p[2], 10) + ' of the month';
+            m.querySelector('#acf-mo-wd').textContent = 'On ' + ordinalLabel(dateInput.value);
+          }
+          if (v === 'weekly' && dateInput.value) {
+            var p2 = dateInput.value.split('-');
+            var wd = new Date(parseInt(p2[0], 10), parseInt(p2[1], 10) - 1, parseInt(p2[2], 10)).getDay();
             var boxes = m.querySelectorAll('.acf-day');
             var anyChecked = Array.prototype.some.call(boxes, function (b) { return b.checked; });
             if (!anyChecked) boxes[wd].checked = true;
@@ -10330,9 +10362,15 @@
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
             endTime: m.querySelector('#acf-end').value || null,
-            recurRule: m.querySelector('#acf-recur').value,
+            recurRule: (function () {
+              var f = m.querySelector('#acf-recur').value;
+              if (f === 'monthly') { var mk = m.querySelector('input[name="acf-mkind"]:checked'); return mk ? mk.value : 'monthly'; }
+              return f;
+            })(),
+            recurInterval: parseInt((m.querySelector('#acf-interval') || {}).value, 10) || 1,
+            recurCount: (function () { var e = m.querySelector('input[name="acf-ends"]:checked'); return e && e.value === 'count' ? (parseInt(m.querySelector('#acf-count').value, 10) || null) : null; })(),
             recurDays: Array.prototype.map.call(m.querySelectorAll('.acf-day:checked'), function (c) { return parseInt(c.value, 10); }),
-            recurUntil: m.querySelector('#acf-until').value || null,
+            recurUntil: (function () { var e = m.querySelector('input[name="acf-ends"]:checked'); return e && e.value === 'date' ? (m.querySelector('#acf-until').value || null) : null; })(),
             location: m.querySelector('#acf-loc').value.trim() || null,
             notes: m.querySelector('#acf-notes').value.trim() || null,
             dashboardId: curDash ? curDash.id : null,
@@ -10342,8 +10380,12 @@
           var payload = readPayload();
           if (!payload.title) { pageError('A title is required.'); return; }
           if (!payload.date) { pageError('Pick a start date.'); return; }
-          if (payload.recurRule !== 'none' && !payload.recurUntil) { pageError('Pick an end date for the rotation.'); return; }
-          if ((payload.recurRule === 'weekly' || payload.recurRule === 'biweekly') && !payload.recurDays.length) { pageError('Pick at least one day of the week for the rotation.'); return; }
+          if (payload.recurRule !== 'none') {
+            var endsSel = m.querySelector('input[name="acf-ends"]:checked');
+            if (endsSel && endsSel.value === 'date' && !payload.recurUntil) { pageError('Pick an end date for the rotation, or choose Never / After.'); return; }
+            if (endsSel && endsSel.value === 'count' && !payload.recurCount) { pageError('How many times should the rotation repeat?'); return; }
+          }
+          if (payload.recurRule === 'weekly' && !payload.recurDays.length) { pageError('Pick at least one day of the week for the rotation.'); return; }
           var req = s
             ? api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify(payload) })
             : api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) });
