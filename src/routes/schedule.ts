@@ -5243,6 +5243,16 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
 // ---------- Academic dashboard ----------
 // Lecturers are team members from the same roster database (users table) — no
 // duplicate people entry; the Academic tab reads lecturers straight from Team.
+function cleanRecurDays(v: any): number[] {
+  if (!Array.isArray(v)) return [];
+  const out: number[] = [];
+  for (const x of v) {
+    const n = parseInt(String(x), 10);
+    if (!isNaN(n) && n >= 0 && n <= 6 && !out.includes(n)) out.push(n);
+  }
+  return out.sort();
+}
+
 function academicRow(r: any) {
   return {
     id: r.id,
@@ -5262,6 +5272,7 @@ function academicRow(r: any) {
     notes: r.notes,
     dashboardId: r.dashboard_id || null,
     recurRule: r.recur_rule || 'none',
+    recurDays: r.recur_days ? String(r.recur_days).split(',').map(function (x: string) { return parseInt(x, 10); }).filter(function (n: number) { return !isNaN(n); }) : [],
     recurUntil: r.recur_until instanceof Date ? r.recur_until.toISOString().slice(0, 10) : (r.recur_until || null),
     seriesId: r.series_id || null,
     isOccurrence: !!r.is_occurrence,
@@ -5323,27 +5334,61 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
         if (!from || (base.date >= from && base.date <= (to || '9999-99-99'))) out.push(base);
         continue;
       }
-      const stepDays = rule === 'biweekly' ? 14 : 7;
       const end = base.recurUntil && base.recurUntil < to ? base.recurUntil : to;
-      const cur = new Date(base.date + 'T00:00:00Z');
+      const startD = new Date(base.date + 'T00:00:00Z');
       const endD = new Date(end + 'T00:00:00Z');
-      const baseDay = cur.getUTCDate();
-      let first = true;
-      while (cur <= endD) {
-        const ds = cur.toISOString().slice(0, 10);
-        if (ds >= from) {
-          out.push(first && ds === base.date
-            ? { ...base, seriesId: base.id }
-            : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true });
+      const pushOcc = function (d: Date) {
+        const ds = d.toISOString().slice(0, 10);
+        if (ds < from || ds > to) return;
+        out.push(ds === base.date
+          ? { ...base, seriesId: base.id }
+          : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true });
+      };
+      if (rule === 'weekly' || rule === 'biweekly') {
+        const days: number[] = base.recurDays && base.recurDays.length ? base.recurDays : [startD.getUTCDay()];
+        const step = rule === 'biweekly' ? 2 : 1;
+        const week0 = new Date(startD);
+        week0.setUTCDate(week0.getUTCDate() - week0.getUTCDay());
+        const cur = new Date(startD);
+        while (cur <= endD) {
+          const weekIdx = Math.floor((cur.getTime() - week0.getTime()) / (7 * 86400000));
+          if (days.includes(cur.getUTCDay()) && weekIdx % step === 0) pushOcc(cur);
+          cur.setUTCDate(cur.getUTCDate() + 1);
         }
-        first = false;
-        if (rule === 'monthly') {
+      } else if (rule === 'monthly-weekday') {
+        const wd = startD.getUTCDay();
+        const nth = Math.floor((startD.getUTCDate() - 1) / 7) + 1;
+        const dimStart = new Date(Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth() + 1, 0)).getUTCDate();
+        const isLast = startD.getUTCDate() + 7 > dimStart;
+        let y = startD.getUTCFullYear(), mo = startD.getUTCMonth();
+        while (Date.UTC(y, mo, 1) <= endD.getTime()) {
+          const dim = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+          let day = 0;
+          if (isLast) {
+            const lastD = new Date(Date.UTC(y, mo, dim));
+            day = dim - ((lastD.getUTCDay() - wd + 7) % 7);
+          } else {
+            const firstD = new Date(Date.UTC(y, mo, 1));
+            const firstOcc = 1 + ((wd - firstD.getUTCDay() + 7) % 7);
+            const cand = firstOcc + (nth - 1) * 7;
+            if (cand <= dim) day = cand;
+          }
+          if (day) {
+            const d = new Date(Date.UTC(y, mo, day));
+            if (d >= startD && d <= endD) pushOcc(d);
+          }
+          mo++; if (mo > 11) { mo = 0; y++; }
+        }
+      } else {
+        // monthly (same date) — step calendar months, clamp the day.
+        const cur = new Date(startD);
+        const baseDay = cur.getUTCDate();
+        while (cur <= endD) {
+          pushOcc(cur);
           cur.setUTCDate(1);
           cur.setUTCMonth(cur.getUTCMonth() + 1);
-          var lastDay = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
-          cur.setUTCDate(Math.min(baseDay, lastDay));
-        } else {
-          cur.setUTCDate(cur.getUTCDate() + stepDays);
+          var lastDay2 = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
+          cur.setUTCDate(Math.min(baseDay, lastDay2));
         }
       }
     }
@@ -5389,7 +5434,8 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       if (!rows.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
     }
     const kind = b.kind === 'event' ? 'event' : 'session';
-    const recurRule = ['weekly', 'biweekly', 'monthly'].includes(b.recurRule) ? b.recurRule : 'none';
+    const recurRule = ['weekly', 'biweekly', 'monthly', 'monthly-weekday'].includes(b.recurRule) ? b.recurRule : 'none';
+    const recurDays = cleanRecurDays(b.recurDays);
     const recurUntil = recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : (recurRule !== 'none' ? null : null);
     let dashboardId: string | null = null;
     if (b.dashboardId) {
@@ -5398,11 +5444,12 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       dashboardId = String(b.dashboardId);
     }
     const { rows } = await query(
-      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
       [crypto.randomUUID(), companyId, title, b.lecturerUserId || null, departmentId,
        b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
-       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null]);
+       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
+       recurRule === 'weekly' || recurRule === 'biweekly' ? (recurDays.length ? recurDays.join(',') : null) : null]);
     res.json({ ok: true, id: rows[0].id });
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
@@ -5428,7 +5475,8 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     const title = b.title !== undefined ? String(b.title).trim() : cur.title;
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
     const kind = b.kind !== undefined ? (b.kind === 'event' ? 'event' : 'session') : cur.kind;
-    const recurRule = b.recurRule !== undefined ? (['weekly', 'biweekly', 'monthly'].includes(b.recurRule) ? b.recurRule : 'none') : cur.recur_rule;
+    const recurRule = b.recurRule !== undefined ? (['weekly', 'biweekly', 'monthly', 'monthly-weekday'].includes(b.recurRule) ? b.recurRule : 'none') : cur.recur_rule;
+    const recurDays = b.recurDays !== undefined ? cleanRecurDays(b.recurDays) : (cur.recur_days ? String(cur.recur_days).split(',').map(function (x: string) { return parseInt(x, 10); }) : []);
     const recurUntil = b.recurUntil !== undefined ? (recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : null) : cur.recur_until;
     const supervisorUserId = b.supervisorUserId !== undefined ? (b.supervisorUserId || null) : cur.supervisor_user_id;
     if (supervisorUserId) {
@@ -5445,14 +5493,15 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     }
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
-        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13 WHERE id=$14`,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14 WHERE id=$15`,
       [title, b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
        b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
        b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
-       dashboardId, recurRule, recurUntil, supervisorUserId, seriesId]);
+       dashboardId, recurRule, recurUntil, supervisorUserId,
+       recurRule === 'weekly' || recurRule === 'biweekly' ? (recurDays.length ? recurDays.join(',') : null) : null, seriesId]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session update failed:', err);
