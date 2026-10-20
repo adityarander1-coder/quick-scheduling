@@ -3524,6 +3524,18 @@
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
       </div>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.9rem">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Department
+          <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Show
+          <select id="db-show-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:190px;background:var(--surface);color:var(--text)">
+            <option value="all">All sessions</option>
+            <option value="mine">⭐ Mine</option>
+            <option value="open">Needs presenter</option>
+          </select>
+        </label>
+      </div>
       <div class="db-tbar" id="db-toolbar"></div>
       <div id="db-view"></div>
     </section>
@@ -10160,6 +10172,7 @@
       var dashList = [];
       var curDash = null;
       var acUsers = [], acDepts = [], acSessions = [], acMyId = null, acCanEdit = false;
+      var acDeptFilter = '', acShowFilter = 'all';
       var acView = 'month';
       var acAnchor = new Date();
 
@@ -10243,6 +10256,18 @@
           acSessions = rs[0].data.sessions || [];
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
+          // Fill the Department filter from the dashboard's departments
+          // (or all visible ones), keeping the current selection.
+          var dfEl = document.getElementById('db-dept-filter');
+          if (dfEl) {
+            var fscope = (curDash && curDash.departmentIds && curDash.departmentIds.length)
+              ? acDepts.filter(function (d) { return curDash.departmentIds.indexOf(d.id) >= 0; })
+              : acDepts;
+            if (acDeptFilter && !fscope.some(function (d) { return d.id === acDeptFilter; })) acDeptFilter = '';
+            dfEl.innerHTML = '<option value="">All departments</option>' + fscope.map(function (d) {
+              return '<option value="' + d.id + '"' + (d.id === acDeptFilter ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+            }).join('');
+          }
           if (rs[3] && rs[3].ok && rs[3].data.user) {
             acMyId = rs[3].data.user.id;
             // Employees get a view-only dashboard calendar (Deepika,
@@ -10276,8 +10301,17 @@
           (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
           (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') + '</span></div>';
       }
+      // Dashboard page filters (Deepika, 2026-10-20 — like the Admin
+      // view's Department/Shift filters): narrow by department and by
+      // All / Mine / Needs presenter. Client-side over loaded sessions.
+      function acVisible(s) {
+        if (acDeptFilter && s.departmentId !== acDeptFilter) return false;
+        if (acShowFilter === 'mine' && !(acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId))) return false;
+        if (acShowFilter === 'open' && s.lecturerUserId) return false;
+        return true;
+      }
       function byDate(d) {
-        return acSessions.filter(function (s) { return s.date === d; }).sort(function (a, b) {
+        return acSessions.filter(function (s) { return s.date === d && acVisible(s); }).sort(function (a, b) {
           return (a.startTime || '99') < (b.startTime || '99') ? -1 : 1;
         });
       }
@@ -10806,6 +10840,10 @@
         if (!acUsers.length) { load(); setTimeout(function () { openForm(null); }, 600); }
         else openForm(null);
       });
+      var dbDeptFilterEl = document.getElementById('db-dept-filter');
+      if (dbDeptFilterEl) dbDeptFilterEl.addEventListener('change', function () { acDeptFilter = dbDeptFilterEl.value; render(); });
+      var dbShowFilterEl = document.getElementById('db-show-filter');
+      if (dbShowFilterEl) dbShowFilterEl.addEventListener('change', function () { acShowFilter = dbShowFilterEl.value; render(); });
 
       // Presenter pickup: claim / give-up buttons in the Day view.
       // Capture phase: the row's own click handler stops propagation
