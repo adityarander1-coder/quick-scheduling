@@ -10065,7 +10065,9 @@
         return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + '" title="' + esc(s.title) + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
           '<span class="ac-dot" style="background:' + color + '"></span>' +
           '<span class="ac-chip-text"><strong>' + esc(s.title) + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
-          (s.lecturerName ? '<span class="ac-chip-who">' + esc(s.lecturerName) + '</span>' : '<span class="ac-chip-who ac-need">Needs lecturer</span>') + '</span></div>';
+          (s.lecturerName ? '<span class="ac-chip-who">' + esc(s.lecturerName) + '</span>' : '<span class="ac-chip-who ac-need">Needs presenter</span>') +
+          (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
+          (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') + '</span></div>';
       }
       function byDate(d) {
         return acSessions.filter(function (s) { return s.date === d; }).sort(function (a, b) {
@@ -10194,7 +10196,7 @@
           html += '<div class="ac-drow" data-acedit="' + s.id + '">' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs lecturer') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + '</div></div></div>';
+            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + '</div></div></div>';
         });
         return html + '</div></div>';
       }
