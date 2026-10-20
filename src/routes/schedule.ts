@@ -3558,11 +3558,139 @@ async function applyOnboardingSetup(
   return { departments: deptCount, jobRoles: roleCount, shiftTypes: typeCount };
 }
 
-// GET /api/schedule/onboarding/status — which setup steps are complete (owner only).
+// Apply job roles + shift types to ONE existing department (scheduler-scoped
+// onboarding). Names are deduped against what already exists; shift types are
+// company-global by name but linked to this department when newly created or
+// not yet linked.
+async function applyDepartmentSetup(
+  companyId: string,
+  departmentId: string,
+  setup: { jobRoles: string[]; shiftTypes: { name: string }[] }
+): Promise<{ departments: number; jobRoles: number; shiftTypes: number }> {
+  let roleCount = 0, typeCount = 0;
+  const { rows: existingRoles } = await query(
+    'SELECT lower(name) AS lname FROM job_roles WHERE company_id = $1 AND department_id = $2',
+    [companyId, departmentId]);
+  const roleNames = new Set(existingRoles.map((r: any) => r.lname));
+  for (const rn of setup.jobRoles || []) {
+    const roleName = String(rn || '').trim();
+    if (!roleName || roleNames.has(roleName.toLowerCase())) continue;
+    await query('INSERT INTO job_roles (id, company_id, department_id, name) VALUES ($1, $2, $3, $4)',
+      [crypto.randomUUID(), companyId, departmentId, roleName]);
+    roleNames.add(roleName.toLowerCase());
+    roleCount++;
+  }
+  let sortOrder = 0;
+  const { rows: maxSort } = await query(
+    'SELECT COALESCE(MAX(sort_order), 0) AS m FROM shift_types WHERE company_id = $1', [companyId]);
+  sortOrder = Number(maxSort[0]?.m || 0);
+  for (const st of setup.shiftTypes || []) {
+    const name = String(st?.name || '').trim();
+    if (!name) continue;
+    const { rows: existing } = await query(
+      'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = $2',
+      [companyId, name.toLowerCase()]);
+    let stId = existing[0]?.id as string | undefined;
+    if (!stId) {
+      sortOrder++;
+      stId = crypto.randomUUID();
+      await query(
+        `INSERT INTO shift_types (id, company_id, name, sort_order, department_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [stId, companyId, name, sortOrder, departmentId]);
+      await query(
+        'INSERT INTO shift_type_departments (shift_type_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [stId, departmentId]);
+      typeCount++;
+    } else {
+      await query(
+        'INSERT INTO shift_type_departments (shift_type_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [stId, departmentId]);
+      typeCount++;
+    }
+  }
+  await auditLog({
+    companyId, date: todayStr(), action: 'created', category: 'settings',
+    description: `Onboarding setup wizard (department): ${typeCount} shift types, ${roleCount} job roles`,
+    source: 'manual',
+  });
+  return { departments: 1, jobRoles: roleCount, shiftTypes: typeCount };
+}
+
+// Resolve the department a scheduler may set up in the onboarding wizard:
+// must be one of their Edit departments. Returns the id or sends a 403.
+async function wizardDepartmentId(req: Request, res: Response): Promise<string | null> {
+  const companyId = req.session.companyId!;
+  const deptId = String((req.query.departmentId ?? (req.body ?? {}).departmentId) || '').trim();
+  if (req.session.role === 'owner') {
+    if (!deptId) return null;
+    const { rows } = await query('SELECT id FROM departments WHERE id = $1 AND company_id = $2',
+      [deptId, companyId]);
+    if (!rows.length) { res.status(400).json({ error: 'Unknown department.' }); return null; }
+    return deptId;
+  }
+  const access = await getDepartmentAccess(req.session.userId!, companyId);
+  if (!access.edit.length) { res.status(403).json({ error: 'Ask your owner for Edit access to a department first.' }); return null; }
+  if (!deptId) { res.status(400).json({ error: 'Choose a department to set up.' }); return null; }
+  if (!access.edit.includes(deptId)) {
+    res.status(403).json({ error: 'You do not have Edit access to that department.' });
+    return null;
+  }
+  return deptId;
+}
+
+// GET /api/schedule/onboarding/status — which setup steps are complete (owner or scheduler).
+// Owners: company-wide. Schedulers: scoped to ?departmentId= (one of their Edit departments).
 // Detects real state so the wizard resumes correctly on any device.
-router.get('/onboarding/status', requireRole('owner'), async (req: Request, res: Response) => {
+router.get('/onboarding/status', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const role = req.session.role!;
+    if (role === 'scheduler') {
+      const deptParam = String(req.query.departmentId || '').trim();
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      const { rows: deptRows } = await query(
+        'SELECT id, name FROM departments WHERE company_id = $1 AND id = ANY($2) ORDER BY name',
+        [companyId, access.edit]);
+      const editableDepartments = deptRows.map((d: any) => ({ id: d.id, name: d.name }));
+      const deptId = deptParam || (editableDepartments.length === 1 ? editableDepartments[0].id : '');
+      if (!deptId || !access.edit.includes(deptId)) {
+        res.json({ steps: { structure: false, team: false, staffing: false, invites: false }, editableDepartments, scopedDepartmentId: null });
+        return;
+      }
+      const { rows: roleRows } = await query(
+        'SELECT COUNT(*) AS c FROM job_roles WHERE company_id = $1 AND department_id = $2',
+        [companyId, deptId]);
+      const { rows: typeRows } = await query(
+        `SELECT COUNT(*) AS c FROM shift_type_departments std
+         JOIN shift_types st ON st.id = std.shift_type_id
+         WHERE st.company_id = $1 AND std.department_id = $2`,
+        [companyId, deptId]);
+      const { rows: userRows } = await query(
+        `SELECT COUNT(*) AS c FROM users WHERE company_id = $1 AND department_id = $2
+         AND role <> 'owner' AND is_active = true`,
+        [companyId, deptId]);
+      const { rows: targetRows } = await query(
+        `SELECT COUNT(*) AS c FROM staffing_targets t
+         JOIN shift_type_departments std ON std.shift_type_id = t.shift_type_id
+         WHERE t.company_id = $1 AND std.department_id = $2`,
+        [companyId, deptId]);
+      const { rows: inviteRows } = await query(
+        `SELECT COUNT(*) AS c FROM invites i JOIN users u ON u.id = i.user_id
+         WHERE i.company_id = $1 AND u.department_id = $2 AND i.sent_at IS NOT NULL`,
+        [companyId, deptId]);
+      res.json({
+        steps: {
+          structure: Number(roleRows[0].c) > 0 || Number(typeRows[0].c) > 0,
+          team: Number(userRows[0].c) > 0,
+          staffing: Number(targetRows[0].c) > 0,
+          invites: Number(inviteRows[0].c) > 0,
+        },
+        editableDepartments,
+        scopedDepartmentId: deptId,
+      });
+      return;
+    }
     const { rows: deptRows } = await query(
       'SELECT COUNT(*) AS c FROM departments WHERE company_id = $1', [companyId]);
     const { rows: userRows } = await query(
@@ -3588,7 +3716,7 @@ router.get('/onboarding/status', requireRole('owner'), async (req: Request, res:
 });
 
 // GET /api/schedule/onboarding/templates — list available industry templates.
-router.get('/onboarding/templates', requireRole('owner'), async (_req: Request, res: Response) => {
+router.get('/onboarding/templates', requireRole('owner', 'scheduler'), async (_req: Request, res: Response) => {
   res.json({
     templates: Object.entries(ONBOARDING_TEMPLATES).map(([key, t]) => ({
       key, label: t.label,
@@ -3598,14 +3726,31 @@ router.get('/onboarding/templates', requireRole('owner'), async (_req: Request, 
   });
 });
 
-// POST /api/schedule/onboarding/template — apply an industry template (owner only).
-// Body: { template: 'hospital' | 'clinic' | 'dental' | 'salon' | 'restaurant' | 'retail' }
-router.post('/onboarding/template', requireRole('owner'), async (req: Request, res: Response) => {
+// POST /api/schedule/onboarding/template — apply an industry template.
+// Owner: whole-company setup. Scheduler (or body.departmentId): applies the
+// template's shift types + job roles to that one department only — roles come
+// from the template department with the matching name (else the first one).
+router.post('/onboarding/template', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const key = String((req.body ?? {}).template || '');
     const tpl = ONBOARDING_TEMPLATES[key];
     if (!tpl) { res.status(400).json({ error: 'Unknown template.' }); return; }
+    const bodyDept = String((req.body ?? {}).departmentId || '').trim();
+    if (bodyDept || req.session.role === 'scheduler') {
+      const deptId = await wizardDepartmentId(req, res);
+      if (!deptId) return;
+      const { rows: deptRows } = await query('SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+        [deptId, companyId]);
+      const deptName = String(deptRows[0]?.name || '');
+      const match = tpl.departments.find((d) => d.name.toLowerCase() === deptName.toLowerCase()) || tpl.departments[0];
+      const counts = await applyDepartmentSetup(companyId, deptId, {
+        jobRoles: match ? match.jobRoles : [],
+        shiftTypes: tpl.shiftTypes,
+      });
+      res.json({ ok: true, label: tpl.label, ...counts });
+      return;
+    }
     const counts = await applyOnboardingSetup(companyId, tpl);
     res.json({ ok: true, label: tpl.label, ...counts });
   } catch (err) {
@@ -3614,10 +3759,10 @@ router.post('/onboarding/template', requireRole('owner'), async (req: Request, r
   }
 });
 
-// POST /api/schedule/onboarding/interview — one Q-Scheduler interview turn (owner only).
+// POST /api/schedule/onboarding/interview — one Q-Scheduler interview turn (owner or scheduler).
 // Body: { message: string, history: [{ role: 'user'|'assistant', text: string }] }
 // Returns { question } or { proposal, summary }.
-router.post('/onboarding/interview', requireRole('owner'), async (req: Request, res: Response) => {
+router.post('/onboarding/interview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const { message, history } = req.body ?? {};
     const hist = Array.isArray(history) ? history.slice(-10) : [];
@@ -3636,14 +3781,42 @@ router.post('/onboarding/interview', requireRole('owner'), async (req: Request, 
   }
 });
 
-// POST /api/schedule/onboarding/apply — apply an interview proposal (owner only).
-// Body: { proposal: { departments: [{ name, jobRoles[] }], shiftTypes: [{ name, departmentNames[] }] } }
-router.post('/onboarding/apply', requireRole('owner'), async (req: Request, res: Response) => {
+// POST /api/schedule/onboarding/apply — apply an interview proposal.
+// Owner: whole-company setup. Scheduler (or body.departmentId): roles + shift
+// types land on that one department only.
+router.post('/onboarding/apply', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const proposal = (req.body ?? {}).proposal;
     if (!proposal || !Array.isArray(proposal.departments) || !proposal.departments.length) {
       res.status(400).json({ error: 'A proposal with departments is required.' }); return;
+    }
+    const bodyDept = String((req.body ?? {}).departmentId || '').trim();
+    if (bodyDept || req.session.role === 'scheduler') {
+      const deptId = await wizardDepartmentId(req, res);
+      if (!deptId) return;
+      const { rows: deptRows } = await query('SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+        [deptId, companyId]);
+      const deptName = String(deptRows[0]?.name || '').toLowerCase();
+      const named = (proposal.departments as any[]).find(
+        (d) => String(d?.name || '').toLowerCase() === deptName);
+      let roles: string[] = [];
+      if (named) roles = Array.isArray(named.jobRoles) ? named.jobRoles : [];
+      else {
+        const seen = new Set<string>();
+        for (const d of proposal.departments as any[]) {
+          for (const r of (Array.isArray(d?.jobRoles) ? d.jobRoles : [])) {
+            const rn = String(r || '').trim();
+            if (rn && !seen.has(rn.toLowerCase())) { seen.add(rn.toLowerCase()); roles.push(rn); }
+          }
+        }
+      }
+      const counts = await applyDepartmentSetup(companyId, deptId, {
+        jobRoles: roles,
+        shiftTypes: Array.isArray(proposal.shiftTypes) ? proposal.shiftTypes : [],
+      });
+      res.json({ ok: true, ...counts });
+      return;
     }
     const counts = await applyOnboardingSetup(companyId, {
       departments: proposal.departments,

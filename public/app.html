@@ -429,12 +429,12 @@
     /* Month grid (read-only) */
     #tab-myschedule .ms-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
     #tab-myschedule .ms-month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); min-width: 0; }
-    #tab-myschedule .ms-day-box { background: #fff; min-height: 110px; padding: 0.5rem; cursor: pointer; min-width: 0; }
+    #tab-myschedule .ms-day-box { background: #fff; min-height: 110px; padding: 0; cursor: pointer; min-width: 0; }
     #tab-myschedule .ms-day-box:hover { background: #f8fafc; }
     #tab-myschedule .ms-day-box.other-month { background: #f8fafc; color: #94a3b8; }
     #tab-myschedule .ms-day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
-    #tab-myschedule .ms-day-num { font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; color: #102d47; }
-    #tab-myschedule .ms-month-chip { display: flex; align-items: flex-start; gap: 0.35rem; border-radius: 8px; padding: 0.25rem 0.45rem; margin-bottom: 0.2rem; font-size: 0.75rem; font-weight: 600; color: #0a0a0a; border: 1px solid; }
+    #tab-myschedule .ms-day-num { font-weight: 700; font-size: 1rem; margin-bottom: 0; padding: 0.5rem 0.5rem 0.25rem; color: #102d47; }
+    #tab-myschedule .ms-month-chip { display: flex; align-items: flex-start; gap: 0.35rem; border-radius: 0; padding: 0.25rem 0.5rem; margin-bottom: 0; font-size: 0.75rem; font-weight: 600; color: #0a0a0a; border: 1px solid; border-left: none; border-right: none; }
     #tab-myschedule .ms-month-chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 0.2rem; }
     #tab-myschedule .ms-month-chip .ms-chip-text { display: block; min-width: 0; line-height: 1.25; }
     #tab-myschedule .ms-month-chip .ms-chip-text strong { display: block; }
@@ -442,7 +442,7 @@
     #tab-myschedule .ms-month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; }
     #tab-myschedule .ms-month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-top: 0.2rem; font-size: 0.72rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
     @media (max-width: 700px) {
-      #tab-myschedule .ms-day-box { min-height: 80px; padding: 0.35rem; }
+      #tab-myschedule .ms-day-box { min-height: 80px; padding: 0; }
       #tab-myschedule .ms-month-chip { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
     }
     /* Mini date grid + horizontal day strip for phone month view (mirrors admin) */
@@ -776,18 +776,18 @@
           #tab-schedule .strip-day-num { font-size: 0.95rem; }
         }
         #tab-schedule .month-dow { background: var(--surface-alt); padding: 0.6rem; text-align: center; font-weight: 700; font-size: 0.95rem; color: var(--text); min-width: 0; }
-        #tab-schedule .day-box { background: #fff; min-height: 140px; padding: 0.6rem; cursor: pointer; min-width: 0; }
+        #tab-schedule .day-box { background: #fff; min-height: 140px; padding: 0; cursor: pointer; min-width: 0; }
         #tab-schedule .day-box:hover { background: #f8fafc; }
         #tab-schedule .day-box.other-month { background: #f8fafc; color: #94a3b8; }
         #tab-schedule .day-box.today { outline: 2px solid var(--accent); outline-offset: -2px; }
-        #tab-schedule .day-num { font-weight: 700; font-size: 1.05rem; margin-bottom: 0.45rem; display: flex; justify-content: space-between; align-items: center; color: #102d47; }
-        #tab-schedule .month-chip { display: flex; align-items: center; gap: 0.4rem; border-radius: 8px; padding: 0.3rem 0.5rem; margin-bottom: 0.25rem; font-size: 0.8rem; font-weight: 600; color: #0a0a0a; border: 1px solid; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #tab-schedule .day-num { font-weight: 700; font-size: 1.05rem; margin-bottom: 0; padding: 0.55rem 0.6rem 0.3rem; display: flex; justify-content: space-between; align-items: center; color: #102d47; }
+        #tab-schedule .month-chip { display: flex; align-items: center; gap: 0.4rem; border-radius: 0; padding: 0.3rem 0.6rem; margin-bottom: 0; font-size: 0.8rem; font-weight: 600; color: #0a0a0a; border: 1px solid; border-left: none; border-right: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #tab-schedule .month-chip .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
         /* Phone: compact scrollable month */
         @media (max-width: 700px) {
-          #tab-schedule .day-box { min-height: 90px; padding: 0.4rem; }
-          #tab-schedule .month-chip { font-size: 0.68rem; padding: 0.15rem 0.35rem; margin-bottom: 0.15rem; }
-          #tab-schedule .day-num { font-size: 0.9rem; margin-bottom: 0.25rem; }
+          #tab-schedule .day-box { min-height: 90px; padding: 0; }
+          #tab-schedule .month-chip { font-size: 0.68rem; padding: 0.15rem 0.35rem; margin-bottom: 0; }
+          #tab-schedule .day-num { font-size: 0.9rem; margin-bottom: 0; padding: 0.35rem 0.4rem 0.2rem; }
         }
         #tab-schedule .month-chip strong { font-weight: 800; }
         #tab-schedule .month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; margin-bottom: 0.15rem; }
@@ -10280,8 +10280,15 @@
     var modal = document.getElementById('setup-wizard');
     var body = document.getElementById('sw-body');
     var interviewHistory = [];
+    // Wizard modes: owners set up the whole company (5 steps incl. Company).
+    // Schedulers set up ONE department they have Edit access to (4 steps).
+    var wzRole = 'owner';
+    var wzDept = null;       // { id, name } for scheduler mode
+    var wzEditDepts = [];    // scheduler's editable departments
+    var ALL_STEPS = ['structure', 'team', 'staffing', 'company', 'invites'];
     var STEPS = ['structure', 'team', 'staffing', 'company', 'invites'];
     var STEP_LABELS = { structure: 'Structure', team: 'Team', staffing: 'Staffing', company: 'Company', invites: 'Invites' };
+    function wizardSteps() { return wzRole === 'scheduler' ? ['structure', 'team', 'staffing', 'invites'] : ALL_STEPS; }
 
     function show(html) { body.innerHTML = html; }
     function close() { modal.classList.add('hidden'); }
@@ -10291,35 +10298,60 @@
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
     // Open at the first incomplete step (detected from real data + local flags).
-    // Owner-only: a non-owner session would hit 403s on every step, so stop early
-    // with a plain explanation instead of opening a wizard that can't work.
+    // Owners: whole company. Schedulers: one editable department. Employees:
+    // blocked with a plain explanation instead of a wizard that can't work.
     window.openSetupWizard = function () {
       api('/api/auth/me').then(function (mr) {
-        if (!mr.ok || !mr.data.user || mr.data.user.role !== 'owner') {
-          alert('The setup wizard is for the company owner. Your account is not the owner of this workspace.');
+        var user = mr.ok && mr.data.user;
+        if (!user) { return; }
+        wzRole = (user.role === 'scheduler') ? 'scheduler' : 'owner';
+        wzDept = null; wzEditDepts = [];
+        if (user.role === 'employee') {
+          alert('The setup wizard is for the company owner or schedulers. Your account is an employee in this workspace.');
+          return;
+        }
+        if (wzRole === 'scheduler') {
+          // Scheduler: which editable department should we set up?
+          api('/api/schedule/onboarding/status').then(function (sr) {
+            var ed = (sr.ok && sr.data.editableDepartments) || [];
+            wzEditDepts = ed;
+            if (!ed.length) { alert('Ask your owner for Edit access to a department first — then the setup wizard can help you set it up.'); return; }
+            if (ed.length === 1) {
+              wzDept = ed[0];
+              api('/api/schedule/onboarding/status?departmentId=' + encodeURIComponent(wzDept.id)).then(function (r2) {
+                resumeWizard((r2.ok && r2.data.steps) || {});
+              });
+            } else {
+              openStep('structure'); // department picker first
+            }
+          }).catch(function () {});
           return;
         }
         api('/api/schedule/onboarding/status').then(function (r) {
-          var s = (r.ok && r.data.steps) || {};
-          if (!s.structure) return openStep('structure');
-          if (!s.team) return openStep('team');
-          if (!s.staffing) return openStep('staffing');
-          if (!lsGet('qs-setup-company')) return openStep('company');
-          if (!s.invites) return openStep('invites');
-          openStep('done');
+          resumeWizard((r.ok && r.data.steps) || {});
         }).catch(function () { openStep('structure'); });
       }).catch(function () {});
     };
 
+    function resumeWizard(s) {
+      if (!s.structure) return openStep('structure');
+      if (!s.team) return openStep('team');
+      if (!s.staffing) return openStep('staffing');
+      if (wzRole === 'owner' && !lsGet('qs-setup-company')) return openStep('company');
+      if (!s.invites) return openStep('invites');
+      openStep('done');
+    }
+
     function progressHtml(current) {
-      var idx = STEPS.indexOf(current);
+      var steps = wizardSteps();
+      var idx = steps.indexOf(current);
       var html = '<div style="display:flex;gap:0.3rem;margin-bottom:1rem">';
-      STEPS.forEach(function (st, i) {
+      steps.forEach(function (st, i) {
         var done = i < idx;
         html += '<div title="' + STEP_LABELS[st] + '" style="flex:1;height:6px;border-radius:3px;background:' +
           (done ? 'var(--accent)' : (i === idx ? 'var(--accent)' : 'var(--border)')) + ';opacity:' + (i === idx ? '1' : (done ? '1' : '0.5')) + '"></div>';
       });
-      html += '</div><p style="color:var(--dim);font-size:0.8rem;margin:-0.5rem 0 1rem">Step ' + (idx + 1) + ' of ' + STEPS.length + ' — ' + STEP_LABELS[current] + '</p>';
+      html += '</div><p style="color:var(--dim);font-size:0.8rem;margin:-0.5rem 0 1rem">Step ' + (idx + 1) + ' of ' + steps.length + ' — ' + STEP_LABELS[current] + '</p>';
       return html;
     }
 
@@ -10349,21 +10381,45 @@
       modal.classList.remove('hidden');
     }
     function nextStepAfter(step) {
-      var i = STEPS.indexOf(step);
-      if (i < 0 || i === STEPS.length - 1) { showDone(); return; }
-      openStep(STEPS[i + 1]);
+      var steps = wizardSteps();
+      var i = steps.indexOf(step);
+      if (i < 0 || i === steps.length - 1) { showDone(); return; }
+      openStep(steps[i + 1]);
     }
     function prevStepBefore(step) {
-      var i = STEPS.indexOf(step);
+      var steps = wizardSteps();
+      var i = steps.indexOf(step);
       if (i <= 0) { showStructure(); return; }
-      openStep(STEPS[i - 1]);
+      openStep(steps[i - 1]);
     }
 
     // ---------- Step 1: Structure (templates or interview) ----------
     function showStructure() {
+      if (wzRole === 'scheduler' && !wzDept) {
+        // Multiple editable departments: pick which one to set up first.
+        show(progressHtml('structure') +
+          '<h2 style="margin-top:0">Which department are you setting up? 🏗️</h2>' +
+          '<p style="color:var(--dim)">The wizard sets up one department at a time — the ones you have Edit access to.</p>' +
+          wzEditDepts.map(function (d) {
+            return '<button type="button" class="btn" data-wzdept="' + d.id + '" style="width:100%;padding:0.9rem;border-radius:12px;margin-bottom:0.6rem">' + esc(d.name) + '</button>';
+          }).join(''));
+        document.querySelectorAll('[data-wzdept]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-wzdept');
+            wzDept = wzEditDepts.find(function (d) { return d.id === id; }) || null;
+            api('/api/schedule/onboarding/status?departmentId=' + encodeURIComponent(id)).then(function (r2) {
+              resumeWizard((r2.ok && r2.data.steps) || {});
+            });
+          });
+        });
+        return;
+      }
+      var sched = wzRole === 'scheduler';
       show(progressHtml('structure') +
-        '<h2 style="margin-top:0">Let\'s build your structure 🏗️</h2>' +
-        '<p style="color:var(--dim)">Q-Scheduler can set up your departments, shift types, and job roles. Pick how:</p>' +
+        '<h2 style="margin-top:0">' + (sched ? 'Let\'s set up ' + esc(wzDept.name) + ' 🏗️' : 'Let\'s build your structure 🏗️') + '</h2>' +
+        '<p style="color:var(--dim)">' + (sched
+          ? 'Q-Scheduler can add shift types and job roles to ' + esc(wzDept.name) + '. Pick how:'
+          : 'Q-Scheduler can set up your departments, shift types, and job roles. Pick how:') + '</p>' +
         '<button type="button" id="sw-tpl" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-bottom:0.6rem">📋 Start from an industry template</button>' +
         '<button type="button" id="sw-ai" class="btn" style="width:100%;padding:0.9rem;border-radius:12px">💬 Describe my workplace to Q-Scheduler</button>' +
         '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-skip1">Skip for now</button></div>'
@@ -10374,7 +10430,9 @@
     }
 
     function showTemplates() {
-      show(progressHtml('structure') + '<h2 style="margin-top:0">Pick your industry</h2><p style="color:var(--dim)">One tap sets up departments, shift types, and job roles. You can tweak everything afterwards.</p><div id="sw-tpls"><p style="color:var(--dim)">Loading…</p></div>' +
+      show(progressHtml('structure') + '<h2 style="margin-top:0">Pick your industry</h2><p style="color:var(--dim)">' + (wzRole === 'scheduler' && wzDept
+          ? 'One tap adds shift types and job roles to ' + esc(wzDept.name) + '. You can tweak everything afterwards.'
+          : 'One tap sets up departments, shift types, and job roles. You can tweak everything afterwards.') + '</p><div id="sw-tpls"><p style="color:var(--dim)">Loading…</p></div>' +
         '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back2">Back</button></div>');
       document.getElementById('sw-back2').addEventListener('click', showStructure);
       api('/api/schedule/onboarding/templates').then(function (r) {
@@ -10397,6 +10455,27 @@
     }
 
     function applyTemplate(t) {
+      if (wzRole === 'scheduler' && wzDept) {
+        var matchName = t.departments.indexOf(wzDept.name) >= 0 ? wzDept.name : t.departments[0];
+        show(progressHtml('structure') + '<h2 style="margin-top:0">' + esc(t.label) + '</h2>' +
+          '<p>This will add to <strong>' + esc(wzDept.name) + '</strong>:</p><ul>' +
+          '<li><strong>' + t.shiftTypes.length + ' shift types:</strong> ' + esc(t.shiftTypes.join(', ')) + '</li>' +
+          '<li><strong>Job roles</strong> from the template\'s ' + esc(matchName) + ' department</li></ul>' +
+          '<p style="color:var(--dim);font-size:0.9rem">Existing items with the same names are kept as-is.</p>' +
+          '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
+          '<button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back3">Back</button>' +
+          '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-apply">Set it up</button></div>');
+        document.getElementById('sw-back3').addEventListener('click', showTemplates);
+        document.getElementById('sw-apply').addEventListener('click', function () {
+          show(progressHtml('structure') + '<p style="color:var(--dim)">Setting things up…</p>');
+          api('/api/schedule/onboarding/template', { method: 'POST', body: JSON.stringify({ template: t.key, departmentId: wzDept.id }) })
+            .then(function (r) {
+              if (r.ok) { showStepDone('structure', 'Added ' + r.data.shiftTypes + ' shift types and ' + r.data.jobRoles + ' job roles to ' + wzDept.name + '.'); }
+              else show(progressHtml('structure') + '<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>');
+            }).catch(function () { show(progressHtml('structure') + '<p style="color:#991b1b">Something went wrong.</p>'); });
+        });
+        return;
+      }
       show(progressHtml('structure') + '<h2 style="margin-top:0">' + esc(t.label) + '</h2>' +
         '<p>This will create:</p><ul><li><strong>' + t.departments.length + ' departments:</strong> ' + esc(t.departments.join(', ')) + '</li>' +
         '<li><strong>' + t.shiftTypes.length + ' shift types:</strong> ' + esc(t.shiftTypes.join(', ')) + '</li></ul>' +
@@ -10425,6 +10504,9 @@
 
     // Interview (same as before, ends with proposal → apply → step done)
     function showInterview() {
+      if (wzRole === 'scheduler' && wzDept && !interviewHistory.length) {
+        interviewHistory.push({ role: 'user', text: '(Context, do not repeat back: I am the scheduler for the "' + wzDept.name + '" department. I am setting up just this one department — its job roles and shift types. Ask about this department only.)' });
+      }
       show(progressHtml('structure') +
         '<h2 style="margin-top:0">Describe your workplace 💬</h2>' +
         '<p style="color:var(--dim)">Tell Q-Scheduler about your business — I\'ll build your setup from it.</p>' +
@@ -10434,7 +10516,9 @@
         '<button type="button" id="sw-send" class="btn" style="padding:0.7rem 1.2rem;border-radius:10px">Send</button></div>' +
         '<div style="display:flex;gap:0.6rem;margin-top:1.2rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="sw-back4">Back</button></div>');
       document.getElementById('sw-back4').addEventListener('click', showStructure);
-      addMsg('assistant', "Hi! I'm Q-Scheduler. What kind of business are you setting up?");
+      addMsg('assistant', wzRole === 'scheduler' && wzDept
+        ? "Hi! I'm Q-Scheduler. Tell me about the " + wzDept.name + " department — what shifts do you run?"
+        : "Hi! I'm Q-Scheduler. What kind of business are you setting up?");
       var input = document.getElementById('sw-input');
       function send() {
         var text = input.value.trim();
@@ -10496,9 +10580,13 @@
       document.getElementById('sw-redo').addEventListener('click', function () { interviewHistory = []; showInterview(); });
       document.getElementById('sw-ok').addEventListener('click', function () {
         show(progressHtml('structure') + '<p style="color:var(--dim)">Setting things up…</p>');
-        api('/api/schedule/onboarding/apply', { method: 'POST', body: JSON.stringify({ proposal: p }) })
+        var applyBody = { proposal: p };
+        if (wzRole === 'scheduler' && wzDept) applyBody.departmentId = wzDept.id;
+        api('/api/schedule/onboarding/apply', { method: 'POST', body: JSON.stringify(applyBody) })
           .then(function (r) {
-            if (r.ok) showStepDone('structure', 'Created ' + r.data.departments + ' departments, ' + r.data.shiftTypes + ' shift types, and ' + r.data.jobRoles + ' job roles.');
+            if (r.ok) showStepDone('structure', wzRole === 'scheduler' && wzDept
+              ? 'Added ' + r.data.shiftTypes + ' shift types and ' + r.data.jobRoles + ' job roles to ' + wzDept.name + '.'
+              : 'Created ' + r.data.departments + ' departments, ' + r.data.shiftTypes + ' shift types, and ' + r.data.jobRoles + ' job roles.');
             else show(progressHtml('structure') + '<p style="color:#991b1b">' + esc((r.data && r.data.error) || 'Something went wrong.') + '</p>');
           }).catch(function () { show(progressHtml('structure') + '<p style="color:#991b1b">Something went wrong.</p>'); });
       });
@@ -10527,13 +10615,23 @@
       api('/api/departments').then(function (r) {
         swDepts = (r.ok && r.data.departments) || [];
         var sel = document.getElementById('sw-dept');
-        if (sel) swDepts.forEach(function (d) {
-          var o = document.createElement('option'); o.value = d.id; o.textContent = d.name; sel.appendChild(o);
-        });
+        if (sel) {
+          swDepts.forEach(function (d) {
+            var o = document.createElement('option'); o.value = d.id; o.textContent = d.name; sel.appendChild(o);
+          });
+          if (wzRole === 'scheduler' && wzDept) {
+            sel.value = wzDept.id; sel.disabled = true;
+            sel.dispatchEvent(new Event('change'));
+          }
+        }
       }).catch(function () {});
       api('/api/job-roles/all').then(function (r) {
         var list = (r.ok && (r.data.jobRoles || r.data.roles)) || [];
         swRoles = list;
+        if (wzRole === 'scheduler' && wzDept) {
+          var deptSel2 = document.getElementById('sw-dept');
+          if (deptSel2) deptSel2.dispatchEvent(new Event('change'));
+        }
       }).catch(function () { swRoles = []; });
       var deptSel = document.getElementById('sw-dept');
       if (deptSel) deptSel.addEventListener('change', function () {
@@ -10565,6 +10663,9 @@
     function refreshMemberList() {
       api('/api/users').then(function (r) {
         var users = ((r.ok && (r.data.users || r.data)) || []).filter(function (u) { return u.role !== 'owner'; });
+        if (wzRole === 'scheduler' && wzDept) users = users.filter(function (u) {
+          return (u.departmentId || u.department_id) === wzDept.id;
+        });
         renderMembers(users);
       }).catch(function () {});
     }
@@ -10587,6 +10688,10 @@
       wireNav(function () { prevStepBefore('staffing'); }, saveStaffing, null);
       api('/api/schedule/shift-types').then(function (r) {
         var types = (r.ok && (r.data.shiftTypes || r.data)) || [];
+        if (wzRole === 'scheduler' && wzDept) types = types.filter(function (t) {
+          var ids = t.departmentIds || (t.departmentId ? [t.departmentId] : []);
+          return ids.indexOf(wzDept.id) >= 0;
+        });
         var box = document.getElementById('sw-targets');
         if (!types.length) { box.innerHTML = '<p style="color:var(--dim)">No shift types yet — skipping this step is fine.</p>'; return; }
         box.innerHTML = types.map(function (t) {
@@ -10640,6 +10745,9 @@
       wireNav(function () { prevStepBefore('invites'); }, function () { showDone(); }, null);
       api('/api/users').then(function (r) {
         var users = ((r.ok && (r.data.users || r.data)) || []).filter(function (u) { return u.role !== 'owner'; });
+        if (wzRole === 'scheduler' && wzDept) users = users.filter(function (u) {
+          return (u.departmentId || u.department_id) === wzDept.id;
+        });
         var box = document.getElementById('sw-invlist');
         if (!users.length) { box.innerHTML = '<p style="color:var(--dim)">No team members to invite yet — add them in the Team step first.</p>'; return; }
         box.innerHTML = users.map(function (u) {
@@ -10679,7 +10787,9 @@
       try { localStorage.setItem('qs-setup-done', '1'); } catch (e) {}
       hideNudge();
       show('<h2 style="margin-top:0">You\'re all set! 🎉</h2>' +
-        '<p>Your company is ready. Add shifts on the Schedule tab to get going.</p>' +
+        '<p>' + (wzRole === 'scheduler' && wzDept
+          ? esc(wzDept.name) + ' is ready. Add shifts on the Schedule tab to get going.'
+          : 'Your company is ready. Add shifts on the Schedule tab to get going.') + '</p>' +
         '<button type="button" class="btn" style="width:100%;padding:0.9rem;border-radius:12px;margin-top:0.6rem" id="sw-done">Start scheduling</button>');
       document.getElementById('sw-done').addEventListener('click', function () {
         close();
