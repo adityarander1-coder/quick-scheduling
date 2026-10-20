@@ -5832,6 +5832,56 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
   }
 });
 
+// POST /api/schedule/academic-sessions/:id/claim — presenter pickup
+// (Deepika, 2026-10-20): any signed-in user who can see a session with no
+// presenter ("Needs presenter") picks it up. Claiming an occurrence claims
+// the whole series. Atomic: the UPDATE lands only while the slot is open.
+router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const seriesId = String(req.params.id).split('@@')[0];
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const cur = rows[0];
+    const ids = await academicVisibleDeptIds(req);
+    if (ids && (!cur.department_id || !ids.includes(cur.department_id))) {
+      res.status(403).json({ error: 'You do not have access to this session.' }); return;
+    }
+    if (cur.lecturer_user_id) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
+    const upd = await query(
+      'UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2 AND company_id = $3 AND lecturer_user_id IS NULL',
+      [req.session.userId!, seriesId, companyId]);
+    if (!upd.rowCount) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] academic session claim failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/academic-sessions/:id/unclaim — the presenter gives the
+// slot back; an owner/scheduler with edit rights on the department can also
+// clear someone else's.
+router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const seriesId = String(req.params.id).split('@@')[0];
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const cur = rows[0];
+    if (!cur.lecturer_user_id) { res.json({ ok: true }); return; }
+    if (cur.lecturer_user_id !== req.session.userId) {
+      if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
+      if (!(await academicDeptCheck(req, res, cur.department_id))) return;
+    }
+    await query('UPDATE academic_sessions SET lecturer_user_id = NULL WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] academic session unclaim failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // PUT /api/schedule/academic-sessions/:id — owner or scheduler (edit-scoped).
 router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

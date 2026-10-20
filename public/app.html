@@ -879,6 +879,8 @@
         .delete-shift-confirm button:disabled { opacity: .6; cursor: wait; }
         .person-action-message { margin: 0; border-radius: 10px; padding: 9px 10px; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); color: var(--danger); font-size: 11px; font-weight: 750; line-height: 1.4; }
         #tab-schedule .shift-nm { cursor: pointer; }
+        #tab-schedule .ev-claim-btn { background: #00796b; color: #fff; border: none; border-radius: 8px; padding: 4px 10px; font-size: 0.76rem; font-weight: 700; cursor: pointer; }
+        #tab-schedule .ev-unclaim-btn { background: none; border: none; color: #64748b; font-size: 0.72rem; cursor: pointer; text-decoration: underline; padding: 0; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
       </style>
@@ -1081,6 +1083,7 @@
           deptFilters: [],
           departments: [],
           dashEvents: [],
+          myId: null,
           showDashEvents: (function () { try { return localStorage.getItem('qs-sched-events') !== '0'; } catch (e) { return true; } })(),
         };
 
@@ -1235,8 +1238,9 @@
             api('/api/schedule/staffing-targets'),
             api('/api/departments'),
             api('/api/schedule/academic-sessions?from=' + fmtDate(efd) + '&to=' + fmtDate(etd)),
+            api('/api/auth/me'),
           ]).then(function (results) {
-            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7];
+            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
             if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
@@ -1245,6 +1249,7 @@
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
             if (deptR.ok) sched.departments = deptR.data.departments || [];
             if (evR && evR.ok) sched.dashEvents = evR.data.sessions || [];
+            if (meR && meR.ok && meR.data.user) sched.myId = meR.data.user.id;
             window.qsShiftTypes = sched.shiftTypes;
             window.qsDepartments = sched.departments;
             renderActiveDeptSwitcher();
@@ -1535,7 +1540,8 @@
             var names = '';
             if (e.lecturerName) names += esc(e.lecturerName);
             if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
-            if (!names) names = '<span style="color:#b91c1c;font-weight:700">Needs presenter</span>';
+            if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="ev-claim-btn" data-evclaim="' + e.id + '" title="Pick up this session">✋ Pick it up — I\'ll present</button>';
+            else if (sched.myId && e.lecturerUserId === sched.myId) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
             if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
             return '<div class="shift-grid dash-ev-box">' +
               '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
@@ -2994,6 +3000,18 @@
         }
 
         // --- events (scoped to this tab) ---
+        // Presenter pickup from the session boxes on the schedule.
+        $('sched-view').addEventListener('click', function (ev) {
+          var c = ev.target.closest('[data-evclaim]');
+          var u = ev.target.closest('[data-evunclaim]');
+          if (!c && !u) return;
+          ev.stopPropagation();
+          var id = (c || u).getAttribute(c ? 'data-evclaim' : 'data-evunclaim');
+          api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
+            if (r.ok) loadAll();
+            else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+          });
+        }, true);
         var evtTgl = $('sched-events-toggle');
         if (evtTgl) {
           evtTgl.checked = sched.showDashEvents;
@@ -10050,7 +10068,7 @@
     (function () {
       var dashList = [];
       var curDash = null;
-      var acUsers = [], acDepts = [], acSessions = [];
+      var acUsers = [], acDepts = [], acSessions = [], acMyId = null;
       var acView = 'month';
       var acAnchor = new Date();
 
@@ -10112,11 +10130,13 @@
           api('/api/schedule/academic-sessions?from=' + r.from + '&to=' + r.to + '&dashboardId=' + curDash.id),
           api('/api/users'),
           api('/api/departments'),
+          api('/api/auth/me'),
         ]).then(function (rs) {
           if (!rs[0].ok) { pageError('Could not load this dashboard.'); return; }
           acSessions = rs[0].data.sessions || [];
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
+          if (rs[3] && rs[3].ok && rs[3].data.user) acMyId = rs[3].data.user.id;
           render();
         }).catch(function () { pageError('Could not load this dashboard.'); });
       }
@@ -10263,10 +10283,13 @@
         else list.forEach(function (s) {
           var color = chipColor(s);
           var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">Repeats</span>' : '';
+          var claimBtn = '';
+          if (!s.lecturerUserId) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
+          else if (acMyId && s.lecturerUserId === acMyId) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
           html += '<div class="ac-drow" data-acedit="' + s.id + '">' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + '</div></div></div>';
+            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + claimBtn + '</div></div></div>';
         });
         return html + '</div></div>';
       }
@@ -10662,6 +10685,23 @@
         if (!acUsers.length) { load(); setTimeout(function () { openForm(null); }, 600); }
         else openForm(null);
       });
+
+      // Presenter pickup: claim / give-up buttons in the Day view.
+      // Capture phase: the row's own click handler stops propagation
+      // (opens the edit form), so the button must win before it bubbles.
+      var dashTabEl = document.getElementById('tab-dash');
+      if (dashTabEl) dashTabEl.addEventListener('click', function (ev) {
+        var c = ev.target.closest('[data-acclaim]');
+        var u = ev.target.closest('[data-acunclaim]');
+        if (!c && !u) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        var id = (c || u).getAttribute(c ? 'data-acclaim' : 'data-acunclaim');
+        api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
+          if (r.ok) load();
+          else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+        });
+      }, true);
     })();
 
 
