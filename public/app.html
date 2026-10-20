@@ -879,6 +879,9 @@
         .delete-shift-confirm button:disabled { opacity: .6; cursor: wait; }
         .person-action-message { margin: 0; border-radius: 10px; padding: 9px 10px; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); color: var(--danger); font-size: 11px; font-weight: 750; line-height: 1.4; }
         #tab-schedule .shift-nm { cursor: pointer; }
+        #tab-schedule .day-events-strip { margin: 10px 12px 0; background: #f5f0ff; border: 1px solid #ddd0fe; border-radius: 10px; padding: 7px 10px; }
+        #tab-schedule .day-event-line { font-size: 0.83rem; color: #4c1d95; padding: 1px 0; font-weight: 600; }
+        #tab-schedule .month-ev-badge { display: inline-block; margin: 2px 0 4px; background: #ede9fe; color: #5b21b6; border: 1px solid #ddd6fe; border-radius: 999px; padding: 0 7px; font-size: 0.68rem; font-weight: 700; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
       </style>
@@ -906,6 +909,9 @@
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
           </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
+            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Dashboard events
+          </label>
         </div>
       </div>
 
@@ -1077,6 +1083,8 @@
           shiftFilters: [],
           deptFilters: [],
           departments: [],
+          dashEvents: [],
+          showDashEvents: (function () { try { return localStorage.getItem('qs-sched-events') !== '0'; } catch (e) { return true; } })(),
         };
 
         function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -1217,6 +1225,10 @@
           }
           var r = viewRange();
           $('sched-h1').textContent = schedTitle();
+          // Dashboard sessions for the strip/badge: widen by a week each side
+          // so month-grid spill-over days are covered too.
+          var efd = parseDate(r.from); efd.setDate(efd.getDate() - 7);
+          var etd = parseDate(r.to); etd.setDate(etd.getDate() + 7);
           return Promise.all([
             api('/api/schedule/shift-types'),
             api('/api/users'),
@@ -1225,8 +1237,9 @@
             api('/api/schedule/comments?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/staffing-targets'),
             api('/api/departments'),
+            api('/api/schedule/academic-sessions?from=' + fmtDate(efd) + '&to=' + fmtDate(etd)),
           ]).then(function (results) {
-            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6];
+            var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
             if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
@@ -1234,6 +1247,7 @@
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
             if (deptR.ok) sched.departments = deptR.data.departments || [];
+            if (evR && evR.ok) sched.dashEvents = evR.data.sessions || [];
             window.qsShiftTypes = sched.shiftTypes;
             window.qsDepartments = sched.departments;
             renderActiveDeptSwitcher();
@@ -1496,6 +1510,33 @@
             '</span></button>';
         }
 
+        // --- Dashboard sessions shown on the main schedule (Deepika, 2026-10-20) ---
+        function fmtTime12(t) {
+          if (!t) return '';
+          var p = String(t).split(':'); var h = parseInt(p[0], 10); var m = p[1] || '00';
+          var ap = h >= 12 ? 'PM' : 'AM'; var h12 = h % 12; if (h12 === 0) h12 = 12;
+          return h12 + ':' + m + ' ' + ap;
+        }
+        function dashEventsFor(ds) {
+          if (!sched.showDashEvents) return [];
+          return (sched.dashEvents || []).filter(function (e) {
+            if (e.date !== ds) return false;
+            if (sched.deptFilters.length) return e.departmentId && sched.deptFilters.indexOf(e.departmentId) !== -1;
+            return true;
+          });
+        }
+        function dashEventsStripHtml(ds) {
+          var evs = dashEventsFor(ds);
+          if (!evs.length) return '';
+          return '<div class="day-events-strip">' + evs.map(function (e) {
+            return '<div class="day-event-line">🎓 ' + esc(e.title) +
+              (e.startTime ? ' · ' + esc(fmtTime12(e.startTime)) : '') +
+              (e.lecturerName ? ' · ' + esc(e.lecturerName) : '') +
+              (e.supervisorName ? ' · Sup: ' + esc(e.supervisorName) : '') +
+              (e.location ? ' · 📍 ' + esc(e.location) : '') + '</div>';
+          }).join('') + '</div>';
+        }
+
         function dayRowHtml(dateStr) {
           var d = parseDate(dateStr);
           var shifts = shiftsFor(dateStr);
@@ -1508,6 +1549,7 @@
           html += '<div class="day-row-actions">' + statusPillHtml(dateStr) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
+          html += dashEventsStripHtml(dateStr);
           html += '<div class="day-row-body">';
           var byType = {};
           shifts.forEach(function (s) {
@@ -1576,6 +1618,7 @@
           html += '<div class="day-row-actions">' + statusPillHtml(ds) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
+          html += dashEventsStripHtml(ds);
           html += '<div class="day-row-body">';
           var byType = {};
           shifts.forEach(function (s) {
@@ -1634,6 +1677,11 @@
 
         function monthDayInner(ds, d, headHtml) {
           var html = '<div class="day-num">' + headHtml + statusPillHtml(ds) + '</div>';
+          var devs = dashEventsFor(ds);
+          if (devs.length) {
+            var det = devs.map(function (e) { return e.title + (e.startTime ? ' ' + fmtTime12(e.startTime) : ''); }).join(', ');
+            html += '<div class="month-ev-badge" title="' + esc(det) + '">🎓 ' + devs.length + (devs.length === 1 ? ' event' : ' events') + '</div>';
+          }
           var dayShifts = shiftsFor(ds);
           // Group by shift type: show shift name once, list people under it.
           var byType = {};
@@ -2933,6 +2981,15 @@
         }
 
         // --- events (scoped to this tab) ---
+        var evtTgl = $('sched-events-toggle');
+        if (evtTgl) {
+          evtTgl.checked = sched.showDashEvents;
+          evtTgl.addEventListener('change', function () {
+            sched.showDashEvents = evtTgl.checked;
+            try { localStorage.setItem('qs-sched-events', evtTgl.checked ? '1' : '0'); } catch (e) {}
+            renderView();
+          });
+        }
         document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
             document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.remove('active'); });
