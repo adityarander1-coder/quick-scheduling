@@ -230,12 +230,25 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       bad();
       return;
     }
-    const user = rows[0];
-    const ok = await bcrypt.compare(String(password), user.password_hash);
-    if (!ok) {
+    // The same email can exist in multiple companies (a multi-workspace owner).
+    // Check the password against every row and prefer the owner account, so the
+    // owner always lands in their owner workspace instead of an arbitrary row.
+    const matches: (DbUser & { company_name: string })[] = [];
+    for (const row of rows) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await bcrypt.compare(String(password), row.password_hash)) matches.push(row);
+    }
+    if (!matches.length) {
       bad();
       return;
     }
+    const roleRank = (r: string) => (r === 'owner' ? 0 : r === 'scheduler' ? 1 : 2);
+    matches.sort((a, b) => {
+      const activeDiff = Number(b.is_active ?? true) - Number(a.is_active ?? true);
+      if (activeDiff) return activeDiff;
+      return roleRank(a.role) - roleRank(b.role);
+    });
+    const user = matches[0];
     if (!user.is_active) {
       res.status(401).json({ error: 'This account has been deactivated. Contact your administrator.' });
       return;

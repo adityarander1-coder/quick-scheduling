@@ -10291,16 +10291,24 @@
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
     // Open at the first incomplete step (detected from real data + local flags).
+    // Owner-only: a non-owner session would hit 403s on every step, so stop early
+    // with a plain explanation instead of opening a wizard that can't work.
     window.openSetupWizard = function () {
-      api('/api/schedule/onboarding/status').then(function (r) {
-        var s = (r.ok && r.data.steps) || {};
-        if (!s.structure) return openStep('structure');
-        if (!s.team) return openStep('team');
-        if (!s.staffing) return openStep('staffing');
-        if (!lsGet('qs-setup-company')) return openStep('company');
-        if (!s.invites) return openStep('invites');
-        openStep('done');
-      }).catch(function () { openStep('structure'); });
+      api('/api/auth/me').then(function (mr) {
+        if (!mr.ok || !mr.data.user || mr.data.user.role !== 'owner') {
+          alert('The setup wizard is for the company owner. Your account is not the owner of this workspace.');
+          return;
+        }
+        api('/api/schedule/onboarding/status').then(function (r) {
+          var s = (r.ok && r.data.steps) || {};
+          if (!s.structure) return openStep('structure');
+          if (!s.team) return openStep('team');
+          if (!s.staffing) return openStep('staffing');
+          if (!lsGet('qs-setup-company')) return openStep('company');
+          if (!s.invites) return openStep('invites');
+          openStep('done');
+        }).catch(function () { openStep('structure'); });
+      }).catch(function () {});
     };
 
     function progressHtml(current) {
@@ -10441,7 +10449,13 @@
             var chat = document.getElementById('sw-chat');
             if (chat && chat.lastChild) chat.removeChild(chat.lastChild);
             input.disabled = false; document.getElementById('sw-send').disabled = false;
-            if (!r.ok) { addMsg('assistant', (r.data && r.data.error) || 'Something went wrong. Try again?'); return; }
+            if (!r.ok) {
+              // Never show raw server errors as if Q-Scheduler said them (e.g. a
+              // permission error reads like the AI refusing to help).
+              console.error('[wizard] interview request failed:', r.status, r.data);
+              addMsg('assistant', 'Hmm, I hit a snag on my end. You can try again, or pick an industry template instead.');
+              return;
+            }
             if (r.data.question) { interviewHistory.push({ role: 'assistant', text: r.data.question }); addMsg('assistant', r.data.question); }
             else if (r.data.proposal) { interviewHistory.push({ role: 'assistant', text: r.data.summary || 'Here is your setup.' }); showProposal(r.data.proposal, r.data.summary); }
           }).catch(function () {
