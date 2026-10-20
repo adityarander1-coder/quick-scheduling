@@ -10372,11 +10372,13 @@
               });
             }
             function candRow(c) {
-              var shifts = c.shifts.map(function (x) { return x.shiftName; }).join(', ');
+              var badges = c.shifts.map(function (x) {
+                return '<span style="background:#dbeafe;color:#1e40af;border-radius:999px;padding:0.12rem 0.55rem;font-size:0.76rem;font-weight:600">' + esc(x.shiftName) + '</span>';
+              }).join(' ');
               var btn = 'type="button" class="btn-secondary" style="padding:0.35rem 0.7rem;border-radius:999px;font-size:0.8rem"';
               return '<div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.45rem;background:#fff;border:1px solid var(--border);border-radius:10px;padding:0.45rem 0.6rem">' +
-                '<span style="font-size:0.9rem;font-weight:600">' + esc(c.name) + '</span>' +
-                '<span style="font-size:0.8rem;color:var(--dim)">' + esc(shifts) + (c.jobRole ? ' · ' + esc(c.jobRole) : '') + '</span>' +
+                '<span style="font-size:0.9rem;font-weight:600">' + esc(c.name) + '</span>' + badges +
+                (c.jobRole ? '<span style="font-size:0.8rem;color:var(--dim)">' + esc(c.jobRole) + '</span>' : '') +
                 '<span style="margin-left:auto;display:flex;gap:0.35rem">' +
                 '<button ' + btn + ' data-cand-p="' + c.userId + '">Presenter</button>' +
                 '<button ' + btn + ' data-cand-s="' + c.userId + '">Supervisor</button></span></div>';
@@ -10386,16 +10388,27 @@
               setPerson(lecSel, cands[0]);
               note = '<div style="color:#15803d;font-weight:600;font-size:0.88rem;margin-bottom:0.45rem">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</div>';
             }
-            var hasOthers = dept && cands.some(function (c) { return c.inDepartment === false; });
-            if (hasOthers) {
-              var inDept = cands.filter(function (c) { return c.inDepartment; });
-              var others = cands.filter(function (c) { return !c.inDepartment; });
-              box.innerHTML = note +
-                (inDept.length ? '<div style="font-size:0.85rem;margin-bottom:0.4rem">Working in this department:</div>' + inDept.map(candRow).join('') : '') +
-                '<div style="font-size:0.85rem;margin:0.4rem 0">Also working that day (other departments / no department):</div>' + others.map(candRow).join('');
-            } else {
-              box.innerHTML = note + '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + (cands.length === 1 ? ' person' : ' people') + ' working that day:</div>' + cands.map(candRow).join('');
-            }
+            // Group people under their department; the session's department first.
+            var groups = new Map();
+            cands.forEach(function (c) {
+              var dn = (c.shifts[0] && c.shifts[0].departmentName) || 'No department';
+              if (!groups.has(dn)) groups.set(dn, []);
+              groups.get(dn).push(c);
+            });
+            var deptNameOf = function (id) {
+              var o = m.querySelector('#acf-dept option[value="' + id + '"]');
+              return o ? o.textContent : null;
+            };
+            var wantName = dept ? deptNameOf(dept) : null;
+            var keys = Array.from(groups.keys()).sort(function (a, b) {
+              if (wantName) { if (a === wantName) return -1; if (b === wantName) return 1; }
+              if (a === 'No department') return 1;
+              if (b === 'No department') return -1;
+              return a.localeCompare(b);
+            });
+            box.innerHTML = note + keys.map(function (k) {
+              return '<div style="font-size:0.85rem;font-weight:700;margin:0.55rem 0 0.4rem">🏥 ' + esc(k) + '</div>' + groups.get(k).map(candRow).join('');
+            }).join('');
             wireBtns();
             if (cands.length === 1) markBtn('data-cand-p', cands[0].userId);
           }).catch(function () { box.innerHTML = '<span style="color:#b91c1c">Could not check the schedule.</span>'; });
