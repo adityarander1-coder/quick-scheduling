@@ -879,9 +879,6 @@
         .delete-shift-confirm button:disabled { opacity: .6; cursor: wait; }
         .person-action-message { margin: 0; border-radius: 10px; padding: 9px 10px; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); color: var(--danger); font-size: 11px; font-weight: 750; line-height: 1.4; }
         #tab-schedule .shift-nm { cursor: pointer; }
-        #tab-schedule .day-events-strip { margin: 10px 12px 0; background: #f5f0ff; border: 1px solid #ddd0fe; border-radius: 10px; padding: 7px 10px; }
-        #tab-schedule .day-event-line { font-size: 0.83rem; color: #4c1d95; padding: 1px 0; font-weight: 600; }
-        #tab-schedule .month-ev-badge { display: inline-block; margin: 2px 0 4px; background: #ede9fe; color: #5b21b6; border: 1px solid #ddd6fe; border-radius: 999px; padding: 0 7px; font-size: 0.68rem; font-weight: 700; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
       </style>
@@ -1525,16 +1522,26 @@
             return true;
           });
         }
-        function dashEventsStripHtml(ds) {
+        // One box per session, styled like a shift box: the kind (Lecture /
+        // Event) is the label box; presenter + supervisor sit together in
+        // the name box. (Deepika's simpler design, 2026-10-20.)
+        function dashEventBoxesHtml(ds) {
           var evs = dashEventsFor(ds);
           if (!evs.length) return '';
-          return '<div class="day-events-strip">' + evs.map(function (e) {
-            return '<div class="day-event-line">🎓 ' + esc(e.title) +
-              (e.startTime ? ' · ' + esc(fmtTime12(e.startTime)) : '') +
-              (e.lecturerName ? ' · ' + esc(e.lecturerName) : '') +
-              (e.supervisorName ? ' · Sup: ' + esc(e.supervisorName) : '') +
-              (e.location ? ' · 📍 ' + esc(e.location) : '') + '</div>';
-          }).join('') + '</div>';
+          return evs.map(function (e) {
+            var color = e.kind === 'event' ? '#7c3aed' : '#00796b';
+            var kindLabel = e.kind === 'event' ? 'Event' : 'Lecture';
+            var sub = '<span style="display:block;font-size:0.7rem;font-weight:700;color:#475569">' + esc(e.title) + (e.startTime ? ' · ' + esc(fmtTime12(e.startTime)) : '') + '</span>';
+            var names = '';
+            if (e.lecturerName) names += esc(e.lecturerName);
+            if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
+            if (!names) names = '<span style="color:#b91c1c;font-weight:700">Needs presenter</span>';
+            if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
+            return '<div class="shift-grid dash-ev-box">' +
+              '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
+              '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div>' +
+              '</div>';
+          }).join('');
         }
 
         function dayRowHtml(dateStr) {
@@ -1549,8 +1556,7 @@
           html += '<div class="day-row-actions">' + statusPillHtml(dateStr) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
-          html += dashEventsStripHtml(dateStr);
-          html += '<div class="day-row-body">';
+          html += '<div class="day-row-body">' + dashEventBoxesHtml(dateStr);
           var byType = {};
           shifts.forEach(function (s) {
             (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
@@ -1570,7 +1576,7 @@
           shifts.forEach(function (s) {
             if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
           });
-          if (!hasContent) html += '<div class="empty-day">No shifts assigned.</div>';
+          if (!hasContent && !dashEventsFor(dateStr).length) html += '<div class="empty-day">No shifts assigned.</div>';
           html += '</div></article>';
           return html;
         }
@@ -1618,8 +1624,7 @@
           html += '<div class="day-row-actions">' + statusPillHtml(ds) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
-          html += dashEventsStripHtml(ds);
-          html += '<div class="day-row-body">';
+          html += '<div class="day-row-body">' + dashEventBoxesHtml(ds);
           var byType = {};
           shifts.forEach(function (s) {
             (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s);
@@ -1640,7 +1645,7 @@
           shifts.forEach(function (s) {
             if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
           });
-          if (!hasContent) html += '<div class="empty-day">No shifts assigned for this day.</div>';
+          if (!hasContent && !dashEventsFor(ds).length) html += '<div class="empty-day">No shifts assigned for this day.</div>';
           if (comments.length) {
             html += '<h4 class="type-group-h">Notes</h4>';
             comments.forEach(function (c) {
@@ -1678,10 +1683,18 @@
         function monthDayInner(ds, d, headHtml) {
           var html = '<div class="day-num">' + headHtml + statusPillHtml(ds) + '</div>';
           var devs = dashEventsFor(ds);
-          if (devs.length) {
-            var det = devs.map(function (e) { return e.title + (e.startTime ? ' ' + fmtTime12(e.startTime) : ''); }).join(', ');
-            html += '<div class="month-ev-badge" title="' + esc(det) + '">🎓 ' + devs.length + (devs.length === 1 ? ' event' : ' events') + '</div>';
-          }
+          devs.forEach(function (e) {
+            var ec = e.kind === 'event' ? '#7c3aed' : '#00796b';
+            var kindLabel = e.kind === 'event' ? 'Event' : 'Lecture';
+            var namesLine = '';
+            if (e.lecturerName) namesLine += esc(e.lecturerName);
+            if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
+            if (!namesLine) namesLine = 'Needs presenter';
+            html += '<div class="month-chip" style="background:' + tint(ec, 70) + ';border-color:' + tint(ec, 55) +
+              '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime12(e.startTime) : '') + (e.location ? ' · ' + e.location : '')) + '">' +
+              '<span class="dot" style="background:' + ec + '"></span>' +
+              '<span><strong>' + kindLabel + '</strong> — ' + esc(e.title) + '<br>' + namesLine + '</span></div>';
+          });
           var dayShifts = shiftsFor(ds);
           // Group by shift type: show shift name once, list people under it.
           var byType = {};
