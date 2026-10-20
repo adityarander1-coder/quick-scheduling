@@ -5081,6 +5081,119 @@ router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'emp
   }
 });
 
+// ---------- Custom dashboards ----------
+// Option 1: named calendar dashboards created in Settings. Each dashboard gets
+// a nav tab with a Day/Week/Month calendar of sessions.
+
+async function dashboardDeptIds(dashboardId: string): Promise<string[]> {
+  const { rows } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
+  return rows.map((r: any) => r.department_id);
+}
+
+async function visibleDashboardIds(req: Request): Promise<string[] | null> {
+  const companyId = req.session.companyId!;
+  const deptIds = await academicVisibleDeptIds(req);
+  if (deptIds === null) return null; // owner sees everything
+  if (deptIds.length === 0) return [];
+  const { rows } = await query('SELECT id FROM dashboards WHERE company_id = $1', [companyId]);
+  const out: string[] = [];
+  for (const r of rows) {
+    const dIds = await dashboardDeptIds(r.id);
+    if (dIds.length === 0 || dIds.some((d) => deptIds.includes(d))) out.push(r.id);
+  }
+  return out;
+}
+
+// GET /api/schedule/dashboards — all roles, scoped like sessions.
+router.get('/dashboards', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const visible = await visibleDashboardIds(req);
+    const params: any[] = [companyId];
+    let clause = 'WHERE d.company_id = $1';
+    if (visible) {
+      params.push(visible);
+      clause += ' AND d.id = ANY($2)';
+    }
+    const { rows } = await query(
+      `SELECT d.id, d.name, d.created_at,
+              (SELECT array_agg(dd.department_id) FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) AS department_ids
+       FROM dashboards d ${clause} ORDER BY d.created_at`, params);
+    res.json({ dashboards: rows.map((r: any) => ({ id: r.id, name: r.name, createdAt: r.created_at, departmentIds: r.department_ids || [] })) });
+  } catch (err) {
+    console.error('[schedule] dashboards list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+async function validateDashboardDepts(companyId: string, ids: any): Promise<string[] | null> {
+  if (!ids || ids.length === 0) return [];
+  const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND id = ANY($2)', [companyId, ids]);
+  if (rows.length !== ids.length) return null;
+  return rows.map((r: any) => r.id);
+}
+
+// POST /api/schedule/dashboards — owner only.
+router.post('/dashboards', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const name = String(req.body?.name || '').trim();
+    if (!name) { res.status(400).json({ error: 'Give the dashboard a name.' }); return; }
+    const deptIds = await validateDashboardDepts(companyId, req.body?.departmentIds);
+    if (!deptIds) { res.status(400).json({ error: 'One or more departments are invalid.' }); return; }
+    const { rows } = await query(
+      'INSERT INTO dashboards (company_id, name, created_by) VALUES ($1, $2, $3) RETURNING id, name, created_at',
+      [companyId, name, req.session.userId]);
+    for (const d of deptIds) {
+      await query('INSERT INTO dashboard_departments (dashboard_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [rows[0].id, d]);
+    }
+    res.status(201).json({ dashboard: { id: rows[0].id, name: rows[0].name, departmentIds: deptIds } });
+  } catch (err) {
+    console.error('[schedule] dashboard create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/dashboards/:id — owner only (rename / re-scope departments).
+router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const name = req.body?.name !== undefined ? String(req.body.name).trim() : undefined;
+    if (name !== undefined && !name) { res.status(400).json({ error: 'Give the dashboard a name.' }); return; }
+    let deptIds: string[] | null = null;
+    if (req.body?.departmentIds !== undefined) {
+      deptIds = await validateDashboardDepts(companyId, req.body.departmentIds);
+      if (!deptIds) { res.status(400).json({ error: 'One or more departments are invalid.' }); return; }
+    }
+    const { rows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (name !== undefined) await query('UPDATE dashboards SET name = $1 WHERE id = $2', [name, req.params.id]);
+    if (deptIds !== null) {
+      await query('DELETE FROM dashboard_departments WHERE dashboard_id = $1', [req.params.id]);
+      for (const d of deptIds) {
+        await query('INSERT INTO dashboard_departments (dashboard_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, d]);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] dashboard update failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/dashboards/:id — owner only. Sessions keep their rows (dashboard_id set null).
+router.delete('/dashboards/:id', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rowCount } = await query('DELETE FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rowCount) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] dashboard delete failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---------- Academic dashboard ----------
 // Lecturers are team members from the same roster database (users table) — no
 // duplicate people entry; the Academic tab reads lecturers straight from Team.
@@ -5099,6 +5212,11 @@ function academicRow(r: any) {
     location: r.location,
     kind: r.kind,
     notes: r.notes,
+    dashboardId: r.dashboard_id || null,
+    recurRule: r.recur_rule || 'none',
+    recurUntil: r.recur_until instanceof Date ? r.recur_until.toISOString().slice(0, 10) : (r.recur_until || null),
+    seriesId: r.series_id || null,
+    isOccurrence: !!r.is_occurrence,
     createdAt: r.created_at,
   };
 }
@@ -5115,19 +5233,30 @@ async function academicVisibleDeptIds(req: Request): Promise<string[] | null> {
   return rows[0] && rows[0].department_id ? [rows[0].department_id] : [];
 }
 
-// GET /api/schedule/academic-sessions?from=YYYY-MM-DD&to=YYYY-MM-DD — all roles, department-scoped.
+// GET /api/schedule/academic-sessions?from=YYYY-MM-DD&to=YYYY-MM-DD&dashboardId= —
+// all roles, department-scoped. Recurring series are expanded into the window
+// as occurrence rows (id = "<base>@@<date>", seriesId = base id).
 router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const ids = await academicVisibleDeptIds(req);
+    const from = req.query.from ? String(req.query.from) : null;
+    const to = req.query.to ? String(req.query.to) : null;
     const clauses = ['s.company_id = $1'];
     const params: any[] = [companyId];
     if (ids) {
       params.push(ids);
       clauses.push(`(s.department_id = ANY($${params.length}) )`);
     }
-    if (req.query.from) { params.push(String(req.query.from)); clauses.push(`s.session_date >= $${params.length}`); }
-    if (req.query.to) { params.push(String(req.query.to)); clauses.push(`s.session_date <= $${params.length}`); }
+    if (from && to) {
+      params.push(from, to);
+      clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until >= $${params.length - 1})`);
+      clauses.push(`s.session_date <= $${params.length}`);
+    } else {
+      if (from) { params.push(from); clauses.push(`s.session_date >= $${params.length}`); }
+      if (to) { params.push(to); clauses.push(`s.session_date <= $${params.length}`); }
+    }
+    if (req.query.dashboardId) { params.push(String(req.query.dashboardId)); clauses.push(`s.dashboard_id = $${params.length}`); }
     const { rows } = await query(
       `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name
        FROM academic_sessions s
@@ -5136,7 +5265,35 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
        WHERE ${clauses.join(' AND ')}
        ORDER BY s.session_date, s.start_time NULLS LAST, s.title`,
       params);
-    res.json({ sessions: rows.map(academicRow) });
+    const out: any[] = [];
+    for (const r of rows) {
+      const base = academicRow(r);
+      const rule = base.recurRule;
+      if (!from || !to || !rule || rule === 'none') {
+        if (!from || (base.date >= from && base.date <= (to || '9999-99-99'))) out.push(base);
+        continue;
+      }
+      const stepDays = rule === 'biweekly' ? 14 : 7;
+      const end = base.recurUntil && base.recurUntil < to ? base.recurUntil : to;
+      const cur = new Date(base.date + 'T00:00:00Z');
+      const endD = new Date(end + 'T00:00:00Z');
+      let first = true;
+      while (cur <= endD) {
+        const ds = cur.toISOString().slice(0, 10);
+        if (ds >= from) {
+          out.push(first && ds === base.date
+            ? { ...base, seriesId: base.id }
+            : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true });
+        }
+        first = false;
+        cur.setUTCDate(cur.getUTCDate() + stepDays);
+      }
+    }
+    out.sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return (a.startTime || '99') < (b.startTime || '99') ? -1 : 1;
+    });
+    res.json({ sessions: out });
   } catch (err) {
     console.error('[schedule] academic sessions list failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5170,12 +5327,20 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
     }
     const kind = b.kind === 'event' ? 'event' : 'session';
+    const recurRule = b.recurRule === 'weekly' || b.recurRule === 'biweekly' ? b.recurRule : 'none';
+    const recurUntil = recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : (recurRule !== 'none' ? null : null);
+    let dashboardId: string | null = null;
+    if (b.dashboardId) {
+      const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
+      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      dashboardId = String(b.dashboardId);
+    }
     const { rows } = await query(
-      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
       [crypto.randomUUID(), companyId, title, b.lecturerUserId || null, departmentId,
        b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
-       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!]);
+       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil]);
     res.json({ ok: true, id: rows[0].id });
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
@@ -5187,7 +5352,8 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
 router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const seriesId = String(req.params.id).split('@@')[0];
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
     const b = req.body ?? {};
@@ -5200,16 +5366,26 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     const title = b.title !== undefined ? String(b.title).trim() : cur.title;
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
     const kind = b.kind !== undefined ? (b.kind === 'event' ? 'event' : 'session') : cur.kind;
+    const recurRule = b.recurRule !== undefined ? (b.recurRule === 'weekly' || b.recurRule === 'biweekly' ? b.recurRule : 'none') : cur.recur_rule;
+    const recurUntil = b.recurUntil !== undefined ? (recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : null) : cur.recur_until;
+    let dashboardId = cur.dashboard_id;
+    if (b.dashboardId !== undefined) {
+      if (b.dashboardId) {
+        const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
+        if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+        dashboardId = String(b.dashboardId);
+      } else dashboardId = null;
+    }
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
-        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9 WHERE id=$10`,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12 WHERE id=$13`,
       [title, b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
        b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
        b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
-       req.params.id]);
+       dashboardId, recurRule, recurUntil, seriesId]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session update failed:', err);
@@ -5221,10 +5397,11 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
 router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { rows } = await query('SELECT department_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const seriesId = String(req.params.id).split('@@')[0];
+    const { rows } = await query('SELECT department_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (!(await academicDeptCheck(req, res, rows[0].department_id))) return;
-    await query('DELETE FROM academic_sessions WHERE id = $1', [req.params.id]);
+    await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session delete failed:', err);
