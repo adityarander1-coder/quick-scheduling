@@ -667,6 +667,7 @@
       <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
+      <span id="dash-nav-emp" style="display:contents"></span>
       <button type="button" class="tab-btn" data-etab="ehelp">Help</button>
     </nav>
   </header>
@@ -10158,7 +10159,7 @@
     (function () {
       var dashList = [];
       var curDash = null;
-      var acUsers = [], acDepts = [], acSessions = [], acMyId = null;
+      var acUsers = [], acDepts = [], acSessions = [], acMyId = null, acCanEdit = false;
       var acView = 'month';
       var acAnchor = new Date();
 
@@ -10186,7 +10187,9 @@
         return { from: fmtD(from), to: fmtD(to) };
       }
 
-      // Build the nav buttons (one per dashboard, in the main tab bar).
+      // Build the nav buttons (one per dashboard, in BOTH tab bars — the
+      // admin nav and the employee / My Schedule nav, so the dashboard
+      // calendar page is reachable from everywhere).
       window.qsRefreshDashboardNav = function () {
         return api('/api/schedule/dashboards').then(function (r) {
           dashList = (r.ok && r.data.dashboards) || [];
@@ -10195,6 +10198,12 @@
           if (nav) {
             nav.innerHTML = dashList.map(function (d) {
               return '<button class="tab-btn" data-tab="dash/' + d.id + '">🎓 ' + esc(d.name) + '</button>';
+            }).join('');
+          }
+          var navEmp = document.getElementById('dash-nav-emp');
+          if (navEmp) {
+            navEmp.innerHTML = dashList.map(function (d) {
+              return '<button type="button" class="tab-btn" data-etab="dash/' + d.id + '">🎓 ' + esc(d.name) + '</button>';
             }).join('');
           }
           return dashList;
@@ -10234,7 +10243,15 @@
           acSessions = rs[0].data.sessions || [];
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
-          if (rs[3] && rs[3].ok && rs[3].data.user) acMyId = rs[3].data.user.id;
+          if (rs[3] && rs[3].ok && rs[3].data.user) {
+            acMyId = rs[3].data.user.id;
+            // Employees get a view-only dashboard calendar (Deepika,
+            // 2026-10-20): no Add session button, no edit form. Pickup
+            // buttons and the your-session highlight still work.
+            acCanEdit = rs[3].data.user.role === 'owner' || rs[3].data.user.role === 'scheduler';
+            var ab = document.getElementById('db-add');
+            if (ab) ab.style.display = acCanEdit ? '' : 'none';
+          }
           render();
         }).catch(function () { pageError('Could not load this dashboard.'); });
       }
@@ -10400,6 +10417,7 @@
       // ---------- Add / edit form ----------
       var acShiftTypes = null;
       function openForm(id, presetDate) {
+        if (!acCanEdit) return; // view-only for employees
         var s = null;
         if (id) {
           var found = acSessions.find(function (x) { return x.id === id; });
@@ -10893,10 +10911,13 @@
       document.querySelectorAll('#employee-tabs .tab-btn').forEach(function (b) {
         b.classList.toggle('active', b.getAttribute('data-etab') === t);
       });
+      var isDash = t.indexOf('dash/') === 0;
+      var panelId = isDash ? 'tab-dash' : 'tab-' + t;
       document.querySelectorAll('.tab-panel').forEach(function (p) {
-        p.classList.toggle('active', p.id === 'tab-' + t);
+        p.classList.toggle('active', p.id === panelId);
       });
-      if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
+      if (isDash) { if (window.qsOpenDashboard) window.qsOpenDashboard(t.slice(5)); }
+      else if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
       else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
       else if (t === 'messages') { if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); }
     };
