@@ -10004,7 +10004,8 @@
         var color = chipColor(s);
         var t = s.startTime ? fmtTime(s.startTime) : '';
         var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">↻</span>' : '';
-        return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + '" title="' + esc(s.title) + '">' +
+        var conflict = acConflicts[s.id] ? ' box-shadow:0 0 0 2px #dc2626 inset;' : '';
+        return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + '" title="' + esc(s.title) + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
           '<span class="ac-dot" style="background:' + color + '"></span>' +
           '<span class="ac-chip-text"><strong>' + esc(s.title) + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
           (s.lecturerName ? '<span class="ac-chip-who">' + esc(s.lecturerName) + '</span>' : '<span class="ac-chip-who ac-need">Needs lecturer</span>') + '</span></div>';
@@ -10015,12 +10016,45 @@
         });
       }
 
+      // Room + presenter double-booking detection over the loaded sessions.
+      var acConflicts = {};
+      function computeConflicts() {
+        acConflicts = {};
+        var list = [];
+        function mins(t) { if (!t) return null; var p = String(t).split(':'); return parseInt(p[0], 10) * 60 + parseInt(p[1] || '0', 10); }
+        for (var i = 0; i < acSessions.length; i++) {
+          for (var j = i + 1; j < acSessions.length; j++) {
+            var a = acSessions[i], b = acSessions[j];
+            if (a.date !== b.date) continue;
+            var as = mins(a.startTime), bs = mins(b.startTime);
+            if (as === null || bs === null) continue;
+            var ae = mins(a.endTime) || as + 60, be = mins(b.endTime) || bs + 60;
+            if (!(as < be && bs < ae)) continue;
+            if (a.location && b.location && a.location.trim().toLowerCase() === b.location.trim().toLowerCase()) {
+              acConflicts[a.id] = true; acConflicts[b.id] = true;
+              list.push('Room conflict: "' + a.title + '" and "' + b.title + '" are both in ' + a.location + ' on ' + a.date + ' at overlapping times.');
+            }
+            if (a.lecturerUserId && a.lecturerUserId === b.lecturerUserId) {
+              acConflicts[a.id] = true; acConflicts[b.id] = true;
+              list.push('Presenter conflict: ' + (a.lecturerName || 'A presenter') + ' has both "' + a.title + '" and "' + b.title + '" on ' + a.date + ' at overlapping times.');
+            }
+          }
+        }
+        return list;
+      }
+
       function render() {
         renderToolbar();
+        var conflicts = computeConflicts();
         var el = document.getElementById('db-view');
-        if (acView === 'month') el.innerHTML = renderMonth();
-        else if (acView === 'week') el.innerHTML = renderWeek();
-        else el.innerHTML = renderDay();
+        var body = acView === 'month' ? renderMonth() : (acView === 'week' ? renderWeek() : renderDay());
+        var banner = '';
+        if (conflicts.length) {
+          banner = '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:0.7rem 1rem;margin-bottom:0.9rem;color:#991b1c;font-size:0.88rem">' +
+            conflicts.slice(0, 4).map(function (c) { return '<div>⚠ ' + esc(c) + '</div>'; }).join('') +
+            (conflicts.length > 4 ? '<div>…and ' + (conflicts.length - 4) + ' more.</div>' : '') + '</div>';
+        }
+        el.innerHTML = banner + body;
         el.querySelectorAll('[data-acedit]').forEach(function (c) {
           c.addEventListener('click', function (e) { e.stopPropagation(); openForm(c.getAttribute('data-acedit')); });
         });
@@ -10103,12 +10137,13 @@
           html += '<div class="ac-drow" data-acedit="' + s.id + '">' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs lecturer') + (s.location ? ' · ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + '</div></div></div>';
+            '<div class="ac-meta">' + esc(s.lecturerName || 'Needs lecturer') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + '</div></div></div>';
         });
         return html + '</div></div>';
       }
 
       // ---------- Add / edit form ----------
+      var acShiftTypes = null;
       function openForm(id, presetDate) {
         var s = null;
         if (id) {
@@ -10119,48 +10154,139 @@
         }
         var old = document.getElementById('ac-modal');
         if (old) old.remove();
-        var lecturerOpts = '<option value="">— Needs a lecturer —</option>' + acUsers
-          .filter(function (u) { return u.role !== 'owner'; })
-          .map(function (u) {
-            var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
-            return '<option value="' + u.id + '"' + (s && s.lecturerUserId === u.id ? ' selected' : '') + '>' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
-          }).join('');
         var dashDepts = curDash && curDash.departmentIds && curDash.departmentIds.length ? acDepts.filter(function (d) { return curDash.departmentIds.includes(d.id); }) : acDepts;
         var deptOpts = '<option value="">No department</option>' + dashDepts.map(function (d) {
           var sel = s ? (s.departmentId === d.id) : (dashDepts.length === 1);
           return '<option value="' + d.id + '"' + (sel ? ' selected' : '') + '>' + esc(d.name) + '</option>';
         }).join('');
         var rule = s && s.recurRule ? s.recurRule : 'none';
+        var people = acUsers.filter(function (u) { return u.role !== 'owner'; });
+        function personOpts(selectedId, emptyLabel) {
+          return '<option value="">' + emptyLabel + '</option>' + people.map(function (u) {
+            var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
+            return '<option value="' + u.id + '"' + (selectedId === u.id ? ' selected' : '') + '>' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
+          }).join('');
+        }
+        var roleNames = [];
+        people.forEach(function (u) { if (u.jobRole && roleNames.indexOf(u.jobRole) === -1) roleNames.push(u.jobRole); });
         var m = document.createElement('div');
         m.id = 'ac-modal';
         m.className = 'modal-back';
         m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem';
-        m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:520px;max-height:88vh;overflow-y:auto">' +
+        var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
+        m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">' +
           '<h2 style="margin-top:0">' + (s ? 'Edit session' : 'Add session') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
-          (s && rule !== 'none' ? '<p style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.5rem 0.7rem;font-size:0.85rem">↻ This is a repeating series — changes apply to every occurrence.</p>' : '') +
-          '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Kind<br><select id="acf-kind" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"><option value="session"' + (s && s.kind === 'session' ? ' selected' : '') + '>Session / lecture</option><option value="event"' + (s && s.kind === 'event' ? ' selected' : '') + '>Event</option></select></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Person (from team members)<br><select id="acf-lecturer" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem">' + lecturerOpts + '</select></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Department<br><select id="acf-dept" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem">' + deptOpts + '</select></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
-          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
-          '<label style="flex:1">End<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label></div>' +
-          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Repeat<br><select id="acf-recur" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"><option value="none"' + (rule === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="weekly"' + (rule === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="biweekly"' + (rule === 'biweekly' ? ' selected' : '') + '>Every 2 weeks</option></select></label>' +
-          '<label style="flex:1">Repeat until<br><input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(s.recurUntil) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Location<br><input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
-          '<label style="display:block;margin-bottom:1rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem"></label>' +
+          (s && rule !== 'none' ? '<p style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.5rem 0.7rem;font-size:0.85rem">↻ This session is on a rotation — changes apply to every date in the rotation.</p>' : '') +
+          '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Kind<br><select id="acf-kind" style="' + IN + '"><option value="session"' + (s && s.kind === 'session' ? ' selected' : '') + '>Session / lecture</option><option value="event"' + (s && s.kind === 'event' ? ' selected' : '') + '>Event</option></select></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Department<br><select id="acf-dept" style="' + IN + '">' + deptOpts + '</select></label>' +
+          '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the lists below</div>' +
+            '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '"' + (s && s.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
+            '<label style="flex:1;min-width:150px">By job role<br><select id="acf-frole" style="' + IN + '"><option value="">All job roles</option>' + roleNames.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label></div>' +
+          '</div>' +
+          '<label style="display:block;margin-bottom:0.7rem">Presenter (from team members)<br><select id="acf-lecturer" style="' + IN + '">' + personOpts(s ? s.lecturerUserId : null, '— Needs a presenter —') + '</select></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Supervisor (from team members)<br><select id="acf-supervisor" style="' + IN + '">' + personOpts(s ? s.supervisorUserId : null, '— No supervisor —') + '</select></label>' +
+          '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 Auto-assign presenter — who is working that day?</div>' +
+            '<div style="display:flex;gap:0.6rem;align-items:flex-end;flex-wrap:wrap"><label style="flex:1;min-width:160px">Shift (optional)<br><select id="acf-wshift" style="' + IN + '"><option value="">Any shift</option></select></label>' +
+            '<button type="button" class="btn-secondary" id="acf-find" style="padding:0.6rem 1rem;border-radius:8px">Find working team</button></div>' +
+            '<div id="acf-cands" style="margin-top:0.6rem"></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="' + IN + '"></label>' +
+          '<label style="flex:1">End date (rotation)<br><input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(s.recurUntil) : '') + '" style="' + IN + '"></label></div>' +
+          '<label style="display:block;margin-bottom:0.7rem">Rotation<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (rule === 'none' ? ' selected' : '') + '>No rotation (one time)</option><option value="weekly"' + (rule === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="biweekly"' + (rule === 'biweekly' ? ' selected' : '') + '>Every 2 weeks</option><option value="monthly"' + (rule === 'monthly' ? ' selected' : '') + '>Monthly</option></select></label>' +
+          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start time<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="' + IN + '"></label>' +
+          '<label style="flex:1">End time<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="' + IN + '"></label></div>' +
+          '<label style="display:block;margin-bottom:0.7rem">Location<br><input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:1rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
           '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-save">Save</button></div>' +
-          (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole series' : 'Delete session') + '</button>' : '') +
+          (s ? '<button type="button" id="acf-dup" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer">⧉ Duplicate on the same day</button>' : '') +
+          (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
         document.body.appendChild(m);
+
+        var lecSel = m.querySelector('#acf-lecturer');
+        var supSel = m.querySelector('#acf-supervisor');
+        function applyFilters() {
+          var fd = m.querySelector('#acf-fdept').value;
+          var fr = m.querySelector('#acf-frole').value;
+          [lecSel, supSel].forEach(function (sel) {
+            var cur = sel.value;
+            var filtered = people.filter(function (u) {
+              if (fd && u.departmentId !== fd && u.id !== cur) return false;
+              if (fr && u.jobRole !== fr && u.id !== cur) return false;
+              return true;
+            });
+            var emptyLabel = sel === lecSel ? '— Needs a presenter —' : '— No supervisor —';
+            sel.innerHTML = '<option value="">' + emptyLabel + '</option>' + filtered.map(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
+              return '<option value="' + u.id + '">' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
+            }).join('');
+            sel.value = cur;
+          });
+        }
+        m.querySelector('#acf-fdept').addEventListener('change', applyFilters);
+        m.querySelector('#acf-frole').addEventListener('change', applyFilters);
+        applyFilters();
+
+        // Shift types for the auto-assign picker (lazy, cached).
+        function fillShifts() {
+          var sel = m.querySelector('#acf-wshift');
+          var fd = m.querySelector('#acf-fdept').value || m.querySelector('#acf-dept').value;
+          var list = (acShiftTypes || []).filter(function (st) { return !fd || !st.departmentId || st.departmentId === fd; });
+          sel.innerHTML = '<option value="">Any shift</option>' + list.map(function (st) {
+            return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
+          }).join('');
+        }
+        if (acShiftTypes) fillShifts();
+        else api('/api/schedule/shift-types').then(function (r) {
+          acShiftTypes = (r.ok && (r.data.shiftTypes || r.data || [])) || [];
+          if (Array.isArray(acShiftTypes)) fillShifts();
+        }).catch(function () {});
+        m.querySelector('#acf-fdept').addEventListener('change', fillShifts);
+        m.querySelector('#acf-dept').addEventListener('change', fillShifts);
+
+        m.querySelector('#acf-find').addEventListener('click', function () {
+          var date = m.querySelector('#acf-date').value;
+          var dept = m.querySelector('#acf-fdept').value || m.querySelector('#acf-dept').value;
+          var shift = m.querySelector('#acf-wshift').value;
+          var box = m.querySelector('#acf-cands');
+          if (!date) { box.innerHTML = '<span style="color:#b91c1c">Pick a start date first.</span>'; return; }
+          box.innerHTML = 'Looking…';
+          var q = '/api/schedule/working-on?date=' + date + (dept ? '&departmentId=' + dept : '') + (shift ? '&shiftTypeId=' + shift : '');
+          api(q).then(function (r) {
+            var cands = (r.ok && r.data.candidates) || [];
+            if (!cands.length) { box.innerHTML = '<span style="color:var(--dim)">Nobody from the team is scheduled to work that day' + (dept ? ' in that department' : '') + '.</span>'; return; }
+            if (cands.length === 1) {
+              lecSel.value = cands[0].userId;
+              box.innerHTML = '<span style="color:#15803d;font-weight:600">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</span>';
+              return;
+            }
+            box.innerHTML = '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + ' people working that day — tap one to make them the presenter:</div>' +
+              cands.map(function (c) {
+                var shifts = c.shifts.map(function (x) { return x.shiftName; }).join(', ');
+                return '<button type="button" class="btn-secondary" data-cand="' + c.userId + '" style="margin:0 0.4rem 0.4rem 0;padding:0.45rem 0.8rem;border-radius:999px;font-size:0.85rem">' + esc(c.name) + (c.jobRole ? ' (' + esc(c.jobRole) + ')' : '') + ' · ' + esc(shifts) + '</button>';
+              }).join('');
+            box.querySelectorAll('[data-cand]').forEach(function (b) {
+              b.addEventListener('click', function () {
+                lecSel.value = b.getAttribute('data-cand');
+                box.querySelectorAll('[data-cand]').forEach(function (x) { x.style.background = ''; x.style.color = ''; });
+                b.style.background = '#2563eb'; b.style.color = '#fff';
+              });
+            });
+          }).catch(function () { box.innerHTML = '<span style="color:#b91c1c">Could not check the schedule.</span>'; });
+        });
+
         m.querySelector('#acf-cancel').addEventListener('click', function () { m.remove(); });
         m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
-        m.querySelector('#acf-save').addEventListener('click', function () {
-          var payload = {
+        function readPayload() {
+          return {
             title: m.querySelector('#acf-title').value.trim(),
             kind: m.querySelector('#acf-kind').value,
-            lecturerUserId: m.querySelector('#acf-lecturer').value || null,
+            lecturerUserId: lecSel.value || null,
+            supervisorUserId: supSel.value || null,
             departmentId: m.querySelector('#acf-dept').value || null,
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
@@ -10171,8 +10297,12 @@
             notes: m.querySelector('#acf-notes').value.trim() || null,
             dashboardId: curDash ? curDash.id : null,
           };
+        }
+        m.querySelector('#acf-save').addEventListener('click', function () {
+          var payload = readPayload();
           if (!payload.title) { pageError('A title is required.'); return; }
-          if (!payload.date) { pageError('Pick a date.'); return; }
+          if (!payload.date) { pageError('Pick a start date.'); return; }
+          if (payload.recurRule !== 'none' && !payload.recurUntil) { pageError('Pick an end date for the rotation.'); return; }
           var req = s
             ? api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify(payload) })
             : api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) });
@@ -10181,9 +10311,20 @@
             else pageError((r.data && r.data.error) || 'Could not save.');
           }).catch(function () { pageError('Could not save.'); });
         });
+        var dup = m.querySelector('#acf-dup');
+        if (dup) dup.addEventListener('click', function () {
+          var payload = readPayload();
+          payload.recurRule = 'none';
+          payload.recurUntil = null;
+          if (!payload.title) { pageError('A title is required.'); return; }
+          api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
+            if (r.ok) { m.remove(); pageSuccess('Duplicated — the copy is on the same day. Tap it to change its time.'); load(); }
+            else pageError((r.data && r.data.error) || 'Could not duplicate.');
+          }).catch(function () { pageError('Could not duplicate.'); });
+        });
         var del = m.querySelector('#acf-del');
         if (del) del.addEventListener('click', function () {
-          if (!confirm(rule !== 'none' ? 'Delete this whole repeating series?' : 'Delete this session?')) return;
+          if (!confirm(rule !== 'none' ? 'Delete this whole rotation?' : 'Delete this session?')) return;
           api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'DELETE' }).then(function (r) {
             if (r.ok) { m.remove(); pageSuccess('Deleted.'); load(); }
             else pageError((r.data && r.data.error) || 'Could not delete.');
