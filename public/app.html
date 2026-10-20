@@ -154,7 +154,7 @@
           sel.innerHTML = '<option>Loading…</option>';
           return;
         }
-        if (window.currentRole !== 'scheduler') { bar.classList.add('hidden'); return; }
+        if (window.currentRole !== 'scheduler') { sel.classList.add('hidden'); return; }
         allIds = [...new Set([...(a.edit || []), ...(a.view || [])])].map(String);
       }
       var cur = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
@@ -8064,6 +8064,7 @@
         // Convert each help topic card into a click-to-open section, on both
         // the admin and employee sides (plus the standalone employee help tab).
         function makeCollapsible(root) {
+          if (!root) return;
           var cards = root.querySelectorAll('.card');
           var first = true;
           cards.forEach(function (card) {
@@ -8143,6 +8144,7 @@
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
+        var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
         var msView = 'week';
         var anchorDate = new Date();
@@ -8320,6 +8322,8 @@
           var r = viewRange();
           $('ms-title').textContent = msTitle();
           $('ms-view').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+          var efd = parseDate(r.from); efd.setDate(efd.getDate() - 7);
+          var etd = parseDate(r.to); etd.setDate(etd.getDate() + 7);
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
@@ -8329,6 +8333,7 @@
               api('/api/users'),
               api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
               api('/api/schedule/staffing-targets').catch(function () { return { ok: false }; }),
+              api('/api/schedule/academic-sessions?from=' + fmtDate(efd) + '&to=' + fmtDate(etd)),
             ]);
           }).then(function (rs) {
             if (!rs) return;
@@ -8341,6 +8346,7 @@
               closedShifts = rs[3].data.closedShifts || [];
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
+            if (rs[5] && rs[5].ok) dashEvents = rs[5].data.sessions || [];
             // Job role names for eligibility notes ("Requires: Physician").
             if (window.qsJobRolesForDept && departments.length) {
               Promise.all(departments.map(function (d) { return window.qsJobRolesForDept(d.id); }))
@@ -8581,6 +8587,45 @@
             '<span>+ Open slot</span>' + btn + '</div></div>';
         }
 
+        // --- Dashboard sessions on My Schedule (Deepika, 2026-10-20): same
+        // boxes as the admin Schedule, with presenter pickup right here ---
+        function msEventsFor(ds) {
+          return (dashEvents || []).filter(function (e) { return e.date === ds; });
+        }
+        function msEventIsMine(e) {
+          return !!(me && (e.lecturerUserId === me.id || e.supervisorUserId === me.id));
+        }
+        function msEventBoxHtml(e) {
+          var color = e.kind === 'event' ? '#7c3aed' : '#00796b';
+          var kindLabel = e.kind === 'event' ? 'Event' : 'Lecture';
+          var sub = '<span style="display:block;font-size:0.7rem;font-weight:700;color:#475569">' + esc(e.title) + (e.startTime ? ' · ' + esc(fmtTime(e.startTime)) : '') + '</span>';
+          var names = '';
+          if (e.lecturerName) names += esc(e.lecturerName) + (me && e.lecturerUserId === me.id ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px">YOU</span>' : '');
+          if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
+          if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="btn" data-ms-evclaim="' + e.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">✋ Pick it up — I\'ll present</button>';
+          else if (me && e.lecturerUserId === me.id) names += '<br><button type="button" class="btn-secondary" data-ms-evunclaim="' + e.id + '" style="padding:0.3rem 0.8rem;font-size:0.8rem">Give it up</button>';
+          if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
+          return '<div class="shift-grid" data-ms-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div></div>';
+        }
+        function msEventBoxesHtml(ds) {
+          return msEventsFor(ds).map(msEventBoxHtml).join('');
+        }
+        function msEventChipsHtml(ds) {
+          return msEventsFor(ds).map(function (e) {
+            var color = e.kind === 'event' ? '#7c3aed' : '#00796b';
+            var kindLabel = e.kind === 'event' ? 'Event' : 'Lecture';
+            var namesLine = '';
+            if (e.lecturerName) namesLine += esc(e.lecturerName);
+            if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
+            if (!namesLine) namesLine = 'Needs presenter';
+            return '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime(e.startTime) : '')) + '">' +
+              '<span class="dot" style="background:' + color + '"></span>' +
+              '<span class="ms-chip-text"><strong>' + kindLabel + '</strong> — ' + esc(e.title) + '<span class="ms-chip-who">' + namesLine + '</span></span></div>';
+          }).join('');
+        }
+
         function dayRowHtml(dateStr) {
           var d = parseDate(dateStr);
           var dow = d.toLocaleDateString(undefined, { weekday: 'long' });
@@ -8589,8 +8634,8 @@
           var html = '<article class="day-row" data-date="' + dateStr + '">';
           html += '<header class="day-row-head"><div><div class="dow">' + esc(dow) + '</div>' +
             '<div class="dnum">' + esc(dnum) + '</div></div></header>';
-          html += '<div class="day-row-body">';
-          var hasContent = false;
+          html += '<div class="day-row-body">' + msEventBoxesHtml(dateStr);
+          var hasContent = msEventsFor(dateStr).length > 0;
           // Group shifts by type (stable order), mirroring the admin view.
           var byType = {};
           list.forEach(function (s) { (byType[s.shiftTypeId] = byType[s.shiftTypeId] || []).push(s); });
@@ -8692,6 +8737,7 @@
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
                 '<span class="ms-chip-text"><strong>' + esc(st ? st.name : 'Shift') + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
             });
+            html += msEventChipsHtml(ds);
             if (showAvailable()) {
               var openParts = [];
               shiftTypes.forEach(function (st) {
@@ -8775,7 +8821,7 @@
             html += '<div class="ms-strip-day-head"><span class="ms-strip-dow">' + dayNames[d.getDay()] + '</span>' +
               '<span class="ms-strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span></div>';
             var list = shiftsFor(ds);
-            if (!list.length) html += '<div style="color:var(--dim);font-size:0.85rem">No shifts.</div>';
+            if (!list.length && !msEventsFor(ds).length) html += '<div style="color:var(--dim);font-size:0.85rem">No shifts.</div>';
             list.forEach(function (s) {
               var st = stById(s.shiftTypeId);
               var color = (st && st.color) || '#637a8e';
@@ -8795,6 +8841,7 @@
               });
               if (openParts.length) html += '<div class="ms-month-open">' + esc(openParts.join(', ')) + ' open</div>';
             }
+            html += msEventChipsHtml(ds);
             html += '</div>';
             d.setDate(d.getDate() + 1);
           }
@@ -8837,6 +8884,37 @@
               var parts = b.getAttribute('data-ms-pickup').split('|');
               claimSlot(parts[0], parts[1], b);
             });
+          });
+          el.querySelectorAll('[data-ms-evclaim]').forEach(function (b) {
+            b.addEventListener('click', function (ev) { ev.stopPropagation(); claimSession(b.getAttribute('data-ms-evclaim'), true); });
+          });
+          el.querySelectorAll('[data-ms-evunclaim]').forEach(function (b) {
+            b.addEventListener('click', function (ev) { ev.stopPropagation(); claimSession(b.getAttribute('data-ms-evunclaim'), false); });
+          });
+          el.querySelectorAll('[data-ms-evopen]').forEach(function (box) {
+            box.addEventListener('click', function (ev) {
+              if (ev.target.closest('[data-ms-evclaim],[data-ms-evunclaim]')) return;
+              var parts = (box.getAttribute('data-ms-evopen') || '').split('|');
+              if (parts[0] && window.qsOpenDashboardAt) {
+                $('ms-day-modal').classList.add('hidden'); msDayModalDate = null;
+                window.qsOpenDashboardAt(parts[0], parts[1]);
+                try { location.hash = '#dash/' + parts[0]; } catch (e) {}
+              }
+            });
+          });
+        }
+
+        // Presenter pickup for dashboard sessions, from My Schedule.
+        function claimSession(id, isClaim) {
+          api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (isClaim ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
+            if (r.ok) {
+              msSuccess(isClaim ? 'You are now the presenter.' : 'Presenter slot released.');
+              var modalDate = msDayModalDate;
+              loadData();
+              if (modalDate) setTimeout(function () { if (msDayModalDate === modalDate) openMsDayModal(modalDate); }, 700);
+            } else {
+              msError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+            }
           });
         }
 
