@@ -10336,32 +10336,68 @@
           api(q).then(function (r) {
             var cands = (r.ok && r.data.candidates) || [];
             if (!cands.length) { box.innerHTML = '<span style="color:var(--dim)">Nobody from the team is scheduled to work that day.</span>'; return; }
-            if (cands.length === 1) {
-              lecSel.value = cands[0].userId;
-              box.innerHTML = '<span style="color:#15803d;font-weight:600">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</span>';
-              return;
+            function setPerson(sel, cand) {
+              var exists = Array.prototype.some.call(sel.options, function (o) { return o.value === cand.userId; });
+              if (!exists) {
+                var o = document.createElement('option');
+                o.value = cand.userId;
+                o.textContent = cand.name + (cand.jobRole ? ' (' + cand.jobRole + ')' : '');
+                sel.appendChild(o);
+              }
+              sel.value = cand.userId;
             }
-            function candBtn(c) {
+            var byId = {};
+            cands.forEach(function (c) { byId[c.userId] = c; });
+            function markBtn(attr, uid) {
+              box.querySelectorAll('[' + attr + ']').forEach(function (x) {
+                var on = x.getAttribute(attr) === uid;
+                x.style.background = on ? '#2563eb' : '';
+                x.style.color = on ? '#fff' : '';
+              });
+            }
+            function wireBtns() {
+              box.querySelectorAll('[data-cand-p]').forEach(function (b) {
+                b.addEventListener('click', function () {
+                  var c = byId[b.getAttribute('data-cand-p')];
+                  setPerson(lecSel, c);
+                  markBtn('data-cand-p', c.userId);
+                });
+              });
+              box.querySelectorAll('[data-cand-s]').forEach(function (b) {
+                b.addEventListener('click', function () {
+                  var c = byId[b.getAttribute('data-cand-s')];
+                  setPerson(supSel, c);
+                  markBtn('data-cand-s', c.userId);
+                });
+              });
+            }
+            function candRow(c) {
               var shifts = c.shifts.map(function (x) { return x.shiftName; }).join(', ');
-              return '<button type="button" class="btn-secondary" data-cand="' + c.userId + '" style="margin:0 0.4rem 0.4rem 0;padding:0.45rem 0.8rem;border-radius:999px;font-size:0.85rem">' + esc(c.name) + (c.jobRole ? ' (' + esc(c.jobRole) + ')' : '') + ' · ' + esc(shifts) + '</button>';
+              var btn = 'type="button" class="btn-secondary" style="padding:0.35rem 0.7rem;border-radius:999px;font-size:0.8rem"';
+              return '<div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.45rem;background:#fff;border:1px solid var(--border);border-radius:10px;padding:0.45rem 0.6rem">' +
+                '<span style="font-size:0.9rem;font-weight:600">' + esc(c.name) + '</span>' +
+                '<span style="font-size:0.8rem;color:var(--dim)">' + esc(shifts) + (c.jobRole ? ' · ' + esc(c.jobRole) : '') + '</span>' +
+                '<span style="margin-left:auto;display:flex;gap:0.35rem">' +
+                '<button ' + btn + ' data-cand-p="' + c.userId + '">Presenter</button>' +
+                '<button ' + btn + ' data-cand-s="' + c.userId + '">Supervisor</button></span></div>';
+            }
+            var note = '';
+            if (cands.length === 1) {
+              setPerson(lecSel, cands[0]);
+              note = '<div style="color:#15803d;font-weight:600;font-size:0.88rem;margin-bottom:0.45rem">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</div>';
             }
             var hasOthers = dept && cands.some(function (c) { return c.inDepartment === false; });
             if (hasOthers) {
               var inDept = cands.filter(function (c) { return c.inDepartment; });
               var others = cands.filter(function (c) { return !c.inDepartment; });
-              box.innerHTML =
-                (inDept.length ? '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + inDept.length + ' working in this department — tap one to make them the presenter:</div>' + inDept.map(candBtn).join('') : '') +
-                '<div style="font-size:0.85rem;margin:0.4rem 0">Also working that day (other departments / no department):</div>' + others.map(candBtn).join('');
+              box.innerHTML = note +
+                (inDept.length ? '<div style="font-size:0.85rem;margin-bottom:0.4rem">Working in this department:</div>' + inDept.map(candRow).join('') : '') +
+                '<div style="font-size:0.85rem;margin:0.4rem 0">Also working that day (other departments / no department):</div>' + others.map(candRow).join('');
             } else {
-              box.innerHTML = '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + ' people working that day — tap one to make them the presenter:</div>' + cands.map(candBtn).join('');
+              box.innerHTML = note + '<div style="font-size:0.85rem;margin-bottom:0.4rem">' + cands.length + (cands.length === 1 ? ' person' : ' people') + ' working that day:</div>' + cands.map(candRow).join('');
             }
-            box.querySelectorAll('[data-cand]').forEach(function (b) {
-              b.addEventListener('click', function () {
-                lecSel.value = b.getAttribute('data-cand');
-                box.querySelectorAll('[data-cand]').forEach(function (x) { x.style.background = ''; x.style.color = ''; });
-                b.style.background = '#2563eb'; b.style.color = '#fff';
-              });
-            });
+            wireBtns();
+            if (cands.length === 1) markBtn('data-cand-p', cands[0].userId);
           }).catch(function () { box.innerHTML = '<span style="color:#b91c1c">Could not check the schedule.</span>'; });
         });
 
