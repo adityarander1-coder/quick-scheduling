@@ -5791,17 +5791,17 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
     const companyId = req.session.companyId!;
     const b = req.body ?? {};
     const dashboardId = b.dashboardId ? String(b.dashboardId) : null;
-    if (!dashboardId) { res.status(400).json({ error: 'Kinds live on a dashboard — open the dashboard and add the kind there.' }); return; }
+    if (!dashboardId) { res.status(400).json({ error: 'Session types live on a dashboard — open the dashboard and add the type there.' }); return; }
     const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
     if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
-    if (!(await dashboardEditAllowed(req, dashboardId))) { res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return; }
+    if (!(await dashboardEditAllowed(req, dashboardId))) { res.status(403).json({ error: 'Only this dashboard\'s editors can change its session types.' }); return; }
     await ensureKinds(companyId, dashboardId);
     const label = String(b.label || '').trim();
     if (!label) { res.status(400).json({ error: 'A name is required.' }); return; }
     if (label.length > 40) { res.status(400).json({ error: 'That name is too long (40 characters max).' }); return; }
     const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color) : '#00796b';
     const { rows: dup } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND lower(label) = lower($3)', [companyId, dashboardId, label]);
-    if (dup.length) { res.status(400).json({ error: 'This dashboard already has a kind with that name.' }); return; }
+    if (dup.length) { res.status(400).json({ error: 'This dashboard already has a session type with that name.' }); return; }
     let key = slugifyKind(label);
     const { rows: existing } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
     const keys = new Set(existing.map((r: any) => r.key));
@@ -5825,7 +5825,7 @@ router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (re
     const { rows } = await query('SELECT dashboard_id FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (rows[0].dashboard_id && !(await dashboardEditAllowed(req, rows[0].dashboard_id))) {
-      res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return;
+      res.status(403).json({ error: 'Only this dashboard\'s editors can change its session types.' }); return;
     }
     await query('DELETE FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
     res.json({ ok: true });

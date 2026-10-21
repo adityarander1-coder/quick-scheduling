@@ -3525,7 +3525,7 @@
         <h1 class="db-h1">🎓 <span id="db-name">Dashboard</span></h1>
         <div style="display:flex;gap:0.6rem;align-items:center">
           <span class="db-date" id="db-date"></span>
-          <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Kinds</button>
+          <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
       </div>
@@ -10569,7 +10569,7 @@
           '<h2 style="margin-top:0">' + (s ? 'Edit session' : 'Add session') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
           (s && rule !== 'none' ? '<p style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.5rem 0.7rem;font-size:0.85rem">↻ This session is on a rotation — changes apply to every date in the rotation.</p>' : '') +
           '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Kind<br><select id="acf-kind" style="' + IN + '">' + (function () {
+          '<label style="display:block;margin-bottom:0.7rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
             var list = acKinds.length ? acKinds : [{ key: 'session', label: 'Lecture' }, { key: 'event', label: 'Event' }];
             var cur = s ? s.kind : 'session';
             var has = list.some(function (k) { return k.key === cur; });
@@ -10939,7 +10939,7 @@
         var kf = document.getElementById('db-kind-filter');
         if (!kf) return;
         if (acKindFilter && !acKinds.some(function (k) { return k.key === acKindFilter; })) acKindFilter = '';
-        kf.innerHTML = '<option value="">All kinds</option>' + acKinds.map(function (k) {
+        kf.innerHTML = '<option value="">All session types</option>' + acKinds.map(function (k) {
           return '<option value="' + esc(k.key) + '"' + (k.key === acKindFilter ? ' selected' : '') + '>' + esc(k.label) + '</option>';
         }).join('');
       }
@@ -10965,18 +10965,18 @@
         function paint(keepName) {
           var nameVal = keepName != null ? keepName : ((m.querySelector('#km-name') || {}).value || '');
           m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:480px;max-height:90vh;overflow-y:auto">' +
-            '<h2 style="margin-top:0">🏷️ Session kinds — ' + esc(curDash.name) + '</h2>' +
-            '<p style="color:var(--dim);font-size:0.9rem;margin-top:0">Kinds for this dashboard only. They appear in its Add session form and Kind filter.</p>' +
+            '<h2 style="margin-top:0">🏷️ Session types — ' + esc(curDash.name) + '</h2>' +
+            '<p style="color:var(--dim);font-size:0.9rem;margin-top:0">Session types for this dashboard only. They appear in its Add session form and Session type filter.</p>' +
             (acKinds.length ? acKinds.map(function (k) {
               return '<div style="display:flex;align-items:center;gap:0.6rem;border:1px solid var(--border);border-radius:10px;padding:0.55rem 0.8rem;margin-bottom:0.5rem"><span style="width:14px;height:14px;border-radius:50%;background:' + esc(k.color) + ';flex:none"></span><strong>' + esc(k.label) + '</strong><button type="button" data-km-del="' + k.id + '" style="margin-left:auto;padding:0.35rem 0.75rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></div>';
-            }).join('') : '<p style="color:var(--dim)">No kinds yet.</p>') +
-            '<div style="font-weight:700;margin:1rem 0 0.4rem">Add a kind</div>' +
-            '<input id="km-name" type="text" value="' + esc(nameVal) + '" placeholder="Kind name (e.g. Interviews)" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
+            }).join('') : '<p style="color:var(--dim)">No session types yet.</p>') +
+            '<div style="font-weight:700;margin:1rem 0 0.4rem">Add a type</div>' +
+            '<input id="km-name" type="text" value="' + esc(nameVal) + '" placeholder="Type name (e.g. Interviews)" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
             '<div style="display:flex;gap:0.4rem;margin:0.7rem 0;flex-wrap:wrap;align-items:center"><span style="font-weight:600;font-size:0.9rem">Color</span>' + AC_KIND_PALETTE.map(function (c) {
               return '<button type="button" data-km-color="' + c + '" title="' + c + '" style="width:28px;height:28px;border-radius:50%;background:' + c + ';border:' + (c === selColor ? '3px solid #0f172a' : '2px solid #fff') + ';box-shadow:0 0 0 1px #cbd5e1;cursor:pointer"></button>';
             }).join('') + '</div>' +
             '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" id="km-close" style="flex:1;padding:0.7rem;border-radius:10px">Close</button>' +
-            '<button type="button" class="btn" id="km-add" style="flex:1;padding:0.7rem;border-radius:10px">＋ Add kind</button></div></div>';
+            '<button type="button" class="btn" id="km-add" style="flex:1;padding:0.7rem;border-radius:10px">＋ Add type</button></div></div>';
           m.querySelector('#km-close').addEventListener('click', function () { m.remove(); });
           m.querySelectorAll('[data-km-color]').forEach(function (b) {
             b.addEventListener('click', function () {
@@ -10986,18 +10986,18 @@
           });
           m.querySelectorAll('[data-km-del]').forEach(function (b) {
             b.addEventListener('click', function () {
-              if (!confirm('Delete this kind? Sessions that used it keep their calendar slot but lose the custom name and color.')) return;
+              if (!confirm('Delete this session type? Sessions that used it keep their slot but lose the custom name and color.')) return;
               api('/api/schedule/session-kinds/' + b.getAttribute('data-km-del'), { method: 'DELETE' }).then(function (r) {
-                if (r.ok) { pageSuccess('Kind deleted.'); refreshDashKinds().then(function () { paint(); }); }
+                if (r.ok) { pageSuccess('Session type deleted.'); refreshDashKinds().then(function () { paint(); }); }
                 else pageError((r.data && r.data.error) || 'Could not delete.');
               });
             });
           });
           m.querySelector('#km-add').addEventListener('click', function () {
             var name = m.querySelector('#km-name').value.trim();
-            if (!name) { pageError('Give the kind a name.'); return; }
+            if (!name) { pageError('Give the type a name.'); return; }
             api('/api/schedule/session-kinds', { method: 'POST', body: JSON.stringify({ label: name, color: selColor, dashboardId: curDash.id }) }).then(function (r) {
-              if (r.ok) { pageSuccess('Kind added to ' + curDash.name + '.'); refreshDashKinds().then(function () { paint(''); }); }
+              if (r.ok) { pageSuccess('Session type added to ' + curDash.name + '.'); refreshDashKinds().then(function () { paint(''); }); }
               else pageError((r.data && r.data.error) || 'Could not add.');
             });
           });
