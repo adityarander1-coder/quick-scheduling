@@ -3520,6 +3520,18 @@
         #tab-dash .ac-recur-badge { font-size: 0.68rem; color: #6d28d9; font-weight: 700; }
         #tab-dash [data-acedit].ac-selected { outline: 3px solid #7c3aed; outline-offset: 1px; position: relative; }
         #tab-dash [data-acedit].ac-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; border-radius: 50%; background: #7c3aed; color: #fff; font-size: 13px; font-weight: 900; display: flex; align-items: center; justify-content: center; z-index: 3; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+        #tab-dash .ac-blockwrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; }
+        #tab-dash .ac-blockgrid { display: grid; grid-template-columns: 52px repeat(7, minmax(104px, 1fr)); min-width: 780px; }
+        #tab-dash .ac-bhead { text-align: center; font-weight: 700; font-size: 0.85rem; padding: 8px 2px; border-bottom: 2px solid var(--border); color: var(--dim); }
+        #tab-dash .ac-bhead.today { color: #2563eb; }
+        #tab-dash .ac-bhour { font-size: 0.68rem; color: var(--dim); text-align: right; padding-right: 7px; transform: translateY(-6px); }
+        #tab-dash .ac-bgutterlabel { font-size: 0.68rem; color: var(--dim); text-align: right; padding: 4px 7px 4px 0; }
+        #tab-dash .ac-ballday { border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 4px; }
+        #tab-dash .ac-ballday.today { background: #f5f9ff; }
+        #tab-dash .ac-bday { position: relative; border-left: 1px solid var(--border); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 45px, var(--border) 45px, var(--border) 46px); }
+        #tab-dash .ac-bday.today { background-color: #f5f9ff; }
+        #tab-dash .ac-blk { position: absolute; border-radius: 8px; padding: 4px 6px; font-size: 0.7rem; line-height: 1.3; overflow: hidden; border: 1px solid; cursor: pointer; color: var(--text); z-index: 1; }
+        #tab-dash .ac-blk b { display: block; font-size: 0.72rem; }
         #tab-dash .ac-selbtn { background: #4f46e5; color: #fff; border: 1px solid #6366f1; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
         #tab-dash .ac-selbtn-ghost { background: transparent; border-color: rgba(255,255,255,0.45); }
         @media (max-width: 860px) {
@@ -10291,7 +10303,7 @@
       function viewRange() {
         var from, to;
         if (acView === 'day') { from = new Date(acAnchor); to = new Date(acAnchor); }
-        else if (acView === 'week') {
+        else if (acView === 'week' || acView === 'block') {
           from = new Date(acAnchor); from.setDate(from.getDate() - from.getDay());
           to = new Date(from); to.setDate(to.getDate() + 6);
         } else {
@@ -10593,7 +10605,7 @@
         renderToolbar();
         var conflicts = computeConflicts();
         var el = document.getElementById('db-view');
-        var body = acView === 'month' ? renderMonth() : (acView === 'week' ? renderWeek() : renderDay());
+        var body = acView === 'month' ? renderMonth() : (acView === 'week' ? renderWeek() : (acView === 'block' ? renderBlock() : renderDay()));
         var banner = '';
         if (conflicts.length) {
           banner = '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:0.7rem 1rem;margin-bottom:0.9rem;color:#991b1c;font-size:0.88rem">' +
@@ -10626,7 +10638,7 @@
         var tb = document.getElementById('db-toolbar');
         var title = acView === 'month'
           ? acAnchor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
-          : (acView === 'week'
+          : ((acView === 'week' || acView === 'block')
             ? 'Week of ' + acAnchor.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
             : acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }));
         tb.innerHTML = '<div class="ac-tbar"><div class="ac-tleft"><button type="button" class="ac-nav" data-nav="-1">‹</button>' +
@@ -10635,7 +10647,8 @@
           '<h2 class="ac-title">' + esc(title) + '</h2>' +
           '<div class="ac-views"><button type="button" data-aview="day"' + (acView === 'day' ? ' class="active"' : '') + '>Day</button>' +
           '<button type="button" data-aview="week"' + (acView === 'week' ? ' class="active"' : '') + '>Week</button>' +
-          '<button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button></div></div>';
+          '<button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button>' +
+          '<button type="button" data-aview="block"' + (acView === 'block' ? ' class="active"' : '') + '>Block</button></div></div>';
         tb.querySelectorAll('[data-aview]').forEach(function (b) {
           b.addEventListener('click', function () { acView = b.getAttribute('data-aview'); load(); });
         });
@@ -10644,10 +10657,100 @@
             var n = b.getAttribute('data-nav');
             if (n === 'today') acAnchor = new Date();
             else if (acView === 'month') acAnchor = new Date(acAnchor.getFullYear(), acAnchor.getMonth() + (n === '1' ? 1 : -1), 1);
-            else { acAnchor = new Date(acAnchor); acAnchor.setDate(acAnchor.getDate() + (acView === 'week' ? 7 : 1) * (n === '1' ? 1 : -1)); }
+            else { acAnchor = new Date(acAnchor); acAnchor.setDate(acAnchor.getDate() + ((acView === 'week' || acView === 'block') ? 7 : 1) * (n === '1' ? 1 : -1)); }
             load();
           });
         });
+      }
+
+      // Block view (Deepika, 2026-10-21): the classic block schedule —
+      // days across the top, hours down the side, each session a block
+      // as tall as it runs. Overlapping sessions split the column into
+      // lanes; sessions with no start time sit in an All day row.
+      function renderBlock() {
+        var H = 46;
+        var weekStart = new Date(acAnchor); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+        var days = [];
+        for (var i = 0; i < 7; i++) { var d = new Date(weekStart); d.setDate(d.getDate() + i); days.push(d); }
+        function mins(t) { if (!t) return null; var p = String(t).split(':'); return parseInt(p[0], 10) * 60 + parseInt(p[1] || '0', 10); }
+        var perDay = days.map(function (d) { return byDate(fmtD(d)); });
+        var startH = 7, endH = 17;
+        perDay.forEach(function (list) { list.forEach(function (s) {
+          var st = mins(s.startTime); if (st === null) return;
+          var en = mins(s.endTime); if (en === null || en <= st) en = st + 60;
+          startH = Math.min(startH, Math.floor(st / 60));
+          endH = Math.max(endH, Math.ceil(en / 60));
+        }); });
+        startH = Math.max(0, startH); endH = Math.min(24, endH);
+        var todayS = fmtD(new Date());
+        var dows = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        var html = '<div class="ac-blockwrap"><div class="ac-blockgrid">';
+        html += '<div class="ac-bhead"></div>' + days.map(function (d) {
+          return '<div class="ac-bhead' + (fmtD(d) === todayS ? ' today' : '') + '">' + dows[d.getDay()] + ' ' + (d.getMonth() + 1) + '/' + d.getDate() + '</div>';
+        }).join('');
+        var anyAllDay = perDay.some(function (list) { return list.some(function (s) { return !s.startTime; }); });
+        if (anyAllDay) {
+          html += '<div class="ac-bgutterlabel">All day</div>' + perDay.map(function (list, i) {
+            var chips = list.filter(function (s) { return !s.startTime; }).map(chipHtml).join('');
+            return '<div class="ac-ballday' + (fmtD(days[i]) === todayS ? ' today' : '') + '">' + chips + '</div>';
+          }).join('');
+        }
+        html += '<div class="ac-bgutter">';
+        for (var h = startH; h < endH; h++) {
+          var hh = h % 12 === 0 ? 12 : h % 12;
+          html += '<div class="ac-bhour" style="height:' + H + 'px">' + hh + (h < 12 ? ' AM' : ' PM') + '</div>';
+        }
+        html += '</div>';
+        perDay.forEach(function (list, di) {
+          var ds = fmtD(days[di]);
+          var timed = list.filter(function (s) { return !!s.startTime; }).map(function (s) {
+            var st = mins(s.startTime); var en = mins(s.endTime);
+            if (en === null || en <= st) en = st + 60;
+            return { s: s, st: st, en: en, lane: 0, lanes: 1 };
+          }).sort(function (a, b) { return a.st - b.st || a.en - b.en; });
+          var laneEnds = [], cluster = [];
+          function flushCluster() {
+            if (!cluster.length) return;
+            var n = 1;
+            cluster.forEach(function (c) { n = Math.max(n, c.lane + 1); });
+            cluster.forEach(function (c) { c.lanes = n; });
+            cluster = []; laneEnds = [];
+          }
+          timed.forEach(function (it) {
+            if (cluster.length) {
+              var cMax = 0;
+              cluster.forEach(function (c) { cMax = Math.max(cMax, c.en); });
+              if (it.st >= cMax) flushCluster();
+            }
+            var lane = -1;
+            for (var li = 0; li < laneEnds.length; li++) { if (laneEnds[li] <= it.st) { lane = li; break; } }
+            if (lane === -1) { lane = laneEnds.length; laneEnds.push(it.en); } else laneEnds[lane] = it.en;
+            it.lane = lane;
+            cluster.push(it);
+          });
+          flushCluster();
+          var blocks = timed.map(function (it) {
+            var s = it.s;
+            var color = chipColor(s);
+            var top = (it.st - startH * 60) / 60 * H;
+            var height = Math.max(22, (it.en - it.st) / 60 * H - 3);
+            var w = 100 / (it.lanes || 1);
+            var left = (it.lane || 0) * w;
+            var mine = !!acMyId && s.lecturerUserId === acMyId;
+            var who = s.lecturerName ? esc(s.lecturerName) : '<span style="color:#c62828;font-weight:700">Needs presenter</span>';
+            var conflict = acConflicts[s.id] ? 'box-shadow:0 0 0 2px #dc2626 inset;' : '';
+            var mineStyle = mine ? 'box-shadow:0 0 0 2px #b45309 inset;' : '';
+            return '<div class="ac-blk" data-acedit="' + s.id + '" title="' + esc(s.title) + '" style="top:' + top + 'px;height:' + height + 'px;left:calc(' + left + '% + 2px);width:calc(' + w + '% - 4px);background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '">' +
+              '<b>' + (mine ? '⭐ ' : '') + esc(s.title) + '</b>' +
+              '<span>' + fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') + '</span>' +
+              '<br><span>' + who + (s.supervisorName ? ' · Sup: ' + esc(s.supervisorName) : '') + '</span>' +
+              (s.location ? '<br><span>📍 ' + esc(s.location) + '</span>' : '') +
+              '</div>';
+          }).join('');
+          html += '<div class="ac-bday' + (ds === todayS ? ' today' : '') + '" data-acday="' + ds + '" style="height:' + ((endH - startH) * H) + 'px">' + blocks + '</div>';
+        });
+        html += '</div></div>';
+        return html;
       }
 
       function renderMonth() {
