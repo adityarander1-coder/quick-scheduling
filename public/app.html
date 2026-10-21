@@ -3496,6 +3496,8 @@
         #tab-dash .ac-day.today .ac-daynum { background: #2563eb; color: #fff; border-radius: 50%; width: 1.5rem; height: 1.5rem; display: inline-flex; align-items: center; justify-content: center; }
         #tab-dash .ac-daynum { font-weight: 700; font-size: 0.82rem; margin-bottom: 3px; color: var(--text); }
         #tab-dash .ac-day.other .ac-daynum { color: var(--dim); }
+        #tab-dash .ac-dayfull { display: none; }
+        #tab-dash .ac-month-empty { display: none; }
         #tab-dash .ac-chip { border-radius: 6px; padding: 2px 6px; font-size: 0.72rem; margin-bottom: 3px; border: 1px solid; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: var(--text); }
         #tab-dash .ac-chip .ac-dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 4px; vertical-align: baseline; }
         #tab-dash .ac-chip-text { vertical-align: baseline; }
@@ -3519,6 +3521,16 @@
         @media (max-width: 860px) {
           #tab-dash .ac-week { grid-template-columns: 1fr; }
           #tab-dash .ac-wday { min-height: 0; }
+          /* Month stacks like Week on phones (Deepika, 2026-10-20):
+             one day card after another; other-month days drop out. */
+          #tab-dash .ac-month-grid { display: block; background: none; border: none; border-radius: 0; overflow: visible; }
+          #tab-dash .ac-dow { display: none; }
+          #tab-dash .ac-day { border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem; margin-bottom: 0.6rem; min-height: 0; }
+          #tab-dash .ac-day.other { display: none; }
+          #tab-dash .ac-day.today { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb; }
+          #tab-dash .ac-daynum { display: none; }
+          #tab-dash .ac-dayfull { display: block; font-size: 0.85rem; margin-bottom: 0.5rem; color: var(--dim); }
+          #tab-dash .ac-month-empty { display: block; }
         }
       </style>
       <div class="db-head">
@@ -3540,7 +3552,7 @@
             <option value="open">Needs presenter</option>
           </select>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Kind
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Session type
           <select id="db-kind-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text)"></select>
         </label>
       </div>
@@ -8630,10 +8642,9 @@
           if (e.lecturerName) names += esc(e.lecturerName) + (me && e.lecturerUserId === me.id ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px">YOU</span>' : '');
           if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
           if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="btn" data-ms-evclaim="' + e.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">✋ Pick it up — I\'ll present</button>';
-          else if (me && e.lecturerUserId === me.id) names += '<br><button type="button" class="btn-secondary" data-ms-evunclaim="' + e.id + '" style="padding:0.3rem 0.8rem;font-size:0.8rem">Give it up</button>';
           if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
           if (e.meetingUrl) names += '<br><a class="qs-join" href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700;font-size:0.8rem">🔗 Join meeting</a>';
-          return '<div class="shift-grid" data-ms-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
+          return '<div class="shift-grid" data-ms-evopen="' + e.id + '" title="See details" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div></div>';
         }
@@ -8922,11 +8933,16 @@
           el.querySelectorAll('[data-ms-evopen]').forEach(function (box) {
             box.addEventListener('click', function (ev) {
               if (ev.target.closest('[data-ms-evclaim],[data-ms-evunclaim]')) return;
-              var parts = (box.getAttribute('data-ms-evopen') || '').split('|');
-              if (parts[0] && window.qsOpenDashboardAt) {
-                $('ms-day-modal').classList.add('hidden'); msDayModalDate = null;
-                window.qsOpenDashboardAt(parts[0], parts[1]);
-                try { location.hash = '#dash/' + parts[0]; } catch (e) {}
+              // My Schedule shows details only (Deepika, 2026-10-20) —
+              // never the edit form, never a trip to the dashboard.
+              var id = box.getAttribute('data-ms-evopen');
+              var e = (dashEvents || []).find(function (x) { return x.id === id; });
+              if (e && window.qsShowSessionDetails) {
+                window.qsShowSessionDetails(e, function () {
+                  var modalDate = msDayModalDate;
+                  loadData();
+                  if (modalDate) setTimeout(function () { if (msDayModalDate === modalDate) openMsDayModal(modalDate); }, 700);
+                });
               }
             });
           });
@@ -10214,7 +10230,7 @@
     (function () {
       var dashList = [];
       var curDash = null;
-      var acUsers = [], acDepts = [], acSessions = [], acMyId = null, acCanEdit = false;
+      var acUsers = [], acDepts = [], acSessions = [], acMyId = null, acCanEdit = false, acReadOnly = false;
       var acDeptFilter = '', acShowFilter = 'all', acKindFilter = '';
       // Session kinds live on EACH dashboard (Deepika, 2026-10-20).
       // acKinds = the open dashboard's kinds. window.qsKinds = every
@@ -10305,6 +10321,7 @@
       // Open a dashboard on a specific date in Day view — used when a
       // session box is clicked on the main schedule (Deepika, 2026-10-20).
       window.qsOpenDashboardAt = function (id, dateStr) {
+        window.qsDashReadOnly = false; // reached from the Admin schedule — editing context
         if (dateStr) { var p = String(dateStr).split('-'); acAnchor = new Date(+p[0], +p[1] - 1, +p[2]); }
         acView = 'day';
         window.qsOpenDashboard(id);
@@ -10343,7 +10360,8 @@
             // Employees get a view-only dashboard calendar (Deepika,
             // 2026-10-20): no Add session button, no edit form. Pickup
             // buttons and the your-session highlight still work.
-            acCanEdit = (rs[3].data.user.role === 'owner' || rs[3].data.user.role === 'scheduler') && (!curDash || curDash.canEdit !== false);
+            acReadOnly = !!window.qsDashReadOnly;
+            acCanEdit = (rs[3].data.user.role === 'owner' || rs[3].data.user.role === 'scheduler') && (!curDash || curDash.canEdit !== false) && !acReadOnly;
             var ab = document.getElementById('db-add');
             if (ab) ab.style.display = acCanEdit ? '' : 'none';
             var kb2 = document.getElementById('db-kinds');
@@ -10435,10 +10453,21 @@
         }
         el.innerHTML = banner + body;
         el.querySelectorAll('[data-acedit]').forEach(function (c) {
-          c.addEventListener('click', function (e) { e.stopPropagation(); openForm(c.getAttribute('data-acedit')); });
+          c.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (acReadOnly) {
+              var s = acSessions.find(function (x) { return x.id === c.getAttribute('data-acedit'); });
+              if (s) window.qsShowSessionDetails(s, function () { load(); });
+            } else openForm(c.getAttribute('data-acedit'));
+          });
         });
         el.querySelectorAll('[data-acday]').forEach(function (c) {
-          c.addEventListener('click', function () { openForm(null, c.getAttribute('data-acday')); });
+          c.addEventListener('click', function () {
+            if (acReadOnly) {
+              var p = (c.getAttribute('data-acday') || '').split('-');
+              if (p.length === 3) { acAnchor = new Date(+p[0], +p[1] - 1, +p[2]); acView = 'day'; load(); }
+            } else openForm(null, c.getAttribute('data-acday'));
+          });
         });
       }
 
@@ -10481,8 +10510,12 @@
           var cur = new Date(start); cur.setDate(cur.getDate() + i);
           var ds = fmtD(cur);
           var inMonth = cur.getMonth() === acAnchor.getMonth();
+          var chips = byDate(ds).map(chipHtml).join('');
           html += '<div class="ac-day' + (inMonth ? '' : ' other') + (ds === todayS ? ' today' : '') + '" data-acday="' + ds + '">' +
-            '<div class="ac-daynum">' + cur.getDate() + '</div>' + byDate(ds).map(chipHtml).join('') + '</div>';
+            '<div class="ac-daynum">' + cur.getDate() + '</div>' +
+            '<div class="ac-dayfull"><strong>' + cur.toLocaleDateString(undefined, { weekday: 'short' }) + '</strong> ' +
+            cur.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) + '</div>' +
+            (chips || '<div class="ac-emptyday ac-month-empty">—</div>') + '</div>';
         }
         return html + '</div>';
       }
@@ -10509,13 +10542,13 @@
         var html = '<div class="ac-dayview"><div class="ac-whead big' + (ds === todayS ? ' today' : '') + '">' +
           acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) + '</div>';
         html += '<div data-acday="' + ds + '" style="cursor:pointer">';
-        if (!list.length) html += '<div class="ac-empty">Nothing scheduled — tap here to add a session.</div>';
+        if (!list.length) html += '<div class="ac-empty">' + (acReadOnly ? 'Nothing scheduled.' : 'Nothing scheduled — tap here to add a session.') + '</div>';
         else list.forEach(function (s) {
           var color = chipColor(s);
           var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">Repeats</span>' : '';
           var claimBtn = '';
           if (!s.lecturerUserId) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
-          else if (acMyId && s.lecturerUserId === acMyId) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
+          else if (acMyId && s.lecturerUserId === acMyId && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
           var mineTag = '', rowStyle = '';
           if (acMyId && s.lecturerUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
           else if (acMyId && s.supervisorUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re supervising</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
@@ -10527,6 +10560,72 @@
         });
         return html + '</div></div>';
       }
+
+      // ---------- Session details (read-only) ----------
+      // What My Schedule shows when an event is tapped (Deepika,
+      // 2026-10-20): the details, plus pick-up buttons for whichever
+      // role is still open — presenter or supervisor. No editing and
+      // no "give it up" here; giving a session back lives in Admin view.
+      var sdMyId = null;
+      window.qsShowSessionDetails = function (e, onDone) {
+        function show(myId) {
+          var old = document.getElementById('sd-modal');
+          if (old) old.remove();
+          var color = window.qsKindColor ? window.qsKindColor(e.kind, e.dashboardId) : '#00796b';
+          var kindLabel = window.qsKindLabel ? window.qsKindLabel(e.kind, e.dashboardId) : 'Session';
+          var p = String(e.date || '').split('-');
+          var dateTxt = p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : (e.date || '');
+          var timeTxt = e.startTime ? fmtTime(e.startTime) + (e.endTime ? ' – ' + fmtTime(e.endTime) : '') : 'All day';
+          var pres = !e.lecturerUserId
+            ? '<button type="button" class="btn" data-sd-claim="presenter" style="flex:1;padding:0.7rem;border-radius:10px">✋ Pick it up — I\'ll present</button>'
+            : (myId && e.lecturerUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re presenting</div>' : '');
+          var sup = !e.supervisorUserId
+            ? '<button type="button" class="btn" data-sd-claim="supervisor" style="flex:1;padding:0.7rem;border-radius:10px;background:#7c3aed">✋ Pick it up — I\'ll supervise</button>'
+            : (myId && e.supervisorUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re supervising</div>' : '');
+          var rows = '' +
+            '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem"><span style="width:12px;height:12px;border-radius:50%;background:' + color + ';flex:none"></span><strong>' + esc(kindLabel) + '</strong>' +
+            ((e.recurRule && e.recurRule !== 'none') || e.isOccurrence ? '<span class="ac-recur-badge">Repeats</span>' : '') + '</div>' +
+            '<h2 style="margin:0 0 0.6rem;font-size:1.25rem">' + esc(e.title) + '</h2>' +
+            '<div style="display:grid;gap:0.45rem;font-size:0.95rem">' +
+            '<div>📅 ' + esc(dateTxt) + '</div>' +
+            '<div>🕐 ' + esc(timeTxt) + '</div>' +
+            '<div>👤 Presenter: ' + (e.lecturerName ? '<strong>' + esc(e.lecturerName) + '</strong>' : '<strong style="color:#b91c1c">Needs presenter</strong>') + '</div>' +
+            '<div>🧑‍🏫 Supervisor: ' + (e.supervisorName ? '<strong>' + esc(e.supervisorName) + '</strong>' : '<span style="color:var(--dim)">Not assigned</span>') + '</div>' +
+            (e.location ? '<div>📍 ' + esc(e.location) + '</div>' : '') +
+            (e.departmentName ? '<div>🏥 ' + esc(e.departmentName) + '</div>' : '') +
+            (e.meetingUrl ? '<div><a href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700">🔗 Join meeting</a></div>' : '') +
+            (e.notes ? '<div style="color:var(--dim)">📝 ' + esc(e.notes) + '</div>' : '') +
+            '</div>' +
+            ((pres || sup) ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + sup + '</div>' : '') +
+            '<div style="display:flex;gap:0.6rem;margin-top:1rem"><button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px">Close</button></div>';
+          var wrap = document.createElement('div');
+          wrap.id = 'sd-modal';
+          wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:230;padding:1rem');
+          wrap.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.2rem;width:100%;max-width:460px;max-height:88vh;overflow:auto">' + rows + '</div>';
+          document.body.appendChild(wrap);
+          function close() { wrap.remove(); }
+          wrap.addEventListener('click', function (ev) { if (ev.target === wrap) close(); });
+          wrap.querySelector('[data-sd-close]').addEventListener('click', close);
+          wrap.querySelectorAll('[data-sd-claim]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var role = b.getAttribute('data-sd-claim');
+              b.disabled = true;
+              api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/claim', { method: 'POST', body: JSON.stringify({ role: role }) }).then(function (r) {
+                if (r.ok) {
+                  pageSuccess(role === 'supervisor' ? 'You are now the supervisor.' : 'You are now the presenter.');
+                  close();
+                  if (onDone) onDone();
+                } else {
+                  pageError((r.data && r.data.error) || 'Could not pick this up.');
+                  b.disabled = false;
+                }
+              }).catch(function () { pageError('Could not pick this up.'); b.disabled = false; });
+            });
+          });
+        }
+        if (acMyId || sdMyId) show(acMyId || sdMyId);
+        else api('/api/auth/me').then(function (r) { sdMyId = r.ok && r.data.user ? r.data.user.id : null; show(sdMyId); }).catch(function () { show(null); });
+      };
 
       // ---------- Add / edit form ----------
       var acShiftTypes = null;
@@ -11056,6 +11155,7 @@
       },
       'dash': function(sub) {
         activateTab('dash', sub || '');
+        window.qsDashReadOnly = false;
         if (window.qsOpenDashboard) window.qsOpenDashboard(sub || '');
       },
       'settings': function(sub) { activateTab('settings', sub || 'departments'); },
@@ -11132,7 +11232,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (p) {
         p.classList.toggle('active', p.id === panelId);
       });
-      if (isDash) { if (window.qsOpenDashboard) window.qsOpenDashboard(t.slice(5)); }
+      if (isDash) { window.qsDashReadOnly = true; if (window.qsOpenDashboard) window.qsOpenDashboard(t.slice(5)); }
       else if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
       else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
       else if (t === 'messages') { if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); }

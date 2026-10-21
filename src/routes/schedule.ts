@@ -6031,7 +6031,8 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
 
 // POST /api/schedule/academic-sessions/:id/claim — presenter pickup
 // (Deepika, 2026-10-20): any signed-in user who can see a session with no
-// presenter ("Needs presenter") picks it up. Claiming an occurrence claims
+// presenter ("Needs presenter") picks it up. Body { role: 'supervisor' }
+// picks up the supervisor slot instead. Claiming an occurrence claims
 // the whole series. Atomic: the UPDATE lands only while the slot is open.
 router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
@@ -6044,9 +6045,13 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
     if (ids && (!cur.department_id || !ids.includes(cur.department_id))) {
       res.status(403).json({ error: 'You do not have access to this session.' }); return;
     }
-    if (cur.lecturer_user_id) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
+    const col = String(req.body?.role || '') === 'supervisor' ? 'supervisor_user_id' : 'lecturer_user_id';
+    if (cur[col]) {
+      if (cur[col] === req.session.userId) { res.json({ ok: true, already: true }); return; }
+      res.status(409).json({ error: 'Someone already picked this up.' }); return;
+    }
     const upd = await query(
-      'UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2 AND company_id = $3 AND lecturer_user_id IS NULL',
+      `UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3 AND ${col} IS NULL`,
       [req.session.userId!, seriesId, companyId]);
     if (!upd.rowCount) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
     res.json({ ok: true });
