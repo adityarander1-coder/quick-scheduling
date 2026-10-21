@@ -5396,6 +5396,22 @@ async function sessionEditCheck(req: Request, res: Response, dashboardId: string
   return academicDeptCheck(req, res, departmentId);
 }
 
+// Quiet version of sessionEditCheck for loops (no response writes):
+// owner yes; editors list (when set) decides; otherwise the
+// scheduler needs Edit access to the session's department.
+async function canEditSessionQuiet(req: Request, dashboardId: string | null, departmentId: string | null): Promise<boolean> {
+  const role = req.session.role!;
+  if (role === 'owner') return true;
+  if (role !== 'scheduler') return false;
+  if (dashboardId) {
+    const editors = await dashboardEditorIds(dashboardId);
+    if (editors.length) return editors.includes(req.session.userId!);
+  }
+  if (!departmentId) return false;
+  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+  return (access.edit || []).includes(departmentId);
+}
+
 async function validateDashboardEditors(companyId: string, ids: any): Promise<string[] | null> {
   if (!ids || !Array.isArray(ids) || ids.length === 0) return [];
   const want = ids.map((x: any) => String(x));
@@ -6098,6 +6114,56 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     res.json({ ok: true, id: rows[0].id });
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/academic-sessions/bulk-assign — owner or
+// scheduler. Assign a presenter, supervisor or location to many
+// sessions at once (Deepika, 2026-10-21). Items are the occurrences
+// as shown on the calendar ({id, date}): a recurring session touched
+// with a date writes that date's override only; a one-off session
+// (or an item without a date) updates the session itself.
+router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const field = ['lecturer', 'supervisor', 'location'].includes(String(b.field)) ? String(b.field) : null;
+    if (!field) { res.status(400).json({ error: 'Say what to assign: presenter, supervisor or location.' }); return; }
+    const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
+    if (!items.length) { res.status(400).json({ error: 'Select at least one session.' }); return; }
+    let userId: string | null = null;
+    if (field !== 'location' && b.userId) {
+      const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [String(b.userId), companyId]);
+      if (!lu.length) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
+      userId = String(b.userId);
+    }
+    const locVal = field === 'location' ? (b.location ? String(b.location).trim().slice(0, 200) : null) : null;
+    let updated = 0;
+    const skipped: any[] = [];
+    for (const it of items) {
+      const seriesId = String((it && it.id) || '').split('@@')[0];
+      const date = it && it.date && /^\d{4}-\d{2}-\d{2}$/.test(String(it.date)) ? String(it.date) : null;
+      if (!seriesId) { skipped.push({ id: it && it.id, error: 'Not found.' }); continue; }
+      const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+      if (!rows.length) { skipped.push({ id: it.id, error: 'Not found.' }); continue; }
+      const cur = rows[0];
+      if (!(await canEditSessionQuiet(req, cur.dashboard_id, cur.department_id))) { skipped.push({ id: it.id, error: 'Not editable.' }); continue; }
+      const recurring = cur.recur_rule && cur.recur_rule !== 'none';
+      if (recurring && date) {
+        if (field === 'lecturer') await upsertOverride(companyId, seriesId, date, { has_lecturer: true, lecturer_user_id: userId });
+        else if (field === 'supervisor') await upsertOverride(companyId, seriesId, date, { has_supervisor: true, supervisor_user_id: userId });
+        else await upsertOverride(companyId, seriesId, date, { has_location: true, location: locVal });
+      } else {
+        const col = field === 'lecturer' ? 'lecturer_user_id' : field === 'supervisor' ? 'supervisor_user_id' : 'location';
+        const val = field === 'location' ? locVal : userId;
+        await query(`UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3`, [val, seriesId, companyId]);
+      }
+      updated++;
+    }
+    res.json({ ok: true, updated, skipped });
+  } catch (err) {
+    console.error('[schedule] bulk assign failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

@@ -3518,6 +3518,10 @@
         #tab-dash .ac-meta { font-size: 0.82rem; color: var(--dim); margin-top: 0.15rem; }
         #tab-dash .ac-empty { padding: 1.5rem; text-align: center; color: var(--dim); }
         #tab-dash .ac-recur-badge { font-size: 0.68rem; color: #6d28d9; font-weight: 700; }
+        #tab-dash [data-acedit].ac-selected { outline: 3px solid #7c3aed; outline-offset: 1px; position: relative; }
+        #tab-dash [data-acedit].ac-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; border-radius: 50%; background: #7c3aed; color: #fff; font-size: 13px; font-weight: 900; display: flex; align-items: center; justify-content: center; z-index: 3; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+        #tab-dash .ac-selbtn { background: #4f46e5; color: #fff; border: 1px solid #6366f1; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
+        #tab-dash .ac-selbtn-ghost { background: transparent; border-color: rgba(255,255,255,0.45); }
         @media (max-width: 860px) {
           #tab-dash .ac-week { grid-template-columns: 1fr; }
           #tab-dash .ac-wday { min-height: 0; }
@@ -3537,6 +3541,7 @@
         <h1 class="db-h1">🎓 <span id="db-name">Dashboard</span></h1>
         <div style="display:flex;gap:0.6rem;align-items:center">
           <span class="db-date" id="db-date"></span>
+          <button type="button" class="btn-secondary" id="db-select" style="padding:0.6rem 1rem;border-radius:10px;display:none">☑ Select</button>
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
@@ -3558,6 +3563,17 @@
       </div>
       <div class="db-tbar" id="db-toolbar"></div>
       <div id="db-view"></div>
+      <div id="ac-selbar" style="display:none;position:sticky;bottom:12px;z-index:40;background:#312e81;color:#fff;border-radius:14px;padding:0.7rem 0.9rem;margin-top:0.8rem;box-shadow:0 8px 24px rgba(0,0,0,0.35)">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <strong id="ac-selcount">0 selected</strong>
+          <button type="button" class="ac-selbtn" data-selact="presenter">👤 Presenter</button>
+          <button type="button" class="ac-selbtn" data-selact="supervisor">🧑‍🏫 Supervisor</button>
+          <button type="button" class="ac-selbtn" data-selact="location">📍 Location</button>
+          <button type="button" class="ac-selbtn ac-selbtn-ghost" data-selact="clear">Clear</button>
+          <button type="button" class="ac-selbtn ac-selbtn-ghost" data-selact="done">Done</button>
+        </div>
+        <div style="font-size:0.8rem;opacity:0.85;margin-top:0.35rem">Tap sessions to add or remove them — the change applies to the dates you picked.</div>
+      </div>
     </section>
 
     <section id="tab-ask" class="tab-panel">
@@ -10309,6 +10325,133 @@
         }).catch(function () { return dashList; });
       };
 
+      // ---- Bulk assign: multi-select sessions on the calendar and
+      // set a presenter, supervisor or location for all of them at
+      // once (Deepika, 2026-10-21). Enter by long-pressing a session
+      // (phone or mouse) or with the Select button; then taps toggle.
+      var acSelMode = false;
+      var acSelected = new Map();
+      var acSelDashId = null;
+      var acSuppressClick = 0;
+      var acRoomsCache = null;
+      window.qsDashSelecting = function () { return acSelMode; };
+      function acSelAllowed() { return acCanEdit && !acReadOnly; }
+      function acEnterSel(itemEl) {
+        if (!acSelAllowed()) return;
+        acSelMode = true;
+        acToggleSel(itemEl, true);
+      }
+      function acExitSel() {
+        acSelMode = false;
+        acSelected.clear();
+        acApplySelUI();
+        acRenderSelBar();
+      }
+      function acToggleSel(itemEl, forceOn) {
+        var id = itemEl.getAttribute('data-acedit');
+        var s = acSessions.find(function (x) { return x.id === id; });
+        if (!s) return;
+        if (acSelected.has(id) && !forceOn) acSelected.delete(id);
+        else acSelected.set(id, { id: s.id, date: s.date });
+        acApplySelUI();
+        acRenderSelBar();
+      }
+      function acApplySelUI() {
+        document.querySelectorAll('#db-view [data-acedit]').forEach(function (el) {
+          el.classList.toggle('ac-selected', acSelMode && acSelected.has(el.getAttribute('data-acedit')));
+        });
+        var sb = document.getElementById('db-select');
+        if (sb) sb.textContent = acSelMode ? '☑ Selecting…' : '☑ Select';
+      }
+      function acRenderSelBar() {
+        var bar = document.getElementById('ac-selbar');
+        if (!bar) return;
+        bar.style.display = acSelMode ? '' : 'none';
+        var c = document.getElementById('ac-selcount');
+        if (c) c.textContent = acSelected.size + ' selected';
+      }
+      function acDoAssign(field, userId, location) {
+        var items = Array.from(acSelected.values());
+        if (!items.length) return;
+        var body = { field: field, items: items };
+        if (field === 'location') body.location = location; else body.userId = userId;
+        api('/api/schedule/academic-sessions/bulk-assign', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+          if (r.ok) {
+            var n = (r.data && r.data.updated) || 0;
+            var word = field === 'location' ? 'Location' : (field === 'supervisor' ? 'Supervisor' : 'Presenter');
+            pageSuccess(word + ' set on ' + n + ' session' + (n === 1 ? '' : 's') + '.');
+            if (r.data && r.data.skipped && r.data.skipped.length) pageError(r.data.skipped.length + ' session(s) could not be changed — no edit access.');
+            acExitSel();
+            load();
+          } else pageError((r.data && r.data.error) || 'Could not assign.');
+        }).catch(function () { pageError('Could not assign.'); });
+      }
+      function acPickPerson(field) {
+        var old = document.getElementById('ac-pick');
+        if (old) old.remove();
+        var wrap = document.createElement('div');
+        wrap.id = 'ac-pick';
+        wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:80;padding:1rem';
+        var BTN = 'display:block;width:100%;text-align:left;padding:0.65rem 0.8rem;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;margin-bottom:0.45rem;cursor:pointer;font-size:0.95rem';
+        var people = acUsers.filter(function (u) { return u.role !== 'owner'; });
+        var rows = people.map(function (u) {
+          var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
+          return '<button type="button" data-pick="' + u.id + '" style="' + BTN + '">' + esc(nm) + (u.jobRole ? ' <span style="color:var(--dim)">(' + esc(u.jobRole) + ')</span>' : '') + '</button>';
+        }).join('');
+        wrap.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.3rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
+          '<h3 style="margin:0 0 0.8rem">' + (field === 'supervisor' ? '🧑‍🏫 Supervisor' : '👤 Presenter') + ' for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
+          '<button type="button" data-pick="" style="' + BTN + '">— Clear (nobody) —</button>' + rows +
+          '<button type="button" data-pick-cancel style="' + BTN + ';text-align:center;margin-top:0.4rem">Cancel</button></div>';
+        document.body.appendChild(wrap);
+        wrap.addEventListener('click', function (e) { if (e.target === wrap) wrap.remove(); });
+        wrap.querySelector('[data-pick-cancel]').addEventListener('click', function () { wrap.remove(); });
+        wrap.querySelectorAll('[data-pick]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var uid = b.getAttribute('data-pick') || null;
+            wrap.remove();
+            acDoAssign(field, uid, null);
+          });
+        });
+      }
+      function acPickLocation() {
+        var old = document.getElementById('ac-pick');
+        if (old) old.remove();
+        var wrap = document.createElement('div');
+        wrap.id = 'ac-pick';
+        wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:80;padding:1rem';
+        var BTN = 'display:block;width:100%;text-align:left;padding:0.65rem 0.8rem;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;margin-bottom:0.45rem;cursor:pointer;font-size:0.95rem';
+        function build(rooms) {
+          var roomBtns = (rooms || []).map(function (r) {
+            return '<button type="button" data-room="' + esc(r.name) + '" style="' + BTN + '">📍 ' + esc(r.name) + '</button>';
+          }).join('');
+          wrap.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.3rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
+            '<h3 style="margin:0 0 0.8rem">📍 Location for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
+            roomBtns +
+            '<input id="ac-locbulk" type="text" placeholder="Or type a location" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin:0.3rem 0 0.7rem">' +
+            '<button type="button" data-loc-apply style="display:block;width:100%;padding:0.7rem;border-radius:10px" class="btn">Set location</button>' +
+            '<button type="button" data-loc-clear style="' + BTN + ';text-align:center;margin-top:0.5rem">Clear location</button>' +
+            '<button type="button" data-pick-cancel style="' + BTN + ';text-align:center">Cancel</button></div>';
+          document.body.appendChild(wrap);
+          wrap.addEventListener('click', function (e) { if (e.target === wrap) wrap.remove(); });
+          wrap.querySelector('[data-pick-cancel]').addEventListener('click', function () { wrap.remove(); });
+          wrap.querySelector('[data-loc-apply]').addEventListener('click', function () {
+            var v = wrap.querySelector('#ac-locbulk').value.trim();
+            if (!v) { pageError('Type a location, or pick a room.'); return; }
+            wrap.remove();
+            acDoAssign('location', null, v);
+          });
+          wrap.querySelector('[data-loc-clear]').addEventListener('click', function () { wrap.remove(); acDoAssign('location', null, ''); });
+          wrap.querySelectorAll('[data-room]').forEach(function (b) {
+            b.addEventListener('click', function () { var v = b.getAttribute('data-room'); wrap.remove(); acDoAssign('location', null, v); });
+          });
+        }
+        if (acRoomsCache) build(acRoomsCache);
+        else api('/api/schedule/rooms').then(function (r) {
+          acRoomsCache = (r.ok && r.data.rooms) || [];
+          build(acRoomsCache);
+        }).catch(function () { build([]); });
+      }
+
       window.qsOpenDashboard = function (id) {
         if (!dashList.length) {
           window.qsRefreshDashboardNav().then(function () { window.qsOpenDashboard(id); });
@@ -10331,6 +10474,7 @@
 
       function load() {
         if (!curDash) return;
+        if (acSelDashId !== curDash.id) { if (acSelMode) acExitSel(); acSelDashId = curDash.id; }
         var r = viewRange();
         document.getElementById('db-date').textContent = '📅 ' + acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
         Promise.all([
@@ -10368,6 +10512,9 @@
             if (ab) ab.style.display = acCanEdit ? '' : 'none';
             var kb2 = document.getElementById('db-kinds');
             if (kb2) kb2.style.display = acCanEdit ? '' : 'none';
+            var sb2 = document.getElementById('db-select');
+            if (sb2) sb2.style.display = acCanEdit ? '' : 'none';
+            if (!acCanEdit && acSelMode) acExitSel();
           }
           if (rs[4] && rs[4].ok) {
             acKinds = rs[4].data.kinds || [];
@@ -10471,6 +10618,8 @@
             } else openForm(null, c.getAttribute('data-acday'));
           });
         });
+        acApplySelUI();
+        acRenderSelBar();
       }
 
       function renderToolbar() {
@@ -11102,6 +11251,63 @@
         if (!acUsers.length) { load(); setTimeout(function () { openForm(null); }, 600); }
         else openForm(null);
       });
+
+      // Bulk-select wiring: the Select button, the action bar, and
+      // long-press on session items (pointer held ~450ms).
+      var selBtn = document.getElementById('db-select');
+      if (selBtn) selBtn.addEventListener('click', function () {
+        if (acSelMode) acExitSel();
+        else if (acSelAllowed()) { acSelMode = true; acApplySelUI(); acRenderSelBar(); }
+      });
+      var selBar = document.getElementById('ac-selbar');
+      if (selBar) selBar.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('[data-selact]') : null;
+        if (!b) return;
+        var act = b.getAttribute('data-selact');
+        if (act === 'done') acExitSel();
+        else if (act === 'clear') { acSelected.clear(); acApplySelUI(); acRenderSelBar(); }
+        else if (!acSelected.size) pageError('Select at least one session first — tap the sessions to change.');
+        else if (act === 'presenter') acPickPerson('lecturer');
+        else if (act === 'supervisor') acPickPerson('supervisor');
+        else if (act === 'location') acPickLocation();
+      });
+      var dbViewEl = document.getElementById('db-view');
+      if (dbViewEl) {
+        var lpTimer = null, lpX = 0, lpY = 0;
+        dbViewEl.addEventListener('pointerdown', function (e) {
+          if (!acSelAllowed()) return;
+          var item = e.target.closest ? e.target.closest('[data-acedit]') : null;
+          if (!item) return;
+          lpX = e.clientX; lpY = e.clientY;
+          lpTimer = setTimeout(function () {
+            lpTimer = null;
+            acSuppressClick = Date.now() + 700;
+            if (navigator.vibrate) { try { navigator.vibrate(15); } catch (err) {} }
+            if (!acSelMode) acEnterSel(item);
+            else acToggleSel(item);
+          }, 450);
+        });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (t) {
+          dbViewEl.addEventListener(t, function () { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } });
+        });
+        dbViewEl.addEventListener('pointermove', function (e) {
+          if (lpTimer && (Math.abs(e.clientX - lpX) > 10 || Math.abs(e.clientY - lpY) > 10)) { clearTimeout(lpTimer); lpTimer = null; }
+        });
+        dbViewEl.addEventListener('contextmenu', function (e) {
+          if (e.target.closest && e.target.closest('[data-acedit]')) e.preventDefault();
+        });
+        // Capture-phase: while selecting, calendar clicks toggle
+        // instead of opening anything; and the click that follows a
+        // long-press is swallowed (the press already toggled).
+        dbViewEl.addEventListener('click', function (e) {
+          if (Date.now() < acSuppressClick) { e.stopPropagation(); e.preventDefault(); return; }
+          if (!acSelMode) return;
+          e.stopPropagation();
+          e.preventDefault();
+          var item = e.target.closest ? e.target.closest('[data-acedit]') : null;
+          if (item) acToggleSel(item);
+        }, true);
+      }
       var dbDeptFilterEl = document.getElementById('db-dept-filter');
       if (dbDeptFilterEl) dbDeptFilterEl.addEventListener('change', function () { acDeptFilter = dbDeptFilterEl.value; render(); });
       var dbShowFilterEl = document.getElementById('db-show-filter');
@@ -11187,6 +11393,9 @@
       // (opens the edit form), so the button must win before it bubbles.
       var dashTabEl = document.getElementById('tab-dash');
       if (dashTabEl) dashTabEl.addEventListener('click', function (ev) {
+        // While bulk-selecting on a dashboard, taps toggle selection —
+        // never fire a claim/unclaim underneath.
+        if (window.qsDashSelecting && window.qsDashSelecting()) return;
         // Meeting links open in a new tab — never trigger the row's
         // edit-open click underneath them.
         var j = ev.target.closest ? ev.target.closest('a[data-acjoin]') : null;
