@@ -910,7 +910,7 @@
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
           </div>
           <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
-            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 📅 Calendar events
+            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Dashboard events
           </label>
         </div>
       </div>
@@ -1548,7 +1548,7 @@
             else if (sched.myId && e.lecturerUserId === sched.myId) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
             if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
             if (e.meetingUrl) names += '<br><a class="qs-join" href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700;font-size:0.8rem">🔗 Join meeting</a>';
-            return '<div class="shift-grid dash-ev-box" data-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its calendar" style="cursor:pointer">' +
+            return '<div class="shift-grid dash-ev-box" data-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer">' +
               '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
               '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div>' +
               '</div>';
@@ -3522,7 +3522,7 @@
         }
       </style>
       <div class="db-head">
-        <h1 class="db-h1">📅 <span id="db-name">Calendar</span></h1>
+        <h1 class="db-h1">🎓 <span id="db-name">Dashboard</span></h1>
         <div style="display:flex;gap:0.6rem;align-items:center">
           <span class="db-date" id="db-date"></span>
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Kinds</button>
@@ -4047,19 +4047,19 @@
           <button class="subtab-btn" data-subtab="shifts">Shifts</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
           <button class="subtab-btn" data-subtab="team">Team members</button>
-          <button class="subtab-btn" data-subtab="dashboards">Calendars</button>
+          <button class="subtab-btn" data-subtab="dashboards">Dashboards</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
           <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
         </nav>
         <div class="subpanel-container">
           <div id="subtab-dashboards" class="sub-panel">
-            <h3>📅 Calendars</h3>
-            <p class="muted">Each calendar becomes its own tab — for meetings, interviews, sessions and events. People are picked from the team roster.</p>
+            <h3>🎓 Dashboards</h3>
+            <p class="muted">Each dashboard becomes its own tab — a calendar for sessions and events. People are picked from the team roster.</p>
             <div id="dash-list"></div>
-            <h4>Add a calendar</h4>
+            <h4>Add a dashboard</h4>
             <div class="form-row">
-              <input type="text" id="dash-new-name" placeholder="Calendar name (e.g. Meetings, Interviews)" style="max-width:340px">
+              <input type="text" id="dash-new-name" placeholder="Dashboard name (e.g. Teaching, Conferences)" style="max-width:340px">
             </div>
             <div class="form-row">
               <label style="font-weight:600">Departments (leave all unchecked = all departments)</label>
@@ -4069,7 +4069,7 @@
               <label style="font-weight:600">Who can adjust it (leave all unchecked = schedulers who can edit its departments)</label>
               <div id="dash-new-editors" class="checklist" style="display:flex;flex-wrap:wrap;gap:0.5rem"></div>
             </div>
-            <button type="button" class="btn" id="dash-new-save">＋ Add calendar</button>
+            <button type="button" class="btn" id="dash-new-save">＋ Add dashboard</button>
             <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
             <p class="muted">Rooms you can book sessions into. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and the session form will warn you when the room is already booked at that time.</p>
             <div id="room-list"></div>
@@ -8633,7 +8633,7 @@
           else if (me && e.lecturerUserId === me.id) names += '<br><button type="button" class="btn-secondary" data-ms-evunclaim="' + e.id + '" style="padding:0.3rem 0.8rem;font-size:0.8rem">Give it up</button>';
           if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
           if (e.meetingUrl) names += '<br><a class="qs-join" href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700;font-size:0.8rem">🔗 Join meeting</a>';
-          return '<div class="shift-grid" data-ms-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its calendar" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
+          return '<div class="shift-grid" data-ms-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + kindLabel + sub + '</div></div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + names + '</div></div>';
         }
@@ -10062,11 +10062,11 @@
           renderList();
           renderNewDepts();
           renderNewEditors();
-        }).catch(function () { el('dash-list').innerHTML = '<p class="muted">Could not load calendars.</p>'; });
+        }).catch(function () { el('dash-list').innerHTML = '<p class="muted">Could not load dashboards.</p>'; });
       }
       function renderList() {
         var wrap = el('dash-list');
-        if (!dashes.length) { wrap.innerHTML = '<p class="muted">No calendars yet.</p>'; return; }
+        if (!dashes.length) { wrap.innerHTML = '<p class="muted">No dashboards yet.</p>'; return; }
         wrap.innerHTML = dashes.map(function (d) {
           var names = d.departmentIds.length
             ? depts.filter(function (x) { return d.departmentIds.includes(x.id); }).map(function (x) { return esc(x.name); }).join(', ')
@@ -10090,7 +10090,7 @@
             '</div><div style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">' + esc(names) + (edNames ? ' · Adjusted by: ' + esc(edNames) : '') + '</div>' +
             '<div style="margin-top:0.5rem;font-size:0.85rem"><label style="font-weight:600">Departments:</label> ' + (boxes || '<span class="muted">none</span>') + '</div>' +
             '<div style="margin-top:0.5rem;font-size:0.85rem"><label style="font-weight:600">Who can adjust it:</label> ' + (editorBoxes || '<span class="muted">No schedulers yet</span>') +
-            '<div style="color:var(--dim);font-size:0.8rem;margin-top:0.2rem">Leave all unchecked = any scheduler who can edit its departments can adjust this calendar. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div></div>';
+            '<div style="color:var(--dim);font-size:0.8rem;margin-top:0.2rem">Leave all unchecked = any scheduler who can edit its departments can adjust this dashboard. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div></div>';
         }).join('');
         wrap.querySelectorAll('[data-dash-save]').forEach(function (b) {
           b.addEventListener('click', function () {
@@ -10101,7 +10101,7 @@
             var editorIds = Array.prototype.map.call(
               wrap.querySelectorAll('[data-dash-edit-editor="' + id + '"]:checked'), function (c) { return c.value; });
             api('/api/schedule/dashboards/' + id, { method: 'PUT', body: JSON.stringify({ name: name, departmentIds: deptIds, editorIds: editorIds }) }).then(function (r) {
-              if (r.ok) { pageSuccess('Calendar updated.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
+              if (r.ok) { pageSuccess('Dashboard updated.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
               else pageError((r.data && r.data.error) || 'Could not save.');
             });
           });
@@ -10109,9 +10109,9 @@
         wrap.querySelectorAll('[data-dash-del]').forEach(function (b) {
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-dash-del');
-            if (!confirm('Delete this calendar? Its sessions will stay but lose this calendar.')) return;
+            if (!confirm('Delete this dashboard? Its sessions will stay but lose this dashboard.')) return;
             api('/api/schedule/dashboards/' + id, { method: 'DELETE' }).then(function (r) {
-              if (r.ok) { pageSuccess('Calendar deleted.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
+              if (r.ok) { pageSuccess('Dashboard deleted.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
               else pageError((r.data && r.data.error) || 'Could not delete.');
             });
           });
@@ -10178,12 +10178,12 @@
       var save = el('dash-new-save');
       if (save) save.addEventListener('click', function () {
         var name = el('dash-new-name').value.trim();
-        if (!name) { pageError('Give the calendar a name.'); return; }
+        if (!name) { pageError('Give the dashboard a name.'); return; }
         var deptIds = Array.prototype.map.call(document.querySelectorAll('.dash-new-dept:checked'), function (c) { return c.value; });
         var editorIds = Array.prototype.map.call(document.querySelectorAll('.dash-new-editor:checked'), function (c) { return c.value; });
         api('/api/schedule/dashboards', { method: 'POST', body: JSON.stringify({ name: name, departmentIds: deptIds, editorIds: editorIds }) }).then(function (r) {
           if (r.ok) {
-            pageSuccess('Calendar added — check your tabs.');
+            pageSuccess('Dashboard added — check your tabs.');
             el('dash-new-name').value = '';
             document.querySelectorAll('.dash-new-dept:checked, .dash-new-editor:checked').forEach(function (c) { c.checked = false; });
             load();
@@ -10278,13 +10278,13 @@
           var nav = document.getElementById('dash-nav');
           if (nav) {
             nav.innerHTML = dashList.map(function (d) {
-              return '<button class="tab-btn" data-tab="dash/' + d.id + '">📅 ' + esc(d.name) + '</button>';
+              return '<button class="tab-btn" data-tab="dash/' + d.id + '">🎓 ' + esc(d.name) + '</button>';
             }).join('');
           }
           var navEmp = document.getElementById('dash-nav-emp');
           if (navEmp) {
             navEmp.innerHTML = dashList.map(function (d) {
-              return '<button type="button" class="tab-btn" data-etab="dash/' + d.id + '">📅 ' + esc(d.name) + '</button>';
+              return '<button type="button" class="tab-btn" data-etab="dash/' + d.id + '">🎓 ' + esc(d.name) + '</button>';
             }).join('');
           }
           return dashList;
@@ -10322,7 +10322,7 @@
           api('/api/schedule/session-kinds?dashboardId=' + curDash.id),
           api('/api/schedule/session-kinds'),
         ]).then(function (rs) {
-          if (!rs[0].ok) { pageError('Could not load this calendar.'); return; }
+          if (!rs[0].ok) { pageError('Could not load this dashboard.'); return; }
           acSessions = rs[0].data.sessions || [];
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
@@ -10355,7 +10355,7 @@
           }
           if (rs[5] && rs[5].ok) window.qsKinds = rs[5].data.kinds || [];
           render();
-        }).catch(function () { pageError('Could not load this calendar.'); });
+        }).catch(function () { pageError('Could not load this dashboard.'); });
       }
 
       function chipColor(s) { return kindColor(s.kind); }
@@ -10966,7 +10966,7 @@
           var nameVal = keepName != null ? keepName : ((m.querySelector('#km-name') || {}).value || '');
           m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:480px;max-height:90vh;overflow-y:auto">' +
             '<h2 style="margin-top:0">🏷️ Session kinds — ' + esc(curDash.name) + '</h2>' +
-            '<p style="color:var(--dim);font-size:0.9rem;margin-top:0">Kinds for this calendar only. They appear in its Add session form and Kind filter.</p>' +
+            '<p style="color:var(--dim);font-size:0.9rem;margin-top:0">Kinds for this dashboard only. They appear in its Add session form and Kind filter.</p>' +
             (acKinds.length ? acKinds.map(function (k) {
               return '<div style="display:flex;align-items:center;gap:0.6rem;border:1px solid var(--border);border-radius:10px;padding:0.55rem 0.8rem;margin-bottom:0.5rem"><span style="width:14px;height:14px;border-radius:50%;background:' + esc(k.color) + ';flex:none"></span><strong>' + esc(k.label) + '</strong><button type="button" data-km-del="' + k.id + '" style="margin-left:auto;padding:0.35rem 0.75rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></div>';
             }).join('') : '<p style="color:var(--dim)">No kinds yet.</p>') +
@@ -11073,7 +11073,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Calendar', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
