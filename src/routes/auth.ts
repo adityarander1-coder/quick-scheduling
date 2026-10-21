@@ -190,10 +190,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         passwordHash,
       ]
     );
-    // Every new company starts with one default "Academic" dashboard.
+    // Every new company starts with one default "General" calendar.
     await query(
       'INSERT INTO dashboards (company_id, name, created_by) VALUES ($1, $2, $3)',
-      [companyId, 'Academic', userId]
+      [companyId, 'General', userId]
     );
 
     await setSession(req, userId, companyId, 'owner');

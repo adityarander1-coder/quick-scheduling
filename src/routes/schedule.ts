@@ -5389,7 +5389,7 @@ async function sessionEditCheck(req: Request, res: Response, dashboardId: string
     const editors = await dashboardEditorIds(dashboardId);
     if (editors.length) {
       if (editors.includes(req.session.userId!)) return true;
-      res.status(403).json({ error: 'Only the editors chosen for this dashboard can change its sessions.' });
+      res.status(403).json({ error: 'Only the editors chosen for this calendar can change its sessions.' });
       return false;
     }
   }
@@ -5465,7 +5465,7 @@ router.post('/dashboards', requireRole('owner'), async (req: Request, res: Respo
   try {
     const companyId = req.session.companyId!;
     const name = String(req.body?.name || '').trim();
-    if (!name) { res.status(400).json({ error: 'Give the dashboard a name.' }); return; }
+    if (!name) { res.status(400).json({ error: 'Give the calendar a name.' }); return; }
     const deptIds = await validateDashboardDepts(companyId, req.body?.departmentIds);
     if (!deptIds) { res.status(400).json({ error: 'One or more departments are invalid.' }); return; }
     const editorIds = await validateDashboardEditors(companyId, req.body?.editorIds);
@@ -5491,7 +5491,7 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
   try {
     const companyId = req.session.companyId!;
     const name = req.body?.name !== undefined ? String(req.body.name).trim() : undefined;
-    if (name !== undefined && !name) { res.status(400).json({ error: 'Give the dashboard a name.' }); return; }
+    if (name !== undefined && !name) { res.status(400).json({ error: 'Give the calendar a name.' }); return; }
     let deptIds: string[] | null = null;
     if (req.body?.departmentIds !== undefined) {
       deptIds = await validateDashboardDepts(companyId, req.body.departmentIds);
@@ -5503,7 +5503,7 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
       if (!editorIds) { res.status(400).json({ error: 'One or more editors are invalid.' }); return; }
     }
     const { rows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
-    if (!rows.length) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (!rows.length) { res.status(404).json({ error: 'Calendar not found.' }); return; }
     if (name !== undefined) await query('UPDATE dashboards SET name = $1 WHERE id = $2', [name, req.params.id]);
     if (deptIds !== null) {
       await query('DELETE FROM dashboard_departments WHERE dashboard_id = $1', [req.params.id]);
@@ -5529,7 +5529,7 @@ router.delete('/dashboards/:id', requireRole('owner'), async (req: Request, res:
   try {
     const companyId = req.session.companyId!;
     const { rowCount } = await query('DELETE FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
-    if (!rowCount) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (!rowCount) { res.status(404).json({ error: 'Calendar not found.' }); return; }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] dashboard delete failed:', err);
@@ -5770,7 +5770,7 @@ router.get('/session-kinds', requireRole('owner', 'scheduler', 'employee'), asyn
     const dashId = req.query.dashboardId ? String(req.query.dashboardId) : null;
     if (dashId) {
       const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashId, companyId]);
-      if (!d.length) { res.status(404).json({ error: 'Unknown dashboard.' }); return; }
+      if (!d.length) { res.status(404).json({ error: 'Unknown calendar.' }); return; }
       await ensureKinds(companyId, dashId);
       const { rows } = await query('SELECT * FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 ORDER BY position, label', [companyId, dashId]);
       res.json({ kinds: rows.map(kindRow) });
@@ -5791,17 +5791,17 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
     const companyId = req.session.companyId!;
     const b = req.body ?? {};
     const dashboardId = b.dashboardId ? String(b.dashboardId) : null;
-    if (!dashboardId) { res.status(400).json({ error: 'Kinds live on a dashboard — open the dashboard and add the kind there.' }); return; }
+    if (!dashboardId) { res.status(400).json({ error: 'Kinds live on a calendar — open the calendar and add the kind there.' }); return; }
     const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
-    if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
-    if (!(await dashboardEditAllowed(req, dashboardId))) { res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return; }
+    if (!d.length) { res.status(400).json({ error: 'Unknown calendar.' }); return; }
+    if (!(await dashboardEditAllowed(req, dashboardId))) { res.status(403).json({ error: 'Only this calendar\'s editors can change its kinds.' }); return; }
     await ensureKinds(companyId, dashboardId);
     const label = String(b.label || '').trim();
     if (!label) { res.status(400).json({ error: 'A name is required.' }); return; }
     if (label.length > 40) { res.status(400).json({ error: 'That name is too long (40 characters max).' }); return; }
     const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color) : '#00796b';
     const { rows: dup } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND lower(label) = lower($3)', [companyId, dashboardId, label]);
-    if (dup.length) { res.status(400).json({ error: 'This dashboard already has a kind with that name.' }); return; }
+    if (dup.length) { res.status(400).json({ error: 'This calendar already has a kind with that name.' }); return; }
     let key = slugifyKind(label);
     const { rows: existing } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
     const keys = new Set(existing.map((r: any) => r.key));
@@ -5825,7 +5825,7 @@ router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (re
     const { rows } = await query('SELECT dashboard_id FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (rows[0].dashboard_id && !(await dashboardEditAllowed(req, rows[0].dashboard_id))) {
-      res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return;
+      res.status(403).json({ error: 'Only this calendar\'s editors can change its kinds.' }); return;
     }
     await query('DELETE FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
     res.json({ ok: true });
@@ -5996,7 +5996,7 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     let dashboardId: string | null = null;
     if (b.dashboardId) {
       const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
-      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      if (!dRows.length) { res.status(400).json({ error: 'Unknown calendar.' }); return; }
       dashboardId = String(b.dashboardId);
     }
     if (!(await sessionEditCheck(req, res, dashboardId, departmentId))) return;
@@ -6116,7 +6116,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     if (b.dashboardId !== undefined) {
       if (b.dashboardId) {
         const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
-        if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+        if (!dRows.length) { res.status(400).json({ error: 'Unknown calendar.' }); return; }
         dashboardId = String(b.dashboardId);
       } else dashboardId = null;
     }
