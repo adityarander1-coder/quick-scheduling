@@ -5722,6 +5722,69 @@ const DEFAULT_KINDS = [
   { key: 'event', label: 'Event', color: '#7c3aed', position: 1 },
 ];
 
+// ---------- Per-date overrides for recurring sessions ----------
+// A series keeps the defaults; an override row individualizes one
+// date (own presenter / supervisor / room / link / times, or a
+// cancelled date). has_* flags separate "set (maybe to null)" from
+// "not overridden".
+function ovDateStr(d: any): string {
+  return d instanceof Date ? d.toISOString().slice(0, 10) : String(d);
+}
+
+async function loadOverrides(companyId: string, sessionIds: string[], from: string, to: string): Promise<Map<string, any>> {
+  const map = new Map<string, any>();
+  if (!sessionIds.length) return map;
+  const { rows } = await query(
+    'SELECT * FROM academic_session_overrides WHERE company_id = $1 AND session_id = ANY($2) AND date >= $3 AND date <= $4',
+    [companyId, sessionIds, from, to]);
+  for (const o of rows) map.set(o.session_id + '|' + ovDateStr(o.date), o);
+  return map;
+}
+
+function applyOverride(base: any, ov: any, userName: Map<string, string>): any {
+  const out = { ...base, hasOverride: true };
+  if (ov.has_lecturer) {
+    out.lecturerUserId = ov.lecturer_user_id;
+    out.lecturerName = ov.lecturer_user_id ? (userName.get(ov.lecturer_user_id) || '—') : null;
+  }
+  if (ov.has_supervisor) {
+    out.supervisorUserId = ov.supervisor_user_id;
+    out.supervisorName = ov.supervisor_user_id ? (userName.get(ov.supervisor_user_id) || null) : null;
+  }
+  if (ov.has_location) out.location = ov.location;
+  if (ov.has_meeting_url) out.meetingUrl = ov.meeting_url;
+  if (ov.has_times) { out.startTime = ov.start_time; out.endTime = ov.end_time; }
+  return out;
+}
+
+// Upsert the override row for one date, touching only the given
+// columns (keys of `fields` are column names; values may be null).
+async function upsertOverride(companyId: string, sessionId: string, date: string, fields: Record<string, any>): Promise<void> {
+  const cols = Object.keys(fields);
+  if (!cols.length) return;
+  const insertCols = ['company_id', 'session_id', 'date', ...cols];
+  const values = [companyId, sessionId, date, ...cols.map((c) => fields[c])];
+  const placeholders = insertCols.map((_, i) => '$' + (i + 1)).join(', ');
+  const updates = cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ');
+  await query(
+    `INSERT INTO academic_session_overrides (${insertCols.join(', ')}) VALUES (${placeholders})
+     ON CONFLICT (session_id, date) DO UPDATE SET ${updates}, updated_at = now()`,
+    values);
+}
+
+async function getOverride(sessionId: string, date: string): Promise<any | null> {
+  const { rows } = await query('SELECT * FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [sessionId, date]);
+  return rows[0] || null;
+}
+
+// Effective presenter/supervisor of one date of a series.
+function effectivePeople(cur: any, ov: any | null): { lecturer: string | null; supervisor: string | null } {
+  return {
+    lecturer: ov && ov.has_lecturer ? ov.lecturer_user_id : cur.lecturer_user_id,
+    supervisor: ov && ov.has_supervisor ? ov.supervisor_user_id : cur.supervisor_user_id,
+  };
+}
+
 async function ensureKinds(companyId: string, dashboardId: string) {
   const { rows } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 LIMIT 1', [companyId, dashboardId]);
   if (!rows.length) {
@@ -5869,6 +5932,13 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
        WHERE ${clauses.join(' AND ')}
        ORDER BY s.session_date, s.start_time NULLS LAST, s.title`,
       params);
+    let ovMap = new Map<string, any>();
+    const userName = new Map<string, string>();
+    if (from && to && rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
+      ovMap = await loadOverrides(companyId, rows.map((r: any) => r.id), from, to);
+      const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
+      for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+    }
     const out: any[] = [];
     for (const r of rows) {
       const base = academicRow(r);
@@ -5888,9 +5958,12 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
         occCount++;
         const ds = d.toISOString().slice(0, 10);
         if (ds >= from && ds <= to) {
-          out.push(ds === base.date
+          const ov = ovMap.get(base.id + '|' + ds);
+          if (ov && ov.cancelled) return occCount < maxCount; // this date is cancelled on its own
+          const occ0 = ds === base.date
             ? { ...base, seriesId: base.id }
-            : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true });
+            : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true };
+          out.push(ov ? applyOverride(occ0, ov, userName) : occ0);
         }
         return occCount < maxCount;
       };
@@ -6046,6 +6119,34 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       res.status(403).json({ error: 'You do not have access to this session.' }); return;
     }
     const col = String(req.body?.role || '') === 'supervisor' ? 'supervisor_user_id' : 'lecturer_user_id';
+    const isSup = col === 'supervisor_user_id';
+    // Per-date pickup: a recurring session claimed WITH a date
+    // claims only that date (override row), never the whole series.
+    const occDate = req.body?.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date)) ? String(req.body.date) : null;
+    if (occDate && cur.recur_rule && cur.recur_rule !== 'none') {
+      const ov = await getOverride(seriesId, occDate);
+      if (ov && ov.cancelled) { res.status(409).json({ error: 'This date is cancelled.' }); return; }
+      const eff = effectivePeople(cur, ov);
+      const holder = isSup ? eff.supervisor : eff.lecturer;
+      if (holder) {
+        if (holder === req.session.userId) { res.json({ ok: true, already: true }); return; }
+        res.status(409).json({ error: 'Someone already picked this up.' }); return;
+      }
+      const flag = isSup ? 'has_supervisor' : 'has_lecturer';
+      await query('INSERT INTO academic_session_overrides (company_id, session_id, date) VALUES ($1, $2, $3) ON CONFLICT (session_id, date) DO NOTHING', [companyId, seriesId, occDate]);
+      const upd2 = await query(
+        `UPDATE academic_session_overrides SET ${col} = $1, ${flag} = true, updated_at = now()
+         WHERE session_id = $2 AND date = $3 AND ${col} IS NULL`,
+        [req.session.userId!, seriesId, occDate]);
+      if (!upd2.rowCount) {
+        const ov2 = await getOverride(seriesId, occDate);
+        const nowHolder = ov2 ? (isSup ? ov2.supervisor_user_id : ov2.lecturer_user_id) : null;
+        if (nowHolder === req.session.userId) { res.json({ ok: true, already: true }); return; }
+        res.status(409).json({ error: 'Someone already picked this up.' }); return;
+      }
+      res.json({ ok: true });
+      return;
+    }
     if (cur[col]) {
       if (cur[col] === req.session.userId) { res.json({ ok: true, already: true }); return; }
       res.status(409).json({ error: 'Someone already picked this up.' }); return;
@@ -6071,6 +6172,19 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    const occDateU = req.body?.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date)) ? String(req.body.date) : null;
+    if (occDateU && cur.recur_rule && cur.recur_rule !== 'none') {
+      const ov = await getOverride(seriesId, occDateU);
+      const eff = effectivePeople(cur, ov);
+      if (!eff.lecturer) { res.json({ ok: true }); return; }
+      if (eff.lecturer !== req.session.userId) {
+        if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
+        if (!(await academicDeptCheck(req, res, cur.department_id))) return;
+      }
+      await upsertOverride(companyId, seriesId, occDateU, { has_lecturer: true, lecturer_user_id: null });
+      res.json({ ok: true });
+      return;
+    }
     if (!cur.lecturer_user_id) { res.json({ ok: true }); return; }
     if (cur.lecturer_user_id !== req.session.userId) {
       if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
@@ -6080,6 +6194,26 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session unclaim failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/academic-sessions/:id/overrides/:date —
+// reset one date back to the series defaults (owner or scheduler).
+router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const seriesId = String(req.params.id).split('@@')[0];
+    const date = String(req.params.date);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A valid date is required.' }); return; }
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const cur = rows[0];
+    if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
+    await query('DELETE FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [seriesId, date]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] session override delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -6096,6 +6230,41 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     const departmentId = b.departmentId !== undefined ? (b.departmentId ? String(b.departmentId) : null) : cur.department_id;
     const targetDashboardId = b.dashboardId !== undefined ? (b.dashboardId ? String(b.dashboardId) : null) : cur.dashboard_id;
     if (!(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
+    // One-date change: write an override for a single date of a
+    // recurring series instead of touching the series itself.
+    if (String(b.scope || '') === 'date') {
+      const occDate = b.date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.date)) ? String(b.date) : null;
+      if (!occDate) { res.status(400).json({ error: 'A date is required for a one-date change.' }); return; }
+      if (!cur.recur_rule || cur.recur_rule === 'none') { res.status(400).json({ error: 'This session does not repeat.' }); return; }
+      if (b.cancelled === true) {
+        await upsertOverride(companyId, seriesId, occDate, { cancelled: true });
+        res.json({ ok: true, scope: 'date', cancelled: true });
+        return;
+      }
+      for (const key of ['lecturerUserId', 'supervisorUserId']) {
+        if (b[key]) {
+          const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b[key], companyId]);
+          if (!lu.length) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
+        }
+      }
+      const fields: Record<string, any> = { cancelled: false };
+      if (b.lecturerUserId !== undefined) { fields.has_lecturer = true; fields.lecturer_user_id = b.lecturerUserId ? String(b.lecturerUserId) : null; }
+      if (b.supervisorUserId !== undefined) { fields.has_supervisor = true; fields.supervisor_user_id = b.supervisorUserId ? String(b.supervisorUserId) : null; }
+      if (b.location !== undefined) { fields.has_location = true; fields.location = b.location ? String(b.location).trim() : null; }
+      if (b.meetingUrl !== undefined) {
+        const cm = cleanMeetingUrl(b.meetingUrl);
+        if ('error' in cm) { res.status(400).json({ error: cm.error }); return; }
+        fields.has_meeting_url = true; fields.meeting_url = cm.url;
+      }
+      if (b.startTime !== undefined || b.endTime !== undefined) {
+        fields.has_times = true;
+        fields.start_time = b.startTime ? String(b.startTime) : null;
+        fields.end_time = b.endTime ? String(b.endTime) : null;
+      }
+      await upsertOverride(companyId, seriesId, occDate, fields);
+      res.json({ ok: true, scope: 'date' });
+      return;
+    }
     if (b.lecturerUserId) {
       const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
       if (!lu.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }

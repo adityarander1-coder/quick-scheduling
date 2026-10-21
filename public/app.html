@@ -8950,7 +8950,9 @@
 
         // Presenter pickup for dashboard sessions, from My Schedule.
         function claimSession(id, isClaim) {
-          api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (isClaim ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
+          var evx = (dashEvents || []).find(function (x) { return x.id === id; });
+          var cbody = (evx && evx.recurRule && evx.recurRule !== 'none' && evx.date) ? JSON.stringify({ date: evx.date }) : undefined;
+          api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (isClaim ? '/claim' : '/unclaim'), { method: 'POST', body: cbody }).then(function (r) {
             if (r.ok) {
               msSuccess(isClaim ? 'You are now the presenter.' : 'Presenter slot released.');
               var modalDate = msDayModalDate;
@@ -10585,6 +10587,7 @@
           var rows = '' +
             '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem"><span style="width:12px;height:12px;border-radius:50%;background:' + color + ';flex:none"></span><strong>' + esc(kindLabel) + '</strong>' +
             ((e.recurRule && e.recurRule !== 'none') || e.isOccurrence ? '<span class="ac-recur-badge">Repeats</span>' : '') + '</div>' +
+            (e.hasOverride ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.4rem 0.6rem;font-size:0.85rem;color:#6d28d9;margin-bottom:0.5rem">✏️ This date has its own details — it does not follow the series.</div>' : '') +
             '<h2 style="margin:0 0 0.6rem;font-size:1.25rem">' + esc(e.title) + '</h2>' +
             '<div style="display:grid;gap:0.45rem;font-size:0.95rem">' +
             '<div>📅 ' + esc(dateTxt) + '</div>' +
@@ -10610,7 +10613,9 @@
             b.addEventListener('click', function () {
               var role = b.getAttribute('data-sd-claim');
               b.disabled = true;
-              api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/claim', { method: 'POST', body: JSON.stringify({ role: role }) }).then(function (r) {
+              var pbody = { role: role };
+              if (e.recurRule && e.recurRule !== 'none' && e.date) pbody.date = e.date;
+              api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/claim', { method: 'POST', body: JSON.stringify(pbody) }).then(function (r) {
                 if (r.ok) {
                   pageSuccess(role === 'supervisor' ? 'You are now the supervisor.' : 'You are now the presenter.');
                   close();
@@ -10638,6 +10643,9 @@
             s = acSessions.find(function (x) { return x.id === found.seriesId; }) || found;
           } else s = found;
         }
+        var occ = (typeof found !== 'undefined' && found) ? found : null;
+        var isSeries = !!(s && s.recurRule && s.recurRule !== 'none');
+        var occDate = isSeries && occ ? occ.date : (s ? s.date : null);
         var old = document.getElementById('ac-modal');
         if (old) old.remove();
         var dashDepts = curDash && curDash.departmentIds && curDash.departmentIds.length ? acDepts.filter(function (d) { return curDash.departmentIds.includes(d.id); }) : acDepts;
@@ -10666,7 +10674,7 @@
         var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
         m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">' +
           '<h2 style="margin-top:0">' + (s ? 'Edit session' : 'Add session') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
-          (s && rule !== 'none' ? '<p style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.5rem 0.7rem;font-size:0.85rem">↻ This session is on a rotation — changes apply to every date in the rotation.</p>' : '') +
+          (s && rule !== 'none' ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.6rem 0.7rem;font-size:0.88rem;margin-bottom:0.7rem"><div style="font-weight:700;margin-bottom:0.35rem">↻ This session repeats — what are you changing?</div><label style="display:block;cursor:pointer;margin-bottom:0.25rem"><input type="radio" name="acf-scope" value="date" checked> Just this date (<span id="acf-scope-dlabel"></span>)</label><label style="display:block;cursor:pointer"><input type="radio" name="acf-scope" value="series"> The whole series — every date</label><div id="acf-scope-note" style="margin-top:0.35rem;color:#6d28d9"></div></div>' : '') +
           '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
           '<label style="display:block;margin-bottom:0.7rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
             var list = acKinds.length ? acKinds : [{ key: 'session', label: 'Lecture' }, { key: 'event', label: 'Event' }];
@@ -10691,7 +10699,7 @@
             '<div id="acf-cands" style="margin-top:0.6rem"></div>' +
           '</div>' +
           '<label style="display:block;margin-bottom:0.7rem">Start date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="' + IN + '"></label>' +
-          '<div style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Rotation</div>' +
+          '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Rotation</div>' +
           '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
           '<div id="acf-everyrow" style="display:none;margin-bottom:0.6rem"><label>Every <input id="acf-interval" type="number" min="1" max="52" value="' + interval0 + '" style="width:4.5rem;padding:0.45rem;border:1px solid var(--border);border-radius:8px"> <span id="acf-unit">weeks</span></label></div>' +
           '<div id="acf-daysrow" style="display:none;margin-bottom:0.6rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
@@ -10716,6 +10724,7 @@
           '<label style="display:block;margin-bottom:1rem">🔗 Meeting link (Zoom / Teams)<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom or Teams meeting link" style="' + IN + '"></label>' +
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
           '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-save">Save</button></div>' +
+          (s && rule !== 'none' ? '<div id="acf-daterow" style="display:none;margin-top:0.7rem"><button type="button" id="acf-canceldate" style="width:100%;padding:0.6rem;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;cursor:pointer">🚫 Cancel just this date</button><button type="button" id="acf-resetdate" style="display:none;width:100%;margin-top:0.5rem;padding:0.6rem;border-radius:10px;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;cursor:pointer">↩ Reset this date to the series defaults</button></div>' : '') +
           (s ? '<button type="button" id="acf-dup" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer">⧉ Duplicate on the same day</button>' : '') +
           (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
@@ -10744,6 +10753,55 @@
         m.querySelector('#acf-fdept').addEventListener('change', applyFilters);
         m.querySelector('#acf-frole').addEventListener('change', applyFilters);
         applyFilters();
+
+        // Per-date scope for recurring series (Deepika, 2026-10-20):
+        // "this date only" writes an override — the series keeps its
+        // defaults and other dates don't change.
+        function scopeVal() { var r = m.querySelector('input[name="acf-scope"]:checked'); return r ? r.value : 'series'; }
+        function applyScope() {
+          if (!isSeries) return;
+          var dateScope = scopeVal() === 'date';
+          var src = dateScope ? (occ || s) : s;
+          lecSel.value = (src && src.lecturerUserId) || '';
+          supSel.value = (src && src.supervisorUserId) || '';
+          var st = m.querySelector('#acf-start'); if (st) st.value = (src && src.startTime) || '';
+          var en = m.querySelector('#acf-end'); if (en) en.value = (src && src.endTime) || '';
+          var lc = m.querySelector('#acf-loc'); if (lc) lc.value = (src && src.location) || '';
+          var mt = m.querySelector('#acf-meeting'); if (mt) mt.value = (src && src.meetingUrl) || '';
+          ['#acf-title', '#acf-kind', '#acf-dept', '#acf-date', '#acf-notes'].forEach(function (sel) { var el = m.querySelector(sel); if (el) el.disabled = dateScope; });
+          var rot = m.querySelector('#acf-rotation'); if (rot) rot.style.display = dateScope ? 'none' : '';
+          var dp2 = m.querySelector('#acf-dup'); if (dp2) dp2.style.display = dateScope ? 'none' : '';
+          var dl2 = m.querySelector('#acf-del'); if (dl2) dl2.style.display = dateScope ? 'none' : '';
+          var dr = m.querySelector('#acf-daterow'); if (dr) dr.style.display = dateScope ? '' : 'none';
+          var note = m.querySelector('#acf-scope-note');
+          if (note) note.textContent = dateScope && occ && occ.hasOverride ? 'This date has its own changes saved — they stay even if the series changes.' : '';
+          var rs = m.querySelector('#acf-resetdate'); if (rs) rs.style.display = dateScope && occ && occ.hasOverride ? '' : 'none';
+        }
+        if (isSeries) {
+          var dlbl = m.querySelector('#acf-scope-dlabel');
+          if (dlbl) {
+            var pp9 = String(occDate || '').split('-');
+            dlbl.textContent = pp9.length === 3 ? new Date(+pp9[0], +pp9[1] - 1, +pp9[2]).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : occDate;
+          }
+          Array.prototype.forEach.call(m.querySelectorAll('input[name="acf-scope"]'), function (r) { r.addEventListener('change', applyScope); });
+          applyScope();
+          var cdBtn = m.querySelector('#acf-canceldate');
+          if (cdBtn) cdBtn.addEventListener('click', function () {
+            if (!confirm('Cancel just this date? The rest of the series stays.')) return;
+            api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify({ scope: 'date', date: occDate, cancelled: true }) }).then(function (r) {
+              if (r.ok) { m.remove(); pageSuccess('That date is cancelled — the series continues.'); load(); }
+              else pageError((r.data && r.data.error) || 'Could not cancel that date.');
+            }).catch(function () { pageError('Could not cancel that date.'); });
+          });
+          var rdBtn = m.querySelector('#acf-resetdate');
+          if (rdBtn) rdBtn.addEventListener('click', function () {
+            if (!confirm('Reset this date to the series defaults? Its own changes will be removed.')) return;
+            api('/api/schedule/academic-sessions/' + (s.seriesId || s.id) + '/overrides/' + occDate, { method: 'DELETE' }).then(function (r) {
+              if (r.ok) { m.remove(); pageSuccess('This date now follows the series again.'); load(); }
+              else pageError((r.data && r.data.error) || 'Could not reset that date.');
+            }).catch(function () { pageError('Could not reset that date.'); });
+          });
+        }
 
         // Shift types for the auto-assign picker (lazy, cached).
         function fillShifts() {
@@ -10984,6 +11042,22 @@
           };
         }
         m.querySelector('#acf-save').addEventListener('click', function () {
+          if (isSeries && scopeVal() === 'date') {
+            var dpayload = {
+              scope: 'date', date: occDate,
+              lecturerUserId: lecSel.value || null,
+              supervisorUserId: supSel.value || null,
+              location: m.querySelector('#acf-loc').value.trim() || null,
+              meetingUrl: m.querySelector('#acf-meeting').value.trim() || null,
+              startTime: m.querySelector('#acf-start').value || null,
+              endTime: m.querySelector('#acf-end').value || null
+            };
+            api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify(dpayload) }).then(function (r) {
+              if (r.ok) { m.remove(); pageSuccess('Saved for this date only.'); load(); }
+              else pageError((r.data && r.data.error) || 'Could not save.');
+            }).catch(function () { pageError('Could not save.'); });
+            return;
+          }
           var payload = readPayload();
           if (!payload.title) { pageError('A title is required.'); return; }
           if (!payload.date) { pageError('Pick a start date.'); return; }
@@ -11123,7 +11197,9 @@
         ev.stopPropagation();
         ev.preventDefault();
         var id = (c || u).getAttribute(c ? 'data-acclaim' : 'data-acunclaim');
-        api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
+        var sref = acSessions.find(function (x) { return x.id === id; });
+        var dbody = (sref && sref.recurRule && sref.recurRule !== 'none' && sref.date) ? JSON.stringify({ date: sref.date }) : undefined;
+        api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST', body: dbody }).then(function (r) {
           if (r.ok) load();
           else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
         });
