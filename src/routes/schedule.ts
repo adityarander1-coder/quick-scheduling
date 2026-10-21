@@ -5363,7 +5363,11 @@ async function visibleDashboardIds(req: Request): Promise<string[] | null> {
   const companyId = req.session.companyId!;
   const deptIds = await academicVisibleDeptIds(req);
   if (deptIds === null) return null; // owner sees everything
-  if (deptIds.length === 0) return [];
+  // No early return for an empty deptIds: a dashboard with NO department
+  // restriction is visible to everyone (the loop's first condition) —
+  // a team member without a department (or a scheduler with no view
+  // access yet) still gets those dashboards. (Bug found 2026-10-20:
+  // returning [] here hid every dashboard from dept-less employees.)
   const { rows } = await query('SELECT id FROM dashboards WHERE company_id = $1', [companyId]);
   const out: string[] = [];
   for (const r of rows) {
@@ -5648,27 +5652,27 @@ const DEFAULT_KINDS = [
   { key: 'event', label: 'Event', color: '#7c3aed', position: 1 },
 ];
 
-async function ensureKinds(companyId: string) {
-  const { rows } = await query('SELECT id FROM session_kinds WHERE company_id = $1 LIMIT 1', [companyId]);
+async function ensureKinds(companyId: string, dashboardId: string) {
+  const { rows } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 LIMIT 1', [companyId, dashboardId]);
   if (!rows.length) {
     for (const k of DEFAULT_KINDS) {
       await query(
-        'INSERT INTO session_kinds (id, company_id, key, label, color, position) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (company_id, key) DO NOTHING',
-        [crypto.randomUUID(), companyId, k.key, k.label, k.color, k.position]);
+        'INSERT INTO session_kinds (id, company_id, dashboard_id, key, label, color, position) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (dashboard_id, key) DO NOTHING',
+        [crypto.randomUUID(), companyId, dashboardId, k.key, k.label, k.color, k.position]);
     }
   }
 }
 
 function kindRow(r: any) {
-  return { id: r.id, key: r.key, label: r.label, color: r.color || '#00796b' };
+  return { id: r.id, key: r.key, label: r.label, color: r.color || '#00796b', dashboardId: r.dashboard_id || null };
 }
 
-// A posted kind key is valid when the company has it (or it's a built-in).
-async function cleanKind(companyId: string, raw: any): Promise<string> {
+// A posted kind key is valid when the session's dashboard has it.
+async function cleanKind(companyId: string, dashboardId: string | null, raw: any): Promise<string> {
   const key = String(raw || '').trim().toLowerCase();
   if (!key) return 'session';
-  if (key === 'session' || key === 'event') return key;
-  const { rows } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND key = $2', [companyId, key]);
+  if (!dashboardId) return key === 'event' ? 'event' : 'session';
+  const { rows } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND key = $3', [companyId, dashboardId, key]);
   return rows.length ? key : 'session';
 }
 
@@ -5686,11 +5690,22 @@ function slugifyKind(label: string): string {
   return s || 'kind';
 }
 
-// GET /api/schedule/session-kinds — all roles.
+// GET /api/schedule/session-kinds — all roles. With ?dashboardId=,
+// that dashboard's kinds (seeded with Lecture/Event on first use).
+// Without, every kind in the company (each row carries its dashboardId)
+// so aggregated views can resolve labels/colors per dashboard.
 router.get('/session-kinds', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    await ensureKinds(companyId);
+    const dashId = req.query.dashboardId ? String(req.query.dashboardId) : null;
+    if (dashId) {
+      const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashId, companyId]);
+      if (!d.length) { res.status(404).json({ error: 'Unknown dashboard.' }); return; }
+      await ensureKinds(companyId, dashId);
+      const { rows } = await query('SELECT * FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 ORDER BY position, label', [companyId, dashId]);
+      res.json({ kinds: rows.map(kindRow) });
+      return;
+    }
     const { rows } = await query('SELECT * FROM session_kinds WHERE company_id = $1 ORDER BY position, label', [companyId]);
     res.json({ kinds: rows.map(kindRow) });
   } catch (err) {
@@ -5699,27 +5714,32 @@ router.get('/session-kinds', requireRole('owner', 'scheduler', 'employee'), asyn
   }
 });
 
-// POST /api/schedule/session-kinds — owner or scheduler adds a kind.
+// POST /api/schedule/session-kinds — owner or scheduler adds a kind to
+// one dashboard.
 router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    await ensureKinds(companyId);
     const b = req.body ?? {};
+    const dashboardId = b.dashboardId ? String(b.dashboardId) : null;
+    if (!dashboardId) { res.status(400).json({ error: 'Kinds live on a dashboard — open the dashboard and add the kind there.' }); return; }
+    const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
+    if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+    await ensureKinds(companyId, dashboardId);
     const label = String(b.label || '').trim();
     if (!label) { res.status(400).json({ error: 'A name is required.' }); return; }
     if (label.length > 40) { res.status(400).json({ error: 'That name is too long (40 characters max).' }); return; }
     const color = /^#[0-9a-fA-F]{6}$/.test(String(b.color || '')) ? String(b.color) : '#00796b';
-    const { rows: dup } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND lower(label) = lower($2)', [companyId, label]);
-    if (dup.length) { res.status(400).json({ error: 'You already have a kind with that name.' }); return; }
+    const { rows: dup } = await query('SELECT id FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND lower(label) = lower($3)', [companyId, dashboardId, label]);
+    if (dup.length) { res.status(400).json({ error: 'This dashboard already has a kind with that name.' }); return; }
     let key = slugifyKind(label);
-    const { rows: existing } = await query('SELECT key FROM session_kinds WHERE company_id = $1', [companyId]);
+    const { rows: existing } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
     const keys = new Set(existing.map((r: any) => r.key));
     if (keys.has(key)) { let n = 2; while (keys.has(key + '-' + n)) n++; key = key + '-' + n; }
-    const { rows: mx } = await query('SELECT COALESCE(MAX(position), 0) AS m FROM session_kinds WHERE company_id = $1', [companyId]);
+    const { rows: mx } = await query('SELECT COALESCE(MAX(position), 0) AS m FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
     const id = crypto.randomUUID();
-    await query('INSERT INTO session_kinds (id, company_id, key, label, color, position) VALUES ($1,$2,$3,$4,$5,$6)',
-      [id, companyId, key, label, color, (mx[0].m || 0) + 1]);
-    res.json({ ok: true, kind: { id, key, label, color } });
+    await query('INSERT INTO session_kinds (id, company_id, dashboard_id, key, label, color, position) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [id, companyId, dashboardId, key, label, color, (mx[0].m || 0) + 1]);
+    res.json({ ok: true, kind: { id, key, label, color, dashboardId } });
   } catch (err) {
     console.error('[schedule] session kind create failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5906,7 +5926,6 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.supervisorUserId, companyId]);
       if (!rows.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
     }
-    const kind = await cleanKind(companyId, b.kind);
     const mu = cleanMeetingUrl(b.meetingUrl);
     if ('error' in mu) { res.status(400).json({ error: mu.error }); return; }
     const rec = cleanRecur(b);
@@ -5919,6 +5938,7 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
       dashboardId = String(b.dashboardId);
     }
+    const kind = await cleanKind(companyId, dashboardId, b.kind);
     const { rows } = await query(
       `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
@@ -6000,7 +6020,6 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     }
     const title = b.title !== undefined ? String(b.title).trim() : cur.title;
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
-    const kind = b.kind !== undefined ? await cleanKind(companyId, b.kind) : cur.kind;
     let meetingUrl = cur.meeting_url || null;
     if (b.meetingUrl !== undefined) {
       const mu = cleanMeetingUrl(b.meetingUrl);
@@ -6024,6 +6043,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
         dashboardId = String(b.dashboardId);
       } else dashboardId = null;
     }
+    const kind = b.kind !== undefined ? await cleanKind(companyId, dashboardId, b.kind) : cur.kind;
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
         start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17 WHERE id=$18`,
