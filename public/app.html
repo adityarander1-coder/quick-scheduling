@@ -3528,9 +3528,9 @@
         #tab-dash .ac-bgutterlabel { font-size: 0.68rem; color: var(--dim); text-align: right; padding: 4px 7px 4px 0; }
         #tab-dash .ac-ballday { border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 4px; }
         #tab-dash .ac-ballday.today { background: #f5f9ff; }
-        #tab-dash .ac-bday { position: relative; border-left: 1px solid var(--border); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 45px, var(--border) 45px, var(--border) 46px); }
+        #tab-dash .ac-bday { position: relative; border-left: 1px solid var(--border); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 51px, var(--border) 51px, var(--border) 52px); }
         #tab-dash .ac-bday.today { background-color: #f5f9ff; }
-        #tab-dash .ac-blk { position: absolute; border-radius: 8px; padding: 4px 6px; font-size: 0.7rem; line-height: 1.3; overflow: hidden; border: 1px solid; cursor: pointer; color: var(--text); z-index: 1; }
+        #tab-dash .ac-blk { position: absolute; border-radius: 8px; padding: 3px 6px; font-size: 0.7rem; line-height: 1.25; overflow: hidden; border: 1px solid; cursor: pointer; color: var(--text); z-index: 1; }
         #tab-dash .ac-blk b { display: block; font-size: 0.72rem; }
         #tab-dash .ac-selbtn { background: #4f46e5; color: #fff; border: 1px solid #6366f1; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
         #tab-dash .ac-selbtn-ghost { background: transparent; border-color: rgba(255,255,255,0.45); }
@@ -10668,7 +10668,7 @@
       // as tall as it runs. Overlapping sessions split the column into
       // lanes; sessions with no start time sit in an All day row.
       function renderBlock() {
-        var H = 46;
+        var H = 52;
         var weekStart = new Date(acAnchor); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
         var days = [];
         for (var i = 0; i < 7; i++) { var d = new Date(weekStart); d.setDate(d.getDate() + i); days.push(d); }
