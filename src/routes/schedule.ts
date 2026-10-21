@@ -5359,6 +5359,51 @@ async function dashboardDeptIds(dashboardId: string): Promise<string[]> {
   return rows.map((r: any) => r.department_id);
 }
 
+async function dashboardEditorIds(dashboardId: string): Promise<string[]> {
+  const { rows } = await query('SELECT user_id FROM dashboard_editors WHERE dashboard_id = $1', [dashboardId]);
+  return rows.map((r: any) => r.user_id);
+}
+
+// Can this user adjust a dashboard's sessions/kinds at all? Owner:
+// always. Scheduler: when the dashboard has an editors list, only its
+// members; otherwise, Edit access touching the dashboard (any Edit
+// department when the dashboard is unrestricted). Employees: never.
+async function dashboardEditAllowed(req: Request, dashboardId: string): Promise<boolean> {
+  if (req.session.role === 'owner') return true;
+  if (req.session.role !== 'scheduler') return false;
+  const editors = await dashboardEditorIds(dashboardId);
+  if (editors.length) return editors.includes(req.session.userId!);
+  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+  const editDepts = access.edit || [];
+  if (!editDepts.length) return false;
+  const dIds = await dashboardDeptIds(dashboardId);
+  if (!dIds.length) return true;
+  return dIds.some((d) => editDepts.includes(d));
+}
+
+// Gate for saving a session: an editors list (when set) replaces the
+// department-edit check for that dashboard's sessions.
+async function sessionEditCheck(req: Request, res: Response, dashboardId: string | null, departmentId: string | null): Promise<boolean> {
+  if (req.session.role === 'owner') return true;
+  if (dashboardId) {
+    const editors = await dashboardEditorIds(dashboardId);
+    if (editors.length) {
+      if (editors.includes(req.session.userId!)) return true;
+      res.status(403).json({ error: 'Only the editors chosen for this dashboard can change its sessions.' });
+      return false;
+    }
+  }
+  return academicDeptCheck(req, res, departmentId);
+}
+
+async function validateDashboardEditors(companyId: string, ids: any): Promise<string[] | null> {
+  if (!ids || !Array.isArray(ids) || ids.length === 0) return [];
+  const want = ids.map((x: any) => String(x));
+  const { rows } = await query('SELECT id FROM users WHERE company_id = $1 AND id = ANY($2) AND is_active = true', [companyId, want]);
+  if (rows.length !== want.length) return null;
+  return rows.map((r: any) => r.id);
+}
+
 async function visibleDashboardIds(req: Request): Promise<string[] | null> {
   const companyId = req.session.companyId!;
   const deptIds = await academicVisibleDeptIds(req);
@@ -5392,7 +5437,16 @@ router.get('/dashboards', requireRole('owner', 'scheduler', 'employee'), async (
       `SELECT d.id, d.name, d.created_at,
               (SELECT array_agg(dd.department_id) FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) AS department_ids
        FROM dashboards d ${clause} ORDER BY d.created_at`, params);
-    res.json({ dashboards: rows.map((r: any) => ({ id: r.id, name: r.name, createdAt: r.created_at, departmentIds: r.department_ids || [] })) });
+    const out: any[] = [];
+    for (const r of rows) {
+      out.push({
+        id: r.id, name: r.name, createdAt: r.created_at,
+        departmentIds: r.department_ids || [],
+        editorIds: await dashboardEditorIds(r.id),
+        canEdit: await dashboardEditAllowed(req, r.id),
+      });
+    }
+    res.json({ dashboards: out });
   } catch (err) {
     console.error('[schedule] dashboards list failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5414,13 +5468,18 @@ router.post('/dashboards', requireRole('owner'), async (req: Request, res: Respo
     if (!name) { res.status(400).json({ error: 'Give the dashboard a name.' }); return; }
     const deptIds = await validateDashboardDepts(companyId, req.body?.departmentIds);
     if (!deptIds) { res.status(400).json({ error: 'One or more departments are invalid.' }); return; }
+    const editorIds = await validateDashboardEditors(companyId, req.body?.editorIds);
+    if (!editorIds) { res.status(400).json({ error: 'One or more editors are invalid.' }); return; }
     const { rows } = await query(
       'INSERT INTO dashboards (company_id, name, created_by) VALUES ($1, $2, $3) RETURNING id, name, created_at',
       [companyId, name, req.session.userId]);
     for (const d of deptIds) {
       await query('INSERT INTO dashboard_departments (dashboard_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [rows[0].id, d]);
     }
-    res.status(201).json({ dashboard: { id: rows[0].id, name: rows[0].name, departmentIds: deptIds } });
+    for (const u of editorIds) {
+      await query('INSERT INTO dashboard_editors (dashboard_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [rows[0].id, u]);
+    }
+    res.status(201).json({ dashboard: { id: rows[0].id, name: rows[0].name, departmentIds: deptIds, editorIds } });
   } catch (err) {
     console.error('[schedule] dashboard create failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5438,6 +5497,11 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
       deptIds = await validateDashboardDepts(companyId, req.body.departmentIds);
       if (!deptIds) { res.status(400).json({ error: 'One or more departments are invalid.' }); return; }
     }
+    let editorIds: string[] | null = null;
+    if (req.body?.editorIds !== undefined) {
+      editorIds = await validateDashboardEditors(companyId, req.body.editorIds);
+      if (!editorIds) { res.status(400).json({ error: 'One or more editors are invalid.' }); return; }
+    }
     const { rows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
     if (name !== undefined) await query('UPDATE dashboards SET name = $1 WHERE id = $2', [name, req.params.id]);
@@ -5445,6 +5509,12 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
       await query('DELETE FROM dashboard_departments WHERE dashboard_id = $1', [req.params.id]);
       for (const d of deptIds) {
         await query('INSERT INTO dashboard_departments (dashboard_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, d]);
+      }
+    }
+    if (editorIds !== null) {
+      await query('DELETE FROM dashboard_editors WHERE dashboard_id = $1', [req.params.id]);
+      for (const u of editorIds) {
+        await query('INSERT INTO dashboard_editors (dashboard_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, u]);
       }
     }
     res.json({ ok: true });
@@ -5724,6 +5794,7 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
     if (!dashboardId) { res.status(400).json({ error: 'Kinds live on a dashboard — open the dashboard and add the kind there.' }); return; }
     const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
     if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+    if (!(await dashboardEditAllowed(req, dashboardId))) { res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return; }
     await ensureKinds(companyId, dashboardId);
     const label = String(b.label || '').trim();
     if (!label) { res.status(400).json({ error: 'A name is required.' }); return; }
@@ -5751,6 +5822,11 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
 router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT dashboard_id FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    if (rows[0].dashboard_id && !(await dashboardEditAllowed(req, rows[0].dashboard_id))) {
+      res.status(403).json({ error: 'Only this dashboard\'s editors can change its kinds.' }); return;
+    }
     await query('DELETE FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
     res.json({ ok: true });
   } catch (err) {
@@ -5917,7 +5993,13 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     const title = String(b.title || '').trim();
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
     const departmentId = b.departmentId ? String(b.departmentId) : null;
-    if (!(await academicDeptCheck(req, res, departmentId))) return;
+    let dashboardId: string | null = null;
+    if (b.dashboardId) {
+      const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
+      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      dashboardId = String(b.dashboardId);
+    }
+    if (!(await sessionEditCheck(req, res, dashboardId, departmentId))) return;
     if (b.lecturerUserId) {
       const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
       if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
@@ -5932,12 +6014,6 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     const recurRule = rec.rule;
     const recurDays = cleanRecurDays(b.recurDays);
     const recurUntil = recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : (recurRule !== 'none' ? null : null);
-    let dashboardId: string | null = null;
-    if (b.dashboardId) {
-      const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
-      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
-      dashboardId = String(b.dashboardId);
-    }
     const kind = await cleanKind(companyId, dashboardId, b.kind);
     const { rows } = await query(
       `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url)
@@ -6013,7 +6089,8 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     const cur = rows[0];
     const b = req.body ?? {};
     const departmentId = b.departmentId !== undefined ? (b.departmentId ? String(b.departmentId) : null) : cur.department_id;
-    if (!(await academicDeptCheck(req, res, departmentId))) return;
+    const targetDashboardId = b.dashboardId !== undefined ? (b.dashboardId ? String(b.dashboardId) : null) : cur.dashboard_id;
+    if (!(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
     if (b.lecturerUserId) {
       const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
       if (!lu.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
@@ -6067,9 +6144,9 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler'), async
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
-    const { rows } = await query('SELECT department_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    const { rows } = await query('SELECT department_id, dashboard_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
-    if (!(await academicDeptCheck(req, res, rows[0].department_id))) return;
+    if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
     await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
     res.json({ ok: true });
   } catch (err) {
