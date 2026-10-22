@@ -1231,11 +1231,15 @@
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (sched.view === 'block') {
-            // Block view shows 4 weeks at a time, starting at the
-            // configured week start of the anchor's week.
-            var bdow = weekStartOffset(a);
-            from = new Date(a); from.setDate(a.getDate() - bdow);
-            to = new Date(from); to.setDate(from.getDate() + 27);
+            // Block view spans the WHOLE YEAR of the anchor date
+            // (Deepika: no 4-week limit) — every week of that year,
+            // from the week containing Jan 1 to the week containing
+            // Dec 31, on the configured week-start day.
+            var yr = a.getFullYear();
+            var jan1 = new Date(yr, 0, 1);
+            from = new Date(jan1); from.setDate(jan1.getDate() - weekStartOffset(jan1));
+            var dec31 = new Date(yr, 11, 31);
+            to = new Date(dec31); to.setDate(dec31.getDate() + (6 - weekStartOffset(dec31)));
           } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
             from = parseDate(sched.rangeFrom); to = parseDate(sched.rangeTo);
           } else {
@@ -1254,6 +1258,8 @@
             return 'Week of ' + f.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
           if (sched.view === 'month')
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+          if (sched.view === 'block')
+            return String(sched.anchorDate.getFullYear());
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' \u2013 ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -1643,7 +1649,7 @@
 
         // --- Weekly Block view (Deepika, 2026-10-21) ---
         // The classic block schedule: shift names on the vertical
-        // axis, weeks across the top (4 at a time, starting on the
+        // axis, weeks across the top (the whole year, starting on the
         // configured week-start day), ONE box per shift per week
         // holding the names of the people doing it that week.
         // Part-week coverage gets a day note; gaps show OPEN in red.
@@ -1707,8 +1713,11 @@
         function renderBlockView(el) {
           var r = viewRange();
           var startD = parseDate(r.from);
+          var endD = parseDate(r.to);
+          var totalDays = Math.round((Date.UTC(endD.getFullYear(), endD.getMonth(), endD.getDate()) - Date.UTC(startD.getFullYear(), startD.getMonth(), startD.getDate())) / 86400000) + 1;
+          var weekCount = Math.max(1, Math.round(totalDays / 7));
           var weeks = [];
-          for (var w = 0; w < 4; w++) {
+          for (var w = 0; w < weekCount; w++) {
             var days = [], dates = [];
             for (var i = 0; i < 7; i++) {
               var dObj = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate() + w * 7 + i);
@@ -1718,7 +1727,7 @@
           }
           var todayS = fmtDate(new Date());
           var types = sched.shiftTypes.filter(shiftTypeVisible);
-          var html = '<div class="sbw-wrap"><div class="sbw-grid">';
+          var html = '<div class="sbw-wrap"><div class="sbw-grid" style="grid-template-columns:150px repeat(' + weekCount + ', minmax(180px, 1fr))">';
           html += '<div class="sbw-whead"></div>' + weeks.map(function (wk) {
             var f = wk.dates[0], t = wk.dates[6];
             var isNow = wk.days.indexOf(todayS) !== -1;
@@ -3249,7 +3258,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() - 1);
             else if (sched.view === 'week') a.setDate(a.getDate() - 7);
-            else if (sched.view === 'block') a.setDate(a.getDate() - 28);
+            else if (sched.view === 'block') a.setFullYear(a.getFullYear() - 1);
             else a.setMonth(a.getMonth() - 1);
           }
           saveSchedView();
@@ -3266,7 +3275,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() + 1);
             else if (sched.view === 'week') a.setDate(a.getDate() + 7);
-            else if (sched.view === 'block') a.setDate(a.getDate() + 28);
+            else if (sched.view === 'block') a.setFullYear(a.getFullYear() + 1);
             else a.setMonth(a.getMonth() + 1);
           }
           saveSchedView();
@@ -8541,9 +8550,12 @@
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (msView === 'block') {
-            var bdow = weekStartOffset(a);
-            from = new Date(a); from.setDate(a.getDate() - bdow);
-            to = new Date(from); to.setDate(from.getDate() + 27);
+            // Whole year of the anchor date (same as the admin Block view).
+            var yr = a.getFullYear();
+            var jan1 = new Date(yr, 0, 1);
+            from = new Date(jan1); from.setDate(jan1.getDate() - weekStartOffset(jan1));
+            var dec31 = new Date(yr, 11, 31);
+            to = new Date(dec31); to.setDate(dec31.getDate() + (6 - weekStartOffset(dec31)));
           } else if (msView === 'range' && rangeFrom && rangeTo) {
             from = parseDate(rangeFrom); to = parseDate(rangeTo);
           } else {
@@ -8561,6 +8573,8 @@
             return 'Week of ' + f.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
           if (msView === 'month')
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+          if (msView === 'block')
+            return String(anchorDate.getFullYear());
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -8924,7 +8938,7 @@
 
         // --- Weekly Block view for My Schedule (Deepika, 2026-10-21) ---
         // Same classic block schedule as the admin Schedule: shift
-        // names on the vertical axis, weeks across the top (4 at a
+        // names on the vertical axis, weeks across the top (the whole year),
         // time), one box per shift per week with the people's names
         // inside. The viewer's own shifts are starred. Read-only —
         // tapping a box jumps to that week in Week view.
@@ -8993,8 +9007,11 @@
         function renderMsBlockView(el) {
           var r = viewRange();
           var startD = parseDate(r.from);
+          var endD = parseDate(r.to);
+          var totalDays = Math.round((Date.UTC(endD.getFullYear(), endD.getMonth(), endD.getDate()) - Date.UTC(startD.getFullYear(), startD.getMonth(), startD.getDate())) / 86400000) + 1;
+          var weekCount = Math.max(1, Math.round(totalDays / 7));
           var weeks = [];
-          for (var w = 0; w < 4; w++) {
+          for (var w = 0; w < weekCount; w++) {
             var days = [], dates = [];
             for (var i = 0; i < 7; i++) {
               var dObj = new Date(startD.getFullYear(), startD.getMonth(), startD.getDate() + w * 7 + i);
@@ -9004,7 +9021,7 @@
           }
           var todayS = fmtDate(new Date());
           var types = shiftTypes.filter(msTypePasses);
-          var html = '<div class="sbw-wrap"><div class="sbw-grid">';
+          var html = '<div class="sbw-wrap"><div class="sbw-grid" style="grid-template-columns:150px repeat(' + weekCount + ', minmax(180px, 1fr))">';
           html += '<div class="sbw-whead"></div>' + weeks.map(function (wk) {
             var f = wk.dates[0], t = wk.dates[6];
             var isNow = wk.days.indexOf(todayS) !== -1;
@@ -9432,12 +9449,14 @@
           });
         });
         $('ms-prev').addEventListener('click', function () {
-          var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'block' ? -28 : msView === 'month' ? -30 : -14;
+          if (msView === 'block') { anchorDate = new Date(anchorDate.getFullYear() - 1, anchorDate.getMonth(), anchorDate.getDate()); loadData(); return; }
+          var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'month' ? -30 : -14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
         $('ms-today').addEventListener('click', function () { anchorDate = new Date(); loadData(); });
         $('ms-next').addEventListener('click', function () {
-          var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'block' ? 28 : msView === 'month' ? 30 : 14;
+          if (msView === 'block') { anchorDate = new Date(anchorDate.getFullYear() + 1, anchorDate.getMonth(), anchorDate.getDate()); loadData(); return; }
+          var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'month' ? 30 : 14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
         $('ms-range-apply').addEventListener('click', function () {
