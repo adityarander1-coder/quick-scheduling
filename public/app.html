@@ -1537,7 +1537,7 @@
 
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = isPublished(s.date) && s.published !== false;
+          var published = s.published !== false;
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
@@ -1736,7 +1736,7 @@
               var key = s.userId || ('nm-' + displayName(s));
               if (!byPerson[key]) { byPerson[key] = { name: displayName(s), days: [] }; order.push(key); }
               if (byPerson[key].days.indexOf(di) === -1) byPerson[key].days.push(di);
-              if (s.published === false || !isPublished(ds)) anyDraft = true;
+              if (s.published === false) anyDraft = true;
             });
             var oc = openCountFor(ds, st.id);
             if (oc > 0) openDays.push({ di: di, count: oc });
@@ -1777,7 +1777,7 @@
               var g = byType[s.shiftTypeId];
               if (!g) { g = byType[s.shiftTypeId] = { idxs: [], draft: false }; order.push(s.shiftTypeId); }
               if (g.idxs.indexOf(di) === -1) g.idxs.push(di);
-              if (s.published === false || !isPublished(ds)) g.draft = true;
+              if (s.published === false) g.draft = true;
             });
           });
           if (!order.length) return '<div style="color:#9ca3af">—</div>';
@@ -1978,7 +1978,7 @@
 
         function monthChipHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = isPublished(s.date) && s.published !== false;
+          var published = s.published !== false;
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
@@ -2022,7 +2022,7 @@
             if (!shiftTypeVisible(st)) return;
             var items = byType[st.id] || [];
             if (!items.length) return;
-            var published = isPublished(ds) && items[0].published !== false;
+            var published = items[0].published !== false;
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
             var names = items.map(function (s) { return esc(displayName(s)); }).join('<br>');
@@ -2421,7 +2421,7 @@
         window.qsToggleShiftPublish = function(sid) {
           var s = shiftById(sid);
           if (!s || !shiftEditable(s)) return;
-          var toPublished = !(s.published !== false && isPublished(s.date));
+          var toPublished = !(s.published !== false);
           // Optimistic: update instantly.
           s.published = toPublished;
           renderView();
@@ -2582,7 +2582,7 @@
           shifts.forEach(function (s) {
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
-            var isDraftShift = s.published === false || !isPublished(s.date);
+            var isDraftShift = s.published === false;
             var editable = shiftEditable(s);
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
@@ -2879,7 +2879,7 @@
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
           // Replace / Delete (not for rotation shifts)
-          var isDraft = s.published === false || !isPublished(s.date);
+          var isDraft = s.published === false;
           html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
           if (!isRot) {
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
@@ -2967,7 +2967,7 @@
               openEmployeeCommentModal(s.userId, s.date);
             } else if (act === 'toggle-publish') {
               closeShiftPopup();
-              var toPublished = !(s.published !== false && isPublished(s.date));
+              var toPublished = !(s.published !== false);
               var isRot = s.id && s.id.indexOf('rot-') === 0;
               var ep, body;
               if (isRot) {
@@ -7954,7 +7954,7 @@
           <button type="button" id="share-generate" class="btn">Generate link</button>
         </div>
         <div id="share-link-list" style="margin-top:0.5rem"></div>
-        <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published dates are visible. Copy the link right after generating — it can't be shown again later.</p>
+        <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published shifts are visible — the date itself doesn't need to be published. Copy the link right after generating — it can't be shown again later.</p>
       </div>
       <div class="card" style="margin-top:1rem">
         <h3 style="margin-top:0">Open shifts broadcast</h3>
@@ -8549,7 +8549,7 @@
           <li><strong>Range view</strong> — pick any date range.</li>
         </ul>
         <p>Filter by <strong>Department</strong> or <strong>Shift</strong> using the two dropdowns under the heading. Green dates are published, gray are draft, plain are empty.</p>
-        <p><strong>Publishing:</strong> assign shifts as drafts, then publish a date when it's final. Staff only see published dates on shared links.</p>
+        <p><strong>Publishing:</strong> assign shifts as drafts, then publish each shift when it's final. Staff only see published shifts on shared links — the date itself doesn't need to be published.</p>
       </div>
 
       <div class="card">
@@ -8557,7 +8557,7 @@
         <div class="help-carousel"><div class="help-carousel-track">
           <div class="help-carousel-slide"><img src="help-img/help-ask.png" alt="Ask Q-Scheduler"><div class="cap">Ask Q-Scheduler — plain-language questions, instant answers</div></div>
         </div></div>
-        <p>Ask plain-language questions about the schedule, like <em>"Who is on tonight?"</em>, <em>"Where are we short next week?"</em>, or <em>"How many shifts did Priya work in September?"</em> Answers come from published dates.</p>
+        <p>Ask plain-language questions about the schedule, like <em>"Who is on tonight?"</em>, <em>"Where are we short next week?"</em>, or <em>"How many shifts did Priya work in September?"</em> Answers cover the whole schedule; draft shifts are labeled (draft).</p>
         <p><strong>Staffing targets:</strong> set how many people you need per shift type per day (e.g. 4 Day Hospitalists + 1 Night Hospitalist + 1 Night NP). Ask <em>"where are we short?"</em> to find gaps.</p>
         <h4 style="margin-top:1rem">Change plans (email-to-schedule)</h4>
         <p>Forward a schedule email to your connected inbox address and the system reads it, builds a proposed change plan, and emails you for approval — you never have to check email yourself.</p>
@@ -8631,7 +8631,7 @@
 
       <div class="card">
         <h3>Viewing your schedule</h3>
-        <p>Your scheduler shares a <strong>schedule link</strong> with you — no login needed. Open it on your phone or computer to see your upcoming shifts. Only published dates are shown, so what you see is final.</p>
+        <p>Your scheduler shares a <strong>schedule link</strong> with you — no login needed. Open it on your phone or computer to see your upcoming shifts. Only published shifts are shown, so what you see is final.</p>
         <p>On phones, swipe sideways to move between days, or tap a date in the mini calendar at the top to jump straight to it.</p>
       </div>
 

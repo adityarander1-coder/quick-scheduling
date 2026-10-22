@@ -2471,7 +2471,8 @@ router.delete('/share', requireRole('owner', 'scheduler'), async (req: Request, 
 });
 
 // GET /api/schedule/public?token=xxx&from=YYYY-MM-DD&to=YYYY-MM-DD — public read-only schedule.
-// Returns only published dates.
+// Returns only published shifts (per-shift state; the date itself does not
+// need to be published — departments publish on their own cadence).
 router.get('/public', async (req: Request, res: Response) => {
   try {
     const token = String(req.query.token || '');
@@ -2492,7 +2493,7 @@ router.get('/public', async (req: Request, res: Response) => {
     const companyId = shares[0].company_id;
     const deptId = shares[0].department_id;
     const shiftTypeId = shares[0].shift_type_id;
-    // Only published dates and published shifts. Optionally scoped to a department and/or shift type.
+    // Only published shifts. Optionally scoped to a department and/or shift type.
     const shiftParams: any[] = [companyId, from, to];
     let extraFilter = '';
     if (deptId) { shiftParams.push(deptId); extraFilter += ` AND (u.department_id = $${shiftParams.length} OR EXISTS (SELECT 1 FROM shift_type_departments std WHERE std.shift_type_id = s.shift_type_id AND std.department_id = $${shiftParams.length}))`; }
@@ -2507,7 +2508,6 @@ router.get('/public', async (req: Request, res: Response) => {
        FROM shifts s
        JOIN users u ON u.id = s.user_id
        JOIN shift_types st ON st.id = s.shift_type_id
-       JOIN schedule_days d ON d.company_id = s.company_id AND d.date = s.date AND d.is_published = true
        WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true ${extraFilter}
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
       shiftParams
