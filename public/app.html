@@ -712,6 +712,21 @@
         #tab-schedule .day-row-body { padding: 0.15rem 0.4rem; }
         #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 1px; min-height: 14px; margin-bottom: 2px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
+        /* Weekly Block view (main Schedule): shift names on the vertical axis, weeks across, one box per shift per week with the people's names inside. */
+        #tab-schedule .sbw-wrap { background: #fff; border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; }
+        #tab-schedule .sbw-grid { display: grid; grid-template-columns: 150px repeat(4, minmax(180px, 1fr)); min-width: 900px; }
+        #tab-schedule .sbw-whead { text-align: center; font-weight: 700; font-size: 0.9rem; padding: 9px 4px; border-bottom: 2px solid var(--border); border-left: 1px solid var(--border); color: var(--dim); }
+        #tab-schedule .sbw-whead:first-child { position: sticky; left: 0; background: #fff; z-index: 3; border-left: none; }
+        #tab-schedule .sbw-whead small { display: block; font-weight: 400; font-size: 0.74rem; color: #8a94a6; }
+        #tab-schedule .sbw-whead.now { color: #2563eb; }
+        #tab-schedule .sbw-rowhead { position: sticky; left: 0; background: #fff; z-index: 2; padding: 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+        #tab-schedule .sbw-rowhead b { font-size: 0.92rem; }
+        #tab-schedule .sbw-rowhead span { font-size: 0.76rem; color: var(--dim); }
+        #tab-schedule .sbw-rowhead .sbw-sw { width: 12px; height: 12px; border-radius: 3px; margin-bottom: 5px; }
+        #tab-schedule .sbw-cell { border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px; }
+        #tab-schedule .sbw-box { border: 1px solid; border-radius: 10px; padding: 8px 10px; height: 100%; font-size: 0.84rem; line-height: 1.45; cursor: pointer; color: var(--text); }
+        #tab-schedule .sbw-part { color: #66788c; font-size: 0.76rem; font-weight: 600; }
+        #tab-schedule .sbw-open { color: #c62828; font-weight: 800; }
         @media (min-width: 900px) {
           body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
           #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.4rem; align-items: start; }
@@ -903,6 +918,7 @@
             <button type="button" data-view="week" role="tab" class="active">Week</button>
             <button type="button" data-view="month" role="tab">Month</button>
             <button type="button" data-view="range" role="tab">Range</button>
+            <button type="button" data-view="block" role="tab">Block</button>
           </div>
           <div class="date-nav">
             <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
@@ -1187,6 +1203,12 @@
             var dow = weekStartOffset(a);
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
+          } else if (sched.view === 'block') {
+            // Block view shows 4 weeks at a time, starting at the
+            // configured week start of the anchor's week.
+            var bdow = weekStartOffset(a);
+            from = new Date(a); from.setDate(a.getDate() - bdow);
+            to = new Date(from); to.setDate(from.getDate() + 27);
           } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
             from = parseDate(sched.rangeFrom); to = parseDate(sched.rangeTo);
           } else {
@@ -1592,10 +1614,125 @@
           return html;
         }
 
+        // --- Weekly Block view (Deepika, 2026-10-21) ---
+        // The classic block schedule: shift names on the vertical
+        // axis, weeks across the top (4 at a time, starting on the
+        // configured week-start day), ONE box per shift per week
+        // holding the names of the people doing it that week.
+        // Part-week coverage gets a day note; gaps show OPEN in red.
+        // Clicking a box jumps to that week in Week view to edit.
+        function sbDayRuns(dayIdxs, dates) {
+          var names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          var runs = [];
+          var start = dayIdxs[0], prev = dayIdxs[0];
+          function pushRun(a, b) {
+            var la = names[dates[a].getDay()], lb = names[dates[b].getDay()];
+            runs.push(a === b ? la : la + '–' + lb);
+          }
+          for (var i = 1; i < dayIdxs.length; i++) {
+            if (dayIdxs[i] === prev + 1) { prev = dayIdxs[i]; continue; }
+            pushRun(start, prev); start = prev = dayIdxs[i];
+          }
+          pushRun(start, prev);
+          return runs.join(', ');
+        }
+
+        function sbwCellHtml(st, wk) {
+          var byPerson = {}, order = [];
+          var openDays = [], closedDays = [], anyDraft = false;
+          wk.days.forEach(function (ds, di) {
+            shiftsFor(ds).forEach(function (s) {
+              if (s.shiftTypeId !== st.id) return;
+              var key = s.userId || ('nm-' + displayName(s));
+              if (!byPerson[key]) { byPerson[key] = { name: displayName(s), days: [] }; order.push(key); }
+              if (byPerson[key].days.indexOf(di) === -1) byPerson[key].days.push(di);
+              if (s.published === false || !isPublished(ds)) anyDraft = true;
+            });
+            var oc = openCountFor(ds, st.id);
+            if (oc > 0) openDays.push({ di: di, count: oc });
+            if (isShiftClosed(ds, st.id)) closedDays.push(di);
+          });
+          var out = '';
+          order.sort(function (a, b) { return byPerson[a].days[0] - byPerson[b].days[0] || (byPerson[a].name < byPerson[b].name ? -1 : 1); });
+          order.forEach(function (key) {
+            var p = byPerson[key];
+            var note = p.days.length === 7 ? '' : ' <span class="sbw-part">(' + sbDayRuns(p.days, wk.dates) + ')</span>';
+            out += '<div>' + esc(p.name) + note + '</div>';
+          });
+          if (openDays.length) {
+            if (openDays.length === 7 && openDays.every(function (o) { return o.count === openDays[0].count; })) {
+              out += '<div class="sbw-open">— OPEN' + (openDays[0].count > 1 ? ' ×' + openDays[0].count : '') + ' —</div>';
+            } else {
+              var parts = openDays.map(function (o) {
+                var nm = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][wk.dates[o.di].getDay()];
+                return nm + (o.count > 1 ? ' ×' + o.count : '');
+              });
+              out += '<div class="sbw-open">— OPEN ' + parts.join(', ') + ' —</div>';
+            }
+          }
+          if (closedDays.length === 7) out += '<div style="color:#9ca3af;font-weight:700">Closed all week</div>';
+          else if (closedDays.length) out += '<div style="color:#9ca3af;font-size:0.76rem;font-weight:600">Closed ' + sbDayRuns(closedDays, wk.dates) + '</div>';
+          if (anyDraft) out += '<div style="color:#6b7280;font-size:0.76rem;font-weight:700">(draft)</div>';
+          if (!out) out = '<div style="color:#9ca3af">—</div>';
+          return out;
+        }
+
+        function renderBlockView(el) {
+          var r = viewRange();
+          var startMs = Date.parse(r.from + 'T00:00:00');
+          var weeks = [];
+          for (var w = 0; w < 4; w++) {
+            var days = [], dates = [];
+            for (var i = 0; i < 7; i++) {
+              var dd = new Date(startMs + (w * 7 + i) * 86400000);
+              var dObj = new Date(dd.getFullYear(), dd.getMonth(), dd.getDate());
+              dates.push(dObj); days.push(fmtDate(dObj));
+            }
+            weeks.push({ days: days, dates: dates });
+          }
+          var todayS = fmtDate(new Date());
+          var types = sched.shiftTypes.filter(shiftTypeVisible);
+          var html = '<div class="sbw-wrap"><div class="sbw-grid">';
+          html += '<div class="sbw-whead"></div>' + weeks.map(function (wk) {
+            var f = wk.dates[0], t = wk.dates[6];
+            var isNow = wk.days.indexOf(todayS) !== -1;
+            return '<div class="sbw-whead' + (isNow ? ' now' : '') + '">Week of ' + f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+              '<small>' + f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '</small></div>';
+          }).join('');
+          types.forEach(function (st) {
+            var maxTarget = 0;
+            weeks.forEach(function (wk) { wk.days.forEach(function (ds) { maxTarget = Math.max(maxTarget, targetCountFor(ds, st.id)); }); });
+            var times = st.startTime ? fmtTime12(st.startTime) + ' – ' + fmtTime12(st.endTime || st.startTime) : '';
+            html += '<div class="sbw-rowhead"><span class="sbw-sw" style="background:' + esc(st.color || '#637a8e') + '"></span><b>' + esc(st.name) + '</b>' +
+              '<span>' + esc(times) + (maxTarget ? ' · needs ' + maxTarget : '') + '</span></div>';
+            weeks.forEach(function (wk) {
+              html += '<div class="sbw-cell"><div class="sbw-box" data-sbweek="' + wk.days[0] + '" title="Open this week in Week view" style="background:' + tint(st.color || '#637a8e', 84) + ';border-color:' + tint(st.color || '#637a8e', 52) + '">' +
+                sbwCellHtml(st, wk) + '</div></div>';
+            });
+          });
+          if (!types.length) html += '<div style="padding:1rem;color:var(--dim)">No shift types to show.</div>';
+          html += '</div></div>';
+          el.innerHTML = html;
+          bindBlockView(el);
+        }
+
+        function bindBlockView(el) {
+          el.querySelectorAll('[data-sbweek]').forEach(function (box) {
+            box.addEventListener('click', function () {
+              sched.view = 'week';
+              sched.anchorDate = parseDate(box.getAttribute('data-sbweek'));
+              document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === 'week'); });
+              saveSchedView();
+              loadAll();
+            });
+          });
+        }
+
         function renderView() {
           var el = $('sched-view');
           if (sched.view === 'month') renderMonth(el);
           else if (sched.view === 'day') renderDay(el);
+          else if (sched.view === 'block') renderBlockView(el);
           else renderWeek(el);
         }
         // Global hook: apply a department filter from the top-level switcher.
@@ -2984,7 +3121,7 @@
             var raw = localStorage.getItem(SCHED_VIEW_KEY);
             if (!raw) return;
             var p = JSON.parse(raw);
-            if (p.view && ['day', 'week', 'month', 'range'].indexOf(p.view) !== -1) {
+            if (p.view && ['day', 'week', 'month', 'range', 'block'].indexOf(p.view) !== -1) {
               sched.view = p.view;
               document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) {
                 x.classList.toggle('active', x.getAttribute('data-view') === p.view);
@@ -3058,6 +3195,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() - 1);
             else if (sched.view === 'week') a.setDate(a.getDate() - 7);
+            else if (sched.view === 'block') a.setDate(a.getDate() - 28);
             else a.setMonth(a.getMonth() - 1);
           }
           saveSchedView();
@@ -3074,6 +3212,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() + 1);
             else if (sched.view === 'week') a.setDate(a.getDate() + 7);
+            else if (sched.view === 'block') a.setDate(a.getDate() + 28);
             else a.setMonth(a.getMonth() + 1);
           }
           saveSchedView();
@@ -10304,11 +10443,11 @@
         var from, to;
         if (acView === 'day') { from = new Date(acAnchor); to = new Date(acAnchor); }
         else if (acView === 'week' || acView === 'block') {
-          from = new Date(acAnchor); from.setDate(from.getDate() - from.getDay());
+          from = new Date(acAnchor); from.setDate(from.getDate() - weekStartOffset(from));
           to = new Date(from); to.setDate(to.getDate() + 6);
         } else {
           from = new Date(acAnchor.getFullYear(), acAnchor.getMonth(), 1);
-          from.setDate(from.getDate() - from.getDay());
+          from.setDate(from.getDate() - weekStartOffset(from));
           to = new Date(from); to.setDate(to.getDate() + 41);
         }
         return { from: fmtD(from), to: fmtD(to) };
@@ -10669,7 +10808,7 @@
       // lanes; sessions with no start time sit in an All day row.
       function renderBlock() {
         var H = 52;
-        var weekStart = new Date(acAnchor); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+        var weekStart = new Date(acAnchor); weekStart.setDate(weekStart.getDate() - weekStartOffset(weekStart));
         var days = [];
         for (var i = 0; i < 7; i++) { var d = new Date(weekStart); d.setDate(d.getDate() + i); days.push(d); }
         function mins(t) { if (!t) return null; var p = String(t).split(':'); return parseInt(p[0], 10) * 60 + parseInt(p[1] || '0', 10); }
@@ -10755,8 +10894,11 @@
 
       function renderMonth() {
         var first = new Date(acAnchor.getFullYear(), acAnchor.getMonth(), 1);
-        var start = new Date(first); start.setDate(start.getDate() - start.getDay());
+        var start = new Date(first); start.setDate(start.getDate() - weekStartOffset(start));
         var dows = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        var wsIdx = WEEK_DAYS[(window.qsGeneral && window.qsGeneral.week_start) || 'monday'];
+        if (wsIdx === undefined) wsIdx = 1;
+        dows = dows.slice(wsIdx).concat(dows.slice(0, wsIdx));
         var html = '<div class="ac-month-grid">';
         dows.forEach(function (d) { html += '<div class="ac-dow">' + d + '</div>'; });
         var todayS = fmtD(new Date());
@@ -10775,7 +10917,7 @@
       }
 
       function renderWeek() {
-        var start = new Date(acAnchor); start.setDate(start.getDate() - start.getDay());
+        var start = new Date(acAnchor); start.setDate(start.getDate() - weekStartOffset(start));
         var todayS = fmtD(new Date());
         var html = '<div class="ac-week">';
         for (var i = 0; i < 7; i++) {
