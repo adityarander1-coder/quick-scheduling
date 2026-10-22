@@ -115,6 +115,9 @@ export async function planFromEmail(
     rooms?: string[];               // room / location names
     sessions?: string[];            // upcoming calendar session lines
     dashboardDepartments?: string[];// "Calendars: Internal Medicine" lines
+    attachmentText?: string;        // spreadsheet/doc attachments converted to text
+    pdfAttachments?: { filename: string; base64: string }[]; // PDFs, sent to Gemini as documents
+    attachmentNotes?: string[];     // attachments that could not be read (name + reason)
   }
 ): Promise<SchedulePlan> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -136,7 +139,14 @@ ${(context.sessions || []).join('\n') || '(none listed)'}
 Email subject: ${emailSubject}
 Email body:
 ${emailBody}
-
+${context.attachmentText ? `
+Attached file contents (files the sender attached — spreadsheets/documents converted to text):
+${context.attachmentText}
+` : ''}${(context.pdfAttachments || []).length ? `
+The sender also attached PDF file(s): ${(context.pdfAttachments || []).map(p => p.filename).join(', ')}. The PDF pages follow this prompt as documents — read them as part of the request.
+` : ''}${(context.attachmentNotes || []).length ? `
+Some attachments could not be read: ${(context.attachmentNotes || []).join('; ')}. If the request cannot be completed without them, say so in needsClarification.
+` : ''}
 First, classify the email into one of:
 - "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts) or change the calendar (add, move, cancel a session, change a session's presenter/supervisor/room/time)
 - "schedule_question": the sender is asking about the schedule (who is working when, what is the schedule for certain dates)
@@ -197,6 +207,7 @@ Respond with JSON only, no other text:
 
 Rules:
 - For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
+- Attachments: when the email has attached file contents or PDFs, they are part of the request. If an attachment is a schedule list or grid of shifts, create one "assign" change per person per shift per day — expand week-long blocks and date ranges into one change per day — following any instructions in the email body. If the email body is empty, the attachment alone is the request. Attached documents can also hold the details for any other request type (e.g. a list of team members to add).
 - For "settings_change": fill in "changes" with settings actions. Supported actions:
   - "add_job_role": needs jobRoleName + department. Example: "Add PGY4 role to IM Residency" → jobRoleName "PGY4", department "IM Residency".
   - "rename_job_role": needs jobRoleName + newJobRoleName + department.
@@ -220,6 +231,14 @@ Rules:
 
   const model = await discoverModel(apiKey);
 
+  // Attached PDFs ride along as document parts; a request built from a
+  // whole schedule file can produce many changes, so give it more room.
+  const parts: any[] = [{ text: prompt }];
+  for (const pdf of context.pdfAttachments || []) {
+    parts.push({ inlineData: { mimeType: 'application/pdf', data: pdf.base64 } });
+  }
+  const hasAttachments = !!context.attachmentText || (context.pdfAttachments || []).length > 0;
+
   // Retry on 503 (overloaded) with backoff, up to 3 attempts
   let res: Response | null = null;
   let lastErr = '';
@@ -230,8 +249,8 @@ Rules:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 2000 },
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: hasAttachments ? 8000 : 2000 },
         }),
       }
     );

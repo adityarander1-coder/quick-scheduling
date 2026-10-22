@@ -6,6 +6,14 @@
 import Imap from 'imap';
 import { simpleParser } from 'mailparser';
 
+export interface ImapAttachment {
+  filename: string;
+  contentType: string;
+  size: number;
+  /** File bytes, or null when the file is too large to process (> 8 MB). */
+  content: Buffer | null;
+}
+
 export interface ImapMessage {
   uid: string;
   subject: string;
@@ -14,7 +22,11 @@ export interface ImapMessage {
   cc: string;
   date: string;
   body: string;
+  attachments: ImapAttachment[];
 }
+
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_ATTACHMENTS = 5;
 
 function getConfig() {
   const user = process.env.GMAIL_USER;
@@ -74,6 +86,16 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
           simpleParser(stream as any).then((parsed: any) => {
             if (resolved) return;
             resolved = true;
+            const rawAtts: any[] = Array.isArray(parsed.attachments) ? parsed.attachments : [];
+            const attachments: ImapAttachment[] = rawAtts.slice(0, MAX_ATTACHMENTS).map((a: any) => {
+              const content: Buffer | null = a?.content && Buffer.isBuffer(a.content) ? a.content : null;
+              return {
+                filename: String(a?.filename || 'attachment'),
+                contentType: String(a?.contentType || ''),
+                size: typeof a?.size === 'number' ? a.size : (content ? content.length : 0),
+                content: content && content.length <= MAX_ATTACHMENT_BYTES ? content : null,
+              };
+            });
             resolve({
               uid: String(uid),
               subject: parsed.subject || '',
@@ -82,6 +104,7 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
               cc: parsed.cc?.text || '',
               date: parsed.date?.toISOString() || '',
               body: (parsed.text || '').substring(0, 10000),
+              attachments,
             });
           }).catch((e: any) => {
             if (!resolved) {

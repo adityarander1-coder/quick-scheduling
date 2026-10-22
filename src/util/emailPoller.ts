@@ -5,6 +5,7 @@
 
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
+import { extractAttachmentContent } from './emailAttachments.js';
 import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -230,6 +231,25 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
       try {
         const email = await getImapMessage(uid);
 
+        // Read any attachments (PDF / Excel / CSV / Word) so the plan
+        // builder can work from them — e.g. an emailed schedule file.
+        let attachmentText = '';
+        let pdfAttachments: { filename: string; base64: string }[] = [];
+        let attachmentNotes: string[] = [];
+        if (email.attachments && email.attachments.length) {
+          try {
+            const conv = await extractAttachmentContent(email.attachments);
+            attachmentText = conv.textParts.map((p) => `--- ${p.filename} ---\n${p.text}`).join('\n\n');
+            pdfAttachments = conv.pdfParts;
+            attachmentNotes = conv.notes;
+            if (conv.textParts.length || pdfAttachments.length || attachmentNotes.length) {
+              console.log(`[email-poll] Message ${uid}: attachments — ${conv.textParts.length} as text, ${pdfAttachments.length} PDF(s)${attachmentNotes.length ? `; notes: ${attachmentNotes.join('; ')}` : ''}`);
+            }
+          } catch (attErr: any) {
+            console.log(`[email-poll] Message ${uid}: attachment reading failed: ${attErr.message}`);
+          }
+        }
+
         // Get company context (shift types and team members) for Gemini
         const membersResult = await query(
           `SELECT COALESCE(nickname, first_name || ' ' || last_name) as name FROM users WHERE company_id = $1 AND is_active = true`,
@@ -251,6 +271,9 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           members,
           today,
           ...sessionCtx,
+          attachmentText: attachmentText || undefined,
+          pdfAttachments: pdfAttachments.length ? pdfAttachments : undefined,
+          attachmentNotes: attachmentNotes.length ? attachmentNotes : undefined,
         });
 
         // Handle schedule questions: query and reply directly to sender
