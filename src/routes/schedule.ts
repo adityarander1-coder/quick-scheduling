@@ -4178,8 +4178,20 @@ async function buildClarification(
   const shiftNames = async () => (await query(
     'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY name LIMIT 20',
     [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+  const dashNames = async () => (await query(
+    'SELECT name FROM dashboards WHERE company_id = $1 ORDER BY name LIMIT 20',
+    [companyId])).rows.map((r: any) => r.name).filter(Boolean);
+  const sessionTitles = async () => (await query(
+    'SELECT DISTINCT title FROM academic_sessions WHERE company_id = $1 ORDER BY title LIMIT 20',
+    [companyId])).rows.map((r: any) => r.title).filter(Boolean);
 
-  if (p.includes('person') || p.includes('member')) {
+  if (p.includes('dashboard')) {
+    question = 'Which dashboard (calendar) is this session on?';
+    options = await dashNames();
+  } else if (p.includes('session')) {
+    question = 'Which session do you mean?';
+    options = await sessionTitles();
+  } else if (p.includes('person') || p.includes('member')) {
     const role = ch.jobRoleName ? ` the ${ch.jobRoleName} role` : '';
     question = ch.action === 'update_team_member' && ch.jobRoleName
       ? `Which team member should get the ${ch.jobRoleName} role?`
@@ -4222,10 +4234,13 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
       const { rows: dRows } = await query(
         'SELECT name FROM departments WHERE company_id = $1', [companyId]);
       const today = new Date().toISOString().slice(0, 10);
+      const { buildSessionContext } = await import('../util/emailPoller.js');
+      const sessionCtx = await buildSessionContext(query, companyId, today);
       plan = await planFromEmail(task, 'In-app agent task', {
         shiftTypes: stRows.map((r: any) => r.name),
         members: uRows.map((r: any) => r.name),
         today,
+        ...sessionCtx,
       });
       // Attach department names for settings actions.
       (plan as any).departments = dRows.map((r: any) => r.name);
@@ -4506,6 +4521,375 @@ router.get('/plans/reject/:token', async (req: Request, res: Response) => {
     res.send('<h1>Rejected</h1><p>The plan was rejected and will not be applied.</p>');
   } catch (err) {
     res.status(500).send('<h1>Error</h1>');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Quick session links (migration 062, Deepika 2026-10-21): plan-approval
+// emails carry a "Quick session" button next to Approve / Reject. The
+// link opens a small standalone session form — no app, no login (the
+// token is the auth, like the approve/reject tokens) — to add a session
+// or change/cancel one right from the email. Tokens are company-scoped,
+// optionally prefilled to one dashboard / session / date, 7-day expiry.
+// ---------------------------------------------------------------------------
+
+async function loadQuickLink(token: string): Promise<any | null> {
+  const { rows } = await query(
+    'SELECT *, occ_date::text AS occ_date FROM quick_session_links WHERE token = $1 AND expires_at > NOW()',
+    [token]
+  );
+  return rows[0] || null;
+}
+
+router.get('/quick-session/:token', async (req: Request, res: Response) => {
+  try {
+    const link = await loadQuickLink(String(req.params.token));
+    const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+    if (!link) {
+      res.status(404).send(`<h1 style="font-family:sans-serif">Link expired or invalid</h1><p style="font-family:sans-serif">Quick session links work for 7 days. <a href="${baseUrl}">Open the app</a> to make the change instead.</p>`);
+      return;
+    }
+    const companyId = link.company_id;
+    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: kinds } = await query('SELECT dashboard_id, key, label FROM session_kinds WHERE company_id = $1 ORDER BY position, label', [companyId]);
+    const { rows: dds } = await query(
+      `SELECT dd.dashboard_id, d.id, d.name FROM dashboard_departments dd
+       JOIN departments d ON d.id = dd.department_id
+       JOIN dashboards db ON db.id = dd.dashboard_id WHERE db.company_id = $1`, [companyId]);
+    const { rows: members } = await query(
+      `SELECT id, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+       FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name`, [companyId]);
+    const { rows: rooms } = await query('SELECT name FROM rooms WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: sess } = await query(
+      `SELECT id, dashboard_id, title, session_date::text AS sdate, start_time::text AS stime, end_time::text AS etime,
+              recur_rule, recur_interval, location, kind, lecturer_user_id, supervisor_user_id
+       FROM academic_sessions WHERE company_id = $1 ORDER BY session_date`, [companyId]);
+    const data = {
+      dashboards: dashes,
+      kindsByDash: {} as Record<string, any[]>,
+      deptsByDash: {} as Record<string, any[]>,
+      members,
+      rooms: rooms.map((r: any) => r.name),
+      sessionsByDash: {} as Record<string, any[]>,
+      prefill: {
+        dashboardId: link.dashboard_id || null,
+        sessionId: link.session_id || null,
+        date: link.occ_date ? String(link.occ_date).slice(0, 10) : null,
+      },
+    };
+    for (const k of kinds) { if (!k.dashboard_id) continue; (data.kindsByDash[k.dashboard_id] ||= []).push({ key: k.key, label: k.label }); }
+    for (const d of dds) { (data.deptsByDash[d.dashboard_id] ||= []).push({ id: d.id, name: d.name }); }
+    const memberName = new Map(members.map((m: any) => [m.id, m.name]));
+    for (const s of sess) {
+      if (!s.dashboard_id) continue;
+      (data.sessionsByDash[s.dashboard_id] ||= []).push({
+        id: s.id, title: s.title, sdate: s.sdate,
+        stime: s.stime ? String(s.stime).slice(0, 5) : '', etime: s.etime ? String(s.etime).slice(0, 5) : '',
+        recur: s.recur_rule && s.recur_rule !== 'none' ? s.recur_rule : '',
+        interval: s.recur_interval || 1, location: s.location || '', kind: s.kind || 'session',
+        presenterName: s.lecturer_user_id ? (memberName.get(s.lecturer_user_id) || '') : '',
+        supervisorName: s.supervisor_user_id ? (memberName.get(s.supervisor_user_id) || '') : '',
+      });
+    }
+    const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+    res.send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick session</title>
+<style>
+  body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;margin:0;background:#f6f7f9;color:#111827}
+  .wrap{max-width:560px;margin:0 auto;padding:16px}
+  h1{font-size:20px;margin:8px 0 2px} .sub{color:#6b7280;font-size:13px;margin-bottom:14px}
+  label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
+  input,select,textarea{width:100%;box-sizing:border-box;font-size:16px;padding:10px;border:1px solid #d1d5db;border-radius:8px;background:#fff}
+  .row{display:flex;gap:10px}.row>div{flex:1}
+  .tabs{display:flex;gap:8px;margin:14px 0 4px}
+  .tabs button{flex:1;padding:11px;border-radius:8px;border:1px solid #d1d5db;background:#fff;font-size:15px;font-weight:600;cursor:pointer}
+  .tabs button.on{background:#2563eb;color:#fff;border-color:#2563eb}
+  .go{width:100%;margin-top:18px;padding:13px;font-size:16px;font-weight:700;color:#fff;background:#2563eb;border:0;border-radius:8px;cursor:pointer}
+  .go:disabled{opacity:.5}
+  .danger{width:100%;margin-top:10px;padding:12px;font-size:15px;font-weight:600;color:#fff;background:#ef4444;border:0;border-radius:8px;cursor:pointer}
+  .danger.ghost{background:#fff;color:#ef4444;border:1px solid #ef4444}
+  #msg{display:none;padding:12px;border-radius:8px;margin:12px 0;font-size:15px}
+  #msg.ok{display:block;background:#dcfce7;color:#166534}#msg.err{display:block;background:#fee2e2;color:#991b1b}
+  .hint{font-size:13px;color:#374151;background:#eef2ff;border-radius:8px;padding:9px 11px;margin-top:8px}
+  .radios{display:flex;gap:8px;margin-top:6px}.radios label{flex:1;margin:0;font-weight:500;font-size:14px;border:1px solid #d1d5db;border-radius:8px;padding:9px;text-align:center;background:#fff;cursor:pointer}
+  .radios input{width:auto;margin-right:6px}
+  .small{font-size:12px;color:#6b7280;font-weight:400}
+</style></head>
+<body><div class="wrap">
+  <h1>📅 Quick session</h1>
+  <div class="sub">Add a session, or change / cancel one — right here, no app needed.</div>
+  <div id="msg"></div>
+  <label>Dashboard (calendar)</label>
+  <select id="dash"></select>
+  <div class="tabs"><button id="tabAdd" class="on" type="button">➕ Add a session</button><button id="tabChange" type="button">✏️ Change a session</button></div>
+
+  <section id="addForm">
+    <label>Session title</label><input id="a-title" placeholder="e.g. Morning Report">
+    <div class="row"><div><label>Date</label><input id="a-date" type="date"></div>
+    <div><label>Session type</label><select id="a-kind"></select></div></div>
+    <div class="row"><div><label>Starts</label><input id="a-start" type="time"></div>
+    <div><label>Ends</label><input id="a-end" type="time"></div></div>
+    <label>Presenter</label><select id="a-presenter"></select>
+    <label>Supervisor</label><select id="a-supervisor"></select>
+    <label>Room / location</label><input id="a-location" list="rooms" placeholder="Type or pick a room"><datalist id="rooms"></datalist>
+    <div id="a-deptwrap"><label>Department</label><select id="a-dept"></select></div>
+    <label>Repeats</label><select id="a-recur"><option value="none">Does not repeat</option><option value="weekly1">Weekly</option><option value="weekly2">Every 2 weeks</option></select>
+    <div id="a-untilwrap" style="display:none"><label>Repeat until <span class="small">(optional)</span></label><input id="a-until" type="date"></div>
+    <label>Notes <span class="small">(optional)</span></label><input id="a-notes">
+    <button class="go" id="a-save" type="button">Add session</button>
+  </section>
+
+  <section id="changeForm" style="display:none">
+    <label>Session</label><select id="c-session"></select>
+    <div class="hint" id="c-hint" style="display:none"></div>
+    <label>Date this change is about</label><input id="c-date" type="date">
+    <div id="c-scopewrap"><label>Apply to</label><div class="radios">
+      <label><input type="radio" name="scope" value="date" checked>Just this date</label>
+      <label><input type="radio" name="scope" value="series">Whole series</label>
+    </div></div>
+    <div class="small" style="margin-top:10px">Leave a field blank to keep it as it is.</div>
+    <label>New title</label><input id="c-title" placeholder="No change">
+    <label>Presenter</label><select id="c-presenter"></select>
+    <label>Supervisor</label><select id="c-supervisor"></select>
+    <label>Room / location</label><input id="c-location" list="rooms" placeholder="No change">
+    <div class="row"><div><label>Starts</label><input id="c-start" type="time"></div>
+    <div><label>Ends</label><input id="c-end" type="time"></div></div>
+    <label>Move to a different date <span class="small">(optional)</span></label><input id="c-newdate" type="date">
+    <button class="go" id="c-save" type="button">Save changes</button>
+    <button class="danger ghost" id="c-cancel-date" type="button">🚫 Cancel just this date</button>
+    <button class="danger" id="c-cancel-all" type="button">🗑 Cancel the whole session</button>
+  </section>
+</div>
+<script>
+const DATA = ${dataJson};
+const $ = (id) => document.getElementById(id);
+const msg = (ok, text) => { const m = $('msg'); m.className = ok ? 'ok' : 'err'; m.textContent = text; m.scrollIntoView({behavior:'smooth', block:'center'}); };
+const memberOpts = (el, blankLabel, withNobody) => {
+  el.innerHTML = '';
+  const o0 = document.createElement('option'); o0.value = ''; o0.textContent = blankLabel; el.appendChild(o0);
+  if (withNobody) { const on = document.createElement('option'); on.value = 'none'; on.textContent = '— Nobody —'; el.appendChild(on); }
+  for (const m of DATA.members) { const o = document.createElement('option'); o.value = m.id; o.textContent = m.name; el.appendChild(o); }
+};
+function dashChanged() {
+  const d = $('dash').value;
+  const kinds = DATA.kindsByDash[d] || [{key:'session',label:'Lecture'},{key:'event',label:'Event'}];
+  $('a-kind').innerHTML = '';
+  for (const k of kinds) { const o = document.createElement('option'); o.value = k.key; o.textContent = k.label; $('a-kind').appendChild(o); }
+  const depts = DATA.deptsByDash[d] || [];
+  $('a-deptwrap').style.display = depts.length ? '' : 'none';
+  $('a-dept').innerHTML = '';
+  for (const dep of depts) { const o = document.createElement('option'); o.value = dep.id; o.textContent = dep.name; $('a-dept').appendChild(o); }
+  const list = DATA.sessionsByDash[d] || [];
+  $('c-session').innerHTML = '';
+  for (const s of list) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.title + (s.recur ? ' (repeats)' : ' — ' + s.sdate); $('c-session').appendChild(o); }
+  sessionChanged();
+  const pre = DATA.prefill;
+  if (pre.sessionId && list.some((s) => s.id === pre.sessionId)) { $('c-session').value = pre.sessionId; sessionChanged(); showChange(); }
+}
+function curSession() {
+  const list = DATA.sessionsByDash[$('dash').value] || [];
+  return list.find((s) => s.id === $('c-session').value) || null;
+}
+function sessionChanged() {
+  const s = curSession();
+  const hint = $('c-hint');
+  if (!s) { hint.style.display = 'none'; $('c-scopewrap').style.display = 'none'; return; }
+  const parts = [];
+  if (s.recur) parts.push('Repeats ' + s.recur + (s.interval > 1 ? ' every ' + s.interval : ''));
+  else parts.push('One-time on ' + s.sdate);
+  if (s.stime) parts.push(s.stime + (s.etime ? '–' + s.etime : ''));
+  if (s.presenterName) parts.push('Presenter: ' + s.presenterName);
+  if (s.supervisorName) parts.push('Supervisor: ' + s.supervisorName);
+  if (s.location) parts.push('In ' + s.location);
+  hint.textContent = parts.join(' · ');
+  hint.style.display = '';
+  $('c-scopewrap').style.display = s.recur ? '' : 'none';
+  $('c-cancel-date').style.display = s.recur ? '' : 'none';
+}
+function showAdd() { $('addForm').style.display = ''; $('changeForm').style.display = 'none'; $('tabAdd').classList.add('on'); $('tabChange').classList.remove('on'); }
+function showChange() { $('addForm').style.display = 'none'; $('changeForm').style.display = ''; $('tabAdd').classList.remove('on'); $('tabChange').classList.add('on'); }
+async function post(body, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(location.pathname, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) { msg(true, '✅ ' + j.message); }
+    else msg(false, j.error || 'Something went wrong. Please try again.');
+  } catch (e) { msg(false, 'Network error — please try again.'); }
+  btn.disabled = false;
+}
+// init
+for (const d of DATA.dashboards) { const o = document.createElement('option'); o.value = d.id; o.textContent = d.name; $('dash').appendChild(o); }
+for (const name of DATA.rooms) { const o = document.createElement('option'); o.value = name; $('rooms').appendChild(o); }
+memberOpts($('a-presenter'), '— Nobody —', false);
+memberOpts($('a-supervisor'), '— Nobody —', false);
+memberOpts($('c-presenter'), '— No change —', true);
+memberOpts($('c-supervisor'), '— No change —', true);
+if (DATA.prefill.dashboardId) $('dash').value = DATA.prefill.dashboardId;
+if (DATA.prefill.date) { $('a-date').value = DATA.prefill.date; $('c-date').value = DATA.prefill.date; }
+$('a-date').value = $('a-date').value || new Date().toISOString().slice(0, 10);
+$('c-date').value = $('c-date').value || new Date().toISOString().slice(0, 10);
+$('dash').addEventListener('change', dashChanged);
+$('c-session').addEventListener('change', sessionChanged);
+$('tabAdd').addEventListener('click', showAdd);
+$('tabChange').addEventListener('click', showChange);
+$('a-recur').addEventListener('change', () => { $('a-untilwrap').style.display = $('a-recur').value === 'none' ? 'none' : ''; });
+dashChanged();
+if (DATA.prefill.sessionId) showChange();
+$('a-save').addEventListener('click', () => {
+  const title = $('a-title').value.trim();
+  if (!title) { msg(false, 'Give the session a title first.'); return; }
+  if (!$('a-date').value) { msg(false, 'Pick a date first.'); return; }
+  post({ mode: 'add', dashboardId: $('dash').value, title, date: $('a-date').value,
+    startTime: $('a-start').value || null, endTime: $('a-end').value || null,
+    kindKey: $('a-kind').value, presenterId: $('a-presenter').value || null,
+    supervisorId: $('a-supervisor').value || null, location: $('a-location').value.trim() || null,
+    departmentId: $('a-dept').value || null, recur: $('a-recur').value,
+    recurUntil: $('a-until').value || null, notes: $('a-notes').value.trim() || null }, $('a-save'));
+});
+$('c-save').addEventListener('click', () => {
+  const s = curSession();
+  if (!s) { msg(false, 'Pick a session first.'); return; }
+  const fields = {};
+  if ($('c-title').value.trim()) fields.title = $('c-title').value.trim();
+  if ($('c-presenter').value) fields.presenterId = $('c-presenter').value === 'none' ? null : $('c-presenter').value;
+  if ($('c-supervisor').value) fields.supervisorId = $('c-supervisor').value === 'none' ? null : $('c-supervisor').value;
+  if ($('c-location').value.trim()) fields.location = $('c-location').value.trim();
+  if ($('c-start').value) fields.startTime = $('c-start').value;
+  if ($('c-end').value) fields.endTime = $('c-end').value;
+  const scope = s.recur ? (document.querySelector('input[name=scope]:checked') || {}).value || 'date' : 'series';
+  post({ mode: 'update', sessionId: s.id, scope, date: $('c-date').value || null,
+    newDate: $('c-newdate').value || null, fields }, $('c-save'));
+});
+$('c-cancel-date').addEventListener('click', () => {
+  const s = curSession(); if (!s) return;
+  if (!$('c-date').value) { msg(false, 'Pick the date to cancel first.'); return; }
+  if (!confirm('Cancel "' + s.title + '" on ' + $('c-date').value + ' (just this date)?')) return;
+  post({ mode: 'cancel', sessionId: s.id, scope: 'date', date: $('c-date').value }, $('c-cancel-date'));
+});
+$('c-cancel-all').addEventListener('click', () => {
+  const s = curSession(); if (!s) return;
+  if (!confirm('Cancel "' + s.title + '"' + (s.recur ? ' — the WHOLE series?' : '?'))) return;
+  post({ mode: 'cancel', sessionId: s.id, scope: 'series', date: null }, $('c-cancel-all'));
+});
+</script>
+</div></body></html>`);
+  } catch (err) {
+    console.error('[schedule] quick-session page failed:', err);
+    res.status(500).send('<h1 style="font-family:sans-serif">Error</h1><p style="font-family:sans-serif">Something went wrong. Please try again.</p>');
+  }
+});
+
+router.post('/quick-session/:token', async (req: Request, res: Response) => {
+  try {
+    const link = await loadQuickLink(String(req.params.token));
+    if (!link) { res.status(404).json({ error: 'This quick link has expired. Open the app to make the change.' }); return; }
+    const companyId = link.company_id;
+    const b = req.body ?? {};
+    const { insertSession, updateSessionSeries, updateSessionDate, cancelSessionDate, deleteSessionRow, moveSessionDate } =
+      await import('../util/planExecutor.js');
+    const { rows: ow } = await query("SELECT id FROM users WHERE company_id = $1 AND role = 'owner' AND is_active = true LIMIT 1", [companyId]);
+    const ownerId = ow[0]?.id ?? null;
+    const validUser = async (id: any): Promise<boolean> => {
+      if (!id) return true;
+      const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [String(id), companyId]);
+      return rows.length > 0;
+    };
+
+    if (b.mode === 'add') {
+      const dashboardId = String(b.dashboardId || '');
+      const { rows: dRows } = await query('SELECT id, name FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
+      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      const title = String(b.title || '').trim();
+      const date = String(b.date || '');
+      if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'Pick a date.' }); return; }
+      if (!(await validUser(b.presenterId)) || !(await validUser(b.supervisorId))) {
+        res.status(400).json({ error: 'That person is not an active team member.' }); return;
+      }
+      let kindKey = 'session';
+      if (b.kindKey) {
+        const { rows: kRows } = await query('SELECT key FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND key = $3', [companyId, dashboardId, String(b.kindKey)]);
+        if (kRows.length) kindKey = String(b.kindKey);
+      }
+      let departmentId: string | null = null;
+      const { rows: ddRows } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
+      const dashDepts = ddRows.map((r: any) => r.department_id);
+      if (b.departmentId && dashDepts.includes(String(b.departmentId))) departmentId = String(b.departmentId);
+      else if (dashDepts.length === 1) departmentId = dashDepts[0];
+      const recurRule = b.recur === 'weekly1' || b.recur === 'weekly2' ? 'weekly' : 'none';
+      await insertSession(companyId, ownerId, dashboardId, {
+        title, date,
+        startTime: b.startTime || null, endTime: b.endTime || null,
+        presenterId: b.presenterId || null, supervisorId: b.supervisorId || null,
+        location: b.location ? String(b.location).trim() : null,
+        kindKey, departmentId, notes: b.notes ? String(b.notes).trim() : null,
+        recurRule, recurInterval: b.recur === 'weekly2' ? 2 : 1,
+        recurUntil: recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : null,
+      });
+      res.json({ ok: true, message: `Added "${title}" to ${dRows[0].name} on ${date}${recurRule !== 'none' ? ' (repeating weekly)' : ''}.` });
+      return;
+    }
+
+    if (b.mode === 'update' || b.mode === 'cancel') {
+      const sessionId = String(b.sessionId || '');
+      const { rows: sRows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [sessionId, companyId]);
+      if (!sRows.length) { res.status(404).json({ error: 'Session not found.' }); return; }
+      const sess = sRows[0];
+      const recurring = !!(sess.recur_rule && sess.recur_rule !== 'none');
+      const scope = recurring && b.scope === 'date' ? 'date' : 'series';
+      const date = b.date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.date)) ? String(b.date) : null;
+
+      if (b.mode === 'cancel') {
+        if (scope === 'date') {
+          if (!date) { res.status(400).json({ error: 'Pick the date to cancel.' }); return; }
+          await cancelSessionDate(companyId, sess.id, date);
+          res.json({ ok: true, message: `Cancelled "${sess.title}" on ${date} (just this date).` });
+        } else {
+          await deleteSessionRow(companyId, sess.id);
+          res.json({ ok: true, message: `Cancelled "${sess.title}"${recurring ? ' (whole series)' : ''}.` });
+        }
+        return;
+      }
+
+      // update
+      const fIn = (b.fields && typeof b.fields === 'object') ? b.fields : {};
+      const f: any = {};
+      if (typeof fIn.title === 'string' && fIn.title.trim()) f.title = fIn.title.trim();
+      if ('presenterId' in fIn) { if (!(await validUser(fIn.presenterId))) { res.status(400).json({ error: 'That presenter is not an active team member.' }); return; } f.presenterId = fIn.presenterId || null; }
+      if ('supervisorId' in fIn) { if (!(await validUser(fIn.supervisorId))) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; } f.supervisorId = fIn.supervisorId || null; }
+      if (typeof fIn.location === 'string' && fIn.location.trim()) f.location = fIn.location.trim();
+      if (fIn.startTime) f.startTime = String(fIn.startTime);
+      if (fIn.endTime) f.endTime = String(fIn.endTime);
+      const newDate = b.newDate && /^\d{4}-\d{2}-\d{2}$/.test(String(b.newDate)) ? String(b.newDate) : null;
+      if (!newDate && !Object.keys(f).length) { res.status(400).json({ error: 'Fill in at least one field to change.' }); return; }
+      if (newDate) {
+        if (!recurring || scope === 'series') {
+          await updateSessionSeries(companyId, sess, { ...f, date: newDate });
+          res.json({ ok: true, message: `Moved "${sess.title}" to ${newDate}.` });
+        } else {
+          if (!date) { res.status(400).json({ error: 'Pick the date to move from.' }); return; }
+          await moveSessionDate(companyId, ownerId, sess, date, newDate, f);
+          res.json({ ok: true, message: `Moved "${sess.title}" from ${date} to ${newDate} (just that date).` });
+        }
+        return;
+      }
+      if (scope === 'date') {
+        if (!date) { res.status(400).json({ error: 'Pick the date this change is about.' }); return; }
+        const skipped = await updateSessionDate(companyId, sess, date, f);
+        res.json({ ok: true, message: `Updated "${sess.title}" for ${date} (just this date).` + (skipped.length ? ` Note: ${skipped.join(' and ')} can only change for the whole series.` : '') });
+      } else {
+        await updateSessionSeries(companyId, sess, f);
+        res.json({ ok: true, message: `Updated "${sess.title}"${recurring ? ' (whole series)' : ''}.` });
+      }
+      return;
+    }
+
+    res.status(400).json({ error: 'Unknown action.' });
+  } catch (err) {
+    console.error('[schedule] quick-session apply failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 

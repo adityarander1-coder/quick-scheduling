@@ -1,6 +1,8 @@
 // util/planExecutor.ts — executes approved schedule change plans.
 
+import crypto from 'node:crypto';
 import { query } from '../db.js';
+import { getDepartmentAccess } from './departmentAccess.js';
 
 interface PlanChange {
   action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
@@ -8,7 +10,8 @@ interface PlanChange {
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
           'set_staffing_target' |
-          'bulk_publish' | 'bulk_unpublish';
+          'bulk_publish' | 'bulk_unpublish' |
+          'add_session' | 'update_session' | 'cancel_session';
   person?: string;
   fromPerson?: string;
   toPerson?: string;
@@ -25,6 +28,22 @@ interface PlanChange {
   email?: string;
   newShiftType?: string;
   targetCount?: number;
+  // Calendar session fields (add_session / update_session / cancel_session)
+  dashboard?: string;
+  title?: string;
+  sessionTitle?: string;
+  sessionType?: string;
+  presenter?: string;
+  supervisor?: string;
+  location?: string;
+  startTime?: string;
+  endTime?: string;
+  scope?: 'date' | 'series';
+  newDate?: string;
+  recurRule?: string;
+  recurInterval?: number;
+  recurUntil?: string;
+  notes?: string;
 }
 
 interface ExecuteResult {
@@ -185,6 +204,249 @@ async function findShiftRow(
 function noManualShiftMsg(display: string, date: string, shiftTypeName?: string): string {
   return `No shift found for ${display} on ${date}${shiftTypeName ? ` (${shiftTypeName})` : ''}. ` +
     `Only manually-assigned shifts can be swapped — rotation-generated shifts need the scheduler.`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Calendar sessions (dashboards) — added 2026-10-21 so Email        */
+/* Q-Scheduler / the in-app Task agent can add, change and cancel    */
+/* sessions with the same semantics as the session REST endpoints    */
+/* (per-date overrides, series edits, editor permission rule). The   */
+/* exported ops are shared with the quick-session email page.        */
+/* ------------------------------------------------------------------ */
+
+async function findDashboard(companyId: string, name: string): Promise<{ id: string; name: string } | null> {
+  const { rows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
+  const lower = name.toLowerCase().trim();
+  for (const d of rows) if (d.name.toLowerCase() === lower) return { id: d.id, name: d.name };
+  const cands = rows.filter((d: any) => d.name.toLowerCase().includes(lower) || lower.includes(d.name.toLowerCase()));
+  if (cands.length === 1) return { id: cands[0].id, name: cands[0].name };
+  return null;
+}
+
+async function dashboardDeptIdsE(dashboardId: string): Promise<string[]> {
+  const { rows } = await query(
+    'SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1',
+    [dashboardId]
+  ).catch(() => ({ rows: [] as any[] }));
+  return rows.map((r: any) => r.department_id);
+}
+
+/** Mirror of the routes' cleanKind: label/key match, else 'session'. */
+async function resolveKindKey(companyId: string, dashboardId: string, label?: string): Promise<string> {
+  if (!label) return 'session';
+  const key = label.trim().toLowerCase();
+  if (!key) return 'session';
+  const { rows } = await query('SELECT key, label FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
+  for (const k of rows) if (k.key === key || String(k.label).toLowerCase() === key) return k.key;
+  for (const k of rows) if (String(k.label).toLowerCase().includes(key) || key.includes(String(k.label).toLowerCase())) return k.key;
+  return 'session';
+}
+
+/** Permission mirror of the routes' sessionEditCheck, for plan execution. */
+async function canEditSessionTarget(
+  companyId: string, createdBy: string | null, dashboardId: string | null, departmentId: string | null
+): Promise<boolean> {
+  if (!createdBy) return true; // email approve link: the token is the auth
+  const { rows } = await query('SELECT role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [createdBy, companyId]);
+  const role = rows[0]?.role;
+  if (role === 'owner') return true;
+  if (role !== 'scheduler') return false;
+  if (dashboardId) {
+    const { rows: ed } = await query('SELECT user_id FROM dashboard_editors WHERE dashboard_id = $1', [dashboardId]);
+    if (ed.length) return ed.some((r: any) => r.user_id === createdBy);
+  }
+  if (!departmentId) return false;
+  const access = await getDepartmentAccess(createdBy, companyId);
+  return access.edit.includes(departmentId);
+}
+
+function toDateStr(v: any): string {
+  if (!v) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+/** Does this session row occur on the given date? (Preference check for
+ *  targeting one series among same-title sessions; monthly/yearly are
+ *  trusted rather than re-derived.) */
+function sessionOccursOn(s: any, date: string): boolean {
+  const start = toDateStr(s.session_date);
+  if (!start || date < start) return false;
+  if (s.recur_until && date > toDateStr(s.recur_until)) return false;
+  const rule = s.recur_rule || 'none';
+  if (rule === 'none') return date === start;
+  const a = new Date(start + 'T00:00:00');
+  const b = new Date(date + 'T00:00:00');
+  const diffDays = Math.round((b.getTime() - a.getTime()) / 86400000);
+  const interval = s.recur_interval || (rule === 'biweekly' ? 2 : 1);
+  if (rule === 'daily') return diffDays % interval === 0;
+  if (rule === 'weekly' || rule === 'biweekly') {
+    const days = s.recur_days ? String(s.recur_days).split(',').map((x: string) => parseInt(x, 10)) : [a.getDay()];
+    return days.includes(b.getDay()) && Math.floor(diffDays / 7) % interval === 0;
+  }
+  return true;
+}
+
+async function findSessionRow(companyId: string, dashboardId: string, title: string, dateHint?: string): Promise<any | null> {
+  const { rows } = await query('SELECT * FROM academic_sessions WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
+  const lower = title.toLowerCase().trim();
+  const exact = rows.filter((r: any) => String(r.title).toLowerCase() === lower);
+  let cands = exact.length ? exact : rows.filter((r: any) => String(r.title).toLowerCase().includes(lower) || lower.includes(String(r.title).toLowerCase()));
+  if (!cands.length) return null;
+  if (dateHint) {
+    const onDate = cands.filter((r: any) => sessionOccursOn(r, dateHint));
+    if (onDate.length) cands = onDate;
+  }
+  cands.sort((x: any, y: any) => toDateStr(x.session_date).localeCompare(toDateStr(y.session_date)));
+  return cands[0];
+}
+
+/** Mirror of the routes' upsertOverride. */
+async function upsertOverrideE(companyId: string, sessionId: string, date: string, fields: Record<string, any>): Promise<void> {
+  const cols = Object.keys(fields);
+  if (!cols.length) return;
+  const insertCols = ['company_id', 'session_id', 'date', ...cols];
+  const values = [companyId, sessionId, date, ...cols.map((c) => fields[c])];
+  const placeholders = insertCols.map((_, i) => '$' + (i + 1)).join(', ');
+  const updates = cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ');
+  await query(
+    `INSERT INTO academic_session_overrides (${insertCols.join(', ')}) VALUES (${placeholders})
+     ON CONFLICT (session_id, date) DO UPDATE SET ${updates}, updated_at = now()`,
+    values
+  );
+}
+
+async function getOverrideE(sessionId: string, date: string): Promise<any | null> {
+  const { rows } = await query('SELECT * FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [sessionId, date]);
+  return rows[0] || null;
+}
+
+export interface SessionFields {
+  title?: string;
+  date?: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  presenterId?: string | null;
+  supervisorId?: string | null;
+  location?: string | null;
+  kindKey?: string;
+  departmentId?: string | null;
+  notes?: string | null;
+  meetingUrl?: string | null;
+  recurRule?: string;
+  recurInterval?: number;
+  recurUntil?: string | null;
+  recurCount?: number | null;
+  recurDays?: number[];
+}
+
+/** Mirror of POST /academic-sessions. Returns the new session id. */
+export async function insertSession(
+  companyId: string, createdBy: string | null, dashboardId: string, f: SessionFields & { title: string; date: string }
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const rule = f.recurRule || 'none';
+  await query(
+    `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+    [id, companyId, f.title, f.presenterId ?? null, f.departmentId ?? null,
+     f.date, f.startTime ?? null, f.endTime ?? null, f.location ?? null,
+     f.kindKey || 'session', f.notes ?? null, createdBy, dashboardId, rule, rule !== 'none' ? (f.recurUntil ?? null) : null,
+     f.supervisorId ?? null,
+     rule === 'weekly' && f.recurDays && f.recurDays.length ? f.recurDays.join(',') : null,
+     f.recurInterval || 1, f.recurCount ?? null, f.meetingUrl ?? null]
+  );
+  return id;
+}
+
+/** Series-level update: only the provided fields change. */
+export async function updateSessionSeries(companyId: string, s: any, f: SessionFields): Promise<void> {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  const set = (col: string, v: any) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+  if (f.title !== undefined) set('title', f.title);
+  if (f.date !== undefined) set('session_date', f.date);
+  if (f.startTime !== undefined) set('start_time', f.startTime);
+  if (f.endTime !== undefined) set('end_time', f.endTime);
+  if (f.presenterId !== undefined) set('lecturer_user_id', f.presenterId);
+  if (f.supervisorId !== undefined) set('supervisor_user_id', f.supervisorId);
+  if (f.location !== undefined) set('location', f.location);
+  if (f.kindKey !== undefined) set('kind', f.kindKey);
+  if (f.departmentId !== undefined) set('department_id', f.departmentId);
+  if (f.notes !== undefined) set('notes', f.notes);
+  if (f.meetingUrl !== undefined) set('meeting_url', f.meetingUrl);
+  if (!sets.length) return;
+  vals.push(s.id, companyId);
+  await query(`UPDATE academic_sessions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND company_id = $${vals.length}`, vals);
+}
+
+/** One-date update via override. Returns names of fields a one-date
+ *  change cannot carry (name / type / notes), for the result message. */
+export async function updateSessionDate(companyId: string, s: any, date: string, f: SessionFields): Promise<string[]> {
+  const fields: Record<string, any> = { cancelled: false };
+  const skipped: string[] = [];
+  if (f.presenterId !== undefined) { fields.has_lecturer = true; fields.lecturer_user_id = f.presenterId; }
+  if (f.supervisorId !== undefined) { fields.has_supervisor = true; fields.supervisor_user_id = f.supervisorId; }
+  if (f.location !== undefined) { fields.has_location = true; fields.location = f.location; }
+  if (f.meetingUrl !== undefined) { fields.has_meeting_url = true; fields.meeting_url = f.meetingUrl; }
+  if (f.startTime !== undefined || f.endTime !== undefined) {
+    fields.has_times = true;
+    fields.start_time = f.startTime !== undefined ? f.startTime : s.start_time;
+    fields.end_time = f.endTime !== undefined ? f.endTime : s.end_time;
+  }
+  if (f.title !== undefined) skipped.push('the name');
+  if (f.kindKey !== undefined) skipped.push('the session type');
+  if (f.notes !== undefined) skipped.push('notes');
+  await upsertOverrideE(companyId, s.id, date, fields);
+  return skipped;
+}
+
+export async function cancelSessionDate(companyId: string, sessionId: string, date: string): Promise<void> {
+  await upsertOverrideE(companyId, sessionId, date, { cancelled: true });
+}
+
+export async function deleteSessionRow(companyId: string, sessionId: string): Promise<void> {
+  await query('DELETE FROM academic_sessions WHERE id = $1 AND company_id = $2', [sessionId, companyId]);
+}
+
+/** Move ONE date of a recurring series: cancel that date and create a
+ *  one-off copy on the new date with the date's effective details. */
+export async function moveSessionDate(
+  companyId: string, createdBy: string | null, s: any, fromDate: string, toDate: string, f: SessionFields
+): Promise<void> {
+  const ov = await getOverrideE(s.id, fromDate);
+  const eff: SessionFields & { title: string; date: string } = {
+    title: f.title !== undefined ? f.title : s.title,
+    date: toDate,
+    presenterId: f.presenterId !== undefined ? f.presenterId : (ov && ov.has_lecturer ? ov.lecturer_user_id : s.lecturer_user_id),
+    supervisorId: f.supervisorId !== undefined ? f.supervisorId : (ov && ov.has_supervisor ? ov.supervisor_user_id : s.supervisor_user_id),
+    location: f.location !== undefined ? f.location : (ov && ov.has_location ? ov.location : s.location),
+    startTime: f.startTime !== undefined ? f.startTime : (ov && ov.has_times ? ov.start_time : s.start_time),
+    endTime: f.endTime !== undefined ? f.endTime : (ov && ov.has_times ? ov.end_time : s.end_time),
+    meetingUrl: f.meetingUrl !== undefined ? f.meetingUrl : (ov && ov.has_meeting_url ? ov.meeting_url : s.meeting_url),
+    kindKey: f.kindKey !== undefined ? f.kindKey : s.kind,
+    departmentId: s.department_id,
+    notes: f.notes !== undefined ? f.notes : s.notes,
+    recurRule: 'none',
+  };
+  await cancelSessionDate(companyId, s.id, fromDate);
+  await insertSession(companyId, createdBy, s.dashboard_id, eff);
+}
+
+function normTime(v?: string): string | null {
+  if (!v) return null;
+  const m = String(v).trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return String(v).trim() || null;
+  return m[1].padStart(2, '0') + ':' + m[2];
+}
+
+function cleanRecurE(change: PlanChange): { recurRule: string; recurInterval: number; recurUntil: string | null } {
+  let rule = ['daily', 'weekly', 'monthly', 'monthly-weekday', 'yearly'].includes(String(change.recurRule || ''))
+    ? String(change.recurRule) : 'none';
+  let interval = Math.floor(Number(change.recurInterval) || 1);
+  if (interval < 1) interval = 1;
+  if (interval > 52) interval = 52;
+  return { recurRule: rule, recurInterval: rule === 'none' ? 1 : interval, recurUntil: rule !== 'none' ? (change.recurUntil || null) : null };
 }
 
 /** Execute a plan's changes. Returns per-change results. */
@@ -510,6 +772,122 @@ export async function executePlan(
           action: change.action, success: true,
           message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
         });
+      } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {
+        const dash = await findDashboard(companyId, change.dashboard);
+        if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
+        let deptId: string | null = null;
+        if (change.department) {
+          const dept = await findDepartment(companyId, change.department);
+          if (!dept) throw new Error(`Department not found: ${change.department}`);
+          deptId = dept.id;
+        } else {
+          const dd = await dashboardDeptIdsE(dash.id);
+          if (dd.length === 1) deptId = dd[0];
+        }
+        const presenter = change.presenter ? await findUser(companyId, change.presenter) : null;
+        if (change.presenter && !presenter) throw new Error(`Person not found: ${change.presenter}`);
+        const supervisor = change.supervisor ? await findUser(companyId, change.supervisor) : null;
+        if (change.supervisor && !supervisor) throw new Error(`Person not found: ${change.supervisor}`);
+        if (!(await canEditSessionTarget(companyId, createdBy, dash.id, deptId))) {
+          throw new Error(`No edit access to sessions on ${dash.name}.`);
+        }
+        const kindKey = await resolveKindKey(companyId, dash.id, change.sessionType);
+        const rec = cleanRecurE(change);
+        let actorId = createdBy;
+        if (!actorId) {
+          const { rows: ow } = await query("SELECT id FROM users WHERE company_id = $1 AND role = 'owner' AND is_active = true LIMIT 1", [companyId]);
+          actorId = ow[0]?.id ?? null;
+        }
+        await insertSession(companyId, actorId, dash.id, {
+          title: change.title, date: change.date,
+          startTime: normTime(change.startTime), endTime: normTime(change.endTime),
+          presenterId: presenter?.id ?? null, supervisorId: supervisor?.id ?? null,
+          location: change.location ? change.location.trim() : null,
+          kindKey, departmentId: deptId, notes: change.notes ? change.notes.trim() : null,
+          recurRule: rec.recurRule, recurInterval: rec.recurInterval, recurUntil: rec.recurUntil,
+        });
+        results.push({
+          action: 'add_session', success: true,
+          message: `Added "${change.title}" to ${dash.name} on ${change.date}` +
+            (change.startTime ? ` at ${normTime(change.startTime)}` : '') +
+            (presenter ? `, presenter ${presenter.display}` : '') +
+            (rec.recurRule !== 'none' ? `, repeating ${rec.recurRule}${rec.recurInterval > 1 ? ` every ${rec.recurInterval}` : ''}` : ''),
+        });
+      } else if (change.action === 'update_session' && change.dashboard && change.sessionTitle) {
+        const dash = await findDashboard(companyId, change.dashboard);
+        if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
+        const sess = await findSessionRow(companyId, dash.id, change.sessionTitle, change.newDate || change.date);
+        if (!sess) throw new Error(`Session not found on ${dash.name}: "${change.sessionTitle}"`);
+        if (!(await canEditSessionTarget(companyId, createdBy, dash.id, sess.department_id))) {
+          throw new Error(`No edit access to sessions on ${dash.name}.`);
+        }
+        const f: SessionFields = {};
+        if (change.title !== undefined && change.title !== sess.title) f.title = change.title;
+        if (change.presenter !== undefined) {
+          const p = change.presenter ? await findUser(companyId, change.presenter) : null;
+          if (change.presenter && !p) throw new Error(`Person not found: ${change.presenter}`);
+          f.presenterId = p?.id ?? null;
+        }
+        if (change.supervisor !== undefined) {
+          const sv = change.supervisor ? await findUser(companyId, change.supervisor) : null;
+          if (change.supervisor && !sv) throw new Error(`Person not found: ${change.supervisor}`);
+          f.supervisorId = sv?.id ?? null;
+        }
+        if (change.location !== undefined) f.location = change.location ? change.location.trim() : null;
+        if (change.startTime !== undefined) f.startTime = normTime(change.startTime);
+        if (change.endTime !== undefined) f.endTime = normTime(change.endTime);
+        if (change.sessionType !== undefined) f.kindKey = await resolveKindKey(companyId, dash.id, change.sessionType);
+        if (change.notes !== undefined) f.notes = change.notes ? change.notes.trim() : null;
+        const recurring = !!(sess.recur_rule && sess.recur_rule !== 'none');
+        const scope: 'date' | 'series' = change.scope === 'series' ? 'series'
+          : change.scope === 'date' ? 'date'
+          : (recurring && change.date ? 'date' : 'series');
+        let actorId = createdBy;
+        if (!actorId) {
+          const { rows: ow } = await query("SELECT id FROM users WHERE company_id = $1 AND role = 'owner' AND is_active = true LIMIT 1", [companyId]);
+          actorId = ow[0]?.id ?? null;
+        }
+        if (change.newDate) {
+          if (!recurring || scope === 'series') {
+            await updateSessionSeries(companyId, sess, { ...f, date: change.newDate });
+            results.push({ action: 'update_session', success: true, message: `Moved "${sess.title}" on ${dash.name} to ${change.newDate}` });
+          } else {
+            if (!change.date) throw new Error('A date is needed to move just one date of a repeating session.');
+            await moveSessionDate(companyId, actorId, sess, change.date, change.newDate, f);
+            results.push({ action: 'update_session', success: true, message: `Moved "${sess.title}" on ${dash.name} from ${change.date} to ${change.newDate} (just that date)` });
+          }
+        } else if (scope === 'date' && recurring) {
+          if (!change.date) throw new Error('A date is needed to change just one date of a repeating session.');
+          const skipped = await updateSessionDate(companyId, sess, change.date, f);
+          results.push({
+            action: 'update_session', success: true,
+            message: `Updated "${sess.title}" on ${dash.name} for ${change.date} (just this date)` +
+              (skipped.length ? `. Note: ${skipped.join(' and ')} can only change for the whole series, so ${skipped.length > 1 ? 'those were' : 'that was'} left as-is.` : ''),
+          });
+        } else {
+          await updateSessionSeries(companyId, sess, f);
+          results.push({ action: 'update_session', success: true, message: `Updated "${sess.title}" on ${dash.name}${recurring ? ' (whole series)' : ''}` });
+        }
+      } else if (change.action === 'cancel_session' && change.dashboard && change.sessionTitle) {
+        const dash = await findDashboard(companyId, change.dashboard);
+        if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
+        const sess = await findSessionRow(companyId, dash.id, change.sessionTitle, change.date);
+        if (!sess) throw new Error(`Session not found on ${dash.name}: "${change.sessionTitle}"`);
+        if (!(await canEditSessionTarget(companyId, createdBy, dash.id, sess.department_id))) {
+          throw new Error(`No edit access to sessions on ${dash.name}.`);
+        }
+        const recurring = !!(sess.recur_rule && sess.recur_rule !== 'none');
+        const scope: 'date' | 'series' = change.scope === 'series' ? 'series'
+          : change.scope === 'date' ? 'date'
+          : (recurring && change.date ? 'date' : 'series');
+        if (scope === 'date' && recurring) {
+          if (!change.date) throw new Error('A date is needed to cancel just one date of a repeating session.');
+          await cancelSessionDate(companyId, sess.id, change.date);
+          results.push({ action: 'cancel_session', success: true, message: `Cancelled "${sess.title}" on ${dash.name} for ${change.date} (just this date)` });
+        } else {
+          await deleteSessionRow(companyId, sess.id);
+          results.push({ action: 'cancel_session', success: true, message: `Cancelled "${sess.title}" on ${dash.name}${recurring ? ' (whole series)' : ''}` });
+        }
       } else {
         results.push({ action: change.action, success: false, message: `Unsupported or incomplete change: ${JSON.stringify(change)}` });
       }

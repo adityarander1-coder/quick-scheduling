@@ -99,10 +99,100 @@ export function changeProblems(change: any): string[] {
       if (missing(change.fromDate)) problems.push('no start date given');
       if (missing(change.toDate)) problems.push('no end date given');
       break;
+    case 'add_session':
+      if (missing(change.dashboard)) problems.push('no dashboard named');
+      if (missing(change.title)) problems.push('no session title given');
+      if (missing(change.date)) problems.push('no date given');
+      break;
+    case 'update_session':
+      if (missing(change.dashboard)) problems.push('no dashboard named');
+      if (missing(change.sessionTitle)) problems.push('no session named');
+      break;
+    case 'cancel_session':
+      if (missing(change.dashboard)) problems.push('no dashboard named');
+      if (missing(change.sessionTitle)) problems.push('no session named');
+      break;
     default:
       problems.push(`unsupported action "${change.action}"`);
   }
   return problems;
+}
+
+/**
+ * Calendar context for the plan builder (2026-10-21): dashboards,
+ * their session types + departments, rooms, and a compact list of
+ * sessions the AI can target for update/cancel. Recurring series are
+ * always listed; one-offs only in a window around today. Capped so
+ * the prompt stays small.
+ */
+export async function buildSessionContext(
+  query: QueryFn, companyId: string, today: string
+): Promise<{ dashboards: string[]; sessionKinds: string[]; rooms: string[]; sessions: string[]; dashboardDepartments: string[] }> {
+  const out = { dashboards: [] as string[], sessionKinds: [] as string[], rooms: [] as string[], sessions: [] as string[], dashboardDepartments: [] as string[] };
+  try {
+    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
+    out.dashboards = dashes.map((d: any) => d.name);
+    const dashName = new Map(dashes.map((d: any) => [d.id, d.name]));
+    if (dashes.length) {
+      const { rows: kinds } = await query(
+        'SELECT dashboard_id, label FROM session_kinds WHERE company_id = $1 ORDER BY position, label', [companyId]);
+      const byDash = new Map<string, string[]>();
+      for (const k of kinds) {
+        if (!k.dashboard_id) continue;
+        const arr = byDash.get(k.dashboard_id) || [];
+        arr.push(k.label);
+        byDash.set(k.dashboard_id, arr);
+      }
+      out.sessionKinds = [...byDash.entries()].map(([id, labels]) => `${dashName.get(id)}: ${labels.join(', ')}`);
+      const { rows: dd } = await query(
+        `SELECT dd.dashboard_id, d.name FROM dashboard_departments dd
+         JOIN departments d ON d.id = dd.department_id
+         JOIN dashboards db ON db.id = dd.dashboard_id WHERE db.company_id = $1`, [companyId]);
+      const deptByDash = new Map<string, string[]>();
+      for (const r of dd) {
+        const arr = deptByDash.get(r.dashboard_id) || [];
+        arr.push(r.name);
+        deptByDash.set(r.dashboard_id, arr);
+      }
+      out.dashboardDepartments = [...deptByDash.entries()].map(([id, names]) => `${dashName.get(id)}: ${names.join(', ')}`);
+    }
+    const { rows: roomRows } = await query('SELECT name FROM rooms WHERE company_id = $1 ORDER BY name', [companyId]);
+    out.rooms = roomRows.map((r: any) => r.name);
+    const { rows: sess } = await query(
+      `SELECT s.title, s.session_date::text AS sdate, s.start_time::text AS stime, s.end_time::text AS etime,
+              s.recur_rule, s.recur_interval, s.recur_days, s.location, s.dashboard_id,
+              TRIM(COALESCE(l.first_name,'') || ' ' || COALESCE(l.last_name,'')) AS presenter,
+              TRIM(COALESCE(sv.first_name,'') || ' ' || COALESCE(sv.last_name,'')) AS supervisor
+       FROM academic_sessions s
+       LEFT JOIN users l ON l.id = s.lecturer_user_id
+       LEFT JOIN users sv ON sv.id = s.supervisor_user_id
+       WHERE s.company_id = $1
+       ORDER BY s.session_date
+       LIMIT 300`, [companyId]);
+    const DAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const from = new Date(today + 'T00:00:00'); from.setDate(from.getDate() - 30);
+    const to = new Date(today + 'T00:00:00'); to.setDate(to.getDate() + 120);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const lines: string[] = [];
+    for (const s of sess) {
+      const dash = dashName.get(s.dashboard_id) || 'Calendar';
+      const times = s.stime ? ` ${String(s.stime).slice(0, 5)}${s.etime ? '–' + String(s.etime).slice(0, 5) : ''}` : '';
+      const people = s.presenter ? `, presenter ${s.presenter}` : '';
+      const sup = s.supervisor ? `, supervisor ${s.supervisor}` : '';
+      const loc = s.location ? `, in ${s.location}` : '';
+      if (s.recur_rule && s.recur_rule !== 'none') {
+        const days = s.recur_days ? String(s.recur_days).split(',').map((x: string) => DAY[parseInt(x, 10)] + 's').join('/')
+          : DAY[new Date(s.sdate + 'T00:00:00').getDay()] + 's';
+        const every = (s.recur_interval || 1) > 1 ? `every ${s.recur_interval} ` : '';
+        const rule = s.recur_rule === 'weekly' || s.recur_rule === 'biweekly' ? `${every}week on ${days}` : s.recur_rule;
+        lines.push(`- "${s.title}" on ${dash} — repeats ${rule}${times}${people}${sup}${loc}`);
+      } else if (s.sdate >= iso(from) && s.sdate <= iso(to)) {
+        lines.push(`- "${s.title}" on ${dash} — ${s.sdate}${times}${people}${sup}${loc} (one-time)`);
+      }
+    }
+    out.sessions = lines.slice(0, 80);
+  } catch { /* context is best-effort; planning still works without it */ }
+  return out;
 }
 
 /**
@@ -153,11 +243,14 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
         const shiftTypes = shiftTypesResult.rows.map(r => r.name);
         const today = new Date().toISOString().split('T')[0];
 
-        // Parse with Gemini
+        // Parse with Gemini (calendar context included so session
+        // requests — add / change / cancel a session — can be planned)
+        const sessionCtx = await buildSessionContext(query, companyId, today);
         const plan = await planFromEmail(email.body, email.subject, {
           shiftTypes,
           members,
           today,
+          ...sessionCtx,
         });
 
         // Handle schedule questions: query and reply directly to sender
@@ -263,6 +356,9 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
                 : c.action === 'unassign' ? `Remove ${c.person} on ${c.date}`
                 : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
                 : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
+                : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
+                : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
+                : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
                 : `${c.action}`;
               return `${i + 1}. ${desc}`;
             }).join('\n');
@@ -323,14 +419,45 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
           const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
           const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
+          // Quick session link (Deepika, 2026-10-21): a standalone
+          // session form next to Approve / Reject — add or change a
+          // session straight from the email, no app needed. Prefilled
+          // from the plan's first session change when there is one.
+          let quickUrl = '';
+          try {
+            const quickToken = crypto.randomBytes(32).toString('hex');
+            let qDash: string | null = null, qSess: string | null = null, qDate: string | null = null;
+            const sc: any = (plan.changes || []).find((c: any) =>
+              ['add_session', 'update_session', 'cancel_session'].includes(c.action));
+            if (sc && sc.dashboard) {
+              const { rows: dRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
+              const dHit = dRows.find((d: any) => d.name.toLowerCase() === String(sc.dashboard).toLowerCase());
+              if (dHit) {
+                qDash = dHit.id;
+                if (sc.sessionTitle) {
+                  const { rows: sRows } = await query(
+                    'SELECT id FROM academic_sessions WHERE company_id = $1 AND dashboard_id = $2 AND lower(title) = lower($3) LIMIT 1',
+                    [companyId, qDash, sc.sessionTitle]);
+                  if (sRows.length) qSess = sRows[0].id;
+                }
+                qDate = sc.date || null;
+              }
+            }
+            await query(
+              `INSERT INTO quick_session_links (token, company_id, dashboard_id, session_id, occ_date, expires_at)
+               VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')`,
+              [quickToken, companyId, qDash, qSess, qDate]
+            );
+            quickUrl = `${baseUrl}/api/schedule/quick-session/${quickToken}`;
+          } catch { /* non-fatal: the email still goes out without the button */ }
           const fromLine = email.fromName ? `${email.fromName} <${email.from}>` : email.from;
           const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
           await sendMail({
             to: toAddr,
             cc: ccRest.length ? ccRest : undefined,
             subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+            text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}${quickUrl ? `\n\nQuick session — add or change a session without opening the app: ${quickUrl}` : ''}\n\nOr review in the app: ${baseUrl}`,
+            html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p>${quickUrl ? `<p><a href="${quickUrl}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">📅 Quick session — add / change a session</a> <span style="color:#6b7280;font-size:13px;">(no app needed)</span></p>` : ''}<p><a href="${baseUrl}">Or review in the app</a></p>`,
           });
           console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
           } // end else (notifications enabled)

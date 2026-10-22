@@ -49,7 +49,8 @@ interface PlanChange {
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
           'set_staffing_target' |
-          'bulk_publish' | 'bulk_unpublish';
+          'bulk_publish' | 'bulk_unpublish' |
+          'add_session' | 'update_session' | 'cancel_session';
   person?: string;          // name for assign/unassign/update_team_member
   fromPerson?: string;       // for move/swap
   toPerson?: string;         // for move/swap
@@ -66,6 +67,22 @@ interface PlanChange {
   email?: string;           // for add_team_member
   newShiftType?: string;    // for rename_shift_type
   targetCount?: number;     // for set_staffing_target
+  // Calendar session fields (add_session / update_session / cancel_session)
+  dashboard?: string;       // dashboard name, e.g. "Calendars"
+  title?: string;           // add_session: the title; update_session: the NEW title
+  sessionTitle?: string;    // update/cancel: the session's current title
+  sessionType?: string;     // session type label for that dashboard
+  presenter?: string;       // presenter (lecturer) full name
+  supervisor?: string;      // supervisor full name
+  location?: string;        // room name or location text
+  startTime?: string;       // HH:MM (24h)
+  endTime?: string;         // HH:MM (24h)
+  scope?: 'date' | 'series';// update/cancel of a recurring session
+  newDate?: string;         // move the session to this date (YYYY-MM-DD)
+  recurRule?: string;       // add_session: none|daily|weekly|monthly|yearly
+  recurInterval?: number;   // add_session: every N (e.g. 2 = every 2 weeks)
+  recurUntil?: string;      // add_session: repeat until YYYY-MM-DD
+  notes?: string;
 }
 
 export interface SchedulePlan {
@@ -91,7 +108,14 @@ export interface SchedulePlan {
 export async function planFromEmail(
   emailBody: string,
   emailSubject: string,
-  context: { shiftTypes: string[]; members: string[]; today: string }
+  context: {
+    shiftTypes: string[]; members: string[]; today: string;
+    dashboards?: string[];          // dashboard names, e.g. ["Calendars"]
+    sessionKinds?: string[];        // "Calendars: Lecture, Event" lines
+    rooms?: string[];               // room / location names
+    sessions?: string[];            // upcoming calendar session lines
+    dashboardDepartments?: string[];// "Calendars: Internal Medicine" lines
+  }
 ): Promise<SchedulePlan> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('Gemini API key not configured.');
@@ -102,13 +126,19 @@ Today's date: ${context.today}
 
 Available shift types: ${context.shiftTypes.join(', ') || '(none listed)'}
 Team members: ${context.members.join(', ') || '(none listed)'}
+Dashboards (calendars): ${(context.dashboards || []).join(', ') || '(none)'}
+Session types by dashboard: ${(context.sessionKinds || []).join(' | ') || '(none)'}
+Dashboard departments: ${(context.dashboardDepartments || []).join(' | ') || '(none)'}
+Rooms / locations: ${(context.rooms || []).join(', ') || '(none listed)'}
+Calendar sessions:
+${(context.sessions || []).join('\n') || '(none listed)'}
 
 Email subject: ${emailSubject}
 Email body:
 ${emailBody}
 
 First, classify the email into one of:
-- "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts)
+- "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts) or change the calendar (add, move, cancel a session, change a session's presenter/supervisor/room/time)
 - "schedule_question": the sender is asking about the schedule (who is working when, what is the schedule for certain dates)
 - "settings_change": the sender wants to manage settings (add a job role, add a department, add a team member)
 - "bulk_action": the sender wants a bulk operation (publish/unpublish shifts for a date range)
@@ -119,7 +149,7 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish",
+      "action": "assign|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
       "person": "Full Name (for assign/unassign/update_team_member)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
@@ -135,7 +165,22 @@ Respond with JSON only, no other text:
       "lastName": "Last name (for add_team_member)",
       "email": "Email (for add_team_member)",
       "newShiftType": "New shift type name (for rename_shift_type)",
-      "targetCount": "Number (for set_staffing_target)"
+      "targetCount": "Number (for set_staffing_target)",
+      "dashboard": "Dashboard name (for session actions)",
+      "title": "Session title (for add_session; the NEW title for update_session)",
+      "sessionTitle": "The session's current title (for update_session/cancel_session)",
+      "sessionType": "Session type label on that dashboard (for session actions)",
+      "presenter": "Presenter full name (for session actions)",
+      "supervisor": "Supervisor full name (for session actions)",
+      "location": "Room or location (for session actions)",
+      "startTime": "HH:MM 24h (for session actions)",
+      "endTime": "HH:MM 24h (for session actions)",
+      "scope": "date|series (for update_session/cancel_session on a repeating session)",
+      "newDate": "YYYY-MM-DD (move a session to this date)",
+      "recurRule": "none|daily|weekly|monthly|yearly (for add_session)",
+      "recurInterval": "Number, every N (for add_session, e.g. 2 = every 2 weeks)",
+      "recurUntil": "YYYY-MM-DD (for add_session, repeat until)",
+      "notes": "Notes (for session actions)"
     }
   ],
   "summary": "Plain-language summary of the proposed changes, or the question being asked",
@@ -165,6 +210,11 @@ Rules:
   - "set_staffing_target": needs shiftType + targetCount. Example: "Set staffing of 2 for Cardiology" → shiftType "Cardiology", targetCount 2.
   Match department/shift type names fuzzily. If critical info is missing, set needsClarification.
 - For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today.
+- Calendar sessions live on dashboards (see the dashboard / session lists above). Use these actions, classified as "change_request":
+  - "add_session": needs dashboard + title + date. Optional: startTime/endTime (convert "8am" to "08:00", "12:30pm" to "12:30"), presenter, supervisor, location (a room name or any location text), sessionType (one of that dashboard's session types), department (pick from that dashboard's departments when the sender names one), notes. If it repeats, set recurRule ("weekly" for weekly, etc.), recurInterval for every-N (e.g. "every other week" = weekly + 2), recurUntil when an end date is given.
+  - "update_session": needs dashboard + sessionTitle (the session's current title — match it against the calendar session list). Set ONLY the fields being changed: title (a rename), presenter, supervisor, location, startTime, endTime, sessionType, notes, newDate (to move it). For a repeating session: if the sender names one date and doesn't say "all/every", set date to that date and scope to "date" (just that date changes); use scope "series" to change every occurrence.
+  - "cancel_session": needs dashboard + sessionTitle. For a repeating session with one date named, set date + scope "date" (cancels just that date); otherwise the whole session/series is cancelled.
+  Match dashboard, session, room and people names fuzzily against the lists. If the dashboard is not named and there is only one dashboard, use it; if there are several and it is unclear, ask in needsClarification. If the session cannot be matched to the session list, ask in needsClarification.
 - For "schedule_question": set "changes" to []. Fill in "question" with parsed details. Resolve relative dates against today's date. Examples: "who is working Oct 12" → kind "who_is_on", startDate=endDate="2026-10-12". "Schedule for Oct 11-13" → kind "schedule_for_dates" with startDate/endDate. "When is John working" → kind "person_schedule" with person name.
 - For "other": set "changes" to [], "question" to null, summary to "Not schedule related.", confidence to "high".`;
 
