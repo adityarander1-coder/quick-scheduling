@@ -1016,6 +1016,24 @@
           <label style="font-size:0.85rem">From<br><input type="date" id="sbp-from" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem"></label>
           <label style="font-size:0.85rem">To<br><input type="date" id="sbp-to" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem"></label>
         </div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px">
+          <label style="font-size:0.85rem">Repeat<br>
+            <select id="sbp-repeat" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+              <option value="">Does not repeat</option>
+              <option value="w1">Weekly</option>
+              <option value="w2">Every 2 weeks</option>
+              <option value="w3">Every 3 weeks</option>
+              <option value="w4">Every 4 weeks</option>
+              <option value="m1">Monthly</option>
+              <option value="w5">Every 5 weeks</option>
+              <option value="w6">Every 6 weeks</option>
+              <option value="w8">Every 8 weeks</option>
+              <option value="w12">Every 12 weeks</option>
+            </select></label>
+          <label id="sbp-until-wrap" style="font-size:0.85rem;display:none">Repeat until<br>
+            <input type="date" id="sbp-until" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem"></label>
+          <span id="sbp-repeat-note" style="font-size:0.8rem;color:var(--dim);padding-bottom:7px"></span>
+        </div>
         <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:12px">
           <span style="font-size:0.88rem">Save as:
             <label style="margin-left:6px"><input type="radio" name="sbp-pub" value="published" checked style="width:auto"> Published</label>
@@ -3513,32 +3531,81 @@
             var f = $('sbp-from'), t = $('sbp-to');
             if (f && !f.value) { var base = blockFromDate(); f.value = fmtDate(base); t.value = fmtDate(new Date(base.getFullYear(), base.getMonth(), base.getDate() + 27)); }
           }
+          sbSyncRepeatRow();
           syncBlockPanel();
         }
         function sbMsg(text, isErr) {
           var m = $('sbp-msg'); if (!m) return;
           m.textContent = text; m.style.color = isErr ? '#b91c1c' : '#15803d';
         }
+        function sbRepeatStep() {
+          var v = ($('sbp-repeat') || {}).value || '';
+          if (!v) return null;
+          if (v === 'm1') return { months: 1 };
+          return { weeks: parseInt(v.slice(1), 10) || 1 };
+        }
+        // Expand template dates along a repeat rhythm through untilStr.
+        function sbLadderDates(template, step, untilStr) {
+          var seen = {}, out = [];
+          template.forEach(function (ds) { if (!seen[ds]) { seen[ds] = true; out.push(ds); } });
+          if (!step || !untilStr) return out;
+          template.forEach(function (ds) {
+            var base = parseDate(ds);
+            for (var k = 1; k <= 80; k++) {
+              var d = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+              if (step.weeks) d.setDate(d.getDate() + step.weeks * 7 * k);
+              else d.setMonth(d.getMonth() + (step.months || 1) * k);
+              var s = fmtDate(d);
+              if (s > untilStr) break;
+              if (!seen[s]) { seen[s] = true; out.push(s); }
+              if (out.length > 3000) break;
+            }
+          });
+          return out;
+        }
+        function sbDefaultUntil() {
+          var base = blockFromDate();
+          return fmtDate(new Date(base.getFullYear(), base.getMonth(), base.getDate() + 363));
+        }
+        function sbSyncRepeatRow() {
+          var step = sbRepeatStep();
+          var uw = $('sbp-until-wrap');
+          var showUntil = !!step && sbPanelMode === 'blocks';
+          if (uw) uw.style.display = showUntil ? '' : 'none';
+          if (showUntil) { var u = $('sbp-until'); if (u && !u.value) u.value = sbDefaultUntil(); }
+          var rn = $('sbp-repeat-note');
+          if (rn) rn.textContent = !step ? '' : (sbPanelMode === 'range'
+            ? 'The first week of the range is the pattern — it repeats on this rhythm through the To date.'
+            : 'Each selected block repeats on this rhythm until the Until date.');
+        }
         function doBlockAssign() {
           var pubRadio = document.querySelector('input[name="sbp-pub"]:checked');
           var published = !pubRadio || pubRadio.value !== 'draft';
           var present = sbPresentSet();
-          var groups = [];
+          var step = sbRepeatStep();
+          var groupMap = {};
           function addGroup(uid, tid, dates) {
-            var fresh = dates.filter(function (ds) { return !present[String(uid) + '|' + String(tid) + '|' + ds]; });
-            if (fresh.length) groups.push({ userId: uid, shiftTypeId: tid, dates: fresh });
+            var key = String(uid) + '|' + String(tid);
+            if (!groupMap[key]) groupMap[key] = { userId: uid, shiftTypeId: tid, set: {} };
+            dates.forEach(function (ds) { if (!present[String(uid) + '|' + String(tid) + '|' + ds]) groupMap[key].set[ds] = true; });
           }
           if (sbPanelMode === 'blocks') {
             var cells = sbSelectedCells();
             if (!cells.length) { sbMsg('Select at least one block first.', true); return; }
+            var until = '';
+            if (step) {
+              until = ($('sbp-until').value || sbDefaultUntil());
+              var earliest = cells.map(function (c) { return c.weekStart; }).sort()[0];
+              if (until < earliest) { sbMsg('The Repeat until date is before the selected blocks.', true); return; }
+            }
             if (schedBlockMode === 'shift') {
               var uid = $('sbp-user').value;
               if (!uid) { sbMsg('No eligible employee listed — tick "Show all" to list everyone.', true); return; }
-              cells.forEach(function (c) { addGroup(uid, c.rowId, sbWeekDays(c.weekStart)); });
+              cells.forEach(function (c) { addGroup(uid, c.rowId, sbLadderDates(sbWeekDays(c.weekStart), step, until)); });
             } else {
               var tid = $('sbp-shift').value;
               if (!tid) { sbMsg('No eligible shift listed — tick "Show all" to list every shift.', true); return; }
-              cells.forEach(function (c) { addGroup(c.rowId, tid, sbWeekDays(c.weekStart)); });
+              cells.forEach(function (c) { addGroup(c.rowId, tid, sbLadderDates(sbWeekDays(c.weekStart), step, until)); });
             }
           } else {
             var ruid = $('sbp-ruser').value, rtid = $('sbp-rshift').value;
@@ -3547,9 +3614,16 @@
             if (!from || !to || from > to) { sbMsg('Pick a valid date range.', true); return; }
             var days = [], d0 = parseDate(from), d1 = parseDate(to);
             for (var d = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()); d <= d1 && days.length < 366; d.setDate(d.getDate() + 1)) days.push(fmtDate(d));
+            if (step) days = sbLadderDates(days.slice(0, 7), step, to);
             addGroup(ruid, rtid, days);
           }
+          var groups = Object.keys(groupMap).map(function (k) {
+            var g = groupMap[k];
+            return { userId: g.userId, shiftTypeId: g.shiftTypeId, dates: Object.keys(g.set).sort() };
+          }).filter(function (g) { return g.dates.length; });
+          var totalDates = groups.reduce(function (n, g) { return n + g.dates.length; }, 0);
           if (!groups.length) { sbMsg('Already assigned — the people picked already have these shifts on those days.', false); return; }
+          if (totalDates > 4000) { sbMsg('That repeat makes ' + totalDates + ' shifts — narrow the blocks or the Until date.', true); return; }
           var btn = $('sbp-apply'); btn.disabled = true;
           api('/api/schedule/block-assign', { method: 'POST', body: JSON.stringify({ assignments: groups, published: published }) }).then(function (r) {
             btn.disabled = false;
@@ -3577,6 +3651,7 @@
         if ($('sbp-clear')) $('sbp-clear').addEventListener('click', function () { sbSel = {}; renderView(); });
         if ($('sbp-apply')) $('sbp-apply').addEventListener('click', doBlockAssign);
         if ($('sbp-showall')) $('sbp-showall').addEventListener('change', syncBlockPanel);
+        if ($('sbp-repeat')) $('sbp-repeat').addEventListener('change', sbSyncRepeatRow);
         if ($('sbp-rshift')) $('sbp-rshift').addEventListener('change', syncBlockPanel);
         if ($('sbp-ruser')) $('sbp-ruser').addEventListener('change', syncBlockPanel);
         var evtTgl = $('sched-events-toggle');
