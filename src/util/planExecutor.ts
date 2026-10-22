@@ -460,6 +460,33 @@ export async function executePlan(
   const createdBy = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(executedBy)
     ? executedBy
     : null;
+  // Notifications pre-pass: remember who presents/supervises sessions
+  // that are about to be updated or cancelled (the change itself may
+  // remove exactly the people who should hear about it).
+  const sessionPeopleBefore = new Map<number, string[]>();
+  for (let i = 0; i < (plan.changes || []).length; i++) {
+    const change = plan.changes[i];
+    if ((change.action === 'update_session' || change.action === 'cancel_session') && change.dashboard && change.sessionTitle) {
+      try {
+        const dash = await findDashboard(companyId, change.dashboard);
+        if (dash) {
+          const sess = await findSessionRow(companyId, dash.id, change.sessionTitle, change.newDate || change.date);
+          if (sess) {
+            let pres = sess.lecturer_user_id || null;
+            let sup = sess.supervisor_user_id || null;
+            if (change.date) {
+              const { rows: ov } = await query(
+                'SELECT lecturer_user_id, supervisor_user_id FROM academic_session_overrides WHERE session_id = $1 AND occ_date = $2',
+                [sess.id, change.date]
+              );
+              if (ov.length) { pres = ov[0].lecturer_user_id ?? pres; sup = ov[0].supervisor_user_id ?? sup; }
+            }
+            sessionPeopleBefore.set(i, [...new Set([pres, sup].filter(Boolean))] as string[]);
+          }
+        }
+      } catch { /* best-effort */ }
+    }
+  }
   for (const change of plan.changes || []) {
     try {
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
@@ -894,6 +921,139 @@ export async function executePlan(
     } catch (err: any) {
       results.push({ action: change.action, success: false, message: err?.message || 'Failed' });
     }
+  }
+  // Notifications (Phase 1): tell people what this approved plan changed
+  // for them. Best-effort — a notification failure never fails the plan.
+  try {
+    const { notify, fmtDateLong } = await import('./notify.js');
+    for (let i = 0; i < (plan.changes || []).length; i++) {
+      const change = plan.changes[i];
+      const result = results[i];
+      if (!result || !result.success) continue;
+      if (change.action === 'assign' && change.person && change.date && change.shiftType) {
+        if (/^Already on/.test(result.message)) continue;
+        const user = await findUser(companyId, change.person);
+        if (user) await notify({
+          companyId, userIds: [user.id], category: 'schedule', type: 'shift_assigned',
+          title: `New shift: ${change.shiftType} on ${fmtDateLong(change.date)}`,
+          body: `You were assigned ${change.shiftType} on ${fmtDateLong(change.date)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${user.id}`,
+          bundleTitle: 'You were assigned {count} new shifts', excludeUserId: createdBy,
+        });
+      } else if (change.action === 'unassign' && change.person && change.date) {
+        if (!/^Removed/.test(result.message)) continue;
+        const user = await findUser(companyId, change.person);
+        if (user) await notify({
+          companyId, userIds: [user.id], category: 'schedule', type: 'shift_removed',
+          title: `Shift removed${change.shiftType ? `: ${change.shiftType}` : ''} on ${fmtDateLong(change.date)}`,
+          body: `Your shift on ${fmtDateLong(change.date)} was removed.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${user.id}`,
+          bundleTitle: '{count} of your shifts were removed', excludeUserId: createdBy,
+        });
+      } else if (change.action === 'move' && change.fromPerson && change.toPerson && change.date) {
+        const fromUser = await findUser(companyId, change.fromPerson);
+        const toUser = await findUser(companyId, change.toPerson);
+        const stName = change.shiftType || 'Shift';
+        if (fromUser) await notify({
+          companyId, userIds: [fromUser.id], category: 'schedule', type: 'shift_removed',
+          title: `Shift moved: ${stName} on ${fmtDateLong(change.date)}`,
+          body: `Your ${stName} on ${fmtDateLong(change.date)} was moved to ${change.toPerson}.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${fromUser.id}`,
+          bundleTitle: '{count} of your shifts were removed', excludeUserId: createdBy,
+        });
+        if (toUser) await notify({
+          companyId, userIds: [toUser.id], category: 'schedule', type: 'shift_assigned',
+          title: `New shift: ${stName} on ${fmtDateLong(change.date)}`,
+          body: `You were assigned ${stName} on ${fmtDateLong(change.date)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${toUser.id}`,
+          bundleTitle: 'You were assigned {count} new shifts', excludeUserId: createdBy,
+        });
+      } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
+        const d = change.date || change.fromDate || '';
+        for (const name of [change.fromPerson, change.toPerson]) {
+          const u = await findUser(companyId, name);
+          if (u) await notify({
+            companyId, userIds: [u.id], category: 'schedule', type: 'shift_changed',
+            title: `Shift swapped${d ? ` on ${fmtDateLong(d)}` : ''}`,
+            body: `A shift swap between ${change.fromPerson} and ${change.toPerson} was applied${d ? ` for ${fmtDateLong(d)}` : ''}.`,
+            link: 'my-schedule', bundleKey: `shift_changed:${u.id}`,
+            bundleTitle: '{count} of your shifts changed', excludeUserId: createdBy,
+          });
+        }
+      } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate) {
+        const publish = change.action === 'bulk_publish';
+        let q = `SELECT DISTINCT user_id FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3 AND published = $4`;
+        const params: any[] = [companyId, change.fromDate, change.toDate, publish];
+        if (change.shiftType) {
+          const st = await findShiftType(companyId, change.shiftType);
+          if (st) { q += ' AND shift_type_id = $5'; params.push(st.id); }
+        }
+        const { rows: affected } = await query(q, params);
+        const ids = affected.map((r: any) => r.user_id);
+        if (ids.length) await notify({
+          companyId, userIds: ids, category: 'schedule', type: publish ? 'schedule_published' : 'shift_removed',
+          title: publish
+            ? `Your schedule was published (${fmtDateLong(change.fromDate)} – ${fmtDateLong(change.toDate)})`
+            : `Your shifts were moved to draft (${fmtDateLong(change.fromDate)} – ${fmtDateLong(change.toDate)})`,
+          body: publish
+            ? `Your shifts between ${fmtDateLong(change.fromDate)} and ${fmtDateLong(change.toDate)} are published.`
+            : `Your shifts between ${fmtDateLong(change.fromDate)} and ${fmtDateLong(change.toDate)} were moved back to draft.`,
+          link: 'my-schedule', bundleKey: publish ? 'schedule_published' : 'shift_removed',
+          bundleTitle: publish ? 'Your schedule was published: {count} shift(s)' : '{count} of your shifts were removed',
+          excludeUserId: createdBy,
+        });
+      } else if (change.action === 'add_session' && change.title && change.date) {
+        const people: string[] = [];
+        if (change.presenter) { const p = await findUser(companyId, change.presenter); if (p) people.push(p.id); }
+        if (change.supervisor) { const s = await findUser(companyId, change.supervisor); if (s) people.push(s.id); }
+        if (people.length) await notify({
+          companyId, userIds: people, category: 'calendar', type: 'session_assigned',
+          title: `New session: "${change.title}" on ${fmtDateLong(change.date)}`,
+          body: `You are on the session "${change.title}" (${change.dashboard}) on ${fmtDateLong(change.date)}${change.startTime ? ` at ${change.startTime}` : ''}.`,
+          link: 'calendars', bundleKey: 'session_assigned', excludeUserId: createdBy,
+        });
+        if (!change.presenter) {
+          // Session needs a presenter: tell the dashboard's department
+          // members (digest-speed type — records in-app by default).
+          const dash = await findDashboard(companyId, change.dashboard || '');
+          if (dash) {
+            const deptIds = await dashboardDeptIdsE(dash.id);
+            if (deptIds.length) {
+              const { rows: mem } = await query(
+                'SELECT id FROM users WHERE company_id = $1 AND is_active = true AND department_id = ANY($2::uuid[])',
+                [companyId, deptIds]
+              );
+              if (mem.length) await notify({
+                companyId, userIds: mem.map((r: any) => r.id), category: 'calendar', type: 'session_needs_presenter',
+                title: `A session needs a presenter: "${change.title}" on ${fmtDateLong(change.date)}`,
+                body: `"${change.title}" (${change.dashboard}) on ${fmtDateLong(change.date)} has no presenter yet.`,
+                link: 'calendars', bundleKey: 'session_needs_presenter', excludeUserId: createdBy,
+              });
+            }
+          }
+        }
+      } else if (change.action === 'update_session' && change.sessionTitle) {
+        const ids = new Set<string>(sessionPeopleBefore.get(i) || []);
+        if (change.presenter) { const p = await findUser(companyId, change.presenter); if (p) ids.add(p.id); }
+        if (change.supervisor) { const s = await findUser(companyId, change.supervisor); if (s) ids.add(s.id); }
+        if (ids.size) await notify({
+          companyId, userIds: [...ids], category: 'calendar', type: 'session_changed',
+          title: `Session changed: "${change.title || change.sessionTitle}"`,
+          body: `The session "${change.sessionTitle}" (${change.dashboard}) was updated${change.date ? ` for ${fmtDateLong(change.date)}` : ''}.`,
+          link: 'calendars', bundleKey: 'session_changed', excludeUserId: createdBy,
+        });
+      } else if (change.action === 'cancel_session' && change.sessionTitle) {
+        const ids = sessionPeopleBefore.get(i) || [];
+        if (ids.length) await notify({
+          companyId, userIds: ids, category: 'calendar', type: 'session_cancelled',
+          title: `Session cancelled: "${change.sessionTitle}"`,
+          body: `The session "${change.sessionTitle}" (${change.dashboard}) was cancelled${change.date ? ` for ${fmtDateLong(change.date)}` : ''}.`,
+          link: 'calendars', bundleKey: 'session_cancelled', excludeUserId: createdBy,
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[planExecutor] notification pass failed: ${e?.message || e}`);
   }
   return results;
 }

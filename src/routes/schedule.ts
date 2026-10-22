@@ -19,6 +19,7 @@ import { escHtml } from '../util/mailer';
 import { auditLog, todayStr } from '../util/audit.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
+import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 
 const router = Router();
 
@@ -650,6 +651,17 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
     });
+    // Notify: only published shifts notify (drafts stay silent).
+    if (published !== false) {
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+        title: `New shift: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+        body: `You were assigned ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
+        link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+        bundleTitle: 'You were assigned {count} new shifts',
+        excludeUserId: req.session.userId!,
+      });
+    }
   } catch (err) {
     console.error('[schedule] assign shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -722,6 +734,18 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
       }
     }
     res.status(201).json({ created, skipped });
+    if (created > 0 && published !== false) {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+        title: `You were assigned ${created} shifts: ${names.shiftTypeName}, ${fmtDateLong(startDate)} – ${fmtDateLong(endDate)}`,
+        body: `${created} ${names.shiftTypeName} shifts from ${fmtDateLong(startDate)} to ${fmtDateLong(endDate)}.`,
+        link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+        bundleTitle: 'You were assigned {count} new shifts',
+        payload: { count: created },
+        excludeUserId: req.session.userId!,
+      });
+    }
   } catch (err) {
     console.error('[schedule] bulk assign failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -765,6 +789,7 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
     }
     let created = 0, already = 0, ineligible = 0, outOfScope = 0, invalid = 0, totalDates = 0;
     let firstRoleError: string | null = null;
+    const createdByUser = new Map<string, { count: number; shiftTypeId: string; shiftTypeName: string; firstDate: string; lastDate: string }>();
     for (const group of assignments) {
       const userId = group?.userId, shiftTypeId = group?.shiftTypeId;
       const rawDates: any[] = Array.isArray(group?.dates) ? group.dates : [];
@@ -805,6 +830,11 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
             [crypto.randomUUID(), companyId, userId, shiftTypeId, date, null, published !== false, req.session.userId!]
           );
           created++;
+          const tally = createdByUser.get(userId) || { count: 0, shiftTypeId, shiftTypeName: '', firstDate: date, lastDate: date };
+          tally.count++;
+          if (date < tally.firstDate) tally.firstDate = date;
+          if (date > tally.lastDate) tally.lastDate = date;
+          createdByUser.set(userId, tally);
         } catch (err: any) {
           if (err?.code === '23505') { already++; continue; }
           throw err;
@@ -812,6 +842,23 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
       }
     }
     res.status(201).json({ created, already, ineligible, outOfScope, invalid, roleError: firstRoleError });
+    // Notify each member who received published shifts (drafts stay silent).
+    if (published !== false) {
+      for (const [uid, tally] of createdByUser) {
+        const names = await shiftDisplayNames(companyId, uid, tally.shiftTypeId);
+        notify({
+          companyId, userIds: [uid], category: 'schedule', type: 'shift_assigned',
+          title: tally.count === 1
+            ? `New shift: ${names.shiftTypeName} on ${fmtDateLong(tally.firstDate)}`
+            : `You were assigned ${tally.count} shifts: ${names.shiftTypeName}, ${fmtDateLong(tally.firstDate)} – ${fmtDateLong(tally.lastDate)}`,
+          body: `${tally.count} ${names.shiftTypeName} shift(s) between ${fmtDateLong(tally.firstDate)} and ${fmtDateLong(tally.lastDate)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${uid}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          payload: { count: tally.count },
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] block assign failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1028,6 +1075,12 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       : '';
     const params: any[] = [companyId, valid];
     if (userFilter) params.push(userIds);
+    // Capture published rows first so their people can be told (below).
+    const { rows: doomed } = await query(
+      `SELECT user_id, shift_type_id, date::text AS date FROM shifts
+       WHERE company_id = $1 AND date = ANY($2::date[]) AND published = true ${userFilter}`,
+      params
+    );
     const { rowCount } = await query(
       `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter}`,
       params
@@ -1059,6 +1112,31 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       } catch { /* skip duplicates */ }
     }
     res.json({ deleted: rowCount || 0, paused });
+    // Notify people whose published shifts were removed (grouped per person).
+    if (doomed.length) {
+      const perUser = new Map<string, { count: number; shiftTypeId: string; firstDate: string; lastDate: string }>();
+      for (const r of doomed) {
+        const t = perUser.get(r.user_id) || { count: 0, shiftTypeId: r.shift_type_id, firstDate: r.date, lastDate: r.date };
+        t.count++;
+        if (r.date < t.firstDate) t.firstDate = r.date;
+        if (r.date > t.lastDate) t.lastDate = r.date;
+        perUser.set(r.user_id, t);
+      }
+      for (const [uid, t] of perUser) {
+        const names = await shiftDisplayNames(companyId, uid, t.shiftTypeId);
+        notify({
+          companyId, userIds: [uid], category: 'schedule', type: 'shift_removed',
+          title: t.count === 1
+            ? `Shift removed: ${names.shiftTypeName} on ${fmtDateLong(t.firstDate)}`
+            : `${t.count} of your shifts were removed (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
+          body: `${t.count} published shift(s) between ${fmtDateLong(t.firstDate)} and ${fmtDateLong(t.lastDate)} were removed.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${uid}`,
+          bundleTitle: '{count} of your shifts were removed',
+          payload: { count: t.count },
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] bulk delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1071,7 +1149,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     const companyId = req.session.companyId!;
     // Fetch details for audit before deleting.
     const { rows: srows } = await query(
-      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId"
+      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
        FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
       [req.params.id, companyId]
     );
@@ -1101,6 +1179,16 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
       });
+      if (s.published) {
+        notify({
+          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift removed: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} was removed.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${s.userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
     }
   } catch (err) {
     console.error('[schedule] delete shift failed:', err);
@@ -1142,6 +1230,24 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
       );
     }
     res.json({ ok: true, dates: dates.length });
+    // Tell eligible members about newly opened pickup slots.
+    if (clamped > 0) {
+      const eligible = await eligibleMemberIds(companyId, shiftTypeId);
+      if (eligible.length) {
+        const { rows: trows } = await query('SELECT name FROM shift_types WHERE id = $1', [shiftTypeId]);
+        const stName = trows[0]?.name || 'Shift';
+        for (const d of dates) {
+          notify({
+            companyId, userIds: eligible, category: 'schedule', type: 'open_shift',
+            title: `Open shift available: ${stName} on ${fmtDateLong(d)}`,
+            body: `An open ${stName} slot is available on ${fmtDateLong(d)}.`,
+            link: 'my-schedule', bundleKey: 'open_shift',
+            bundleTitle: '{count} open shifts are available to pick up',
+            excludeUserId: req.session.userId!,
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('[schedule] adjust slots failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1243,7 +1349,7 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
     }
     // Get the original shift to know its date.
     const { rows: orig } = await query(
-      'SELECT date::text AS date, user_id AS "userId", shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+      'SELECT date::text AS date, user_id AS "userId", shift_type_id AS "shiftTypeId", published FROM shifts WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
     );
     if (!orig.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
@@ -1291,6 +1397,32 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
       }
     }
     res.json({ ok: true, updated, created });
+    // Notify: the original person lost the original date's shift if it was
+    // reassigned; the new person hears about newly created published rows.
+    const finalPublished = published !== null && published !== undefined ? published !== false : true;
+    if (orig[0].userId !== userId && orig[0].published) {
+      const names = await shiftDisplayNames(companyId, orig[0].userId, orig[0].shiftTypeId);
+      notify({
+        companyId, userIds: [orig[0].userId], category: 'schedule', type: 'shift_removed',
+        title: `Shift removed: ${names.shiftTypeName} on ${fmtDateLong(origDate)}`,
+        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(origDate)} was reassigned.`,
+        link: 'my-schedule', bundleKey: `shift_removed:${orig[0].userId}`,
+        bundleTitle: '{count} of your shifts were removed',
+        excludeUserId: req.session.userId!,
+      });
+    }
+    if (created > 0 && finalPublished) {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+        title: `You were assigned ${created} shifts: ${names.shiftTypeName}`,
+        body: `${created} ${names.shiftTypeName} shift(s) were added for you.`,
+        link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+        bundleTitle: 'You were assigned {count} new shifts',
+        payload: { count: created },
+        excludeUserId: req.session.userId!,
+      });
+    }
   } catch (err) {
     console.error('[schedule] apply-range failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1309,7 +1441,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
     // Department scoping: the scheduler's active department must be one of
     // the new or existing shift's departments.
     const { rows: existRows } = await query(
-      'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+      'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
     );
     if (existRows.length) {
@@ -1345,6 +1477,61 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
       source: 'manual', changedBy: req.session.userId!,
       details: { shiftId: req.params.id },
     });
+    // Notify about meaningful changes to published shifts.
+    if (existRows.length) {
+      const old = existRows[0];
+      const finalPublished = published !== null && published !== undefined ? published !== false : old.published !== false;
+      const actor = req.session.userId!;
+      if (old.published && !finalPublished) {
+        notify({
+          companyId, userIds: [old.userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(old.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(old.date)} was moved back to draft.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${old.userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: actor,
+        });
+      } else if (finalPublished && old.userId !== userId) {
+        const oldNames = await shiftDisplayNames(companyId, old.userId, old.shiftTypeId);
+        if (old.published) {
+          notify({
+            companyId, userIds: [old.userId], category: 'schedule', type: 'shift_removed',
+            title: `Shift removed: ${oldNames.shiftTypeName} on ${fmtDateLong(old.date)}`,
+            body: `Your ${oldNames.shiftTypeName} shift on ${fmtDateLong(old.date)} was reassigned.`,
+            link: 'my-schedule', bundleKey: `shift_removed:${old.userId}`,
+            bundleTitle: '{count} of your shifts were removed',
+            excludeUserId: actor,
+          });
+        }
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+          title: `New shift: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `You were assigned ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: actor,
+        });
+      } else if (finalPublished && old.published && (old.date !== date || old.shiftTypeId !== shiftTypeId)) {
+        const oldNames = await shiftDisplayNames(companyId, old.userId, old.shiftTypeId);
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_changed',
+          title: `Shift changed: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your shift changed from ${oldNames.shiftTypeName} on ${fmtDateLong(old.date)} to ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
+          link: 'my-schedule', bundleKey: `shift_changed:${userId}`,
+          bundleTitle: '{count} of your shifts changed',
+          excludeUserId: actor,
+        });
+      } else if (finalPublished && !old.published) {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: actor,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] update shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1357,7 +1544,7 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
     const companyId = req.session.companyId!;
     const { published } = req.body ?? {};
     const { rows: srows } = await query(
-      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId"
+      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
        FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
       [req.params.id, companyId]
     );
@@ -1386,6 +1573,25 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
       });
+      if (published !== false && !s.published) {
+        notify({
+          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_assigned',
+          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} is now published.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${s.userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: req.session.userId!,
+        });
+      } else if (published === false && s.published) {
+        notify({
+          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} was moved back to draft.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${s.userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
     }
   } catch (err) {
     console.error('[schedule] shift publish-state failed:', err);
@@ -1407,6 +1613,12 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       req, res,
       await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
     ))) return;
+    const { rows: prevRows } = await query(
+      `SELECT published FROM rotation_shift_publish
+       WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
+      [companyId, rotationId, userId, date, shiftTypeId]
+    );
+    const wasPublished = prevRows.length ? prevRows[0].published !== false : true;
     await query(
       `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -1415,6 +1627,28 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       [companyId, rotationId, userId, date, shiftTypeId, published !== false]
     );
     res.json({ ok: true, published: published !== false });
+    if (wasPublished !== (published !== false)) {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      if (published !== false) {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: req.session.userId!,
+        });
+      } else {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] rotation shift publish-state failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1454,6 +1688,26 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       source: 'rotation', rotationName: rrows[0]?.name || null,
       changedBy: req.session.userId!,
     });
+    // Notify the person (rotation instances are published unless an
+    // override says otherwise).
+    if (shiftTypeId) {
+      const { rows: prevRows } = await query(
+        `SELECT published FROM rotation_shift_publish
+         WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
+        [companyId, rotationId, userId, date, shiftTypeId]
+      );
+      const wasPublished = prevRows.length ? prevRows[0].published !== false : true;
+      if (wasPublished) {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift removed: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was removed.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] delete rotation shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1559,7 +1813,13 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
       req, res,
       await usersDepartmentIds(userIds, companyId)
     ))) return;
-    // Manual shifts
+    // Manual shifts — capture the rows that will flip so their people
+    // can be told (published-only rule: flips are the notification).
+    const { rows: flipRows } = await query(
+      `SELECT user_id, date::text AS date FROM shifts
+       WHERE company_id = $1 AND date = ANY($2::date[]) AND user_id = ANY($3::uuid[]) AND published = $4`,
+      [companyId, dates, userIds, !published]
+    );
     const { rowCount } = await query(
       `UPDATE shifts SET published = $1
        WHERE company_id = $2 AND date = ANY($3::date[]) AND user_id = ANY($4::uuid[])`,
@@ -1567,6 +1827,7 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
     );
     // Rotation shifts: generate instances and upsert publish overrides
     let rotCount = 0;
+    const rotFlips = new Map<string, number>();
     const { rows: rotations } = await query(
       `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
        FROM rotations WHERE company_id = $1 AND is_active = true`,
@@ -1593,6 +1854,12 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
         const dayAssignments = byDay.get(cycleDay);
         if (!dayAssignments) continue;
         for (const a of dayAssignments) {
+          const { rows: prevRows } = await query(
+            `SELECT published FROM rotation_shift_publish
+             WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
+            [companyId, rot.id, a.userId, dateStr, a.shiftTypeId]
+          );
+          const wasPublished = prevRows.length ? prevRows[0].published !== false : true;
           await query(
             `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -1600,11 +1867,52 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
              DO UPDATE SET published = EXCLUDED.published`,
             [companyId, rot.id, a.userId, dateStr, a.shiftTypeId, published]
           );
+          if (wasPublished !== published) rotFlips.set(a.userId, (rotFlips.get(a.userId) || 0) + 1);
           rotCount++;
         }
       }
     }
     res.json({ ok: true, updated: (rowCount || 0) + rotCount });
+    // Notify per person about the flips (manual + rotation combined).
+    {
+      const perUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+      for (const r of flipRows) {
+        const t = perUser.get(r.user_id) || { count: 0, firstDate: r.date, lastDate: r.date };
+        t.count++;
+        if (r.date < t.firstDate) t.firstDate = r.date;
+        if (r.date > t.lastDate) t.lastDate = r.date;
+        perUser.set(r.user_id, t);
+      }
+      for (const [uid, n] of rotFlips) {
+        const t = perUser.get(uid) || { count: 0, firstDate: dates[0], lastDate: dates[dates.length - 1] };
+        t.count += n;
+        perUser.set(uid, t);
+      }
+      const sortedDates = dates.slice().sort();
+      for (const [uid, t] of perUser) {
+        if (published) {
+          notify({
+            companyId, userIds: [uid], category: 'schedule', type: 'schedule_published',
+            title: `Your schedule was published: ${t.count} shift(s), ${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)}`,
+            body: `${t.count} of your shifts between ${fmtDateLong(t.firstDate)} and ${fmtDateLong(t.lastDate)} are now published.`,
+            link: 'my-schedule', bundleKey: `schedule_published:${uid}`,
+            bundleTitle: 'Your schedule was published: {count} shift(s)',
+            payload: { count: t.count },
+            excludeUserId: req.session.userId!,
+          });
+        } else {
+          notify({
+            companyId, userIds: [uid], category: 'schedule', type: 'shift_removed',
+            title: `${t.count} of your shifts were unpublished (${fmtDateLong(sortedDates[0])} – ${fmtDateLong(sortedDates[sortedDates.length - 1])})`,
+            body: `${t.count} of your published shifts were moved back to draft.`,
+            link: 'my-schedule', bundleKey: `shift_removed:${uid}`,
+            bundleTitle: '{count} of your shifts were removed',
+            payload: { count: t.count },
+            excludeUserId: req.session.userId!,
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('[schedule] bulk publish-state failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1840,6 +2148,7 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
     const fromMs = Date.parse(from + 'T00:00:00Z');
     const toMs = Date.parse(to + 'T00:00:00Z');
     let created = 0;
+    const perUser = new Map<string, { count: number; shiftTypeId: string }>();
     for (let ms = fromMs; ms <= toMs; ms += 86400000) {
       const d = new Date(ms).toISOString().slice(0, 10);
       const dayIndex = Math.floor((ms - startMs) / 86400000);
@@ -1854,10 +2163,26 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
             [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, d, req.session.userId!]
           );
           created++;
+          const t = perUser.get(a.userId) || { count: 0, shiftTypeId: a.shiftTypeId };
+          t.count++;
+          perUser.set(a.userId, t);
         } catch { /* skip duplicates */ }
       }
     }
     res.json({ ok: true, created });
+    // Notify assignees (rotation rows are published by default).
+    for (const [uid, t] of perUser) {
+      const names = await shiftDisplayNames(companyId, uid, t.shiftTypeId);
+      notify({
+        companyId, userIds: [uid], category: 'schedule', type: 'shift_assigned',
+        title: `You were assigned ${t.count} shifts: ${names.shiftTypeName}, ${fmtDateLong(from)} – ${fmtDateLong(to)}`,
+        body: `${t.count} ${names.shiftTypeName} shift(s) from a rotation, ${fmtDateLong(from)} to ${fmtDateLong(to)}.`,
+        link: 'my-schedule', bundleKey: `shift_assigned:${uid}`,
+        bundleTitle: 'You were assigned {count} new shifts',
+        payload: { count: t.count },
+        excludeUserId: req.session.userId!,
+      });
+    }
   } catch (err) {
     console.error('[schedule] apply rotation failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -3132,6 +3457,15 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
         description: `Pickup request via share link (${requested.length} shift${requested.length === 1 ? '' : 's'}) by ${(nm[0] && nm[0].name) || 'staff'}`,
       });
     } catch {}
+    // Notify approvers that pickup request(s) are waiting.
+    if (requested.length) {
+      const { rows: nm2 } = await query(
+        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1`, [userId]);
+      const requesterName = (nm2[0] && nm2[0].name) || 'A team member';
+      notifyShiftRequestApprovers(companyId, { userId, shiftTypeId: requested[0].shiftTypeId }, userId,
+        'A pickup request is waiting for approval',
+        `${requesterName} asked to pick up ${requested.length} open shift(s) via a share link.`);
+    }
     res.json({ ok: true, requested, failed });
   } catch (err) {
     console.error('[schedule] pickup request failed:', err);
@@ -5104,6 +5438,17 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
         recurUntil: recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : null,
       });
       res.json({ ok: true, message: `Added "${title}" to ${dRows[0].name} on ${date}${recurRule !== 'none' ? ' (repeating weekly)' : ''}.` });
+      {
+        const people = [b.presenterId, b.supervisorId].filter(Boolean).map(String);
+        if (people.length) {
+          notify({
+            companyId, userIds: people, category: 'calendar', type: 'session_assigned',
+            title: `New session: "${title}" on ${fmtDateLong(date)}`,
+            body: `You are on the session "${title}" (${dRows[0].name}) on ${fmtDateLong(date)}${b.startTime ? ` at ${String(b.startTime).slice(0, 5)}` : ''}.`,
+            link: 'calendars', bundleKey: 'session_assigned',
+          });
+        }
+      }
       return;
     }
 
@@ -5124,6 +5469,17 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
         } else {
           await deleteSessionRow(companyId, sess.id);
           res.json({ ok: true, message: `Cancelled "${sess.title}"${recurring ? ' (whole series)' : ''}.` });
+        }
+        {
+          const people = [sess.lecturer_user_id, sess.supervisor_user_id].filter(Boolean) as string[];
+          if (people.length) {
+            notify({
+              companyId, userIds: people, category: 'calendar', type: 'session_cancelled',
+              title: `Session cancelled: "${sess.title}"`,
+              body: `The session "${sess.title}" was cancelled${scope === 'date' && date ? ` for ${fmtDateLong(date)} (just this date)` : ''}.`,
+              link: 'calendars', bundleKey: 'session_cancelled',
+            });
+          }
         }
         return;
       }
@@ -5148,6 +5504,17 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
           await moveSessionDate(companyId, ownerId, sess, date, newDate, f);
           res.json({ ok: true, message: `Moved "${sess.title}" from ${date} to ${newDate} (just that date).` });
         }
+        {
+          const people = [sess.lecturer_user_id, sess.supervisor_user_id, f.presenterId || null, f.supervisorId || null].filter(Boolean) as string[];
+          if (people.length) {
+            notify({
+              companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
+              title: `Session moved: "${sess.title}" to ${fmtDateLong(newDate)}`,
+              body: `The session "${sess.title}" was moved to ${fmtDateLong(newDate)}.`,
+              link: 'calendars', bundleKey: 'session_changed',
+            });
+          }
+        }
         return;
       }
       if (scope === 'date') {
@@ -5157,6 +5524,17 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       } else {
         await updateSessionSeries(companyId, sess, f);
         res.json({ ok: true, message: `Updated "${sess.title}"${recurring ? ' (whole series)' : ''}.` });
+      }
+      {
+        const people = [sess.lecturer_user_id, sess.supervisor_user_id, f.presenterId || null, f.supervisorId || null].filter(Boolean) as string[];
+        if (people.length) {
+          notify({
+            companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
+            title: `Session changed: "${f.title || sess.title}"`,
+            body: `The session "${sess.title}" was updated from an email quick link.`,
+            link: 'calendars', bundleKey: 'session_changed',
+          });
+        }
       }
       return;
     }
@@ -5324,6 +5702,35 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
   }
 });
 
+// Notify the people who can decide shift requests for a shift (owners +
+// schedulers with Edit on the shift's departments) that one is waiting.
+async function notifyShiftRequestApprovers(
+  companyId: string,
+  shift: { userId: string; shiftTypeId: string },
+  actorId: string,
+  title: string,
+  body: string
+): Promise<void> {
+  try {
+    const depts = await assignmentRelevantDepartments([{ userId: shift.userId, shiftTypeId: shift.shiftTypeId }], companyId);
+    const ids = new Set<string>();
+    for (const d of depts) {
+      for (const id of await deptApproverIds(companyId, d)) ids.add(id);
+    }
+    if (!depts.length) {
+      for (const id of await deptApproverIds(companyId, null)) ids.add(id);
+    }
+    if (ids.size) {
+      await notify({
+        companyId, userIds: [...ids], category: 'approvals', type: 'shift_request_waiting',
+        title, body, link: 'requests', bundleKey: 'shift_request_waiting',
+        bundleTitle: '{count} shift requests are waiting for a decision',
+        excludeUserId: actorId,
+      });
+    }
+  } catch { /* best-effort */ }
+}
+
 // POST /api/schedule/shifts/:id/request-pickup — ask someone (or anyone) to
 // take over one of your shifts. Requester must own the shift (or be
 // scheduler/owner). targetUserId null = open to the whole company.
@@ -5374,6 +5781,23 @@ router.post('/shifts/:id/request-pickup', requireRole('owner', 'scheduler', 'emp
       id, requestType: 'pickup', shiftId, targetUserId, requesterId: me, status: 'pending',
       shift: { date: shift.date, shiftTypeName: shift.shiftTypeName },
     });
+    // Notify the target (if any) and the approvers.
+    {
+      const names = await shiftDisplayNames(companyId, me, shift.shiftTypeId);
+      if (targetUserId) {
+        notify({
+          companyId, userIds: [targetUserId], category: 'schedule', type: 'request_to_you',
+          title: `${names.personName} asked you to pick up a shift`,
+          body: `${names.personName} asked you to pick up ${shift.shiftTypeName} on ${fmtDateLong(shift.date)}.`,
+          link: 'requests', bundleKey: 'request_to_you',
+          bundleTitle: '{count} requests are waiting for you',
+          excludeUserId: me,
+        });
+      }
+      notifyShiftRequestApprovers(companyId, { userId: shift.userId, shiftTypeId: shift.shiftTypeId }, me,
+        'A shift request is waiting for a decision',
+        `${names.personName} requested pickup for ${shift.shiftTypeName} on ${fmtDateLong(shift.date)}.`);
+    }
   } catch (err) {
     console.error('[schedule] request pickup failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5432,6 +5856,21 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
       myShift: { date: mine.date, shiftTypeName: mine.shiftTypeName },
       theirShift: { date: theirs.date, shiftTypeName: theirs.shiftTypeName },
     });
+    // Notify the swap target and the approvers.
+    {
+      const names = await shiftDisplayNames(companyId, me, mine.shiftTypeId);
+      notify({
+        companyId, userIds: [theirs.userId], category: 'schedule', type: 'request_to_you',
+        title: `${names.personName} wants to swap shifts with you`,
+        body: `${names.personName} offers ${mine.shiftTypeName} on ${fmtDateLong(mine.date)} for your ${theirs.shiftTypeName} on ${fmtDateLong(theirs.date)}.`,
+        link: 'requests', bundleKey: 'request_to_you',
+        bundleTitle: '{count} requests are waiting for you',
+        excludeUserId: me,
+      });
+      notifyShiftRequestApprovers(companyId, { userId: mine.userId, shiftTypeId: mine.shiftTypeId }, me,
+        'A shift request is waiting for a decision',
+        `${names.personName} proposed a swap: ${mine.shiftTypeName} on ${fmtDateLong(mine.date)} ↔ ${theirs.shiftTypeName} on ${fmtDateLong(theirs.date)}.`);
+    }
   } catch (err) {
     console.error('[schedule] swap request failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5649,6 +6088,20 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
         });
       }
     } catch { /* audit must never break the response */ }
+    // Notify the requester that their request was approved.
+    {
+      const shift = await manualShift(companyId, r.shiftId);
+      const typeWord = r.requestType === 'swap' ? 'swap' : 'pickup';
+      notify({
+        companyId, userIds: [r.requesterId], category: 'schedule', type: 'request_decided',
+        title: `Your ${typeWord} request was approved`,
+        body: shift
+          ? `Your ${typeWord} request for ${shift.shiftTypeName} on ${fmtDateLong(shift.date)} was approved.`
+          : `Your ${typeWord} request was approved.`,
+        link: 'requests', bundleKey: 'request_decided',
+        excludeUserId: me,
+      });
+    }
   } catch (err) {
     console.error('[schedule] approve shift request failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5696,6 +6149,20 @@ router.post('/shift-requests/:id/decline', requireRole('owner', 'scheduler', 'em
       await query('DELETE FROM shifts WHERE id = $1 AND published = false', [dr[0].shiftId]);
     }
     res.json({ ok: true, status: 'declined' });
+    // Notify the requester that their request was declined.
+    if (dr.length) {
+      const shift = await manualShift(companyId, dr[0].shiftId);
+      const typeWord = dr[0].requestType === 'swap' ? 'swap' : 'pickup';
+      notify({
+        companyId, userIds: [r.requesterId], category: 'schedule', type: 'request_decided',
+        title: `Your ${typeWord} request was declined`,
+        body: shift
+          ? `Your ${typeWord} request for ${shift.shiftTypeName} on ${fmtDateLong(shift.date)} was declined.`
+          : `Your ${typeWord} request was declined.`,
+        link: 'requests', bundleKey: 'request_decided',
+        excludeUserId: me,
+      });
+    }
   } catch (err) {
     console.error('[schedule] decline shift request failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -6771,6 +7238,38 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
        kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url]);
     res.json({ ok: true, id: rows[0].id });
+    // Notify the presenter/supervisor; if there is no presenter, tell
+    // the dashboard's department members a presenter is needed.
+    {
+      const people = [b.lecturerUserId, b.supervisorUserId].filter(Boolean).map(String);
+      const dateStr = b.date ? String(b.date).slice(0, 10) : '';
+      if (people.length) {
+        notify({
+          companyId, userIds: people, category: 'calendar', type: 'session_assigned',
+          title: `New session: "${title}"${dateStr ? ` on ${fmtDateLong(dateStr)}` : ''}`,
+          body: `You are on the session "${title}"${dateStr ? ` on ${fmtDateLong(dateStr)}` : ''}${b.startTime ? ` at ${String(b.startTime).slice(0, 5)}` : ''}.`,
+          link: 'calendars', bundleKey: 'session_assigned',
+          excludeUserId: req.session.userId!,
+        });
+      } else {
+        let memberIds: string[] = [];
+        if (dashboardId) {
+          const { rows: dd } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
+          for (const d of dd) memberIds.push(...await deptMemberIds(companyId, d.department_id));
+        } else if (departmentId) {
+          memberIds = await deptMemberIds(companyId, departmentId);
+        }
+        if (memberIds.length) {
+          notify({
+            companyId, userIds: memberIds, category: 'calendar', type: 'session_needs_presenter',
+            title: `A session needs a presenter: "${title}"${dateStr ? ` on ${fmtDateLong(dateStr)}` : ''}`,
+            body: `"${title}" has no presenter yet.`,
+            link: 'calendars', bundleKey: 'session_needs_presenter',
+            excludeUserId: req.session.userId!,
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -6800,6 +7299,8 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
     const locVal = field === 'location' ? (b.location ? String(b.location).trim().slice(0, 200) : null) : null;
     let updated = 0;
     const skipped: any[] = [];
+    let assignedChanges = 0;
+    const removedCounts = new Map<string, number>();
     for (const it of items) {
       const seriesId = String((it && it.id) || '').split('@@')[0];
       const date = it && it.date && /^\d{4}-\d{2}-\d{2}$/.test(String(it.date)) ? String(it.date) : null;
@@ -6809,6 +7310,17 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
       const cur = rows[0];
       if (!(await canEditSessionQuiet(req, cur.dashboard_id, cur.department_id))) { skipped.push({ id: it.id, error: 'Not editable.' }); continue; }
       const recurring = cur.recur_rule && cur.recur_rule !== 'none';
+      // Who holds this slot now (for notifications below)?
+      let prevHolder: string | null = null;
+      if (field !== 'location') {
+        if (recurring && date) {
+          const ov = await getOverride(seriesId, date);
+          const eff = effectivePeople(cur, ov);
+          prevHolder = field === 'lecturer' ? eff.lecturer : eff.supervisor;
+        } else {
+          prevHolder = cur[field === 'lecturer' ? 'lecturer_user_id' : 'supervisor_user_id'];
+        }
+      }
       if (recurring && date) {
         if (field === 'lecturer') await upsertOverride(companyId, seriesId, date, { has_lecturer: true, lecturer_user_id: userId });
         else if (field === 'supervisor') await upsertOverride(companyId, seriesId, date, { has_supervisor: true, supervisor_user_id: userId });
@@ -6819,8 +7331,36 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
         await query(`UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3`, [val, seriesId, companyId]);
       }
       updated++;
+      if (field !== 'location') {
+        if (userId && prevHolder !== userId) assignedChanges++;
+        if (prevHolder && prevHolder !== userId) removedCounts.set(prevHolder, (removedCounts.get(prevHolder) || 0) + 1);
+      }
     }
     res.json({ ok: true, updated, skipped });
+    // Notify the newly assigned person and anyone who lost sessions.
+    if (field !== 'location') {
+      const roleWord = field === 'lecturer' ? 'presenter' : 'supervisor';
+      if (userId && assignedChanges > 0) {
+        notify({
+          companyId, userIds: [userId], category: 'calendar', type: 'session_assigned',
+          title: assignedChanges === 1 ? `You were assigned a session as ${roleWord}` : `You were assigned ${assignedChanges} sessions as ${roleWord}`,
+          body: `${assignedChanges} session(s) now list you as ${roleWord}.`,
+          link: 'calendars', bundleKey: 'session_assigned',
+          payload: { count: assignedChanges },
+          excludeUserId: req.session.userId!,
+        });
+      }
+      for (const [uid, n] of removedCounts) {
+        notify({
+          companyId, userIds: [uid], category: 'calendar', type: 'session_changed',
+          title: n === 1 ? `You were removed as ${roleWord} from a session` : `You were removed as ${roleWord} from ${n} sessions`,
+          body: `${n} session(s) no longer list you as ${roleWord}.`,
+          link: 'calendars', bundleKey: 'session_changed',
+          payload: { count: n },
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] bulk assign failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -6935,8 +7475,22 @@ router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'sc
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
     if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
+    const ovBefore = await getOverride(seriesId, date);
     await query('DELETE FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [seriesId, date]);
     res.json({ ok: true });
+    {
+      const eff = effectivePeople(cur, ovBefore);
+      const people = [eff.lecturer, eff.supervisor].filter(Boolean) as string[];
+      if (people.length) {
+        notify({
+          companyId, userIds: people, category: 'calendar', type: 'session_changed',
+          title: `Session changed: "${cur.title}" on ${fmtDateLong(date)}`,
+          body: `The session "${cur.title}" on ${fmtDateLong(date)} was reset to the series settings.`,
+          link: 'calendars', bundleKey: 'session_changed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] session override delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -6962,8 +7516,22 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
       if (!occDate) { res.status(400).json({ error: 'A date is required for a one-date change.' }); return; }
       if (!cur.recur_rule || cur.recur_rule === 'none') { res.status(400).json({ error: 'This session does not repeat.' }); return; }
       if (b.cancelled === true) {
+        const ovBefore = await getOverride(seriesId, occDate);
+        const eff = effectivePeople(cur, ovBefore);
         await upsertOverride(companyId, seriesId, occDate, { cancelled: true });
         res.json({ ok: true, scope: 'date', cancelled: true });
+        {
+          const people = [eff.lecturer, eff.supervisor].filter(Boolean) as string[];
+          if (people.length) {
+            notify({
+              companyId, userIds: people, category: 'calendar', type: 'session_cancelled',
+              title: `Session cancelled: "${cur.title}" on ${fmtDateLong(occDate)}`,
+              body: `The session "${cur.title}" was cancelled for ${fmtDateLong(occDate)} (just this date).`,
+              link: 'calendars', bundleKey: 'session_cancelled',
+              excludeUserId: req.session.userId!,
+            });
+          }
+        }
         return;
       }
       for (const key of ['lecturerUserId', 'supervisorUserId']) {
@@ -6988,6 +7556,18 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
       }
       await upsertOverride(companyId, seriesId, occDate, fields);
       res.json({ ok: true, scope: 'date' });
+      {
+        const people = [cur.lecturer_user_id, cur.supervisor_user_id, b.lecturerUserId || null, b.supervisorUserId || null].filter(Boolean) as string[];
+        if (people.length) {
+          notify({
+            companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
+            title: `Session changed: "${cur.title}" on ${fmtDateLong(occDate)}`,
+            body: `The session "${cur.title}" was changed for ${fmtDateLong(occDate)} (just this date).`,
+            link: 'calendars', bundleKey: 'session_changed',
+            excludeUserId: req.session.userId!,
+          });
+        }
+      }
       return;
     }
     if (b.lecturerUserId) {
@@ -7032,6 +7612,49 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
        dashboardId, recurRule, recurUntil, supervisorUserId,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, seriesId]);
     res.json({ ok: true });
+    // Notify old + new presenter/supervisor about meaningful changes.
+    {
+      const newLecturer = b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id;
+      const newSupervisor = supervisorUserId;
+      const newDate = b.date || cur.session_date;
+      const dstr = (v: any) => !v ? '' : (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+      const changed =
+        String(newLecturer || '') !== String(cur.lecturer_user_id || '') ||
+        String(newSupervisor || '') !== String(cur.supervisor_user_id || '') ||
+        title !== cur.title ||
+        dstr(newDate) !== dstr(cur.session_date) ||
+        (b.startTime !== undefined && (b.startTime || null) !== cur.start_time) ||
+        (b.endTime !== undefined && (b.endTime || null) !== cur.end_time) ||
+        (b.location !== undefined && (b.location ? String(b.location).trim() : null) !== cur.location);
+      const people = [cur.lecturer_user_id, cur.supervisor_user_id, newLecturer, newSupervisor].filter(Boolean) as string[];
+      if (changed && people.length) {
+        notify({
+          companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
+          title: `Session changed: "${title}"`,
+          body: `The session "${cur.title}" was updated.`,
+          link: 'calendars', bundleKey: 'session_changed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+      if (!newLecturer && cur.lecturer_user_id) {
+        let memberIds: string[] = [];
+        if (dashboardId) {
+          const { rows: dd } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
+          for (const d of dd) memberIds.push(...await deptMemberIds(companyId, d.department_id));
+        } else if (departmentId) {
+          memberIds = await deptMemberIds(companyId, departmentId);
+        }
+        if (memberIds.length) {
+          notify({
+            companyId, userIds: memberIds, category: 'calendar', type: 'session_needs_presenter',
+            title: `A session needs a presenter: "${title}"`,
+            body: `"${title}" no longer has a presenter.`,
+            link: 'calendars', bundleKey: 'session_needs_presenter',
+            excludeUserId: req.session.userId!,
+          });
+        }
+      }
+    }
   } catch (err) {
     console.error('[schedule] academic session update failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -7043,11 +7666,23 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler'), async
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
-    const { rows } = await query('SELECT department_id, dashboard_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
     await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
     res.json({ ok: true });
+    {
+      const people = [rows[0].lecturer_user_id, rows[0].supervisor_user_id].filter(Boolean) as string[];
+      if (people.length) {
+        notify({
+          companyId, userIds: people, category: 'calendar', type: 'session_cancelled',
+          title: `Session cancelled: "${rows[0].title}"`,
+          body: `The session "${rows[0].title}" (${fmtDateLong(rows[0].sdate)}) was cancelled.`,
+          link: 'calendars', bundleKey: 'session_cancelled',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
   } catch (err) {
     console.error('[schedule] academic session delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

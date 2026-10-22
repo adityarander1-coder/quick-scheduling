@@ -19,6 +19,7 @@ import candidatesRouter from './routes/candidates';
 
 import invitesRouter from './routes/invites';
 import scheduleRouter from './routes/schedule';
+import notificationsRouter from './routes/notifications';
 import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
 import { billingWriteGate } from './middleware/billing';
 
@@ -78,6 +79,7 @@ app.use('/api/job-roles', jobRolesRouter);
 app.use('/api/candidates', candidatesRouter);
 app.use('/api/invites', invitesRouter);
 app.use('/api/schedule', scheduleRouter);
+app.use('/api/notifications', notificationsRouter);
 
 // GET / → /app.html when signed in, else the public landing page.
 app.get('/', (req: Request, res: Response) => {
@@ -169,6 +171,8 @@ async function main(): Promise<void> {
   startPayrollScheduler();
   const { startEmailPollScheduler } = await import('./util/emailPollScheduler.js');
   startEmailPollScheduler();
+  const { startNotificationDispatcher } = await import('./util/notify.js');
+  startNotificationDispatcher();
   startBillingSync(); // daily Stripe reconciliation + grace -> read_only -> suspended
   // Apply due scheduled role promotions on boot and daily.
   import('./routes/schedule.js').then(m => {

@@ -6,6 +6,7 @@
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
 import { extractAttachmentContent } from './emailAttachments.js';
+import { notify, planApproverIds } from './notify.js';
 import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -366,6 +367,21 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             rejectToken,
           ]
         );
+
+        // Bell + instant email for the approvers: a plan is waiting
+        // (Phase 1 notifications). Best-effort.
+        try {
+          const approvers = await planApproverIds(companyId);
+          if (approvers.length) {
+            await notify({
+              companyId, userIds: approvers, category: 'approvals', type: 'plan_waiting',
+              title: 'A schedule plan is waiting for approval',
+              body: plan.summary || `Plan from ${email.from}`,
+              link: 'requests', bundleKey: 'plan_waiting',
+              bundleTitle: '{count} schedule plans are waiting for approval',
+            });
+          }
+        } catch { /* non-fatal */ }
 
         // Notify requester that their request was received and is awaiting approval.
         try {
