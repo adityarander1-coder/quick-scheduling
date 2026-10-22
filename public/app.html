@@ -966,6 +966,10 @@
               <option value="employee">Block by employee</option>
             </select>
           </label>
+          <label id="sched-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
+            Start
+            <input type="date" id="sched-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+          </label>
           <label id="sched-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
             Team member
             <select id="sched-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
@@ -1248,15 +1252,13 @@
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (sched.view === 'block') {
-            // Block view spans the WHOLE YEAR of the anchor date
-            // (Deepika: no 4-week limit) — every week of that year,
-            // from the week containing Jan 1 to the week containing
-            // Dec 31, on the configured week-start day.
-            var yr = a.getFullYear();
-            var jan1 = new Date(yr, 0, 1);
-            from = new Date(jan1); from.setDate(jan1.getDate() - weekStartOffset(jan1));
-            var dec31 = new Date(yr, 11, 31);
-            to = new Date(dec31); to.setDate(dec31.getDate() + (6 - weekStartOffset(dec31)));
+            // Block view shows ONE FULL YEAR of weeks from the chosen
+            // start date (the Start picker), defaulting to the week
+            // containing Jan 1 of the anchor year (Deepika: whole
+            // year, any start date, past or future).
+            from = blockFromDate();
+            var endRef = new Date(from); endRef.setFullYear(endRef.getFullYear() + 1); endRef.setDate(endRef.getDate() - 1);
+            to = new Date(endRef); to.setDate(endRef.getDate() + (6 - weekStartOffset(endRef)));
           } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
             from = parseDate(sched.rangeFrom); to = parseDate(sched.rangeTo);
           } else {
@@ -1276,7 +1278,7 @@
           if (sched.view === 'month')
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
           if (sched.view === 'block')
-            return String(sched.anchorDate.getFullYear());
+            return f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' \u2013 ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -3315,6 +3317,14 @@
         // one person's year. The dropdowns show only in Block view.
         var bmSel = $('sched-block-mode'), bmemSel = $('sched-block-member');
         var schedBlockMode = 'shift', schedBlockMember = '', schedBlockMemberKey = '';
+        var schedBlockStart = '';
+        // The week-start-snapped first day of the Block view's year:
+        // the chosen Start date, or Jan 1 of the anchor year.
+        function blockFromDate() {
+          var base = schedBlockStart ? parseDate(schedBlockStart) : new Date(sched.anchorDate.getFullYear(), 0, 1);
+          var f = new Date(base); f.setDate(base.getDate() - weekStartOffset(base));
+          return f;
+        }
         function blockMembers() {
           return (sched.members || []).filter(function (m) {
             if (!sched.deptFilters.length) return true;
@@ -3326,6 +3336,9 @@
           var mw = $('sched-block-mode-wrap'), fw = $('sched-block-member-wrap');
           if (mw) mw.style.display = show ? 'flex' : 'none';
           if (fw) fw.style.display = (show && schedBlockMode === 'employee') ? 'flex' : 'none';
+          var stw = $('sched-block-start-wrap'), sti = $('sched-block-start');
+          if (stw) stw.style.display = show ? 'flex' : 'none';
+          if (sti && document.activeElement !== sti) sti.value = fmtDate(blockFromDate());
           if (bmSel && bmSel.value !== schedBlockMode) bmSel.value = schedBlockMode;
           if (bmemSel) {
             var mem = blockMembers();
@@ -3343,6 +3356,8 @@
         }
         if (bmSel) bmSel.addEventListener('change', function () { schedBlockMode = bmSel.value; renderView(); });
         if (bmemSel) bmemSel.addEventListener('change', function () { schedBlockMember = bmemSel.value; renderView(); });
+        var bsInp = $('sched-block-start');
+        if (bsInp) bsInp.addEventListener('change', function () { if (bsInp.value) { schedBlockStart = bsInp.value; loadAll(); } });
         var evtTgl = $('sched-events-toggle');
         if (evtTgl) {
           evtTgl.checked = sched.showDashEvents;
@@ -3372,7 +3387,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() - 1);
             else if (sched.view === 'week') a.setDate(a.getDate() - 7);
-            else if (sched.view === 'block') a.setFullYear(a.getFullYear() - 1);
+            else if (sched.view === 'block') { var bp = blockFromDate(); bp.setFullYear(bp.getFullYear() - 1); schedBlockStart = fmtDate(bp); }
             else a.setMonth(a.getMonth() - 1);
           }
           saveSchedView();
@@ -3389,7 +3404,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() + 1);
             else if (sched.view === 'week') a.setDate(a.getDate() + 7);
-            else if (sched.view === 'block') a.setFullYear(a.getFullYear() + 1);
+            else if (sched.view === 'block') { var bn = blockFromDate(); bn.setFullYear(bn.getFullYear() + 1); schedBlockStart = fmtDate(bn); }
             else a.setMonth(a.getMonth() + 1);
           }
           saveSchedView();
@@ -3397,6 +3412,7 @@
         });
         $('sched-today').addEventListener('click', function () {
           sched.anchorDate = new Date();
+          if (sched.view === 'block') schedBlockStart = '';
           saveSchedView();
           loadAll();
         });
@@ -8505,6 +8521,10 @@
             <option value="employee">Block by employee</option>
           </select>
         </label>
+        <label id="ms-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
+          Start
+          <input type="date" id="ms-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+        </label>
         <label id="ms-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
           Team member
           <select id="ms-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
@@ -8677,12 +8697,11 @@
             from = new Date(a); from.setDate(a.getDate() - dow);
             to = new Date(from); to.setDate(from.getDate() + 6);
           } else if (msView === 'block') {
-            // Whole year of the anchor date (same as the admin Block view).
-            var yr = a.getFullYear();
-            var jan1 = new Date(yr, 0, 1);
-            from = new Date(jan1); from.setDate(jan1.getDate() - weekStartOffset(jan1));
-            var dec31 = new Date(yr, 11, 31);
-            to = new Date(dec31); to.setDate(dec31.getDate() + (6 - weekStartOffset(dec31)));
+            // One full year of weeks from the chosen start date
+            // (the Start picker), defaulting to Jan 1 of the anchor year.
+            from = msBlockFromDate();
+            var endRef = new Date(from); endRef.setFullYear(endRef.getFullYear() + 1); endRef.setDate(endRef.getDate() - 1);
+            to = new Date(endRef); to.setDate(endRef.getDate() + (6 - weekStartOffset(endRef)));
           } else if (msView === 'range' && rangeFrom && rangeTo) {
             from = parseDate(rangeFrom); to = parseDate(rangeTo);
           } else {
@@ -8701,7 +8720,7 @@
           if (msView === 'month')
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
           if (msView === 'block')
-            return String(anchorDate.getFullYear());
+            return f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -9646,13 +9665,13 @@
           });
         });
         $('ms-prev').addEventListener('click', function () {
-          if (msView === 'block') { anchorDate = new Date(anchorDate.getFullYear() - 1, anchorDate.getMonth(), anchorDate.getDate()); loadData(); return; }
+          if (msView === 'block') { var bp = msBlockFromDate(); bp.setFullYear(bp.getFullYear() - 1); msBlockStart = fmtDate(bp); loadData(); return; }
           var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'month' ? -30 : -14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
-        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); loadData(); });
+        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData(); });
         $('ms-next').addEventListener('click', function () {
-          if (msView === 'block') { anchorDate = new Date(anchorDate.getFullYear() + 1, anchorDate.getMonth(), anchorDate.getDate()); loadData(); return; }
+          if (msView === 'block') { var bn = msBlockFromDate(); bn.setFullYear(bn.getFullYear() + 1); msBlockStart = fmtDate(bn); loadData(); return; }
           var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'month' ? 30 : 14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
@@ -9661,6 +9680,12 @@
         // filter to see one person's year. Shown only in Block view.
         var msBmSel = $('ms-block-mode'), msBmemSel = $('ms-block-member');
         var msBlockMode = 'shift', msBlockMember = '', msBlockMemberKey = '';
+        var msBlockStart = '';
+        function msBlockFromDate() {
+          var base = msBlockStart ? parseDate(msBlockStart) : new Date(anchorDate.getFullYear(), 0, 1);
+          var f = new Date(base); f.setDate(base.getDate() - weekStartOffset(base));
+          return f;
+        }
         function msBlockMembers() {
           return (members || []).filter(function (m) {
             if (!deptFilters.length) return true;
@@ -9675,6 +9700,9 @@
           var mw = $('ms-block-mode-wrap'), fw = $('ms-block-member-wrap');
           if (mw) mw.style.display = show ? 'flex' : 'none';
           if (fw) fw.style.display = (show && msBlockMode === 'employee') ? 'flex' : 'none';
+          var stw = $('ms-block-start-wrap'), sti = $('ms-block-start');
+          if (stw) stw.style.display = show ? 'flex' : 'none';
+          if (sti && document.activeElement !== sti) sti.value = fmtDate(msBlockFromDate());
           if (msBmSel && msBmSel.value !== msBlockMode) msBmSel.value = msBlockMode;
           if (msBmemSel) {
             var mem = msBlockMembers();
@@ -9692,6 +9720,8 @@
         }
         if (msBmSel) msBmSel.addEventListener('change', function () { msBlockMode = msBmSel.value; renderView(); });
         if (msBmemSel) msBmemSel.addEventListener('change', function () { msBlockMember = msBmemSel.value; renderView(); });
+        var msBsInp = $('ms-block-start');
+        if (msBsInp) msBsInp.addEventListener('change', function () { if (msBsInp.value) { msBlockStart = msBsInp.value; loadData(); } });
         $('ms-range-apply').addEventListener('click', function () {
           var f = $('ms-range-from').value, t = $('ms-range-to').value;
           if (!f || !t || f > t) { msError('Pick a valid date range.'); return; }
