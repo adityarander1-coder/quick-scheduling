@@ -928,6 +928,18 @@
           <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
             <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Dashboard events
           </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem" title="Choose which day your weeks start on — applies everywhere, including Block view and the dashboard calendars">
+            Week starts
+            <select id="sched-week-start" aria-label="Week starts on" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+              <option value="sunday">Sunday</option>
+              <option value="monday">Monday</option>
+              <option value="tuesday">Tuesday</option>
+              <option value="wednesday">Wednesday</option>
+              <option value="thursday">Thursday</option>
+              <option value="friday">Friday</option>
+              <option value="saturday">Saturday</option>
+            </select>
+          </label>
         </div>
       </div>
 
@@ -1730,6 +1742,7 @@
 
         function renderView() {
           var el = $('sched-view');
+          try { syncWeekStartSel(); } catch (e) {}
           if (sched.view === 'month') renderMonth(el);
           else if (sched.view === 'day') renderDay(el);
           else if (sched.view === 'block') renderBlockView(el);
@@ -3166,6 +3179,33 @@
             try { location.hash = '#dash/' + parts[0]; } catch (e) {}
           }
         });
+        // Week-start quick switcher (Deepika, 2026-10-21): the same
+        // General setting as Settings, without leaving the Schedule.
+        var wsSel = $('sched-week-start');
+        function syncWeekStartSel() {
+          if (!wsSel || !window.qsGeneral || !window.qsGeneral.week_start) return;
+          if (wsSel.value !== window.qsGeneral.week_start) wsSel.value = window.qsGeneral.week_start;
+        }
+        if (wsSel) {
+          syncWeekStartSel();
+          wsSel.addEventListener('change', function () {
+            var chosen = wsSel.value;
+            api('/api/schedule/general-settings').then(function (g) {
+              var s = (g.ok && g.data && (g.data.settings || g.data)) || {};
+              var body = Object.assign({}, s, { week_start: chosen });
+              return api('/api/schedule/general-settings', { method: 'PUT', body: JSON.stringify(body) });
+            }).then(function (r) {
+              if (r && r.ok) {
+                if (window.qsGeneral) window.qsGeneral.week_start = chosen;
+                pageSuccess('Week now starts on ' + chosen.charAt(0).toUpperCase() + chosen.slice(1) + '.');
+                loadAll();
+              } else {
+                pageError('Could not change the week start.');
+                syncWeekStartSel();
+              }
+            }).catch(function () { pageError('Could not change the week start.'); syncWeekStartSel(); });
+          });
+        }
         var evtTgl = $('sched-events-toggle');
         if (evtTgl) {
           evtTgl.checked = sched.showDashEvents;
