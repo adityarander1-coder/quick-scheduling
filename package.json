@@ -22,7 +22,8 @@
     "pg": "^8.23.1",
     "stripe": "^23.0.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "xlsx": "^0.18.5"
   },
   "description": "Quick Scheduling — multi-company scheduling SaaS (Phase 1: accounts & logins)",
   "engines": {

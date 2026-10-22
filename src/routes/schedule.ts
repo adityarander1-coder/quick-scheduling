@@ -17,6 +17,8 @@ import {
 import bcrypt from 'bcryptjs';
 import { escHtml } from '../util/mailer';
 import { auditLog, todayStr } from '../util/audit.js';
+import * as XLSX from 'xlsx';
+import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 
 const router = Router();
 
@@ -813,6 +815,189 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
   } catch (err) {
     console.error('[schedule] block assign failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Normalize a spreadsheet date cell to YYYY-MM-DD ('' when unreadable).
+// Text dates are interpreted as UTC calendar days — never local time — so a
+// date can never shift a day because of the server's timezone.
+function normalizeImportDate(raw: string): string {
+  const t = String(raw || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
+  if (/\d/.test(t)) {
+    const parsed = new Date(t);
+    if (!isNaN(parsed.getTime())) {
+      return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, '0')}-${String(parsed.getUTCDate()).padStart(2, '0')}`;
+    }
+  }
+  return '';
+}
+
+// Excel serial day number → YYYY-MM-DD (serials are pure calendar days).
+function excelSerialToDate(serial: number): string {
+  const d = new Date(Math.round((serial - 25569) * 86400000));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+// A spreadsheet cell as a date: serial numbers and Date objects convert;
+// strings go through the text normalizer.
+function importCellDate(cell: any): string {
+  if (typeof cell === 'number' && isFinite(cell)) return excelSerialToDate(cell);
+  if (cell instanceof Date && !isNaN(cell.getTime())) {
+    return `${cell.getUTCFullYear()}-${String(cell.getUTCMonth() + 1).padStart(2, '0')}-${String(cell.getUTCDate()).padStart(2, '0')}`;
+  }
+  return normalizeImportDate(String(cell ?? ''));
+}
+
+// Minimal CSV parser (quotes, escaped quotes, commas/newlines in quotes).
+function parseCsvText(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [], cell = '', inQuotes = false;
+  const src = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { cell += '"'; i++; }
+        else inQuotes = false;
+      } else cell += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(cell); cell = '';
+    } else if (ch === '\n') {
+      row.push(cell); cell = '';
+      rows.push(row); row = [];
+    } else cell += ch;
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+// POST /api/schedule/import-parse — read an uploaded schedule file
+// (spreadsheet/CSV or PDF) and return candidate assignment rows for the
+// import preview. NOTHING is created here; the client previews the rows
+// and confirms through /block-assign. Body: { filename, dataBase64 }.
+router.post('/import-parse', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { filename, dataBase64 } = req.body ?? {};
+    if (!dataBase64 || typeof dataBase64 !== 'string') {
+      res.status(400).json({ error: 'No file data was received.' });
+      return;
+    }
+    const buf = Buffer.from(dataBase64, 'base64');
+    if (!buf.length) {
+      res.status(400).json({ error: 'That file appears to be empty.' });
+      return;
+    }
+    if (buf.length > 8 * 1024 * 1024) {
+      res.status(413).json({ error: 'That file is too large (max 8 MB).' });
+      return;
+    }
+    const fname = String(filename || '').toLowerCase();
+    const isPdf = fname.endsWith('.pdf') || buf.subarray(0, 4).toString('latin1') === '%PDF';
+    const { rows: memRows } = await query(
+      'SELECT first_name AS "firstName", last_name AS "lastName" FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name',
+      [companyId]
+    );
+    const members = memRows.map((u: any) => `${u.firstName} ${u.lastName}`.trim());
+    const { rows: stRows } = await query(
+      'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name',
+      [companyId]
+    );
+    const shiftTypes = stRows.map((s: any) => s.name);
+    const today = todayStr();
+    if (isPdf) {
+      if (!isGeminiConfigured()) {
+        res.status(422).json({ error: 'PDF import uses the AI reader, which is not configured for this workspace.' });
+        return;
+      }
+      const rows = await parseScheduleDocument({ pdfBase64: dataBase64, members, shiftTypes, today });
+      res.json({ rows, source: 'ai' });
+      return;
+    }
+    // CSV/text files are parsed as plain text on purpose: spreadsheet
+    // libraries interpret date strings in the server's local timezone and
+    // can shift them a day. Excel files keep raw cell values so date
+    // serials convert exactly (see the cell normalizer below).
+    let rawGrid: any[][];
+    const isZip = buf.subarray(0, 2).toString('latin1') === 'PK';
+    if (!isZip && (fname.endsWith('.csv') || fname.endsWith('.txt') || !fname.endsWith('.xls'))) {
+      rawGrid = parseCsvText(buf.toString('utf8'));
+    } else {
+      let wb: XLSX.WorkBook;
+      try {
+        wb = XLSX.read(buf, { type: 'buffer' });
+      } catch {
+        res.status(400).json({ error: 'That file could not be read as a spreadsheet or CSV.' });
+        return;
+      }
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rawGrid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    }
+    const cellText = (c: any): string => {
+      if (c instanceof Date) return importCellDate(c);
+      if (typeof c === 'number' && isFinite(c) && c >= 20000 && c <= 80000) return excelSerialToDate(c);
+      return String(c ?? '');
+    };
+    const grid: string[][] = rawGrid
+      .map((r) => (r || []).map((c) => cellText(c).trim()))
+      .filter((r) => r.some((c) => c !== ''));
+    if (!grid.length) {
+      res.json({ rows: [], source: 'sheet' });
+      return;
+    }
+    // List format: a header row in the first 5 rows naming date/member/shift columns.
+    const colKind = (s: string): 'date' | 'member' | 'shift' | null => {
+      const t = s.toLowerCase();
+      if (/date|day/.test(t)) return 'date';
+      if (/member|employee|name|staff|person|doctor|provider/.test(t)) return 'member';
+      if (/shift|type|assignment|duty/.test(t)) return 'shift';
+      return null;
+    };
+    let headerIdx = -1;
+    let cols: Record<string, number> = {};
+    for (let i = 0; i < Math.min(5, grid.length); i++) {
+      const found: Record<string, number> = {};
+      grid[i].forEach((cell, ci) => {
+        const k = colKind(cell);
+        if (k && found[k] === undefined) found[k] = ci;
+      });
+      if (found.date !== undefined && found.member !== undefined && found.shift !== undefined) {
+        headerIdx = i; cols = found; break;
+      }
+    }
+    if (headerIdx >= 0) {
+      const rows: any[] = [];
+      for (let i = headerIdx + 1; i < grid.length && rows.length <= 2000; i++) {
+        const r = grid[i];
+        const member = r[cols.member] || '';
+        const shift = r[cols.shift] || '';
+        const dateRaw = r[cols.date] || '';
+        if (!member && !shift && !dateRaw) continue;
+        rows.push({ member, shift, date: normalizeImportDate(dateRaw), dateRaw });
+      }
+      res.json({ rows, source: 'sheet' });
+      return;
+    }
+    // Any other layout (block grids etc.) — the AI reads the sheet as CSV text.
+    if (!isGeminiConfigured()) {
+      res.status(422).json({ error: 'This sheet has no Date / Team member / Shift columns, and the AI reader is not configured to read other layouts.' });
+      return;
+    }
+    const csv = grid.map((r) => r.map((c) => (/[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c)).join(',')).join('\n');
+    const rows = await parseScheduleDocument({ text: csv, members, shiftTypes, today });
+    res.json({ rows, source: 'ai' });
+  } catch (err: any) {
+    console.error('[schedule] import parse failed:', err);
+    res.status(500).json({ error: String(err?.message || 'Could not read that file.').slice(0, 200) });
   }
 });
 

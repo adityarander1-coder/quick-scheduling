@@ -530,3 +530,87 @@ or
   if (!parsed.question && !parsed.proposal) throw new Error('Gemini returned no question or proposal.');
   return parsed;
 }
+
+export interface ImportedAssignment {
+  member: string;
+  shift: string;
+  date: string; // YYYY-MM-DD
+}
+
+/**
+ * Read a schedule document (a PDF, or a spreadsheet converted to CSV text)
+ * and extract every assignment as { member, shift, date } rows. Used by the
+ * Block view "Import schedule" feature; the caller shows the rows in a
+ * preview and only creates shifts after the user confirms.
+ */
+export async function parseScheduleDocument(input: {
+  text?: string;
+  pdfBase64?: string;
+  members: string[];
+  shiftTypes: string[];
+  today: string;
+}): Promise<ImportedAssignment[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('AI is not configured (GEMINI_API_KEY missing).');
+  const prompt = `You extract staff shift assignments from a schedule document. Today is ${input.today}.
+
+Team members (use these EXACT names): ${input.members.join(', ') || '(none)'}
+Shift types (use these EXACT names): ${input.shiftTypes.join(', ') || '(none)'}
+
+Return ONLY a JSON object: {"assignments": [{"member": "Exact Member Name", "shift": "Exact Shift Type Name", "date": "YYYY-MM-DD"}]}
+
+Rules:
+- One entry per person per shift per DAY.
+- If the document assigns someone to a shift for a whole week (e.g. a block schedule grid: names down the side, weeks across the top, shift names in the cells), emit one entry for EACH day of that week (7 entries), using the week's actual dates.
+- If a cell or row covers a date range, emit one entry per day in the range.
+- Match names and shift names to the lists above, using the list's exact spelling. If a person or shift in the document is not in the lists, still include the entry with the document's spelling (the app will flag it).
+- Resolve relative or partial dates ("Mar 3", "Week of Mar 3") against the year that makes them closest to today.
+- Skip headers, totals, notes, and anything that is not a person working a shift on a date.
+- If the document has no assignments, return {"assignments": []}.`;
+  const parts: any[] = [{ text: prompt }];
+  if (input.pdfBase64) {
+    parts.push({ inlineData: { mimeType: 'application/pdf', data: input.pdfBase64 } });
+  } else if (input.text) {
+    parts.push({ text: 'Document content (spreadsheet as CSV):\n' + input.text.slice(0, 60000) });
+  } else {
+    throw new Error('Nothing to parse.');
+  }
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise(r => setTimeout(r, attempt * 8000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    throw new Error(`Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`);
+  }
+  const data: any = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('The AI did not return readable assignments.');
+  const parsed = JSON.parse(jsonMatch[0]) as { assignments?: any[] };
+  const out: ImportedAssignment[] = [];
+  for (const a of Array.isArray(parsed.assignments) ? parsed.assignments : []) {
+    const member = String(a?.member || '').trim();
+    const shift = String(a?.shift || '').trim();
+    const date = String(a?.date || '').trim();
+    if (member && shift && /^\d{4}-\d{2}-\d{2}$/.test(date)) out.push({ member, shift, date });
+  }
+  return out;
+}

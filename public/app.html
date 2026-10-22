@@ -999,6 +999,7 @@
           <span style="flex:1"></span>
           <button type="button" id="sbp-mode-blocks" class="btn">Selected blocks</button>
           <button type="button" id="sbp-mode-range" class="btn-secondary">Date range</button>
+          <button type="button" id="sbimp-open" class="btn-secondary">📥 Import from file</button>
           <button type="button" id="sbp-exit" class="btn-secondary">Done</button>
         </div>
         <div id="sbp-blocks-row" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px">
@@ -1044,6 +1045,25 @@
           <span id="sbp-msg" style="font-size:0.88rem"></span>
         </div>
         <div style="font-size:0.8rem;color:var(--dim);margin-top:6px">Candidates are filtered by job roles — only team members whose job role fits the shift are listed (and in By employee, only shifts that fit the selected people). Tick “Show all” to list everyone. Days someone already has are skipped automatically.</div>
+      </div>
+      <div id="sched-import-modal" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:680px;width:94vw">
+          <h3>📥 Import schedule from a file</h3>
+          <p style="font-size:0.88rem;color:var(--dim);margin:4px 0 10px">Upload a spreadsheet (.xlsx, .xls, .csv) or a PDF. A simple list works best: columns for <strong>Date</strong>, <strong>Team member</strong> and <strong>Shift</strong>. Other layouts — including block grids and PDFs — are read by the AI. You preview everything before anything is added.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+            <input type="file" id="sbimp-file" accept=".csv,.xlsx,.xls,.pdf" style="font-size:0.88rem">
+            <span style="font-size:0.88rem">Save as:
+              <label style="margin-left:6px"><input type="radio" name="sbimp-pub" value="published" checked style="width:auto"> Published</label>
+              <label style="margin-left:6px"><input type="radio" name="sbimp-pub" value="draft" style="width:auto"> Draft</label>
+            </span>
+          </div>
+          <div id="sbimp-status" style="font-size:0.88rem;margin-top:10px"></div>
+          <div id="sbimp-preview" style="max-height:320px;overflow:auto;margin-top:8px"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+            <button type="button" id="sbimp-cancel" class="btn-secondary">Cancel</button>
+            <button type="button" id="sbimp-add" class="btn" disabled>Add shifts</button>
+          </div>
+        </div>
       </div>
       <div id="sched-view"></div>
 
@@ -3652,6 +3672,100 @@
         if ($('sbp-apply')) $('sbp-apply').addEventListener('click', doBlockAssign);
         if ($('sbp-showall')) $('sbp-showall').addEventListener('change', syncBlockPanel);
         if ($('sbp-repeat')) $('sbp-repeat').addEventListener('change', sbSyncRepeatRow);
+        // ---- Import schedule from a file (spreadsheet / PDF) ----
+        var sbImpRows = [];
+        function sbImpResolveMember(name) {
+          var t = String(name || '').trim().toLowerCase();
+          if (!t) return null;
+          var mem = sched.members || [];
+          function pick(list) { return list.length === 1 ? list[0] : null; }
+          return pick(mem.filter(function (m) { return fullName(m).toLowerCase() === t; }))
+            || pick(mem.filter(function (m) { return ((m.lastName || '') + ', ' + (m.firstName || '')).toLowerCase() === t; }))
+            || pick(mem.filter(function (m) { return (m.email || '').toLowerCase() === t; }))
+            || pick(mem.filter(function (m) { return (m.lastName || '').toLowerCase() === t; }))
+            || pick(mem.filter(function (m) { return (m.firstName || '').toLowerCase() === t; }));
+        }
+        function sbImpResolveShift(name) {
+          var t = String(name || '').trim().toLowerCase();
+          if (!t) return null;
+          var exact = (sched.shiftTypes || []).filter(function (st) { return (st.name || '').toLowerCase() === t || (st.shortName || '').toLowerCase() === t; });
+          return exact.length === 1 ? exact[0] : null;
+        }
+        function sbImpRenderPreview() {
+          var box = $('sbimp-preview'), status = $('sbimp-status'), addBtn = $('sbimp-add');
+          var ready = sbImpRows.filter(function (r) { return r.ok; });
+          status.innerHTML = sbImpRows.length
+            ? '<strong>' + ready.length + '</strong> of ' + sbImpRows.length + ' rows ready to add' + (sbImpRows.length - ready.length ? ' — the rest have a problem (see Status) and will be skipped' : '') + '.'
+            : 'Choose a file to see the preview.';
+          addBtn.disabled = !ready.length;
+          addBtn.textContent = ready.length ? 'Add ' + ready.length + ' shift' + (ready.length === 1 ? '' : 's') : 'Add shifts';
+          if (!sbImpRows.length) { box.innerHTML = ''; return; }
+          box.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">' +
+            '<tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="padding:4px 6px">Date</th><th style="padding:4px 6px">Team member</th><th style="padding:4px 6px">Shift</th><th style="padding:4px 6px">Status</th></tr>' +
+            sbImpRows.slice(0, 300).map(function (r) {
+              return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:4px 6px">' + esc(r.date || r.dateRaw || '') + '</td><td style="padding:4px 6px">' + esc(r.memberName) + '</td><td style="padding:4px 6px">' + esc(r.shiftName) + '</td><td style="padding:4px 6px">' + (r.ok ? '<span style="color:#15803d;font-weight:700">✓ ready</span>' : '<span style="color:#b91c1c">' + esc(r.problem) + '</span>') + '</td></tr>';
+            }).join('') + '</table>' + (sbImpRows.length > 300 ? '<div style="font-size:0.8rem;color:var(--dim);padding:4px">…and ' + (sbImpRows.length - 300) + ' more rows</div>' : '');
+        }
+        function sbImpHandleFile(file) {
+          if (!file) return;
+          if (file.size > 8 * 1024 * 1024) { $('sbimp-status').textContent = 'That file is too large (max 8 MB).'; return; }
+          $('sbimp-status').textContent = 'Reading ' + file.name + '…';
+          $('sbimp-preview').innerHTML = '';
+          sbImpRows = []; $('sbimp-add').disabled = true;
+          var reader = new FileReader();
+          reader.onload = function () {
+            var b64 = (String(reader.result || '').split(',')[1]) || '';
+            api('/api/schedule/import-parse', { method: 'POST', body: JSON.stringify({ filename: file.name, dataBase64: b64 }) }).then(function (r) {
+              if (!r.ok) { $('sbimp-status').textContent = (r.data && r.data.error) || 'Could not read that file.'; return; }
+              var rows = (r.data && r.data.rows) || [];
+              if (!rows.length) { sbImpRows = []; $('sbimp-status').textContent = 'No assignments were found in that file.'; return; }
+              sbImpRows = rows.map(function (row) {
+                var out = { date: row.date || '', dateRaw: row.dateRaw || row.date || '', memberName: row.member || '', shiftName: row.shift || '', ok: false, problem: '' };
+                var m = sbImpResolveMember(row.member);
+                var st = sbImpResolveShift(row.shift);
+                var dateOk = /^\d{4}-\d{2}-\d{2}$/.test(out.date) && fmtDate(parseDate(out.date)) === out.date;
+                if (!m) out.problem = 'Team member not found';
+                else if (!st) out.problem = 'Shift type not found';
+                else if (!dateOk) out.problem = 'Date not readable';
+                else { out.ok = true; out.userId = m.id; out.shiftTypeId = st.id; }
+                return out;
+              });
+              sbImpRenderPreview();
+            }).catch(function () { $('sbimp-status').textContent = 'Could not read that file — network error.'; });
+          };
+          reader.readAsDataURL(file);
+        }
+        function sbImpConfirm() {
+          var ready = sbImpRows.filter(function (r) { return r.ok; });
+          if (!ready.length) return;
+          var pubRadio = document.querySelector('input[name="sbimp-pub"]:checked');
+          var published = !pubRadio || pubRadio.value !== 'draft';
+          var map = {};
+          ready.forEach(function (r) {
+            var k = r.userId + '|' + r.shiftTypeId;
+            if (!map[k]) map[k] = { userId: r.userId, shiftTypeId: r.shiftTypeId, set: {} };
+            map[k].set[r.date] = true;
+          });
+          var groups = Object.keys(map).map(function (k) { return { userId: map[k].userId, shiftTypeId: map[k].shiftTypeId, dates: Object.keys(map[k].set).sort() }; });
+          var btn = $('sbimp-add'); btn.disabled = true;
+          $('sbimp-status').textContent = 'Adding…';
+          api('/api/schedule/block-assign', { method: 'POST', body: JSON.stringify({ assignments: groups, published: published }) }).then(function (r) {
+            if (!r.ok) { $('sbimp-status').textContent = (r.data && r.data.error) || 'Could not add the shifts.'; btn.disabled = false; return; }
+            var d = r.data, parts = ['Added ' + d.created + ' shift' + (d.created === 1 ? '' : 's') + (published ? ' (published)' : ' (draft)')];
+            if (d.already) parts.push(d.already + ' already existed');
+            if (d.ineligible) parts.push(d.ineligible + ' skipped — job role');
+            if (d.outOfScope) parts.push(d.outOfScope + ' skipped — outside your department');
+            $('sbimp-status').innerHTML = '<strong>' + esc(parts.join(' · ')) + '.</strong>';
+            sbImpRows = [];
+            $('sbimp-preview').innerHTML = '';
+            btn.textContent = 'Add shifts';
+            loadAll();
+          }).catch(function () { $('sbimp-status').textContent = 'Could not add the shifts — network error.'; btn.disabled = false; });
+        }
+        if ($('sbimp-open')) $('sbimp-open').addEventListener('click', function () { sbImpRows = []; var f = $('sbimp-file'); if (f) f.value = ''; sbImpRenderPreview(); show($('sched-import-modal')); });
+        if ($('sbimp-cancel')) $('sbimp-cancel').addEventListener('click', function () { hide($('sched-import-modal')); });
+        if ($('sbimp-file')) $('sbimp-file').addEventListener('change', function () { sbImpHandleFile($('sbimp-file').files[0]); });
+        if ($('sbimp-add')) $('sbimp-add').addEventListener('click', sbImpConfirm);
         if ($('sbp-rshift')) $('sbp-rshift').addEventListener('change', syncBlockPanel);
         if ($('sbp-ruser')) $('sbp-ruser').addEventListener('change', syncBlockPanel);
         var evtTgl = $('sched-events-toggle');

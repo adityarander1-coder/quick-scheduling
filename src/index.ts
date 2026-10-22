@@ -32,7 +32,8 @@ app.disable('x-powered-by');
 app.use(compression()); // Shrink pages before sending — faster downloads.
 // Stripe webhook needs the raw body for signature verification — mount before express.json().
 app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), handleBillingWebhook);
-app.use(express.json());
+// 15mb JSON limit so schedule-import files (base64 PDF/spreadsheet) fit.
+app.use(express.json({ limit: '15mb' }));
 
 let sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
