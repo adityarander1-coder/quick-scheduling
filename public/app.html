@@ -727,6 +727,8 @@
         #tab-schedule .sbw-cell { border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px; }
         #tab-schedule .sbw-box { border: 1px solid; border-radius: 10px; padding: 8px 10px; height: 100%; font-size: 0.84rem; line-height: 1.45; cursor: pointer; color: var(--text); }
         #tab-schedule .sbw-part { color: #66788c; font-size: 0.76rem; font-weight: 600; }
+        #tab-schedule .sbw-box.sbw-sel { outline: 3px solid #7c3aed; outline-offset: -3px; position: relative; }
+        #tab-schedule .sbw-box.sbw-sel::after { content: '✓'; position: absolute; top: 4px; right: 6px; background: #7c3aed; color: #fff; border-radius: 50%; width: 20px; height: 20px; font-size: 13px; line-height: 20px; text-align: center; font-weight: 800; }
         #tab-schedule .sbw-emp { display: flex; align-items: center; gap: 5px; }
         #tab-schedule .sbw-open { color: #c62828; font-weight: 800; }
         /* Weekly Block view (My Schedule): same grid, employee side. */
@@ -976,6 +978,7 @@
               <option value="">All team members</option>
             </select>
           </label>
+          <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
         </div>
       </div>
 
@@ -989,6 +992,41 @@
 
       <!-- publish bar removed per Deepika 2026-10-08 -->
 
+      <div id="sched-block-panel" class="hidden" style="background:#f5f3ff;border:1.5px solid #7c3aed;border-radius:12px;padding:12px 14px;margin:0 0 14px">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+          <strong>✏️ Make schedule</strong>
+          <span id="sbp-count" style="color:var(--dim);font-size:0.88rem">Click blocks to select them</span>
+          <span style="flex:1"></span>
+          <button type="button" id="sbp-mode-blocks" class="btn">Selected blocks</button>
+          <button type="button" id="sbp-mode-range" class="btn-secondary">Date range</button>
+          <button type="button" id="sbp-exit" class="btn-secondary">Done</button>
+        </div>
+        <div id="sbp-blocks-row" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px">
+          <label id="sbp-user-wrap" style="font-size:0.85rem">Assign employee<br>
+            <select id="sbp-user" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem;min-width:190px"></select></label>
+          <label id="sbp-shift-wrap" style="font-size:0.85rem;display:none">Assign shift<br>
+            <select id="sbp-shift" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem;min-width:190px"></select></label>
+          <label style="font-size:0.85rem;display:flex;gap:6px;align-items:center;padding-bottom:7px"><input type="checkbox" id="sbp-showall" style="width:auto"> Show all (ignore job roles)</label>
+        </div>
+        <div id="sbp-range-row" style="display:none;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px">
+          <label style="font-size:0.85rem">Shift<br>
+            <select id="sbp-rshift" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem;min-width:170px"></select></label>
+          <label style="font-size:0.85rem">Employee<br>
+            <select id="sbp-ruser" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem;min-width:170px"></select></label>
+          <label style="font-size:0.85rem">From<br><input type="date" id="sbp-from" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem"></label>
+          <label style="font-size:0.85rem">To<br><input type="date" id="sbp-to" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem"></label>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:12px">
+          <span style="font-size:0.88rem">Save as:
+            <label style="margin-left:6px"><input type="radio" name="sbp-pub" value="published" checked style="width:auto"> Published</label>
+            <label style="margin-left:6px"><input type="radio" name="sbp-pub" value="draft" style="width:auto"> Draft</label>
+          </span>
+          <button type="button" id="sbp-apply" class="btn">Assign</button>
+          <button type="button" id="sbp-clear" class="btn-secondary">Clear selection</button>
+          <span id="sbp-msg" style="font-size:0.88rem"></span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--dim);margin-top:6px">Candidates are filtered by job roles — only team members whose job role fits the shift are listed (and in By employee, only shifts that fit the selected people). Tick “Show all” to list everyone. Days someone already has are skipped automatically.</div>
+      </div>
       <div id="sched-view"></div>
 
       <div style="margin-top:1.5rem;text-align:center">
@@ -1783,7 +1821,7 @@
             memRows.forEach(function (m) {
               ehtml += '<div class="sbw-rowhead"><b>' + esc(fullName(m)) + '</b></div>';
               weeks.forEach(function (wk) {
-                ehtml += '<div class="sbw-cell"><div class="sbw-box" data-sbweek="' + wk.days[0] + '" title="Open this week in Week view" style="background:#ffffff;border-color:#cbd5e1">' +
+                ehtml += '<div class="sbw-cell"><div class="sbw-box' + (sbSel[String(m.id) + '|' + wk.days[0]] ? ' sbw-sel' : '') + '" data-sbweek="' + wk.days[0] + '" data-sbrow="' + esc(m.id) + '" title="Open this week in Week view" style="background:#ffffff;border-color:#cbd5e1">' +
                   sbwEmpCellHtml(m, wk) + '</div></div>';
               });
             });
@@ -1808,7 +1846,7 @@
             html += '<div class="sbw-rowhead"><span class="sbw-sw" style="background:' + esc(st.color || '#637a8e') + '"></span><b>' + esc(st.name) + '</b>' +
               '<span>' + esc(times) + (maxTarget ? ' · needs ' + maxTarget : '') + '</span></div>';
             weeks.forEach(function (wk) {
-              html += '<div class="sbw-cell"><div class="sbw-box" data-sbweek="' + wk.days[0] + '" title="Open this week in Week view" style="background:' + tint(st.color || '#637a8e', 84) + ';border-color:' + tint(st.color || '#637a8e', 52) + '">' +
+              html += '<div class="sbw-cell"><div class="sbw-box' + (sbSel[String(st.id) + '|' + wk.days[0]] ? ' sbw-sel' : '') + '" data-sbweek="' + wk.days[0] + '" data-sbrow="' + esc(st.id) + '" title="Open this week in Week view" style="background:' + tint(st.color || '#637a8e', 84) + ';border-color:' + tint(st.color || '#637a8e', 52) + '">' +
                 sbwCellHtml(st, wk) + '</div></div>';
             });
           });
@@ -1819,8 +1857,22 @@
         }
 
         function bindBlockView(el) {
+          // Prune selections whose boxes are no longer rendered (mode,
+          // department filter or year changed under them).
+          var liveKeys = {};
+          el.querySelectorAll('[data-sbweek]').forEach(function (box) {
+            liveKeys[(box.getAttribute('data-sbrow') || '') + '|' + box.getAttribute('data-sbweek')] = true;
+          });
+          Object.keys(sbSel).forEach(function (k) { if (!liveKeys[k]) delete sbSel[k]; });
           el.querySelectorAll('[data-sbweek]').forEach(function (box) {
             box.addEventListener('click', function () {
+              if (sbMake) {
+                var key = (box.getAttribute('data-sbrow') || '') + '|' + box.getAttribute('data-sbweek');
+                if (sbSel[key]) { delete sbSel[key]; box.classList.remove('sbw-sel'); }
+                else { sbSel[key] = true; box.classList.add('sbw-sel'); }
+                syncBlockPanel();
+                return;
+              }
               sched.view = 'week';
               sched.anchorDate = parseDate(box.getAttribute('data-sbweek'));
               document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === 'week'); });
@@ -1847,6 +1899,7 @@
           var el = $('sched-view');
           try { syncWeekStartSel(); } catch (e) {}
           try { syncBlockSels(); } catch (e) {}
+          try { syncBlockMake(); } catch (e) {}
           if (sched.view === 'month') renderMonth(el);
           else if (sched.view === 'day') renderDay(el);
           else if (sched.view === 'block') renderBlockView(el);
@@ -3354,10 +3407,178 @@
             } else if (bmemSel.value !== schedBlockMember) bmemSel.value = schedBlockMember;
           }
         }
-        if (bmSel) bmSel.addEventListener('change', function () { schedBlockMode = bmSel.value; renderView(); });
+        if (bmSel) bmSel.addEventListener('change', function () { schedBlockMode = bmSel.value; sbSel = {}; renderView(); });
         if (bmemSel) bmemSel.addEventListener('change', function () { schedBlockMember = bmemSel.value; renderView(); });
         var bsInp = $('sched-block-start');
         if (bsInp) bsInp.addEventListener('change', function () { if (bsInp.value) { schedBlockStart = bsInp.value; loadAll(); } });
+        // ---- Block view "Make schedule" mode: multi-select blocks and
+        // assign an employee (By shift) or a shift (By employee), or work
+        // by date range. Candidates are filtered by job roles. ----
+        var sbMake = false, sbSel = {}, sbPanelMode = 'blocks';
+        function syncBlockMake() {
+          var btn = $('sched-block-make'), panel = $('sched-block-panel');
+          var inBlock = sched.view === 'block';
+          if (btn) btn.style.display = (inBlock && sched.canEdit) ? '' : 'none';
+          if (!inBlock && sbMake) { sbMake = false; sbSel = {}; }
+          if (panel) panel.classList.toggle('hidden', !(inBlock && sbMake));
+          if (btn) { btn.textContent = sbMake ? '✏️ Making schedule…' : '✏️ Make schedule'; }
+          if (inBlock && sbMake) syncBlockPanel();
+        }
+        function sbSelectedCells() {
+          return Object.keys(sbSel).map(function (k) { var p = k.split('|'); return { rowId: p[0], weekStart: p[1] }; });
+        }
+        function sbPresentSet() {
+          var s = {};
+          (sched.shifts || []).forEach(function (sh) { s[String(sh.userId) + '|' + String(sh.shiftTypeId) + '|' + sh.date] = true; });
+          return s;
+        }
+        function sbWeekDays(weekStart) {
+          var out = [], d = parseDate(weekStart);
+          for (var i = 0; i < 7; i++) { var x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + i); out.push(fmtDate(x)); }
+          return out;
+        }
+        function sbUserFilter(shiftIds) {
+          if ($('sbp-showall') && $('sbp-showall').checked) return null;
+          var roles = {}, anyUnrestricted = false, any = false;
+          (shiftIds || []).forEach(function (tid) {
+            var st = shiftTypeById(tid); if (!st) return; any = true;
+            var elig = Array.isArray(st.eligibleJobRoleIds) ? st.eligibleJobRoleIds : [];
+            if (!elig.length) anyUnrestricted = true;
+            elig.forEach(function (r) { roles[String(r)] = true; });
+          });
+          if (!any || anyUnrestricted) return null;
+          return roles;
+        }
+        function sbFillUsers(selEl, shiftIds) {
+          if (!selEl) return;
+          var keep = selEl.value;
+          var filter = sbUserFilter(shiftIds || []);
+          var mem = blockMembers();
+          var shown = mem.filter(function (m) { return !filter || (m.jobRoleId && filter[String(m.jobRoleId)]); });
+          selEl.innerHTML = shown.length ? shown.map(function (m) { return '<option value="' + esc(m.id) + '">' + esc(fullName(m)) + '</option>'; }).join('') : '<option value="">— none eligible —</option>';
+          if (keep && shown.some(function (m) { return String(m.id) === String(keep); })) selEl.value = keep;
+        }
+        function sbShiftFilter(userIds) {
+          if ($('sbp-showall') && $('sbp-showall').checked) return null;
+          if (!userIds || !userIds.length) return null;
+          var allowed = {}, any = false;
+          (sched.shiftTypes || []).filter(shiftTypeVisible).forEach(function (st) {
+            var elig = (Array.isArray(st.eligibleJobRoleIds) ? st.eligibleJobRoleIds : []).map(String);
+            var ok = userIds.some(function (uid) {
+              var m = memberById(uid); if (!m) return false;
+              return !elig.length || (m.jobRoleId && elig.indexOf(String(m.jobRoleId)) !== -1);
+            });
+            if (ok) { allowed[String(st.id)] = true; any = true; }
+          });
+          return any ? allowed : {};
+        }
+        function sbFillShifts(selEl, userIds) {
+          if (!selEl) return;
+          var keep = selEl.value;
+          var filter = sbShiftFilter(userIds);
+          var types = (sched.shiftTypes || []).filter(shiftTypeVisible);
+          var shown = types.filter(function (st) { return !filter || filter[String(st.id)]; });
+          selEl.innerHTML = shown.length ? shown.map(function (st) { return '<option value="' + esc(st.id) + '">' + esc(st.name) + '</option>'; }).join('') : '<option value="">— none eligible —</option>';
+          if (keep && shown.some(function (st) { return String(st.id) === String(keep); })) selEl.value = keep;
+        }
+        function syncBlockPanel() {
+          if (!sbMake) return;
+          var cells = sbSelectedCells();
+          var cnt = $('sbp-count');
+          if (cnt) cnt.textContent = sbPanelMode === 'range' ? 'Date range — pick a shift, a person and the dates' : (cells.length ? cells.length + ' block' + (cells.length > 1 ? 's' : '') + ' selected' : 'Click blocks to select them');
+          var uw = $('sbp-user-wrap'), sw = $('sbp-shift-wrap');
+          if (uw) uw.style.display = schedBlockMode === 'shift' ? '' : 'none';
+          if (sw) sw.style.display = schedBlockMode === 'employee' ? '' : 'none';
+          if (sbPanelMode === 'blocks') {
+            if (schedBlockMode === 'shift') {
+              var tids = []; cells.forEach(function (c) { if (tids.indexOf(c.rowId) === -1) tids.push(c.rowId); });
+              sbFillUsers($('sbp-user'), tids);
+            } else {
+              var uids = []; cells.forEach(function (c) { if (uids.indexOf(c.rowId) === -1) uids.push(c.rowId); });
+              sbFillShifts($('sbp-shift'), uids);
+            }
+          } else {
+            var rShift = $('sbp-rshift'), rUser = $('sbp-ruser');
+            sbFillShifts(rShift, rUser && rUser.value ? [rUser.value] : []);
+            sbFillUsers(rUser, rShift && rShift.value ? [rShift.value] : []);
+          }
+        }
+        function sbSetPanelMode(mode) {
+          sbPanelMode = mode;
+          $('sbp-blocks-row').style.display = mode === 'blocks' ? 'flex' : 'none';
+          $('sbp-range-row').style.display = mode === 'range' ? 'flex' : 'none';
+          $('sbp-mode-blocks').className = mode === 'blocks' ? 'btn' : 'btn-secondary';
+          $('sbp-mode-range').className = mode === 'range' ? 'btn' : 'btn-secondary';
+          if (mode === 'range') {
+            var f = $('sbp-from'), t = $('sbp-to');
+            if (f && !f.value) { var base = blockFromDate(); f.value = fmtDate(base); t.value = fmtDate(new Date(base.getFullYear(), base.getMonth(), base.getDate() + 27)); }
+          }
+          syncBlockPanel();
+        }
+        function sbMsg(text, isErr) {
+          var m = $('sbp-msg'); if (!m) return;
+          m.textContent = text; m.style.color = isErr ? '#b91c1c' : '#15803d';
+        }
+        function doBlockAssign() {
+          var pubRadio = document.querySelector('input[name="sbp-pub"]:checked');
+          var published = !pubRadio || pubRadio.value !== 'draft';
+          var present = sbPresentSet();
+          var groups = [];
+          function addGroup(uid, tid, dates) {
+            var fresh = dates.filter(function (ds) { return !present[String(uid) + '|' + String(tid) + '|' + ds]; });
+            if (fresh.length) groups.push({ userId: uid, shiftTypeId: tid, dates: fresh });
+          }
+          if (sbPanelMode === 'blocks') {
+            var cells = sbSelectedCells();
+            if (!cells.length) { sbMsg('Select at least one block first.', true); return; }
+            if (schedBlockMode === 'shift') {
+              var uid = $('sbp-user').value;
+              if (!uid) { sbMsg('No eligible employee listed — tick "Show all" to list everyone.', true); return; }
+              cells.forEach(function (c) { addGroup(uid, c.rowId, sbWeekDays(c.weekStart)); });
+            } else {
+              var tid = $('sbp-shift').value;
+              if (!tid) { sbMsg('No eligible shift listed — tick "Show all" to list every shift.', true); return; }
+              cells.forEach(function (c) { addGroup(c.rowId, tid, sbWeekDays(c.weekStart)); });
+            }
+          } else {
+            var ruid = $('sbp-ruser').value, rtid = $('sbp-rshift').value;
+            var from = $('sbp-from').value, to = $('sbp-to').value;
+            if (!ruid || !rtid) { sbMsg('Pick a shift and an employee.', true); return; }
+            if (!from || !to || from > to) { sbMsg('Pick a valid date range.', true); return; }
+            var days = [], d0 = parseDate(from), d1 = parseDate(to);
+            for (var d = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()); d <= d1 && days.length < 366; d.setDate(d.getDate() + 1)) days.push(fmtDate(d));
+            addGroup(ruid, rtid, days);
+          }
+          if (!groups.length) { sbMsg('Already assigned — the people picked already have these shifts on those days.', false); return; }
+          var btn = $('sbp-apply'); btn.disabled = true;
+          api('/api/schedule/block-assign', { method: 'POST', body: JSON.stringify({ assignments: groups, published: published }) }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok) { sbMsg((r.data && r.data.error) || 'Could not assign.', true); return; }
+            var d = r.data, parts = [];
+            parts.push('Added ' + d.created + ' shift' + (d.created === 1 ? '' : 's') + (published ? ' (published)' : ' (draft)'));
+            if (d.already) parts.push(d.already + ' already existed');
+            if (d.ineligible) parts.push(d.ineligible + ' skipped — job role');
+            if (d.outOfScope) parts.push(d.outOfScope + ' skipped — outside your department');
+            if (d.invalid) parts.push(d.invalid + ' skipped — not found');
+            sbMsg(parts.join(' · ') + '.', false);
+            sbSel = {};
+            loadAll();
+          }).catch(function () { btn.disabled = false; sbMsg('Could not assign — network error.', true); });
+        }
+        var sbMakeBtn = $('sched-block-make');
+        if (sbMakeBtn) sbMakeBtn.addEventListener('click', function () {
+          sbMake = !sbMake;
+          if (!sbMake) sbSel = {};
+          renderView();
+        });
+        if ($('sbp-exit')) $('sbp-exit').addEventListener('click', function () { sbMake = false; sbSel = {}; renderView(); });
+        if ($('sbp-mode-blocks')) $('sbp-mode-blocks').addEventListener('click', function () { sbSetPanelMode('blocks'); });
+        if ($('sbp-mode-range')) $('sbp-mode-range').addEventListener('click', function () { sbSetPanelMode('range'); });
+        if ($('sbp-clear')) $('sbp-clear').addEventListener('click', function () { sbSel = {}; renderView(); });
+        if ($('sbp-apply')) $('sbp-apply').addEventListener('click', doBlockAssign);
+        if ($('sbp-showall')) $('sbp-showall').addEventListener('change', syncBlockPanel);
+        if ($('sbp-rshift')) $('sbp-rshift').addEventListener('change', syncBlockPanel);
+        if ($('sbp-ruser')) $('sbp-ruser').addEventListener('change', syncBlockPanel);
         var evtTgl = $('sched-events-toggle');
         if (evtTgl) {
           evtTgl.checked = sched.showDashEvents;

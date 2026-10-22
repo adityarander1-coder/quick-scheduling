@@ -726,6 +726,96 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
+// POST /api/schedule/block-assign — Block view "Make schedule": assign
+// employees to shift-week blocks (or shifts to employee-week blocks), or a
+// shift+employee over a date range. Body: { assignments: [{ userId,
+// shiftTypeId, dates: [YYYY-MM-DD, ...] }], published }. Mirrors /shifts/bulk
+// rules per group (department scoping + job-role eligibility), but a group
+// that fails a check is SKIPPED and counted instead of failing the batch, so
+// a multi-block selection spanning departments/roles reports honestly.
+router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { assignments, published } = req.body ?? {};
+    if (!Array.isArray(assignments) || !assignments.length || assignments.length > 200) {
+      res.status(400).json({ error: 'Provide between 1 and 200 assignment groups.' });
+      return;
+    }
+    // Scheduler: resolve the active department once (same rule as
+    // requireActiveDepartment); every group must belong to it.
+    let activeDept: string | null = null;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      const rawHeader = req.headers['x-active-department'];
+      const header = String(Array.isArray(rawHeader) ? rawHeader[0] : (rawHeader ?? '')).trim();
+      if (header) {
+        if (!access.edit.includes(header)) {
+          res.status(403).json({ error: 'You do not have edit access to the active department.' });
+          return;
+        }
+        activeDept = header;
+      } else if (access.edit.length === 1) {
+        activeDept = access.edit[0];
+      } else {
+        res.status(403).json({ error: 'Select an active department to make changes.' });
+        return;
+      }
+    }
+    let created = 0, already = 0, ineligible = 0, outOfScope = 0, invalid = 0, totalDates = 0;
+    let firstRoleError: string | null = null;
+    for (const group of assignments) {
+      const userId = group?.userId, shiftTypeId = group?.shiftTypeId;
+      const rawDates: any[] = Array.isArray(group?.dates) ? group.dates : [];
+      const dates: string[] = [...new Set<string>(rawDates.filter((d: any) => typeof d === 'string' && isValidDate(d)))];
+      if (!userId || !shiftTypeId || !dates.length) { invalid++; continue; }
+      totalDates += dates.length;
+      if (totalDates > 5000) {
+        res.status(400).json({ error: 'Too many dates in one request (max 5000).' });
+        return;
+      }
+      // Member + shift type must exist in this company.
+      const { rows: urows } = await query(
+        'SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [userId, companyId]
+      );
+      const { rows: trows } = await query(
+        'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [shiftTypeId, companyId]
+      );
+      if (!urows.length || !trows.length) { invalid++; continue; }
+      // Department scoping (scheduler only; owner bypasses).
+      if (activeDept) {
+        const relevant = await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId);
+        if (!relevant.length || !relevant.includes(activeDept)) { outOfScope++; continue; }
+      }
+      // Job-role eligibility for this (member, shift type) pair.
+      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      if (!eligibility.ok) {
+        ineligible++;
+        if (!firstRoleError) firstRoleError = eligibility.error;
+        continue;
+      }
+      for (const date of dates) {
+        try {
+          await query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [crypto.randomUUID(), companyId, userId, shiftTypeId, date, null, published !== false, req.session.userId!]
+          );
+          created++;
+        } catch (err: any) {
+          if (err?.code === '23505') { already++; continue; }
+          throw err;
+        }
+      }
+    }
+    res.status(201).json({ created, already, ineligible, outOfScope, invalid, roleError: firstRoleError });
+  } catch (err) {
+    console.error('[schedule] block assign failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler; department-scoped).
 // Deletes manual shifts; for rotation shifts, adds skip periods so they don't appear.
 router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
