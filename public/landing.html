@@ -7,9 +7,9 @@
   <meta name="description" content="Quick Scheduling is the simple scheduling app for shift-based teams: build the schedule in minutes, answer staffing questions in plain language, and approve changes from your email.">
   <style>
     :root {
-      --navy: #082f4f; --navy-soft: #123f60; --accent: #0878d1; --accent-hover: #0566b4;
-      --teal: #00a9a4; --bg: #edf4f8; --surface: #ffffff; --text: #102d47; --dim: #5c7185;
-      --border: #cbdbe5; --radius: 22px;
+      --navy: #101828; --navy-soft: #1e2a45; --accent: #0e7c86; --accent-hover: #0a6270;
+      --teal: #00a9a4; --bg: #eef0f8; --surface: #ffffff; --text: #131a2c; --dim: #5c6480;
+      --border: #d5daee; --radius: 22px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--text); background: var(--bg); line-height: 1.6; }
@@ -21,6 +21,8 @@
     .nav .wrap { display: flex; align-items: center; justify-content: space-between; }
     .brand { font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
     .brand span { color: var(--teal); font-weight: 400; font-size: 0.95rem; }
+    .brand-tile-sm { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--teal); color: #fff; font-size: 16px; margin-right: 9px; vertical-align: -8px; }
+
     .nav-cta { display: flex; gap: 0.6rem; align-items: center; }
     .btn { display: inline-block; padding: 0.65rem 1.4rem; border-radius: 999px; font-weight: 700; text-decoration: none; border: none; cursor: pointer; font-size: 0.95rem; }
     .btn-primary { background: var(--teal); color: #fff; }
@@ -28,10 +30,10 @@
     .btn-ghost { color: #fff; border: 1px solid rgba(255,255,255,0.4); }
     .btn-ghost:hover { background: rgba(255,255,255,0.1); }
     .btn-outline { border: 1.5px solid var(--accent); color: var(--accent); background: #fff; }
-    .btn-outline:hover { background: #eef6fd; }
+    .btn-outline:hover { background: #e6f4f5; }
 
     /* Hero */
-    .hero { background: linear-gradient(160deg, var(--navy) 0%, var(--navy-soft) 70%, #0d4a73 100%); color: #fff; padding: 4rem 0 3.5rem; overflow: hidden; }
+    .hero { background: linear-gradient(160deg, var(--navy) 0%, var(--navy-soft) 70%, #14324f 100%); color: #fff; padding: 4rem 0 3.5rem; overflow: hidden; }
     .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; align-items: center; }
     .hero h1 { font-size: 2.6rem; line-height: 1.15; letter-spacing: -0.02em; margin-bottom: 1rem; }
     .hero h1 em { color: var(--teal); font-style: normal; }
@@ -45,13 +47,13 @@
     .mock-bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #ffffff44; }
     .mock-body { padding: 1rem; }
     .mock-week { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
-    .mock-day { background: #f3f8fb; border-radius: 10px; padding: 0.5rem; font-size: 0.7rem; }
+    .mock-day { background: #f4f5fb; border-radius: 10px; padding: 0.5rem; font-size: 0.7rem; }
     .mock-day .d { font-weight: 800; margin-bottom: 0.35rem; font-size: 0.72rem; }
     .mock-shift { border-radius: 7px; padding: 0.3rem 0.45rem; margin-bottom: 0.3rem; font-size: 0.68rem; line-height: 1.35; }
     .mock-chat { display: flex; flex-direction: column; gap: 0.5rem; }
     .mock-msg { border-radius: 12px; padding: 0.55rem 0.8rem; font-size: 0.78rem; max-width: 88%; }
-    .mock-msg.q { background: #e8f1fa; align-self: flex-end; }
-    .mock-msg.a { background: #f3f8fb; border: 1px solid var(--border); align-self: flex-start; }
+    .mock-msg.q { background: #e6f4f5; align-self: flex-end; }
+    .mock-msg.a { background: #f4f5fb; border: 1px solid var(--border); align-self: flex-start; }
     .mock-mail { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.85rem; font-size: 0.75rem; margin-bottom: 0.5rem; }
     .mock-mail .from { font-weight: 700; margin-bottom: 0.15rem; }
     .mock-mail .subj { color: var(--dim); margin-bottom: 0.35rem; }
@@ -59,7 +61,7 @@
     .mock-btn { border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.7rem; font-weight: 700; }
     .mock-btn.go { background: #dcfce7; color: #166534; }
     .mock-btn.no { background: #fee2e2; color: #991b1b; }
-    .mock-phone { width: 200px; margin: 0 auto; border: 8px solid #0f2438; border-radius: 26px; overflow: hidden; background: #fff; }
+    .mock-phone { width: 200px; margin: 0 auto; border: 8px solid #101828; border-radius: 26px; overflow: hidden; background: #fff; }
     .mock-phone .ph-head { background: var(--navy); color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.5rem; text-align: center; }
     .mock-avail { display: flex; justify-content: space-between; align-items: center; font-size: 0.7rem; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eef3f7; }
     .pill { border-radius: 999px; padding: 0.15rem 0.55rem; font-size: 0.65rem; font-weight: 700; }
@@ -129,7 +131,7 @@
 
   <nav class="nav">
     <div class="wrap">
-      <div class="brand">Quick Scheduling <span>· employee schedule</span></div>
+      <div class="brand"><span class="brand-tile-sm">◈</span>Quick Scheduling <span>· employee schedule</span></div>
       <div class="nav-cta">
         <a class="btn btn-ghost" href="/login.html">Log in</a>
         <a class="btn btn-primary" href="/signup.html">Start free trial</a>
@@ -262,7 +264,7 @@
           <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Task Q-Scheduler</div>
           <div class="mock-body"><div class="mock-chat">
             <div class="mock-msg q">Add a triage nurse role to Internal Medicine</div>
-            <div class="mock-msg a"><strong>Plan:</strong> Add job role "triage nurse" to Internal Medicine.<br><span style="color:#0878d1">✓ Approve</span> &nbsp; <span style="color:#5c7185">Reject</span></div>
+            <div class="mock-msg a"><strong>Plan:</strong> Add job role "triage nurse" to Internal Medicine.<br><span style="color:#0e7c86">✓ Approve</span> &nbsp; <span style="color:#5c6480">Reject</span></div>
             <div class="mock-msg a">Want me to also handle any of these?<br><span style="display:inline-block;background:#e8f1f8;border-radius:12px;padding:2px 10px;margin:2px;font-size:0.85em">Assign this role to a team member</span> <span style="display:inline-block;background:#e8f1f8;border-radius:12px;padding:2px 10px;margin:2px;font-size:0.85em">Allow this role on a shift type</span></div>
           </div></div>
         </div></div>
