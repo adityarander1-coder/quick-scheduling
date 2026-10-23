@@ -666,7 +666,6 @@
       <button class="tab-btn" data-tab="ask"><span class="tab-ic">✨</span><span class="tab-tx">Ask Q-Scheduler</span></button>
       <button class="tab-btn" data-tab="link"><span class="tab-ic">🔗</span><span class="tab-tx">Share Links</span></button>
       <button class="tab-btn" data-tab="settings"><span class="tab-ic">⚙️</span><span class="tab-tx">Settings</span></button>
-      <button class="tab-btn" data-tab="mysettings"><span class="tab-ic">👤</span><span class="tab-tx">My settings</span></button>
       <button class="tab-btn" data-tab="billing"><span class="tab-ic">💳</span><span class="tab-tx">Billing</span></button>
       <button class="tab-btn" data-tab="help"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
     </nav>
@@ -12912,8 +12911,7 @@
         if (inEmployeeView && window.qsSetEmployeeTab) {
           window.qsSetEmployeeTab('mysettings');
         } else {
-          var adm = document.querySelector('.tab-btn[data-tab="mysettings"]');
-          if (adm) adm.click();
+          window.location.hash = 'mysettings';
         }
         if (scrollToProfile) setTimeout(function () {
           var card = document.querySelector('#tab-mysettings .card');
