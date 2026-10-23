@@ -727,6 +727,14 @@
     .modal h3 { font-size: 1.12rem; font-weight: 800; letter-spacing: -0.01em; }
     html:not([data-theme="dark"]) .modal input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) .modal select, html:not([data-theme="dark"]) .modal textarea { border-radius: 9px; border-color: #d5daee; }
     .modal .modal-actions .btn-primary, .modal .modal-actions .btn-secondary, .modal .modal-actions button { border-radius: 9px; font-weight: 700; padding-top: 0.55rem; padding-bottom: 0.55rem; }
+    /* ---- Restyle B, stage 4: Settings screens as cards ---- */
+    html:not([data-theme="dark"]) #tab-settings .sub-panel.active { background: #fff; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.08); padding: 18px; }
+    html:not([data-theme="dark"]) #tab-settings input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) #tab-settings select, html:not([data-theme="dark"]) #tab-settings textarea { border-color: #d5daee; }
+    #tab-settings .subtab-btn { border-radius: 999px; padding: 0.45rem 0.95rem; }
+    html:not([data-theme="dark"]) #tab-settings .subtab-btn.active { background: var(--accent); color: #fff; }
+    #tab-settings .sub-panel h3 { font-weight: 800; color: var(--text); }
+    html:not([data-theme="dark"]) #tab-settings table th { color: var(--dim); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 2px solid #eef0f8; }
+    html:not([data-theme="dark"]) #tab-settings table td { border-bottom: 1px solid #eef0f8; }
     @media (min-width: 1024px) {
       body { padding-left: 228px; }
       .app-header { position: fixed; left: 0; top: 0; bottom: 0; width: 228px; padding: 16px 12px; display: flex; flex-direction: column; overflow-y: auto; z-index: 900; }
