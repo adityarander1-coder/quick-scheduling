@@ -3532,8 +3532,16 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
         [companyId, me, since, ...params]);
       return rows[0].n;
     }
+    async function lastMsg(where: string, params: any[]): Promise<{ body: string; at: string } | null> {
+      const { rows } = await query(
+        `SELECT LEFT(body, 90) AS body, created_at AS "createdAt" FROM messages
+         WHERE company_id = $1 AND ${where} ORDER BY created_at DESC LIMIT 1`,
+        [companyId, ...params]);
+      return rows.length ? { body: rows[0].body, at: rows[0].createdAt } : null;
+    }
     const channels: any[] = [{ key: 'company', name: 'Everyone', kind: 'company',
-      unread: await unread('company', "kind = 'company'", []) }];
+      unread: await unread('company', "kind = 'company'", []),
+      last: await lastMsg("kind = 'company'", []) }];
     // Department channels.
     const deptIds = await visibleDepartmentIds(companyId, me, role);
     if (deptIds.length) {
@@ -3541,7 +3549,8 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
         'SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) ORDER BY name', [deptIds]);
       for (const d of depts) {
         channels.push({ key: 'dept:' + d.id, name: d.name, kind: 'department',
-          unread: await unread('dept:' + d.id, "kind = 'department' AND department_id = $4", [d.id]) });
+          unread: await unread('dept:' + d.id, "kind = 'department' AND department_id = $4", [d.id]),
+          last: await lastMsg("kind = 'department' AND department_id = $2", [d.id]) });
       }
     }
     // Custom groups.
@@ -3552,7 +3561,8 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
       [companyId, me]);
     for (const g of groups) {
       channels.push({ key: 'group:' + g.id, name: g.name, kind: 'group',
-        unread: await unread('group:' + g.id, "kind = 'group' AND group_id = $4", [g.id]) });
+        unread: await unread('group:' + g.id, "kind = 'group' AND group_id = $4", [g.id]),
+        last: await lastMsg("kind = 'group' AND group_id = $2", [g.id]) });
     }
     // DM contacts: every other active member.
     const { rows: people } = await query(
@@ -3565,7 +3575,8 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
       if (!p.name) continue;
       const key = 'dm:' + p.id;
       dms.push({ key, name: p.name, kind: 'dm', userId: p.id,
-        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [dmKey(me, p.id)]) });
+        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [dmKey(me, p.id)]),
+        last: await lastMsg("kind = 'dm' AND dm_key = $2", [dmKey(me, p.id)]) });
     }
     // Multi-person DM threads I'm part of.
     const { rows: mdms } = await query(
@@ -3577,7 +3588,8 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
     for (const md of mdms) {
       const key = 'dmg:' + md.dmKey.split('|').filter((id: string) => id !== me).sort().join(',');
       dms.push({ key, name: await multiDmDisplayName(companyId, me, md.dmKey), kind: 'dmg',
-        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [md.dmKey]) });
+        unread: await unread(key, 'kind = \'dm\' AND dm_key = $4', [md.dmKey]),
+        last: await lastMsg("kind = 'dm' AND dm_key = $2", [md.dmKey]) });
     }
     res.json({ channels, dms });
   } catch (err) {

@@ -728,6 +728,29 @@
     html:not([data-theme="dark"]) .modal input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) .modal select, html:not([data-theme="dark"]) .modal textarea { border-radius: 9px; border-color: #d5daee; }
     .modal .modal-actions .btn-primary, .modal .modal-actions .btn-secondary, .modal .modal-actions button { border-radius: 9px; font-weight: 700; padding-top: 0.55rem; padding-bottom: 0.55rem; }
     /* ---- Restyle B, stage 6: Messages polish (cards + avatars + bubbles) ---- */
+    .msg-side { display: flex; flex-direction: column; width: 280px; flex-shrink: 0; min-height: 0; }
+    .msg-search { margin-bottom: 8px; }
+    .msg-search input { width: 100%; padding: 0.6rem 0.9rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.92rem; background: #fff; }
+    html:not([data-theme="dark"]) .msg-search input { border-color: #d5daee; }
+    .msg-channels { flex: 1; min-height: 0; }
+    .msg-ch { align-items: center; }
+    .msg-ch .ch-main { display: inline-flex; align-items: center; min-width: 0; flex: 1; }
+    .msg-ch .ch-texts { display: flex; flex-direction: column; min-width: 0; text-align: left; }
+    .msg-ch .ch-name { font-weight: 700; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msg-ch .ch-snip { font-size: 0.78rem; color: var(--dim); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+    .msg-ch .ch-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; margin-left: 8px; }
+    .msg-ch .ch-time { font-size: 0.7rem; color: var(--dim); }
+    .msg-thread-head { display: flex; align-items: center; gap: 0.5rem; }
+    #msg-back { display: none; border: none; background: transparent; color: var(--accent); font-size: 1.25rem; font-weight: 800; cursor: pointer; padding: 0 4px; line-height: 1; }
+    @media (max-width: 700px) {
+      .msg-side { width: 100%; }
+      #tab-messages .msg-wrap.chat-open .msg-side { display: none; }
+      #tab-messages .msg-wrap.chat-open .msg-thread { display: flex; min-height: 52vh; }
+      #tab-messages .msg-wrap:not(.chat-open) .msg-thread { display: none; }
+      #msg-back { display: inline-block; }
+      .msg-ch .ch-snip { max-width: 210px; }
+      #tab-messages .msg-channels { max-height: 56vh; width: 100%; }
+    }
     html:not([data-theme="dark"]) .msg-channels { background: transparent; border: none; padding: 0.35rem; }
     html:not([data-theme="dark"]) .msg-ch { background: #fff !important; border: 1px solid #eef0f8 !important; border-radius: 11px !important; margin-bottom: 7px; box-shadow: 0 1px 3px rgba(16,24,40,.05); }
     html:not([data-theme="dark"]) .msg-ch.active { background: #fff !important; color: var(--text); box-shadow: 0 0 0 2px var(--accent); }
@@ -10588,10 +10611,13 @@
           .msg-thread { min-height: 50vh; }
         }
       </style>
-      <div class="msg-wrap">
-        <div class="msg-channels" id="msg-channels"><div style="padding:1rem;color:var(--dim)">Loading…</div></div>
+      <div class="msg-wrap" id="msg-wrap">
+        <div class="msg-side">
+          <div class="msg-search"><input type="text" id="msg-search" placeholder="🔍 Search people or conversations…" autocomplete="off"></div>
+          <div class="msg-channels" id="msg-channels"><div style="padding:1rem;color:var(--dim)">Loading…</div></div>
+        </div>
         <div class="msg-thread">
-          <div class="msg-thread-head" id="msg-thread-head">Select a conversation</div>
+          <div class="msg-thread-head"><button type="button" id="msg-back" aria-label="Back to conversations">←</button><span id="msg-thread-title">Select a conversation</span></div>
           <div class="msg-list" id="msg-list"></div>
           <div class="msg-input">
             <input type="text" id="msg-text" placeholder="Type a message…" maxlength="2000" autocomplete="off">
@@ -10605,6 +10631,13 @@
         function esc(s) {
           return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function chAvHtml(name) {
+          var parts = String(name || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/);
+          var ini = ((parts[0] || '?').charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : '')).toUpperCase();
+          var hues = ['#0e7c86', '#f59e0b', '#6366f1', '#0891b2', '#db2777', '#16a34a', '#ea580c'];
+          var h = 0; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997;
+          return '<span class="ch-av" style="background:' + hues[h % hues.length] + '">' + ini + '</span>';
         }
         function fmtTime(iso) {
           var d = new Date(iso);
@@ -10629,19 +10662,23 @@
             }
             var box = $('msg-channels');
             var total = 0, html = '';
-            function chAv(name) {
-              var parts = String(name || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/);
-              var ini = ((parts[0] || '?').charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : '')).toUpperCase();
-              var hues = ['#0e7c86', '#f59e0b', '#6366f1', '#0891b2', '#db2777', '#16a34a', '#ea580c'];
-              var h = 0; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997;
-              return '<span class="ch-av" style="background:' + hues[h % hues.length] + '">' + ini + '</span>';
+            function chAv(name) { return chAvHtml(name); }
+            function fmtDay(iso) {
+              if (!iso) return '';
+              var d = new Date(iso), now = new Date();
+              if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              var y = new Date(now); y.setDate(y.getDate() - 1);
+              if (d.toDateString() === y.toDateString()) return 'Yesterday';
+              return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
             }
             function chBtn(c) {
               total += c.unread || 0;
               var del = c.kind === 'group' ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
               return '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span class="ch-label">' + chAv(c.name) + esc(c.name) + del + '</span>' +
-                (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
+                '<span class="ch-main">' + chAv(c.name) + '<span class="ch-texts"><span class="ch-name">' + esc(c.name) + del + '</span>' +
+                (c.last ? '<span class="ch-snip">' + esc(c.last.body) + '</span>' : '') + '</span></span>' +
+                '<span class="ch-side">' + (c.last ? '<span class="ch-time">' + esc(fmtDay(c.last.at)) + '</span>' : '') +
+                (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</span></button>';
             }
             var chans = r.data.channels || [];
             var company = chans.filter(function (c) { return c.kind === 'company'; });
@@ -10658,14 +10695,12 @@
             html += '<button type="button" class="msg-ch" id="new-group-btn" style="color:var(--accent);font-weight:700"><span>＋ New group</span></button>';
             html += '<h4>Direct messages</h4>';
             (r.data.dms || []).forEach(function (c) {
-              total += c.unread || 0;
-              html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span class="ch-label">' + chAv(c.name) + esc(c.name) + '</span>' +
-                (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
+              html += chBtn(c);
             });
             html += '<button type="button" class="msg-ch" id="new-dm-btn" style="color:var(--accent);font-weight:700"><span>＋ New message</span></button>';
             box.innerHTML = html;
             updateTabBadge(total);
+            filterChannelList();
             box.querySelectorAll('[data-ch]').forEach(function (b) {
               b.addEventListener('click', function (e) {
                 var del = e.target.closest('[data-grpdel]');
@@ -10674,7 +10709,7 @@
                   if (!confirm('Delete this group? Messages will be removed.')) return;
                   api('/api/schedule/messages/groups/' + encodeURIComponent(del.getAttribute('data-grpdel')), { method: 'DELETE' })
                     .then(function (rr) {
-                      if (rr.ok) { if (activeChannel === 'group:' + del.getAttribute('data-grpdel')) { activeChannel = null; $('msg-list').innerHTML = ''; $('msg-thread-head').textContent = 'Select a conversation'; } loadChannels(true); }
+                      if (rr.ok) { if (activeChannel === 'group:' + del.getAttribute('data-grpdel')) { activeChannel = null; $('msg-list').innerHTML = ''; $('msg-thread-title').textContent = 'Select a conversation'; } loadChannels(true); }
                       else pageError((rr.data && rr.data.error) || 'Could not delete.');
                     }).catch(function () { pageError('Could not delete.'); });
                   return;
@@ -10686,7 +10721,7 @@
             if (ngb) ngb.addEventListener('click', openGroupModal);
             var ndb = $('new-dm-btn');
             if (ndb) ndb.addEventListener('click', openDmModal);
-            if (selectFirst && !activeChannel) {
+            if (selectFirst && !activeChannel && window.innerWidth > 700) {
               var first = box.querySelector('[data-ch]');
               if (first) selectChannel(first.getAttribute('data-ch'), first.getAttribute('data-name'));
             }
@@ -10694,9 +10729,50 @@
             $('msg-channels').innerHTML = '<div style="padding:1rem;color:#991b1b">Couldn\'t load messages. Check your connection and reopen the tab.</div>';
           });
         }
+        function filterChannelList() {
+          var q = (($('msg-search') || {}).value || '').trim().toLowerCase();
+          var box = $('msg-channels');
+          if (!box) return;
+          var kids = Array.prototype.slice.call(box.children);
+          var anyVisible = false;
+          kids.forEach(function (el) {
+            if (el.hasAttribute && el.hasAttribute('data-ch')) {
+              var show = !q || (el.getAttribute('data-name') || '').toLowerCase().indexOf(q) !== -1;
+              el.style.display = show ? '' : 'none';
+              if (show) anyVisible = true;
+            }
+          });
+          // Hide section headers whose rows are all hidden.
+          var currentH = null, hHas = false;
+          kids.forEach(function (el) {
+            if (el.tagName === 'H4') {
+              if (currentH) currentH.style.display = hHas ? '' : 'none';
+              currentH = el; hHas = false;
+            } else if (el.hasAttribute && el.hasAttribute('data-ch') && el.style.display !== 'none') {
+              hHas = true;
+            } else if (el.id === 'new-group-btn' || el.id === 'new-dm-btn') {
+              el.style.display = q ? 'none' : '';
+              if (!q) hHas = true;
+            }
+          });
+          if (currentH) currentH.style.display = hHas ? '' : 'none';
+          var nm = $('msg-nomatch');
+          if (!anyVisible && q) {
+            if (!nm) {
+              nm = document.createElement('div');
+              nm.id = 'msg-nomatch';
+              nm.style.cssText = 'padding:1rem;color:var(--dim);font-size:0.9rem';
+              box.appendChild(nm);
+            }
+            nm.textContent = 'No conversations match "' + q + '".';
+            nm.style.display = '';
+          } else if (nm) nm.style.display = 'none';
+        }
         function selectChannel(key, name) {
           activeChannel = key; activeName = name; hasMore = true; oldest = null;
-          $('msg-thread-head').textContent = name;
+          $('msg-thread-title').textContent = name;
+          var wrap = $('msg-wrap');
+          if (wrap) wrap.classList.add('chat-open');
           $('msg-list').innerHTML = '';
           document.querySelectorAll('#msg-channels [data-ch]').forEach(function (b) {
             b.classList.toggle('active', b.getAttribute('data-ch') === key);
@@ -10872,8 +10948,8 @@
               '<div class="modal-back hidden" id="dm-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:1rem">' +
               '<div style="background:var(--surface);border-radius:14px;padding:1.4rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
               '<h3 style="margin-top:0">New message</h3>' +
-              '<p style="color:var(--dim);font-size:0.85rem">Pick one or more people.</p>' +
-              '<div id="dm-people" style="display:flex;gap:0.4rem;flex-wrap:wrap;max-height:240px;overflow-y:auto"></div>' +
+              '<input type="text" id="dm-search" placeholder="🔍 Type a name…" autocomplete="off" style="width:100%;padding:0.6rem 0.8rem;border:1px solid var(--border);border-radius:999px;font-size:0.95rem;margin-bottom:0.7rem">' +
+              '<div id="dm-people" style="max-height:280px;overflow-y:auto"></div>' +
               '<div style="display:flex;gap:0.6rem;margin-top:1.2rem">' +
               '<button type="button" id="dm-cancel" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Cancel</button>' +
               '<button type="button" id="dm-start" class="btn" style="flex:1;padding:0.7rem;border-radius:10px">Start</button>' +
@@ -10901,13 +10977,33 @@
             people.forEach(function (p) {
               if (p.kind === 'dmg') return; // only 1:1 entries carry userId
               var lbl = document.createElement('label');
-              lbl.style.cssText = 'display:flex;align-items:center;gap:0.35rem;background:var(--bg);padding:0.4rem 0.7rem;border-radius:20px;cursor:pointer;font-size:0.85rem';
+              lbl.className = 'dm-row';
+              lbl.setAttribute('data-pname', p.name.toLowerCase());
+              lbl.style.cssText = 'display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.4rem;border-radius:10px;cursor:pointer;font-size:0.95rem';
+              var av = document.createElement('span');
+              av.innerHTML = chAvHtml(p.name);
+              var nm = document.createElement('span');
+              nm.style.flex = '1';
+              nm.textContent = p.name;
               var cb = document.createElement('input');
               cb.type = 'checkbox'; cb.value = p.userId; cb.className = 'dm-person';
-              lbl.appendChild(cb); lbl.appendChild(document.createTextNode(p.name));
+              cb.style.cssText = 'width:19px;height:19px;accent-color:var(--accent)';
+              lbl.appendChild(av); lbl.appendChild(nm); lbl.appendChild(cb);
               pg.appendChild(lbl);
             });
+            if (!pg.children.length) pg.innerHTML = '<span style="color:var(--dim);font-size:0.9rem">No one else here yet.</span>';
           }
+          var ds = $('dm-search');
+          if (ds && !ds.dataset.wired) {
+            ds.dataset.wired = '1';
+            ds.addEventListener('input', function () {
+              var q = ds.value.trim().toLowerCase();
+              pg.querySelectorAll('.dm-row').forEach(function (row) {
+                row.style.display = !q || row.getAttribute('data-pname').indexOf(q) !== -1 ? '' : 'none';
+              });
+            });
+          }
+          if (ds) ds.value = '';
           if (dmPeopleCache) { renderPeople(dmPeopleCache); }
           else {
             pg.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">Loading…</span>';
@@ -10918,6 +11014,15 @@
           }
           m.classList.remove('hidden');
         }
+        (function wireMsgNav() {
+          var s = $('msg-search');
+          if (s) s.addEventListener('input', filterChannelList);
+          var b = $('msg-back');
+          if (b) b.addEventListener('click', function () {
+            var wrap = $('msg-wrap');
+            if (wrap) wrap.classList.remove('chat-open');
+          });
+        })();
         window.qsLoadMessagesTab = function () { loadChannels(true); };
         // Badge refresh every 30s even when tab isn't open.
         setInterval(function () {
