@@ -639,17 +639,18 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
-            <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
-            <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
-          </div>
-          <select id="admin-dept-select" aria-label="Select department" class="hidden" style="border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:0.85rem;font-weight:600;padding:5px 8px;background:rgba(255,255,255,0.15);color:#fff;max-width:220px;width:100%"></select>
-        </div>
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
+        <span id="user-avatar" class="user-avatar" hidden></span>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
+    </div>
+    <div id="hdr-switch-row" style="display:flex;flex-direction:column;gap:4px">
+      <div id="view-switcher" class="view-switcher hidden" role="tablist" aria-label="View" style="margin:0">
+        <button type="button" data-viewmode="admin" class="active" role="tab">Admin view</button>
+        <button type="button" data-viewmode="myschedule" role="tab">My schedule</button>
+      </div>
+      <select id="admin-dept-select" aria-label="Select department" class="hidden" style="border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:0.85rem;font-weight:600;padding:5px 8px;background:rgba(255,255,255,0.15);color:#fff;max-width:220px;width:100%"></select>
     </div>
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule"><span class="tab-ic">📅</span><span class="tab-tx">Schedule</span></button>
@@ -690,6 +691,7 @@
       --navy-soft: #1e2a45;
     }
     .btn-primary { background: var(--accent); border-radius: 8px; }
+    .user-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.82rem; flex: none; }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { border-radius: 8px; }
     .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
@@ -729,6 +731,16 @@
       .app-header .tab-btn.active { background: var(--navy-soft); }
       .app-header .tab-btn .req-badge, .app-header .tab-btn .msg-badge { position: absolute; top: 1px; right: calc(50% - 21px); background: #e5484d; color: #fff; border-radius: 999px; font-size: 0.6rem; font-weight: 800; padding: 0 4px; min-width: 15px; height: 15px; line-height: 15px; text-align: center; }
       body #fab-email-ai { bottom: 96px; }
+      .app-header { padding: 10px 14px 12px; }
+      .app-header .brand .company-line { display: none; }
+      .app-header .brand .product-name { font-size: 1rem; }
+      .app-header .user-chip { display: none; }
+      .app-header .brand-row { flex-wrap: nowrap; gap: 10px; }
+      #hdr-switch-row { width: 100%; margin-top: 8px; }
+      #hdr-switch-row:empty { display: none; }
+      .app-header .view-switcher { display: flex; width: 100%; }
+      .app-header .view-switcher button { flex: 1; }
+      .app-header #admin-dept-select { max-width: none !important; }
     }
     @media (min-width: 1024px) {
       .app-header .brand .product-name { white-space: nowrap; font-size: 1.04rem; }
@@ -13124,6 +13136,15 @@
       if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
+      (function () {
+        var av = $('user-avatar');
+        if (!av) return;
+        var parts = String(r.data.user.name || '').trim().split(/\s+/);
+        var initials = ((parts[0] || '')[0] || '') + ((parts.length > 1 ? parts[parts.length - 1][0] : '') || '');
+        av.textContent = initials.toUpperCase() || '•';
+        av.style.background = r.data.user.profileColor || '#6366f1';
+        av.hidden = false;
+      })();
       document.title = r.data.company.name + ' · employee schedule';
       if (role === 'employee') {
         // Employees land DIRECTLY on the shared My schedule view: no switcher, no admin tabs.
