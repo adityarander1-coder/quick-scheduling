@@ -675,6 +675,57 @@
     </nav>
   </header>
 
+  <!-- B theme (Bold Ops) stage 1: frame + chrome. Presentation only.
+       Rollback: redeploy git tag pre-restyle-b021131. -->
+  <style>
+    html:not([data-theme="dark"]) {
+      --bg: #eef0f8;
+      --surface-alt: #f4f5fb;
+      --text: #131a2c;
+      --dim: #5c6480;
+      --border: #d5daee;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --navy: #101828;
+      --navy-soft: #1e2a45;
+    }
+    .btn-primary { background: var(--accent); border-radius: 8px; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { border-radius: 8px; }
+    .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
+    #tab-schedule .shift-cat, #tab-myschedule .shift-cat { border-radius: 7px; }
+    #tab-schedule .shift-nm, #tab-myschedule .shift-nm { border-radius: 7px; font-weight: 800; color: #101828; }
+    input[type="text"], input[type="email"], input[type="password"], input[type="tel"],
+    input[type="number"], input[type="date"], input[type="time"], input[type="search"],
+    select, textarea { border-radius: 8px; }
+    @media (min-width: 1024px) {
+      body { padding-left: 228px; }
+      .app-header { position: fixed; left: 0; top: 0; bottom: 0; width: 228px; padding: 16px 12px; display: flex; flex-direction: column; overflow-y: auto; z-index: 900; }
+      .app-header .brand-row { flex-direction: column; align-items: stretch; gap: 12px; }
+      .app-header .main-tabs { flex-direction: column; overflow: visible; gap: 4px; margin-top: 14px; }
+      .app-header .tab-btn { text-align: left; border-radius: 8px; padding: 9px 12px; border-bottom: none; width: 100%; color: #aebadd; }
+      .app-header .tab-btn:hover { background: var(--navy-soft); color: #fff; }
+      .app-header .tab-btn.active { background: var(--navy-soft); color: #fff; border-bottom: none; }
+      .app-content { max-width: none; padding: 22px 26px 40px; }
+      .billing-banner { max-width: none; margin: 0.75rem 26px 0; }
+      #notif-panel { left: 240px; right: auto; top: 12px; }
+    }
+    @media (max-width: 1023px) {
+      body { padding-bottom: 64px; }
+      .app-header .main-tabs { position: fixed; left: 0; right: 0; bottom: 0; background: var(--navy); z-index: 900; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); }
+      .app-header .tab-btn { border-bottom: none; border-radius: 8px; padding: 0.55rem 0.8rem; }
+      .app-header .tab-btn.active { background: var(--navy-soft); }
+      #fab-email-ai { bottom: 84px; }
+    }
+    .app-header .brand .product-name { white-space: nowrap; }
+    @media (min-width: 1024px) {
+      .app-header .brand .product-name { font-size: 1.04rem; }
+      .app-header .brand .company-line { font-size: 0.8rem; line-height: 1.35; }
+      .app-header .view-switcher { width: 100%; display: flex; }
+      .app-header .view-switcher button { flex: 1; }
+    }
+  </style>
+
   <!-- Notifications (Phase 1, 2026-10-22) -->
   <style>
     #notif-panel{position:fixed;top:64px;right:12px;width:min(390px,94vw);max-height:72vh;overflow:auto;background:#fff;color:#111827;border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,0.30);z-index:1400;border:1px solid #e5e7eb;font-family:inherit}
