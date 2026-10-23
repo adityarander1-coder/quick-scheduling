@@ -721,6 +721,12 @@
     input[type="text"], input[type="email"], input[type="password"], input[type="tel"],
     input[type="number"], input[type="date"], input[type="time"], input[type="search"],
     select, textarea { border-radius: 8px; }
+    /* ---- Restyle B, stage 3: popups & forms ---- */
+    html:not([data-theme="dark"]) .modal { box-shadow: 0 18px 44px rgba(16,24,40,.30); }
+    html:not([data-theme="dark"]) .modal-backdrop { background: rgba(16,24,40,.52) !important; }
+    .modal h3 { font-size: 1.12rem; font-weight: 800; letter-spacing: -0.01em; }
+    html:not([data-theme="dark"]) .modal input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) .modal select, html:not([data-theme="dark"]) .modal textarea { border-radius: 9px; border-color: #d5daee; }
+    .modal .modal-actions .btn-primary, .modal .modal-actions .btn-secondary, .modal .modal-actions button { border-radius: 9px; font-weight: 700; padding-top: 0.55rem; padding-bottom: 0.55rem; }
     @media (min-width: 1024px) {
       body { padding-left: 228px; }
       .app-header { position: fixed; left: 0; top: 0; bottom: 0; width: 228px; padding: 16px 12px; display: flex; flex-direction: column; overflow-y: auto; z-index: 900; }
@@ -2375,7 +2381,7 @@
                 sched.highlights[userId] = HIGHLIGHT_COLORS[idx + 1];
               }
               try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
-              renderSchedule();
+              renderView();
             });
           });
           // Replace button: shows candidates NOT working that day
@@ -3106,7 +3112,7 @@
             else { delete sched.highlights[popupShift.userId]; }
             try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
             closeShiftPopup();
-            renderSchedule();
+            renderView();
             return;
           }
           var item = e.target.closest ? e.target.closest('#shift-popup .sp-item') : null;
@@ -3129,7 +3135,7 @@
                 body = { published: toPublished };
               }
               api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-                if (r.ok) { s.published = toPublished; renderSchedule(); }
+                if (r.ok) { s.published = toPublished; renderView(); }
               });
             } else if (act === 'replace') {
               // Show candidate list inline in popup
