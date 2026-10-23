@@ -727,6 +727,17 @@
     .modal h3 { font-size: 1.12rem; font-weight: 800; letter-spacing: -0.01em; }
     html:not([data-theme="dark"]) .modal input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) .modal select, html:not([data-theme="dark"]) .modal textarea { border-radius: 9px; border-color: #d5daee; }
     .modal .modal-actions .btn-primary, .modal .modal-actions .btn-secondary, .modal .modal-actions button { border-radius: 9px; font-weight: 700; padding-top: 0.55rem; padding-bottom: 0.55rem; }
+    /* ---- Restyle B, stage 6: Messages polish (cards + avatars + bubbles) ---- */
+    html:not([data-theme="dark"]) .msg-channels { background: transparent; border: none; padding: 0.35rem; }
+    html:not([data-theme="dark"]) .msg-ch { background: #fff !important; border: 1px solid #eef0f8 !important; border-radius: 11px !important; margin-bottom: 7px; box-shadow: 0 1px 3px rgba(16,24,40,.05); }
+    html:not([data-theme="dark"]) .msg-ch.active { background: #fff !important; color: var(--text); box-shadow: 0 0 0 2px var(--accent); }
+    .msg-ch .ch-label { display: inline-flex; align-items: center; min-width: 0; font-weight: 600; }
+    .ch-av { width: 30px; height: 30px; border-radius: 50%; color: #fff; font-size: 0.68rem; font-weight: 800; display: inline-grid; place-items: center; margin-right: 8px; flex: none; }
+    html:not([data-theme="dark"]) .msg-list { background: #fbfbff; }
+    .msg { border-radius: 14px; line-height: 1.45; }
+    html:not([data-theme="dark"]) .msg.them { background: #f1f2f8; border: none; border-bottom-left-radius: 4px; }
+    .msg.mine { border-bottom-right-radius: 4px; }
+    html:not([data-theme="dark"]) .msg-input input { border-color: #d5daee; }
     /* ---- Restyle B, stage 4: Settings screens as cards ---- */
     html:not([data-theme="dark"]) #tab-settings .sub-panel.active { background: #fff; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.08); padding: 18px; }
     html:not([data-theme="dark"]) #tab-settings input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) #tab-settings select, html:not([data-theme="dark"]) #tab-settings textarea { border-color: #d5daee; }
@@ -10618,12 +10629,18 @@
             }
             var box = $('msg-channels');
             var total = 0, html = '';
+            function chAv(name) {
+              var parts = String(name || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().split(/\s+/);
+              var ini = ((parts[0] || '?').charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : '')).toUpperCase();
+              var hues = ['#0e7c86', '#f59e0b', '#6366f1', '#0891b2', '#db2777', '#16a34a', '#ea580c'];
+              var h = 0; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997;
+              return '<span class="ch-av" style="background:' + hues[h % hues.length] + '">' + ini + '</span>';
+            }
             function chBtn(c) {
               total += c.unread || 0;
-              var icon = c.kind === 'company' ? '📢 ' : c.kind === 'group' ? '👥 ' : c.kind === 'department' ? '🏥 ' : '';
               var del = c.kind === 'group' ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
               return '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span>' + icon + esc(c.name) + del + '</span>' +
+                '<span class="ch-label">' + chAv(c.name) + esc(c.name) + del + '</span>' +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
             }
             var chans = r.data.channels || [];
@@ -10642,9 +10659,8 @@
             html += '<h4>Direct messages</h4>';
             (r.data.dms || []).forEach(function (c) {
               total += c.unread || 0;
-              var dmIcon = c.kind === 'dmg' ? '👥 ' : '💬 ';
               html += '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span>' + dmIcon + esc(c.name) + '</span>' +
+                '<span class="ch-label">' + chAv(c.name) + esc(c.name) + '</span>' +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</button>';
             });
             html += '<button type="button" class="msg-ch" id="new-dm-btn" style="color:var(--accent);font-weight:700"><span>＋ New message</span></button>';
