@@ -688,8 +688,8 @@
       --text: #131a2c;
       --dim: #5c6480;
       --border: #d5daee;
-      --accent: #6366f1;
-      --accent-hover: #4f46e5;
+      --accent: #0e7c86;
+      --accent-hover: #0a6270;
       --navy: #101828;
       --navy-soft: #1e2a45;
     }
@@ -4401,7 +4401,7 @@
         #tab-dash .ac-bday.today { background-color: #f5f9ff; }
         #tab-dash .ac-blk { position: absolute; border-radius: 8px; padding: 3px 6px; font-size: 0.7rem; line-height: 1.25; overflow: hidden; border: 1px solid; cursor: pointer; color: var(--text); z-index: 1; }
         #tab-dash .ac-blk b { display: block; font-size: 0.72rem; }
-        #tab-dash .ac-selbtn { background: #4f46e5; color: #fff; border: 1px solid #6366f1; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
+        #tab-dash .ac-selbtn { background: #0a6270; color: #fff; border: 1px solid #0e7c86; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
         #tab-dash .ac-selbtn-ghost { background: transparent; border-color: rgba(255,255,255,0.45); }
         @media (max-width: 860px) {
           #tab-dash .ac-week { grid-template-columns: 1fr; }
@@ -13214,7 +13214,7 @@
         var parts = String(r.data.user.name || '').trim().split(/\s+/);
         var initials = ((parts[0] || '')[0] || '') + ((parts.length > 1 ? parts[parts.length - 1][0] : '') || '');
         av.textContent = initials.toUpperCase() || '•';
-        av.style.background = r.data.user.profileColor || '#6366f1';
+        av.style.background = r.data.user.profileColor || '#0e7c86';
         av.hidden = false;
       })();
       document.title = r.data.company.name + ' · employee schedule';
