@@ -280,6 +280,26 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const body = req.body ?? {};
     const isSelf = targetId === callerId;
 
+    // Self-service (any role): your own phone, nickname and profile color
+    // can always be updated from My Settings — no department scoping.
+    if (isSelf) {
+      const selfAllowed = new Set(['phone', 'nickname', 'profileColor']);
+      const keys = Object.keys(body);
+      if (keys.length && keys.every((k) => selfAllowed.has(k))) {
+        const phone = body.phone !== undefined ? String(body.phone).trim() || null : target.phone;
+        const nickname = body.nickname !== undefined ? String(body.nickname).trim() || null : target.nickname;
+        const color = body.profileColor !== undefined ? String(body.profileColor).trim() || null : target.profile_color;
+        if (color !== null && !/^#[0-9a-fA-F]{6}$/.test(color)) {
+          res.status(400).json({ error: 'Profile color must be a hex color like #2563eb.' });
+          return;
+        }
+        await query(`UPDATE users SET phone = $1, nickname = $2, profile_color = $3 WHERE id = $4`, [phone, nickname, color, targetId]);
+        const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
+        res.json({ user: publicProfile(rows[0]) });
+        return;
+      }
+    }
+
     if (callerRole === 'employee') {
       if (!isSelf) {
         res.status(403).json({ error: 'You can only update your own profile.' });

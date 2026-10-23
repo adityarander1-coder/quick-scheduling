@@ -660,6 +660,7 @@
       <span id="dash-nav" style="display:contents"></span>
       <button class="tab-btn" data-tab="link">Share Links</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
+      <button class="tab-btn" data-tab="mysettings">My settings</button>
       <button class="tab-btn" data-tab="billing">Billing</button>
       <button class="tab-btn" data-tab="help">Help</button>
     </nav>
@@ -669,6 +670,7 @@
       <button type="button" class="tab-btn" data-etab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
       <span id="dash-nav-emp" style="display:contents"></span>
+      <button type="button" class="tab-btn" data-etab="mysettings">⚙️ Settings</button>
       <button type="button" class="tab-btn" data-etab="ehelp">Help</button>
     </nav>
   </header>
@@ -689,29 +691,10 @@
       <strong style="font-size:0.95rem">Notifications</strong>
       <span style="display:flex;gap:6px">
         <button type="button" id="notif-read-all" class="btn-secondary" style="padding:0.25rem 0.55rem;font-size:0.78rem">Mark all read</button>
-        <button type="button" id="notif-settings-btn" class="btn-secondary" style="padding:0.25rem 0.55rem;font-size:0.78rem">Settings</button>
         <button type="button" id="notif-close" class="btn-secondary" style="padding:0.25rem 0.55rem;font-size:0.78rem">✕</button>
       </span>
     </div>
     <div id="notif-list"><div style="padding:16px 14px;color:#6b7280;font-size:0.88rem">Loading…</div></div>
-  </div>
-
-  <div id="notif-prefs-modal" class="modal-backdrop hidden">
-    <div class="modal" style="max-width:560px;width:94vw">
-      <h3>🔔 Notification settings</h3>
-      <p style="font-size:0.86rem;color:var(--dim);margin:4px 0 10px">Everything below always appears under the 🔔 bell in the app. These settings only control the <strong>email</strong> copies: instant, one daily digest, or none. <em>Digest emails start with the next update — until then Digest means no email (the bell still records everything).</em></p>
-      <div id="notif-prefs-rows"></div>
-      <div id="notif-defaults-wrap" hidden>
-        <h4 style="margin:16px 0 4px">Company defaults (owner)</h4>
-        <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">The starting setting for everyone who hasn't chosen their own above.</p>
-        <div id="notif-defaults-rows"></div>
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;align-items:center">
-        <span id="notif-prefs-msg" style="font-size:0.85rem;color:#16a34a;margin-right:auto"></span>
-        <button type="button" id="notif-prefs-cancel" class="btn-secondary">Close</button>
-        <button type="button" id="notif-prefs-save" class="btn-primary">Save</button>
-      </div>
-    </div>
   </div>
 
   <div id="billing-banner" class="billing-banner hidden" role="alert"></div>
@@ -10195,6 +10178,77 @@
 
     <!-- Shift requests — ONE shared tab for all roles (2026-10-12).
          Employees reach it from their tab bar; owner/scheduler from the main tabs. -->
+    <section id="tab-mysettings" class="tab-panel">
+      <div style="max-width:680px">
+        <h2 class="sched-h1">My settings</h2>
+        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem">Your personal account settings. These apply only to you.</p>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 10px">👤 Profile</h3>
+          <div style="display:grid;gap:10px">
+            <label style="font-size:0.88rem">Name<br><input type="text" id="ms-name" disabled style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb"></label>
+            <label style="font-size:0.88rem">Email<br><input type="text" id="ms-email" disabled style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb"></label>
+            <label style="font-size:0.88rem">Nickname (shown when your name matches someone else's)<br><input type="text" id="ms-nickname" maxlength="60" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+            <label style="font-size:0.88rem">Phone<br><input type="tel" id="ms-phone" maxlength="30" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+            <label style="font-size:0.88rem">Profile color<br><input type="color" id="ms-color" style="width:64px;height:36px;padding:2px;border:1px solid #d1d5db;border-radius:8px;background:#fff"></label>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+            <button type="button" id="ms-profile-save" class="btn-primary" style="padding:0.45rem 0.9rem">Save profile</button>
+            <span id="ms-profile-msg" style="font-size:0.85rem"></span>
+          </div>
+          <p style="font-size:0.8rem;color:var(--dim);margin:10px 0 0">Name, department and job role are managed by your scheduler — ask them if those need a change.</p>
+        </div>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 6px">🔔 Notifications</h3>
+          <p style="font-size:0.85rem;color:var(--dim);margin:0 0 8px">Everything always appears under the 🔔 bell in the app. These settings control the <strong>email</strong> copies. <em>Digest emails start with the next update — until then Digest means no email (the bell still records everything).</em></p>
+          <div id="ms-notif-rows"></div>
+          <div id="ms-defaults-wrap" hidden>
+            <h4 style="margin:16px 0 4px">Company defaults (owner)</h4>
+            <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">The starting setting for everyone who hasn't chosen their own above.</p>
+            <div id="ms-defaults-rows"></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+            <button type="button" id="ms-notif-save" class="btn-primary" style="padding:0.45rem 0.9rem">Save notifications</button>
+            <span id="ms-notif-msg" style="font-size:0.85rem"></span>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 10px">🎨 Appearance</h3>
+          <div style="display:grid;gap:10px">
+            <label style="font-size:0.88rem">Theme<br>
+              <select id="ms-theme" style="padding:8px;border:1px solid #d1d5db;border-radius:8px">
+                <option value="system">Match my device</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+            <label style="font-size:0.88rem">Header color (blank = theme default)<br><input type="color" id="ms-header-color" style="width:64px;height:36px;padding:2px;border:1px solid #d1d5db;border-radius:8px;background:#fff"> <button type="button" id="ms-header-clear" class="btn-secondary" style="padding:0.3rem 0.6rem;font-size:0.8rem">Clear</button></label>
+            <label style="font-size:0.88rem">Footer color (blank = theme default)<br><input type="color" id="ms-footer-color" style="width:64px;height:36px;padding:2px;border:1px solid #d1d5db;border-radius:8px;background:#fff"> <button type="button" id="ms-footer-clear" class="btn-secondary" style="padding:0.3rem 0.6rem;font-size:0.8rem">Clear</button></label>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+            <button type="button" id="ms-appearance-save" class="btn-primary" style="padding:0.45rem 0.9rem">Save appearance</button>
+            <span id="ms-appearance-msg" style="font-size:0.85rem"></span>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 10px">🔑 Password</h3>
+          <div style="display:grid;gap:10px">
+            <label style="font-size:0.88rem">Current password<br><input type="password" id="ms-pw-current" autocomplete="current-password" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+            <label style="font-size:0.88rem">New password<br><input type="password" id="ms-pw-new" autocomplete="new-password" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+            <label style="font-size:0.88rem">Repeat new password<br><input type="password" id="ms-pw-repeat" autocomplete="new-password" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+          </div>
+          <p style="font-size:0.8rem;color:var(--dim);margin:8px 0 0">At least 8 characters with one capital letter, one number and one special character.</p>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+            <button type="button" id="ms-pw-save" class="btn-primary" style="padding:0.45rem 0.9rem">Change password</button>
+            <span id="ms-pw-msg" style="font-size:0.85rem"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-requests" class="tab-panel">
       <div class="req-wrap">
         <h2 class="sched-h1">Shift requests</h2>
@@ -12580,6 +12634,7 @@
     var routes = {
       'schedule': function() { activateTab('schedule'); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
+      'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
       'ask': function() { activateTab('ask'); },
       'academic': function() {
@@ -12673,6 +12728,7 @@
       });
       if (isDash) { window.qsDashReadOnly = true; if (window.qsOpenDashboard) window.qsOpenDashboard(t.slice(5)); }
       else if (t === 'requests') { if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); }
+      else if (t === 'mysettings') { if (window.qsLoadMySettings) window.qsLoadMySettings(); }
       else if (t === 'myschedule') { if (window.qsLoadMySchedule) window.qsLoadMySchedule(); }
       else if (t === 'messages') { if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); }
     };
@@ -13795,50 +13851,98 @@
     }).catch(function () {});
   });
 
-  // --- Preferences modal ---
-  var modal = $('notif-prefs-modal');
+  refreshBadge();
+  setInterval(refreshBadge, 30000);
+})();
+</script>
+<script>
+// My Settings (everyone, 2026-10-22): profile, notification email speeds,
+// appearance, password — personal to the signed-in user.
+(function () {
+  'use strict';
+  if (typeof window.api !== 'function') return;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  var CAT_LABEL = { schedule: '📅 Schedule changes', calendar: '🎓 Calendar sessions', approvals: '✅ Approvals & requests', messages: '💬 Messages' };
+  var CAT_DESC = {
+    schedule: 'Shifts assigned to you, changed, removed, or published.',
+    calendar: 'Sessions you present or supervise, and sessions that need a presenter.',
+    approvals: 'Shift requests sent to you, decisions on your requests, and emailed plans waiting for approval.',
+    messages: 'New messages in your conversations (email summaries arrive with the next update).'
+  };
+  var SPEED_LABEL = { instant: 'Instant email', digest: 'Daily digest', off: 'No email' };
+  var myId = null;
+  var appearance = { theme: 'system', header_color: '', footer_color: '' };
+
+  function msg(id, text, ok) {
+    var el = $(id); if (!el) return;
+    el.textContent = text;
+    el.style.color = ok ? '#16a34a' : '#b91c1c';
+  }
   function speedSelect(id, current, defaultLabel) {
-    var opts = '';
-    opts += '<option value=""' + (!current ? ' selected' : '') + '>' + esc(defaultLabel) + '</option>';
+    var opts = '<option value=""' + (!current ? ' selected' : '') + '>' + esc(defaultLabel) + '</option>';
     ['instant', 'digest', 'off'].forEach(function (s) {
       opts += '<option value="' + s + '"' + (current === s ? ' selected' : '') + '>' + SPEED_LABEL[s] + '</option>';
     });
     return '<select id="' + id + '" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;min-width:170px">' + opts + '</select>';
   }
-  function openPrefs() {
-    closePanel();
-    $('notif-prefs-msg').textContent = '';
+
+  window.qsLoadMySettings = function () {
+    api('/api/auth/me').then(function (r) {
+      var u = r && r.data && r.data.user;
+      if (!u) return;
+      myId = u.id;
+      $('ms-name').value = u.name || '';
+      $('ms-email').value = u.email || '';
+      $('ms-nickname').value = u.nickname || '';
+      $('ms-phone').value = u.phone || '';
+      if (u.profileColor && /^#[0-9a-fA-F]{6}$/.test(u.profileColor)) $('ms-color').value = u.profileColor;
+    }).catch(function () {});
     api('/api/notifications/prefs').then(function (r) {
       var cats = (r && r.data && r.data.categories) || [];
-      $('notif-prefs-rows').innerHTML = cats.map(function (c) {
+      $('ms-notif-rows').innerHTML = cats.map(function (c) {
         var def = c.companyDefault || 'instant';
         return '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f3f4f6">' +
           '<div><div style="font-weight:600;font-size:0.92rem">' + esc(CAT_LABEL[c.category] || c.category) + '</div>' +
           '<div style="font-size:0.8rem;color:var(--dim)">' + esc(CAT_DESC[c.category] || '') + '</div></div>' +
-          speedSelect('npref-' + c.category, c.mine, 'Company default (' + SPEED_LABEL[def] + ')') + '</div>';
+          speedSelect('ms-npref-' + c.category, c.mine, 'Company default (' + SPEED_LABEL[def] + ')') + '</div>';
       }).join('');
-      var wrap = $('notif-defaults-wrap');
+      var wrap = $('ms-defaults-wrap');
       if (window.isOwner) {
         wrap.hidden = false;
-        $('notif-defaults-rows').innerHTML = cats.map(function (c) {
+        $('ms-defaults-rows').innerHTML = cats.map(function (c) {
           return '<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid #f3f4f6">' +
             '<div style="font-size:0.92rem">' + esc(CAT_LABEL[c.category] || c.category) + '</div>' +
-            speedSelect('ndef-' + c.category, c.companyDefault, 'Built-in (Instant email)') + '</div>';
+            speedSelect('ms-ndef-' + c.category, c.companyDefault, 'Built-in (Instant email)') + '</div>';
         }).join('');
       } else {
         wrap.hidden = true;
       }
-      modal.classList.remove('hidden');
     }).catch(function () {});
-  }
-  $('notif-settings-btn').addEventListener('click', openPrefs);
-  $('notif-prefs-cancel').addEventListener('click', function () { modal.classList.add('hidden'); });
-  $('notif-prefs-save').addEventListener('click', function () {
+    api('/api/schedule/personal-settings').then(function (r) {
+      var s = (r && r.data && r.data.settings) || {};
+      appearance = { theme: s.theme || 'system', header_color: s.header_color || '', footer_color: s.footer_color || '' };
+      $('ms-theme').value = appearance.theme;
+      if (appearance.header_color) $('ms-header-color').value = appearance.header_color;
+      if (appearance.footer_color) $('ms-footer-color').value = appearance.footer_color;
+    }).catch(function () {});
+  };
+
+  $('ms-profile-save').addEventListener('click', function () {
+    if (!myId) { msg('ms-profile-msg', 'Still loading — try again in a second.', false); return; }
+    var body = { nickname: $('ms-nickname').value.trim(), phone: $('ms-phone').value.trim(), profileColor: $('ms-color').value };
+    api('/api/users/' + myId, { method: 'PATCH', body: JSON.stringify(body) }).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.data && r.data.error) || 'save failed');
+      msg('ms-profile-msg', 'Saved ✓', true);
+    }).catch(function (e) { msg('ms-profile-msg', e.message || 'Could not save — try again.', false); });
+  });
+
+  $('ms-notif-save').addEventListener('click', function () {
     var prefs = {}, defaults = {};
     ['schedule', 'calendar', 'approvals', 'messages'].forEach(function (cat) {
-      var sel = $('npref-' + cat);
+      var sel = $('ms-npref-' + cat);
       if (sel) prefs[cat] = sel.value || null;
-      var dsel = $('ndef-' + cat);
+      var dsel = $('ms-ndef-' + cat);
       if (dsel && window.isOwner) defaults[cat] = dsel.value || null;
     });
     var saves = [api('/api/notifications/prefs', { method: 'PUT', body: JSON.stringify({ prefs: prefs }) })];
@@ -13846,17 +13950,34 @@
     Promise.all(saves).then(function (results) {
       var bad = results.some(function (r) { return !r || !r.ok; });
       if (bad) throw new Error('save failed');
-      $('notif-prefs-msg').textContent = 'Saved ✓';
-      $('notif-prefs-msg').style.color = '#16a34a';
-      setTimeout(function () { modal.classList.add('hidden'); }, 700);
-    }).catch(function () {
-      $('notif-prefs-msg').textContent = 'Could not save — try again.';
-      $('notif-prefs-msg').style.color = '#b91c1c';
-    });
+      msg('ms-notif-msg', 'Saved ✓', true);
+    }).catch(function () { msg('ms-notif-msg', 'Could not save — try again.', false); });
   });
 
-  refreshBadge();
-  setInterval(refreshBadge, 30000);
+  $('ms-header-color').addEventListener('input', function () { appearance.header_color = this.value; });
+  $('ms-footer-color').addEventListener('input', function () { appearance.footer_color = this.value; });
+  $('ms-header-clear').addEventListener('click', function () { appearance.header_color = ''; msg('ms-appearance-msg', 'Header color will reset on save.', true); });
+  $('ms-footer-clear').addEventListener('click', function () { appearance.footer_color = ''; msg('ms-appearance-msg', 'Footer color will reset on save.', true); });
+  $('ms-appearance-save').addEventListener('click', function () {
+    var body = { theme: $('ms-theme').value, header_color: appearance.header_color, footer_color: appearance.footer_color };
+    api('/api/schedule/personal-settings', { method: 'PUT', body: JSON.stringify(body) }).then(function (r) {
+      if (!r || !r.ok) throw new Error('save failed');
+      window.qsPersonal = Object.assign({}, window.qsPersonal || {}, body);
+      if (window.applyPersonalTheme) window.applyPersonalTheme(window.qsPersonal);
+      msg('ms-appearance-msg', 'Saved ✓', true);
+    }).catch(function () { msg('ms-appearance-msg', 'Could not save — try again.', false); });
+  });
+
+  $('ms-pw-save').addEventListener('click', function () {
+    var cur = $('ms-pw-current').value, nw = $('ms-pw-new').value, rep = $('ms-pw-repeat').value;
+    if (!cur || !nw) { msg('ms-pw-msg', 'Enter your current password and a new password.', false); return; }
+    if (nw !== rep) { msg('ms-pw-msg', 'The new passwords do not match.', false); return; }
+    api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword: cur, newPassword: nw }) }).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.data && r.data.error) || 'change failed');
+      $('ms-pw-current').value = ''; $('ms-pw-new').value = ''; $('ms-pw-repeat').value = '';
+      msg('ms-pw-msg', 'Password changed ✓', true);
+    }).catch(function (e) { msg('ms-pw-msg', e.message || 'Could not change the password.', false); });
+  });
 })();
 </script>
 </body>

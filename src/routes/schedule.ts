@@ -2562,8 +2562,8 @@ router.put('/general-settings', requireRole('owner', 'scheduler'), async (req: R
 // Personal settings — per-user appearance (theme, header/footer colors).
 // ---------------------------------------------------------------------------
 
-// GET /api/schedule/personal-settings — owner/scheduler only.
-router.get('/personal-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// GET /api/schedule/personal-settings — any signed-in user (their own).
+router.get('/personal-settings', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { rows } = await query(
@@ -2577,8 +2577,8 @@ router.get('/personal-settings', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
-// PUT /api/schedule/personal-settings — owner/scheduler only.
-router.put('/personal-settings', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// PUT /api/schedule/personal-settings — any signed-in user (their own).
+router.put('/personal-settings', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const body = req.body || {};

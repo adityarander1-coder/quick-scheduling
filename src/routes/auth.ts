@@ -89,6 +89,7 @@ function publicUser(u: {
     endDate: toDateStr(u.end_date),
     isActive: u.is_active ?? true,
     role: u.role,
+    profileColor: (u as any).profile_color ?? null,
   };
 }
 
@@ -127,7 +128,7 @@ export function setSession(req: Request, userId: string, companyId: string, role
 async function loadUserAndCompany(userId: string) {
   const { rows } = await query<DbUser & { company_name: string }>(
     `SELECT u.id, u.company_id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
-            u.job_role, u.job_role_id, u.end_date, u.is_active, u.role, c.name AS company_name
+            u.job_role, u.job_role_id, u.end_date, u.is_active, u.role, u.profile_color, c.name AS company_name
      FROM users u JOIN companies c ON c.id = u.company_id
      WHERE u.id = $1`,
     [userId]
@@ -280,6 +281,40 @@ router.post('/logout', (req: Request, res: Response) => {
     res.clearCookie('qs.sid');
     res.json({ ok: true });
   });
+});
+
+// POST /api/auth/change-password — signed-in users change their own
+// password (My Settings). Verifies the current password first.
+router.post('/change-password', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'Enter your current password and a new password.' });
+      return;
+    }
+    const policyError = passwordPolicyError(newPassword);
+    if (policyError) {
+      res.status(400).json({ error: policyError });
+      return;
+    }
+    const { rows } = await query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+    if (!rows.length) {
+      res.status(401).json({ error: 'You are not signed in.' });
+      return;
+    }
+    const ok = rows[0].password_hash ? await bcrypt.compare(String(currentPassword), rows[0].password_hash) : false;
+    if (!ok) {
+      res.status(400).json({ error: 'Your current password is not correct.' });
+      return;
+    }
+    const hash = await bcrypt.hash(String(newPassword), 12);
+    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] change password failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
 });
 
 // GET /api/auth/me — current session user, or 401.
