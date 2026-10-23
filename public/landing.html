@@ -16,16 +16,16 @@
     a { color: var(--accent); }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 0 1.25rem; }
 
-    /* Nav — white bar (matches the approved picture) */
-    .nav { background: #fff; color: var(--text); padding: 0.85rem 0; position: sticky; top: 0; z-index: 10; border-bottom: 1px solid #eef0f8; }
+    /* Nav — theme navy bar (header in theme navy) */
+    .nav { background: var(--navy); color: #fff; padding: 0.85rem 0; position: sticky; top: 0; z-index: 10; }
     .nav .wrap { display: flex; align-items: center; justify-content: space-between; }
-    .brand { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.01em; color: var(--text); }
+    .brand { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.01em; color: #fff; }
     .brand span { color: var(--teal); font-weight: 400; font-size: 0.95rem; }
     .brand-tile-sm { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--teal); color: #fff; font-size: 16px; margin-right: 9px; vertical-align: -8px; }
 
     .nav-cta { display: flex; gap: 1.1rem; align-items: center; }
-    .nav-link { color: var(--dim); font-weight: 600; font-size: 0.95rem; text-decoration: none; }
-    .nav-link:hover { color: var(--text); }
+    .nav-link { color: #c6cde0; font-weight: 600; font-size: 0.95rem; text-decoration: none; }
+    .nav-link:hover { color: #fff; }
     .btn { display: inline-block; padding: 0.65rem 1.4rem; border-radius: 999px; font-weight: 700; text-decoration: none; border: none; cursor: pointer; font-size: 0.95rem; }
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover { background: var(--accent-hover); }
@@ -44,13 +44,15 @@
     .hero-note { font-size: 0.85rem; color: var(--dim); opacity: 0.8; }
     .btn-ghost-dark { color: var(--text); border: 1.5px solid var(--border); background: #fff; }
     .btn-ghost-dark:hover { border-color: var(--dim); }
-    /* Navy week-preview panel (hero visual) */
-    .wk-panel { background: var(--navy); border-radius: 18px; padding: 1.1rem 1.1rem 1.2rem; box-shadow: 0 24px 55px rgba(16,24,40,.28); }
-    .wk-days { display: flex; margin-bottom: 0.7rem; }
-    .wk-days span { flex: 1; text-align: center; color: #9aa5c9; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; }
-    .wk-pill { display: flex; border-radius: 8px; overflow: hidden; margin-bottom: 0.5rem; background: #1e2a45; }
+    /* Navy week-preview panel (hero visual) — mirrors the app's real schedule pills */
+    .wk-panel { background: var(--navy); border-radius: 18px; padding: 1.15rem 1.15rem 1.25rem; box-shadow: 0 24px 55px rgba(16,24,40,.28); }
+    .wk-day { color: #fff; font-weight: 800; font-size: 0.92rem; margin: 0.55rem 0 0.5rem; }
+    .wk-day span { color: #9aa5c9; font-weight: 600; font-size: 0.78rem; margin-left: 0.35rem; }
+    .wk-day:first-child { margin-top: 0; }
+    .wk-pill { display: flex; border-radius: 8px; overflow: hidden; margin-bottom: 0.45rem; background: #fff; }
     .wk-pill .cat { background: #dbeafe; color: #1e3a8a; font-weight: 700; font-size: 0.78rem; padding: 0.45rem 0.6rem; white-space: nowrap; }
-    .wk-pill .nm { color: #fff; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.6rem; }
+    .wk-pill .nm { color: #131a2c; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.6rem; }
+    .wk-pill .nm.open { color: #b91c1c; }
     /* Three mini feature cards under the hero */
     .mini-feats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; padding-bottom: 0.5rem; }
     .mini-feat { background: #fbfbff; border: 1px solid #eef0f8; border-radius: 14px; padding: 1.05rem 1.15rem; }
@@ -170,11 +172,14 @@
         <p class="hero-note">14-day free trial · No charge until the trial ends · Cancel anytime</p>
       </div>
       <div class="wk-panel">
-        <div class="wk-days"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span></div>
-        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Patel</span></div>
-        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Rander</span></div>
-        <div class="wk-pill"><span class="cat">Night Hospitalist</span><span class="nm">Chen</span></div>
-        <div class="wk-pill" style="margin-bottom:0"><span class="cat">Night NP</span><span class="nm">OPEN — tap to claim</span></div>
+        <div class="wk-day">Monday <span>Oct 19</span></div>
+        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Avery K.</span></div>
+        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Jordan M.</span></div>
+        <div class="wk-pill"><span class="cat">Night Hospitalist</span><span class="nm">Casey L.</span></div>
+        <div class="wk-pill"><span class="cat">Night NP</span><span class="nm open">OPEN — tap to claim</span></div>
+        <div class="wk-day">Tuesday <span>Oct 20</span></div>
+        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Riley P.</span></div>
+        <div class="wk-pill" style="margin-bottom:0"><span class="cat">Night Hospitalist</span><span class="nm">Morgan S.</span></div>
       </div>
     </div>
   </header>
