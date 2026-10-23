@@ -16,30 +16,47 @@
     a { color: var(--accent); }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 0 1.25rem; }
 
-    /* Nav */
-    .nav { background: var(--navy); color: #fff; padding: 0.9rem 0; position: sticky; top: 0; z-index: 10; }
+    /* Nav — white bar (matches the approved picture) */
+    .nav { background: #fff; color: var(--text); padding: 0.85rem 0; position: sticky; top: 0; z-index: 10; border-bottom: 1px solid #eef0f8; }
     .nav .wrap { display: flex; align-items: center; justify-content: space-between; }
-    .brand { font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
+    .brand { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.01em; color: var(--text); }
     .brand span { color: var(--teal); font-weight: 400; font-size: 0.95rem; }
     .brand-tile-sm { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--teal); color: #fff; font-size: 16px; margin-right: 9px; vertical-align: -8px; }
 
-    .nav-cta { display: flex; gap: 0.6rem; align-items: center; }
+    .nav-cta { display: flex; gap: 1.1rem; align-items: center; }
+    .nav-link { color: var(--dim); font-weight: 600; font-size: 0.95rem; text-decoration: none; }
+    .nav-link:hover { color: var(--text); }
     .btn { display: inline-block; padding: 0.65rem 1.4rem; border-radius: 999px; font-weight: 700; text-decoration: none; border: none; cursor: pointer; font-size: 0.95rem; }
-    .btn-primary { background: var(--teal); color: #fff; }
-    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
     .btn-ghost { color: #fff; border: 1px solid rgba(255,255,255,0.4); }
     .btn-ghost:hover { background: rgba(255,255,255,0.1); }
     .btn-outline { border: 1.5px solid var(--accent); color: var(--accent); background: #fff; }
     .btn-outline:hover { background: #e6f4f5; }
 
-    /* Hero */
-    .hero { background: linear-gradient(160deg, var(--navy) 0%, var(--navy-soft) 70%, #14324f 100%); color: #fff; padding: 4rem 0 3.5rem; overflow: hidden; }
+    /* Hero — light, matching the approved picture */
+    .hero { background: linear-gradient(180deg, #f7f8fd 0%, #ffffff 100%); color: var(--text); padding: 3.6rem 0 2.6rem; overflow: hidden; }
     .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; align-items: center; }
     .hero h1 { font-size: 2.6rem; line-height: 1.15; letter-spacing: -0.02em; margin-bottom: 1rem; }
-    .hero h1 em { color: var(--teal); font-style: normal; }
-    .hero p.sub { font-size: 1.15rem; opacity: 0.88; margin-bottom: 1.75rem; max-width: 30rem; }
+    .hero h1 em { color: var(--accent); font-style: normal; }
+    .hero p.sub { font-size: 1.12rem; color: var(--dim); margin-bottom: 1.75rem; max-width: 30rem; }
     .hero-ctas { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .hero-note { font-size: 0.85rem; opacity: 0.7; }
+    .hero-note { font-size: 0.85rem; color: var(--dim); opacity: 0.8; }
+    .btn-ghost-dark { color: var(--text); border: 1.5px solid var(--border); background: #fff; }
+    .btn-ghost-dark:hover { border-color: var(--dim); }
+    /* Navy week-preview panel (hero visual) */
+    .wk-panel { background: var(--navy); border-radius: 18px; padding: 1.1rem 1.1rem 1.2rem; box-shadow: 0 24px 55px rgba(16,24,40,.28); }
+    .wk-days { display: flex; margin-bottom: 0.7rem; }
+    .wk-days span { flex: 1; text-align: center; color: #9aa5c9; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; }
+    .wk-pill { display: flex; border-radius: 8px; overflow: hidden; margin-bottom: 0.5rem; background: #1e2a45; }
+    .wk-pill .cat { background: #dbeafe; color: #1e3a8a; font-weight: 700; font-size: 0.78rem; padding: 0.45rem 0.6rem; white-space: nowrap; }
+    .wk-pill .nm { color: #fff; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.6rem; }
+    /* Three mini feature cards under the hero */
+    .mini-feats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; padding-bottom: 0.5rem; }
+    .mini-feat { background: #fbfbff; border: 1px solid #eef0f8; border-radius: 14px; padding: 1.05rem 1.15rem; }
+    .mini-feat b { display: block; font-size: 0.98rem; margin-bottom: 0.3rem; }
+    .mini-feat span { font-size: 0.9rem; color: var(--dim); line-height: 1.5; }
+    @media (max-width: 860px) { .mini-feats { grid-template-columns: 1fr; } }
 
     /* Mockups */
     .mock { background: var(--surface); border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0,0,0,0.25); overflow: hidden; color: var(--text); }
@@ -131,9 +148,11 @@
 
   <nav class="nav">
     <div class="wrap">
-      <div class="brand"><span class="brand-tile-sm">◈</span>Quick Scheduling <span>· employee schedule</span></div>
+      <div class="brand"><span class="brand-tile-sm">◈</span>Quick Scheduling</div>
       <div class="nav-cta">
-        <a class="btn btn-ghost" href="/login.html">Log in</a>
+        <a class="nav-link" href="#features">Features</a>
+        <a class="nav-link" href="#pricing">Pricing</a>
+        <a class="nav-link" href="/login.html">Log in</a>
         <a class="btn btn-primary" href="/signup.html">Start free trial</a>
       </div>
     </div>
@@ -142,35 +161,33 @@
   <header class="hero">
     <div class="wrap hero-grid">
       <div>
-        <h1>Team scheduling, <em>without the chaos.</em></h1>
-        <p class="sub">The simple scheduling app for shift-based teams — hospitals, clinics, restaurants, retail, and more. Build the schedule in minutes, answer "who's on tonight?" in plain language, and approve changes straight from your email. No spreadsheets, no group-text threads.</p>
+        <h1>Scheduling your team runs itself — <em>from your inbox</em></h1>
+        <p class="sub">Build the schedule, publish it, and let staff swap, pick up and request changes — you approve everything with one tap, even by email.</p>
         <div class="hero-ctas">
-          <a class="btn btn-primary" href="/signup.html">Start free trial</a>
-          <a class="btn btn-ghost" href="#features">See how it works</a>
+          <a class="btn btn-primary" href="/signup.html">Start 14-day free trial</a>
+          <a class="btn btn-ghost-dark" href="#features">See how it works</a>
         </div>
         <p class="hero-note">14-day free trial · No charge until the trial ends · Cancel anytime</p>
       </div>
-      <div class="mock">
-        <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; This week</div>
-        <div class="mock-body">
-          <div class="mock-week">
-            <div class="mock-day"><div class="d">Mon 12</div>
-              <div class="mock-shift" style="background:#dbeafe">Morning Shift<br><b>Avery K.</b></div>
-              <div class="mock-shift" style="background:#fef3c7">Evening Shift<br><b>Jordan M.</b></div>
-            </div>
-            <div class="mock-day"><div class="d">Tue 13</div>
-              <div class="mock-shift" style="background:#dbeafe">Morning Shift<br><b>Casey L.</b></div>
-              <div class="mock-shift" style="background:#e0e7ff">Night Shift<br><b>Riley P.</b></div>
-            </div>
-            <div class="mock-day"><div class="d">Wed 14</div>
-              <div class="mock-shift" style="background:#dbeafe">Morning Shift<br><b>Avery K.</b></div>
-              <div class="mock-shift" style="background:#fef3c7">Evening Shift<br><b>Morgan S.</b></div>
-            </div>
-          </div>
-        </div>
+      <div class="wk-panel">
+        <div class="wk-days"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span></div>
+        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Patel</span></div>
+        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Rander</span></div>
+        <div class="wk-pill"><span class="cat">Night Hospitalist</span><span class="nm">Chen</span></div>
+        <div class="wk-pill" style="margin-bottom:0"><span class="cat">Night NP</span><span class="nm">OPEN — tap to claim</span></div>
       </div>
     </div>
   </header>
+
+  <section class="block" style="padding:0.5rem 0 0">
+    <div class="wrap">
+      <div class="mini-feats">
+        <div class="mini-feat"><b>✉️ Email Q-Scheduler</b><span>Email a change in plain words — it builds the plan, you approve.</span></div>
+        <div class="mini-feat"><b>🔁 Swaps &amp; pickups</b><span>Staff cover each other; you just approve.</span></div>
+        <div class="mini-feat"><b>🎓 Session calendars</b><span>Presenters, supervisors and rooms on their own calendars.</span></div>
+      </div>
+    </div>
+  </section>
 
   <section class="block" style="padding-top:1rem">
     <div class="wrap">
@@ -384,7 +401,7 @@
     </div>
   </section>
 
-  <section class="block">
+  <section class="block" id="pricing">
     <div class="wrap">
       <div class="pricing-card">
         <div class="kicker" style="color:var(--teal)">Pricing</div>
