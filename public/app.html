@@ -640,7 +640,12 @@
       <div class="brand"><div class="product-name"><span class="brand-mark">◈</span>Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
-        <span id="user-avatar" class="user-avatar" hidden></span>
+        <span class="avatar-wrap"><span id="user-avatar" class="user-avatar" hidden role="button" tabindex="0" title="Account" style="cursor:pointer"></span><span id="avatar-menu" class="avatar-menu" hidden>
+          <span class="avatar-menu-head"><strong id="avatar-menu-name"></strong><span id="avatar-menu-sub"></span></span>
+          <button type="button" id="avatar-menu-profile">👤 Profile</button>
+          <button type="button" id="avatar-menu-settings">⚙️ My settings</button>
+          <button type="button" id="avatar-menu-logout">🚪 Log out</button>
+        </span></span>
         <span class="user-chip" id="user-chip"></span>
         <button type="button" id="logout" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.85rem">Log out</button>
       </div>
@@ -693,6 +698,14 @@
     .btn-primary { background: var(--accent); border-radius: 8px; }
     .user-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.82rem; flex: none; }
     .brand-mark { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 15px; margin-right: 8px; vertical-align: -6px; }
+    .avatar-wrap { position: relative; display: inline-flex; }
+    .avatar-menu { position: absolute; right: 0; top: calc(100% + 10px); width: 224px; background: #fff; color: #131a2c; border: 1px solid #e2e5f1; border-radius: 12px; box-shadow: 0 12px 32px rgba(16,24,40,.22); padding: 6px; z-index: 1300; display: flex; flex-direction: column; }
+    .avatar-menu[hidden] { display: none; }
+    .avatar-menu-head { display: flex; flex-direction: column; padding: 8px 10px; border-bottom: 1px solid #eef0f8; margin-bottom: 4px; }
+    .avatar-menu-head strong { font-size: 0.92rem; }
+    .avatar-menu-head span { font-size: 0.78rem; color: #5c6480; }
+    .avatar-menu button { text-align: left; background: none; border: none; padding: 9px 10px; border-radius: 8px; font-size: 0.9rem; color: #131a2c; cursor: pointer; }
+    .avatar-menu button:hover { background: #f4f5fb; }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { border-radius: 8px; }
     .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
@@ -739,9 +752,9 @@
       .app-header .brand-row { flex-wrap: nowrap; gap: 10px; }
       .app-header #logout { display: none; }
       #hdr-switch-row { width: 100%; margin-top: 8px; flex-direction: row !important; align-items: center; }
-      .app-header .view-switcher { display: flex; flex: 1.25; min-width: 0; flex-direction: row !important; flex-wrap: nowrap !important; }
+      .app-header .view-switcher { display: flex; flex: 1.25; min-width: 0; flex-direction: row !important; flex-wrap: nowrap !important; order: 2; }
       .app-header .view-switcher button { flex: 1 1 0; width: auto !important; min-width: 0; white-space: nowrap; }
-      .app-header #admin-dept-select { flex: 1; min-width: 0; width: auto !important; max-width: none !important; }
+      .app-header #admin-dept-select { flex: 1; min-width: 0; width: auto !important; max-width: none !important; order: 1; }
     }
     @media (min-width: 1024px) {
       .app-header .brand .product-name { white-space: nowrap; font-size: 1.04rem; }
@@ -12880,6 +12893,38 @@
     if (msLogout) msLogout.addEventListener('click', function () {
       api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
     });
+    // Avatar menu: name/email header, Profile, My settings, Log out.
+    (function () {
+      var av = $('user-avatar'); var menu = $('avatar-menu');
+      if (!av || !menu) return;
+      function closeMenu() { menu.hidden = true; }
+      function openMenu() {
+        var n = $('avatar-menu-name'); if (n) n.textContent = window.qsCurrentUserName || '';
+        var s = $('avatar-menu-sub'); if (s) s.textContent = (window.qsCurrentUserEmail || '') + (window.qsCurrentUserRole ? ' · ' + window.qsCurrentUserRole : '');
+        menu.hidden = false;
+      }
+      av.addEventListener('click', function (e) { e.stopPropagation(); if (menu.hidden) openMenu(); else closeMenu(); });
+      document.addEventListener('click', function (e) { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
+      function goSettings(scrollToProfile) {
+        closeMenu();
+        var emp = document.querySelector('.tab-btn[data-etab="mysettings"]');
+        var adm = document.querySelector('.tab-btn[data-tab="mysettings"]');
+        var empVisible = emp && emp.offsetParent !== null;
+        var btn = empVisible ? emp : (adm || emp);
+        if (btn) btn.click();
+        if (scrollToProfile) setTimeout(function () {
+          var card = document.querySelector('#tab-mysettings .card');
+          if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 150);
+      }
+      var bp = $('avatar-menu-profile'); if (bp) bp.addEventListener('click', function () { goSettings(true); });
+      var bs = $('avatar-menu-settings'); if (bs) bs.addEventListener('click', function () { goSettings(false); });
+      var bl = $('avatar-menu-logout'); if (bl) bl.addEventListener('click', function () {
+        closeMenu();
+        api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
+      });
+    })();
 
     // --- Global: Schedule change report (audit), available from every tab ---
     (function () {
@@ -13146,6 +13191,9 @@
       if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
       $('company-name').textContent = r.data.company.name;
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
+      window.qsCurrentUserName = r.data.user.name;
+      window.qsCurrentUserRole = role;
+      window.qsCurrentUserEmail = r.data.user.email;
       (function () {
         var av = $('user-avatar');
         if (!av) return;
