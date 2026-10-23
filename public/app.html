@@ -676,7 +676,6 @@
       <button type="button" class="tab-btn" data-etab="requests"><span class="tab-ic">🔁</span><span class="tab-tx">Shift requests</span> <span class="req-badge" data-req-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="messages"><span class="tab-ic">💬</span><span class="tab-tx">Messages</span> <span class="msg-badge" data-msg-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask"><span class="tab-ic">✨</span><span class="tab-tx">Ask Q-Scheduler</span></button>
-      <button type="button" class="tab-btn" data-etab="mysettings"><span class="tab-ic">👤</span><span class="tab-tx">My settings</span></button>
       <button type="button" class="tab-btn" data-etab="ehelp"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
     </nav>
   </header>
@@ -12908,11 +12907,14 @@
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
       function goSettings(scrollToProfile) {
         closeMenu();
-        var emp = document.querySelector('.tab-btn[data-etab="mysettings"]');
-        var adm = document.querySelector('.tab-btn[data-tab="mysettings"]');
-        var empVisible = emp && emp.offsetParent !== null;
-        var btn = empVisible ? emp : (adm || emp);
-        if (btn) btn.click();
+        var empTabs = document.getElementById('employee-tabs');
+        var inEmployeeView = empTabs && !empTabs.classList.contains('hidden') && getComputedStyle(empTabs).display !== 'none';
+        if (inEmployeeView && window.qsSetEmployeeTab) {
+          window.qsSetEmployeeTab('mysettings');
+        } else {
+          var adm = document.querySelector('.tab-btn[data-tab="mysettings"]');
+          if (adm) adm.click();
+        }
         if (scrollToProfile) setTimeout(function () {
           var card = document.querySelector('#tab-mysettings .card');
           if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
