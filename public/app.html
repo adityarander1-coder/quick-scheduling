@@ -637,7 +637,7 @@
 <body>
   <header class="app-header">
     <div class="brand-row">
-      <div class="brand"><div class="product-name">Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
+      <div class="brand"><div class="product-name"><span class="brand-mark">◈</span>Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
         <span id="user-avatar" class="user-avatar" hidden></span>
@@ -692,6 +692,7 @@
     }
     .btn-primary { background: var(--accent); border-radius: 8px; }
     .user-avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.82rem; flex: none; }
+    .brand-mark { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 15px; margin-right: 8px; vertical-align: -6px; }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { border-radius: 8px; }
     .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
@@ -736,11 +737,11 @@
       .app-header .brand .product-name { font-size: 1rem; }
       .app-header .user-chip { display: none; }
       .app-header .brand-row { flex-wrap: nowrap; gap: 10px; }
-      #hdr-switch-row { width: 100%; margin-top: 8px; }
-      #hdr-switch-row:empty { display: none; }
-      .app-header .view-switcher { display: flex; width: 100%; }
-      .app-header .view-switcher button { flex: 1; }
-      .app-header #admin-dept-select { max-width: none !important; }
+      .app-header #logout { display: none; }
+      #hdr-switch-row { width: 100%; margin-top: 8px; flex-direction: row !important; align-items: center; }
+      .app-header .view-switcher { display: flex; flex: 1.25; min-width: 0; flex-direction: row !important; flex-wrap: nowrap !important; }
+      .app-header .view-switcher button { flex: 1 1 0; width: auto !important; min-width: 0; white-space: nowrap; }
+      .app-header #admin-dept-select { flex: 1; min-width: 0; width: auto !important; max-width: none !important; }
     }
     @media (min-width: 1024px) {
       .app-header .brand .product-name { white-space: nowrap; font-size: 1.04rem; }
@@ -10322,6 +10323,11 @@
             <span id="ms-pw-msg" style="font-size:0.85rem"></span>
           </div>
         </div>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 10px">🚪 Log out</h3>
+          <button type="button" id="ms-logout" class="btn-secondary" style="padding:0.5rem 1rem">Log out of Quick Scheduling</button>
+        </div>
       </div>
     </section>
 
@@ -12868,6 +12874,10 @@
     window.addEventListener('hashchange', handleHash);
 
     $('logout').addEventListener('click', function () {
+      api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
+    });
+    var msLogout = $('ms-logout');
+    if (msLogout) msLogout.addEventListener('click', function () {
       api('/api/auth/logout', { method: 'POST' }).then(function () { window.location.href = '/login.html'; });
     });
 
