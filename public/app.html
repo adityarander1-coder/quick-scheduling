@@ -652,26 +652,26 @@
       </div>
     </div>
     <nav class="main-tabs" role="tablist">
-      <button class="tab-btn active" data-tab="schedule">Schedule</button>
-      <button class="tab-btn" data-tab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
-      <button class="tab-btn" data-tab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
-      <button class="tab-btn" data-tab="bulk">Bulk Actions</button>
-      <button class="tab-btn" data-tab="ask">Ask Q-Scheduler</button>
+      <button class="tab-btn active" data-tab="schedule">📅 Schedule</button>
+      <button class="tab-btn" data-tab="requests">🔁 Shift requests <span class="req-badge" data-req-badge hidden></span></button>
+      <button class="tab-btn" data-tab="messages">💬 Messages <span class="msg-badge" data-msg-badge hidden></span></button>
+      <button class="tab-btn" data-tab="bulk">🗂️ Bulk Actions</button>
+      <button class="tab-btn" data-tab="ask">✨ Ask Q-Scheduler</button>
       <span id="dash-nav" style="display:contents"></span>
-      <button class="tab-btn" data-tab="link">Share Links</button>
-      <button class="tab-btn" data-tab="settings">Settings</button>
-      <button class="tab-btn" data-tab="mysettings">My settings</button>
-      <button class="tab-btn" data-tab="billing">Billing</button>
-      <button class="tab-btn" data-tab="help">Help</button>
+      <button class="tab-btn" data-tab="link">🔗 Share Links</button>
+      <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+      <button class="tab-btn" data-tab="mysettings">👤 My settings</button>
+      <button class="tab-btn" data-tab="billing">💳 Billing</button>
+      <button class="tab-btn" data-tab="help">❓ Help</button>
     </nav>
     <nav id="employee-tabs" class="main-tabs hidden" role="tablist" aria-label="Employee">
-      <button type="button" class="tab-btn active" data-etab="myschedule">My schedule</button>
-      <button type="button" class="tab-btn" data-etab="requests">Shift requests <span class="req-badge" data-req-badge hidden></span></button>
-      <button type="button" class="tab-btn" data-etab="messages">Messages <span class="msg-badge" data-msg-badge hidden></span></button>
-      <button type="button" class="tab-btn" data-etab="ask">Ask Q-Scheduler</button>
+      <button type="button" class="tab-btn active" data-etab="myschedule">📅 My schedule</button>
+      <button type="button" class="tab-btn" data-etab="requests">🔁 Shift requests <span class="req-badge" data-req-badge hidden></span></button>
+      <button type="button" class="tab-btn" data-etab="messages">💬 Messages <span class="msg-badge" data-msg-badge hidden></span></button>
+      <button type="button" class="tab-btn" data-etab="ask">✨ Ask Q-Scheduler</button>
       <span id="dash-nav-emp" style="display:contents"></span>
-      <button type="button" class="tab-btn" data-etab="mysettings">⚙️ Settings</button>
-      <button type="button" class="tab-btn" data-etab="ehelp">Help</button>
+      <button type="button" class="tab-btn" data-etab="mysettings">👤 My settings</button>
+      <button type="button" class="tab-btn" data-etab="ehelp">❓ Help</button>
     </nav>
   </header>
 
@@ -695,6 +695,15 @@
     .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
     #tab-schedule .shift-cat, #tab-myschedule .shift-cat { border-radius: 7px; }
     #tab-schedule .shift-nm, #tab-myschedule .shift-nm { border-radius: 7px; font-weight: 800; color: #101828; }
+    /* Stage 2 (content): day cards + joined shift pills, mock-matched */
+    #tab-schedule .day-row, #tab-myschedule .day-row { border: none; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.10); }
+    #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
+    #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
+    #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
+    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: flex; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 5px; min-height: 30px; background: var(--surface-alt); }
+    #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.42rem 0.55rem; font-size: 12.5px; display: flex; align-items: center; }
+    #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.42rem 0.55rem 0.42rem 0.35rem; font-size: 13.5px; flex: 1; }
+    #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
     input[type="text"], input[type="email"], input[type="password"], input[type="tel"],
     input[type="number"], input[type="date"], input[type="time"], input[type="search"],
     select, textarea { border-radius: 8px; }
@@ -717,9 +726,8 @@
       .app-header .tab-btn.active { background: var(--navy-soft); }
       #fab-email-ai { bottom: 84px; }
     }
-    .app-header .brand .product-name { white-space: nowrap; }
     @media (min-width: 1024px) {
-      .app-header .brand .product-name { font-size: 1.04rem; }
+      .app-header .brand .product-name { white-space: nowrap; font-size: 1.04rem; }
       .app-header .brand .company-line { font-size: 0.8rem; line-height: 1.35; }
       .app-header .view-switcher { width: 100%; display: flex; }
       .app-header .view-switcher button { flex: 1; }
