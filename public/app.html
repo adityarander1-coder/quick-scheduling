@@ -799,6 +799,16 @@
     html:not([data-theme="dark"]) .msg.them { background: #f1f2f8; border: none; border-bottom-left-radius: 4px; }
     .msg.mine { border-bottom-right-radius: 4px; }
     html:not([data-theme="dark"]) .msg-input input { border-color: #d5daee; }
+    /* ---- Restyle B, stage 8: finishing touches (today ring, empty states, headings) ---- */
+    .day-row.is-today { outline: 2.5px solid var(--accent); outline-offset: 2px; box-shadow: 0 8px 22px rgba(14,124,134,.16); }
+    .today-tag { background: var(--accent); color: #fff; font-size: 0.6rem; font-weight: 800; letter-spacing: 0.06em; border-radius: 999px; padding: 2px 7px; margin-left: 6px; vertical-align: 2px; display: inline-block; }
+    .empty-week { background: #fff; border: 1.5px dashed #b9c4e4; border-radius: 14px; padding: 30px 20px; text-align: center; margin: 0 0 14px; }
+    .empty-week .ew-ic { font-size: 2rem; }
+    .empty-week .ew-t { font-weight: 800; font-size: 1.05rem; color: var(--text); margin-top: 8px; }
+    .empty-week .ew-s { color: var(--dim); font-size: 0.9rem; margin-top: 5px; }
+    .app-content > section h2 { font-size: 1.3rem; font-weight: 800; letter-spacing: -0.01em; }
+    .app-content > section h3 { font-size: 1.02rem; font-weight: 800; }
+    .app-content > section h4 { font-size: 0.9rem; font-weight: 700; }
     /* ---- Restyle B, stage 7: teal desktop top bar + collapsible sidebar ---- */
     #topbar { display: none; }
     @media (min-width: 1024px) {
@@ -1932,10 +1942,11 @@
           var shifts = shiftsFor(dateStr);
           var dow = d.toLocaleDateString(undefined, { weekday: 'long' });
           var dnum = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-          var html = '<article class="day-row" data-date="' + dateStr + '">';
+          var isToday = dateStr === fmtDate(new Date());
+          var html = '<article class="day-row' + (isToday ? ' is-today' : '') + '" data-date="' + dateStr + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + dateStr + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + '</div></div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
           html += '<div class="day-row-actions">' + statusPillHtml(dateStr) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
@@ -2177,14 +2188,34 @@
         function renderWeek(el) {
           var r = viewRange();
           var html = '<div class="week-grid">';
+          var ndays = 0;
           for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
             var dd = new Date(ms);
             var ds = fmtDate(new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()));
             html += dayRowHtml(ds);
+            ndays++;
           }
           html += '</div>';
+          var emptyDays = (html.match(/empty-day/g) || []).length;
+          if (ndays >= 7 && emptyDays >= ndays && html.indexOf('shift-grid') === -1) {
+            var panel = '<div class="empty-week"><div class="ew-ic">🗓️</div>' +
+              '<div class="ew-t">Nothing scheduled ' + (ndays === 7 ? 'this week' : 'in this period') + ' yet</div>' +
+              '<div class="ew-s">Tap the <b>+</b> on any day to add the first shift' + (sched.canEdit ? ' — or build the whole week at once:' : '.') + '</div>' +
+              (sched.canEdit ? '<button type="button" class="btn-primary" id="empty-make-btn" style="margin-top:12px">✏️ Make schedule</button>' : '') +
+              '</div>';
+            html = panel + html;
+          }
           el.innerHTML = html;
           bindDayRows(el);
+          var mb = el.querySelector('#empty-make-btn');
+          if (mb) mb.addEventListener('click', function () {
+            var tab = document.querySelector('#tab-schedule .view-tabs [data-view="block"]');
+            if (tab) tab.click();
+            setTimeout(function () {
+              var b = $('sched-block-make');
+              if (b && b.textContent.indexOf('Making') === -1) b.click();
+            }, 90);
+          });
         }
 
         function renderDay(el) {
@@ -2195,10 +2226,10 @@
           var d = parseDate(ds);
           var dow = d.toLocaleDateString(undefined, { weekday: 'long' });
           var dnum = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-          var html = '<article class="day-row" data-date="' + ds + '">';
+          var html = '<article class="day-row' + (ds === fmtDate(new Date()) ? ' is-today' : '') + '" data-date="' + ds + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + ds + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + '</div></div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
           html += '<div class="day-row-actions">' + statusPillHtml(ds) +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
@@ -9691,9 +9722,10 @@
           var dow = d.toLocaleDateString(undefined, { weekday: 'long' });
           var dnum = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           var list = shiftsFor(dateStr);
-          var html = '<article class="day-row" data-date="' + dateStr + '">';
+          var isToday = dateStr === fmtDate(new Date());
+          var html = '<article class="day-row' + (isToday ? ' is-today' : '') + '" data-date="' + dateStr + '">';
           html += '<header class="day-row-head"><div><div class="dow">' + esc(dow) + '</div>' +
-            '<div class="dnum">' + esc(dnum) + '</div></div></header>';
+            '<div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div></header>';
           html += '<div class="day-row-body">' + msEventBoxesHtml(dateStr);
           var hasContent = msEventsFor(dateStr).length > 0;
           // Group shifts by type (stable order), mirroring the admin view.
@@ -9930,8 +9962,15 @@
         function renderWeek(el) {
           var r = viewRange();
           var html = '<div class="week-grid">';
-          eachDate(r.from, r.to, function (ds) { html += dayRowHtml(ds); });
+          var ndays = 0;
+          eachDate(r.from, r.to, function (ds) { html += dayRowHtml(ds); ndays++; });
           html += '</div>';
+          var emptyDays = (html.match(/empty-day/g) || []).length;
+          if (ndays >= 7 && emptyDays >= ndays && html.indexOf('shift-grid') === -1 && showEveryone()) {
+            html = '<div class="empty-week"><div class="ew-ic">🗓️</div>' +
+              '<div class="ew-t">Nothing scheduled this week yet</div>' +
+              '<div class="ew-s">Shifts will appear here as soon as they are assigned.</div></div>' + html;
+          }
           el.innerHTML = html;
         }
 
