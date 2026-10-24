@@ -28,7 +28,12 @@ export interface ImapMessage {
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS = 5;
 
-function getConfig() {
+/** Credentials for one company's mailbox. When omitted, the legacy single
+ *  inbox from env vars (GMAIL_USER / GMAIL_APP_PASSWORD) is used. */
+export interface ImapCreds { user: string; password: string; }
+
+function getConfig(creds?: ImapCreds) {
+  if (creds && creds.user && creds.password) return creds;
   const user = process.env.GMAIL_USER;
   const password = process.env.GMAIL_APP_PASSWORD;
   if (!user || !password) {
@@ -37,8 +42,8 @@ function getConfig() {
   return { user, password };
 }
 
-function connect(): Promise<Imap> {
-  const { user, password } = getConfig();
+function connect(creds?: ImapCreds): Promise<Imap> {
+  const { user, password } = getConfig(creds);
   return new Promise((resolve, reject) => {
     const imap = new Imap({
       user,
@@ -55,8 +60,8 @@ function connect(): Promise<Imap> {
 }
 
 /** List UIDs of unread messages in INBOX */
-export async function listUnreadUids(maxResults = 10): Promise<number[]> {
-  const imap = await connect();
+export async function listUnreadUids(maxResults = 10, creds?: ImapCreds): Promise<number[]> {
+  const imap = await connect(creds);
   try {
     await new Promise<void>((resolve, reject) => {
       imap.openBox('INBOX', false, (err) => err ? reject(err) : resolve());
@@ -71,8 +76,8 @@ export async function listUnreadUids(maxResults = 10): Promise<number[]> {
 }
 
 /** Fetch a single message by UID */
-export async function getImapMessage(uid: number): Promise<ImapMessage> {
-  const imap = await connect();
+export async function getImapMessage(uid: number, creds?: ImapCreds): Promise<ImapMessage> {
+  const imap = await connect(creds);
   try {
     await new Promise<void>((resolve, reject) => {
       imap.openBox('INBOX', false, (err) => err ? reject(err) : resolve());
@@ -137,8 +142,8 @@ export async function getImapMessage(uid: number): Promise<ImapMessage> {
 }
 
 /** Mark a message as seen */
-export async function markImapAsRead(uid: number): Promise<void> {
-  const imap = await connect();
+export async function markImapAsRead(uid: number, creds?: ImapCreds): Promise<void> {
+  const imap = await connect(creds);
   try {
     await new Promise<void>((resolve, reject) => {
       imap.openBox('INBOX', false, (err) => err ? reject(err) : resolve());

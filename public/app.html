@@ -5126,6 +5126,7 @@
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
           <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
+          <button class="subtab-btn" data-subtab="inbox">Email inbox</button>
         </nav>
         <div class="subpanel-container">
           <div id="subtab-dashboards" class="sub-panel">
@@ -8160,6 +8161,75 @@
               });
               // If the tab is already active when this script runs, load immediately.
               if (document.querySelector('[data-subtab="notifications"]').classList.contains('active')) load();
+            })();
+            </script>
+          </div>
+          <div id="subtab-inbox" class="sub-panel">
+            <div class="set-head-row">
+              <h3 class="set-h3" style="margin:0">Email inbox</h3>
+            </div>
+            <p class="set-desc">Connect this company's own Gmail mailbox so Email Q-Scheduler reads <em>your</em> schedule emails — not a shared inbox. The app checks it every 5 minutes and builds plans for your approval; it never changes the schedule on its own.</p>
+            <p class="set-desc">To connect: in that Gmail account, turn on 2-Step Verification, then Google Account → Security → App passwords → generate one for "Mail" and paste the 16 characters here (spaces are fine). Use an app password, never the account's normal password. The password is stored encrypted and is never shown back.</p>
+            <div id="inbox-status" style="margin-bottom:1rem"></div>
+            <div class="form-row"><label>Gmail address</label><input type="email" id="inbox-user" autocomplete="off" placeholder="schedules@yourcompany.com" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></div>
+            <div class="form-row"><label>Gmail app password</label><input type="password" id="inbox-pass" autocomplete="off" placeholder="16-character app password" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></div>
+            <div class="form-row"><label style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="checkbox" id="inbox-active" checked> Poll this inbox for schedule emails</label></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:0.5rem">
+              <button type="button" id="inbox-save" class="btn-primary">Save inbox</button>
+              <button type="button" id="inbox-test" class="btn-secondary">Test connection</button>
+              <button type="button" id="inbox-disconnect" class="btn-danger hidden">Disconnect</button>
+              <span id="inbox-msg" style="margin-left:0.25rem;font-size:0.9rem;color:var(--dim);align-self:center"></span>
+            </div>
+            <script>
+            (function () {
+              var loaded = false;
+              function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+              function fmt(dt) { if (!dt) return 'never'; try { return new Date(dt).toLocaleString(); } catch (e) { return dt; } }
+              function load() {
+                api('/api/schedule/email-inbox').then(function (r) {
+                  if (!r || !r.ok) return;
+                  var d = r.data;
+                  var html = '';
+                  if (d.connected) {
+                    html = '<p><strong>Connected:</strong> ' + esc(d.gmailUser) + ' · ' + (d.isActive ? 'polling every 5 minutes' : 'paused') + '</p>' +
+                      '<p style="font-size:0.9rem;color:var(--dim)">Last checked: ' + esc(fmt(d.lastPolledAt)) + (d.lastError ? '<br><span style="color:#b91c1c">Last error: ' + esc(d.lastError) + '</span>' : '') + '</p>';
+                    $('inbox-user').value = d.gmailUser;
+                    $('inbox-active').checked = !!d.isActive;
+                    $('inbox-disconnect').classList.remove('hidden');
+                  } else if (d.legacyFallback) {
+                    html = '<p style="color:#92400e">No inbox connected here — schedule emails are currently read from the shared mailbox (' + esc(d.legacyUser) + '). Connect this company\u2019s own mailbox above to stop sharing it.</p>';
+                    $('inbox-disconnect').classList.add('hidden');
+                  } else {
+                    html = '<p>No inbox connected. Schedule emails are not being read for this company yet.</p>';
+                    $('inbox-disconnect').classList.add('hidden');
+                  }
+                  $('inbox-status').innerHTML = html;
+                  loaded = true;
+                });
+              }
+              $('inbox-save').addEventListener('click', function () {
+                var msg = $('inbox-msg'); msg.textContent = 'Saving…';
+                api('/api/schedule/email-inbox', { method: 'PUT', body: JSON.stringify({ gmailUser: $('inbox-user').value.trim(), appPassword: $('inbox-pass').value, isActive: $('inbox-active').checked }) }).then(function (r) {
+                  msg.textContent = (r && r.ok) ? 'Saved. The next poll (within 5 minutes) will use this mailbox.' : ((r && r.data && r.data.error) || 'Could not save.');
+                  if (r && r.ok) { $('inbox-pass').value = ''; load(); }
+                }).catch(function () { msg.textContent = 'Network error. Could not save.'; });
+              });
+              $('inbox-test').addEventListener('click', function () {
+                var msg = $('inbox-msg'); msg.textContent = 'Testing…';
+                api('/api/schedule/email-inbox/test', { method: 'POST', body: JSON.stringify({ gmailUser: $('inbox-user').value.trim(), appPassword: $('inbox-pass').value }) }).then(function (r) {
+                  msg.textContent = (r && r.ok) ? 'Connected — signed in to the mailbox successfully.' : ((r && r.data && r.data.error) || 'Connection failed.');
+                }).catch(function () { msg.textContent = 'Network error. Could not test.'; });
+              });
+              $('inbox-disconnect').addEventListener('click', function () {
+                if (!window.confirm('Disconnect this inbox? Schedule emails will stop being read for this company (unless the shared mailbox covers it).')) return;
+                var msg = $('inbox-msg'); msg.textContent = 'Disconnecting…';
+                api('/api/schedule/email-inbox', { method: 'DELETE' }).then(function (r) {
+                  msg.textContent = (r && r.ok) ? 'Disconnected.' : 'Could not disconnect.';
+                  if (r && r.ok) { $('inbox-pass').value = ''; load(); }
+                }).catch(function () { msg.textContent = 'Network error. Could not disconnect.'; });
+              });
+              document.querySelector('[data-subtab="inbox"]').addEventListener('click', function () { if (!loaded) load(); });
+              if (document.querySelector('[data-subtab="inbox"]').classList.contains('active')) load();
             })();
             </script>
           </div>
@@ -13063,6 +13133,7 @@
         // Arriving by hash/deep link must load the panel's data too —
         // the subtab buttons' own click handlers don't fire then.
         if (tabId === 'settings' && subtabId === 'dashboards' && window.qsLoadDashboardsSettings) window.qsLoadDashboardsSettings();
+        if (tabId === 'settings' && subtabId === 'inbox') { var ib = document.querySelector('[data-subtab="inbox"]'); if (ib) ib.click(); }
       }
     }
 
@@ -13517,6 +13588,8 @@
       if (!window.isOwner) {
         var btab = document.querySelector('.tab-btn[data-tab="billing"]');
         if (btab) btab.style.display = 'none';
+        var itab = document.querySelector('[data-subtab="inbox"]');
+        if (itab) itab.style.display = 'none';
       }
       var vsw = $('view-switcher'); if (vsw) vsw.classList.remove('hidden');
       var savedView = 'admin';

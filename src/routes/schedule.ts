@@ -2732,6 +2732,115 @@ router.put('/notification-settings', requireRole('owner'), async (req: Request, 
 // Shift settings — default start/end times per shift type.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-company email inbox — Settings → Email inbox (owner only).
+// Each company connects its OWN Gmail mailbox for Email Q-Scheduler.
+// The app password is stored encrypted and NEVER returned by any route.
+// ---------------------------------------------------------------------------
+
+// GET /api/schedule/email-inbox — connection status (no password, ever).
+router.get('/email-inbox', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT gmail_user, is_active, last_polled_at, last_error FROM company_inboxes WHERE company_id = $1',
+      [companyId]
+    );
+    if (rows.length) {
+      res.json({
+        connected: true, gmailUser: rows[0].gmail_user, isActive: rows[0].is_active,
+        lastPolledAt: rows[0].last_polled_at, lastError: rows[0].last_error, legacyFallback: false,
+      });
+      return;
+    }
+    // No inbox row: the legacy single env inbox covers this company only if
+    // it is pinned to it (or no company is pinned).
+    const legacy = !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
+      && (!process.env.GMAIL_COMPANY_ID || process.env.GMAIL_COMPANY_ID === companyId);
+    res.json({
+      connected: false, gmailUser: null, isActive: false,
+      lastPolledAt: null, lastError: null, legacyFallback: legacy,
+      legacyUser: legacy ? process.env.GMAIL_USER : null,
+    });
+  } catch (err) {
+    console.error('[schedule] get email inbox failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/email-inbox — connect (or update) this company's inbox.
+router.put('/email-inbox', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const gmailUser = String(req.body.gmailUser || '').trim().toLowerCase();
+    const appPassword = String(req.body.appPassword || '').replace(/\s+/g, '');
+    const isActive = req.body.isActive !== false;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(gmailUser)) { res.status(400).json({ error: 'Enter a valid Gmail address.' }); return; }
+    if (!appPassword || appPassword.length < 8) { res.status(400).json({ error: 'Enter the 16-character Gmail app password (spaces are fine — they are stripped).' }); return; }
+    const { encryptInboxPassword, hasDedicatedInboxKey } = await import('../util/inboxCrypto.js');
+    if (!hasDedicatedInboxKey()) {
+      console.warn('[schedule] Saving inbox without COMPANY_INBOX_KEY (key derived from SESSION_SECRET). Set COMPANY_INBOX_KEY in Render before real customers connect inboxes.');
+    }
+    await query(
+      `INSERT INTO company_inboxes (company_id, gmail_user, gmail_app_password_enc, is_active, updated_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (company_id) DO UPDATE SET gmail_user = $2, gmail_app_password_enc = $3, is_active = $4, updated_at = now(), last_error = NULL`,
+      [companyId, gmailUser, encryptInboxPassword(appPassword), isActive]
+    );
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Connected email inbox ${gmailUser}`,
+    });
+    res.json({ ok: true, gmailUser });
+  } catch (err) {
+    console.error('[schedule] save email inbox failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/email-inbox/test — verify IMAP login works.
+// Tests the stored inbox, or body creds (unsaved) when given.
+router.post('/email-inbox/test', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    let creds: { user: string; password: string } | undefined;
+    const bodyUser = String(req.body.gmailUser || '').trim().toLowerCase();
+    const bodyPass = String(req.body.appPassword || '').replace(/\s+/g, '');
+    if (bodyUser && bodyPass) {
+      creds = { user: bodyUser, password: bodyPass };
+    } else {
+      const { rows } = await query('SELECT gmail_user, gmail_app_password_enc FROM company_inboxes WHERE company_id = $1', [companyId]);
+      if (!rows.length) { res.status(400).json({ ok: false, error: 'No inbox connected yet.' }); return; }
+      const { decryptInboxPassword } = await import('../util/inboxCrypto.js');
+      creds = { user: rows[0].gmail_user, password: decryptInboxPassword(rows[0].gmail_app_password_enc) };
+    }
+    const { listUnreadUids } = await import('../util/gmailImap.js');
+    const uids = await listUnreadUids(1, creds);
+    res.json({ ok: true, unread: uids.length });
+  } catch (err: any) {
+    console.error('[schedule] email inbox test failed:', err.message);
+    res.json({ ok: false, error: 'Could not sign in to that mailbox. Check the address and app password — the Gmail account needs 2-Step Verification on, and the password must be a Gmail app password, not your normal password.' });
+  }
+});
+
+// DELETE /api/schedule/email-inbox — disconnect (falls back to legacy env inbox, if any).
+router.delete('/email-inbox', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    await query('DELETE FROM company_inboxes WHERE company_id = $1', [companyId]);
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: 'Disconnected email inbox',
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete email inbox failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // PUT /api/schedule/shift-types/:id — update (owner/scheduler).
 router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {

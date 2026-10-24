@@ -4,6 +4,7 @@
  */
 
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
+import type { ImapCreds } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
 import { extractAttachmentContent } from './emailAttachments.js';
 import { notify, planApproverIds } from './notify.js';
@@ -201,7 +202,7 @@ export async function buildSessionContext(
  * Poll the Gmail inbox for new schedule change emails.
  * Creates pending plans for Deepika to approve. Never modifies the schedule directly.
  */
-export async function pollInbox(query: QueryFn, companyId: string): Promise<{
+export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapCreds): Promise<{
   checked: number;
   newPlans: number;
   questionsAnswered: number;
@@ -209,19 +210,22 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
 }> {
   const result = { checked: 0, newPlans: 0, questionsAnswered: 0, errors: [] as string[] };
 
-  // Check if Gmail IMAP is configured
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+  // Check if Gmail IMAP is configured (per-company creds, or the legacy env inbox)
+  if (!creds && (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD)) {
     result.errors.push('Gmail not configured on server');
     return result;
   }
 
   try {
-    const uids = await listUnreadUids(10);
+    const uids = await listUnreadUids(10, creds);
     result.checked = uids.length;
 
     // Get already-processed message UIDs
+    // Seen UIDs are scoped to THIS company: IMAP UIDs are per-mailbox, so
+    // two different companies' mailboxes can both contain UID 42.
     const seenResult = await query(
-      `SELECT source_email_id FROM schedule_plans WHERE source_email_id IS NOT NULL`
+      `SELECT source_email_id FROM schedule_plans WHERE source_email_id IS NOT NULL AND company_id = $1`,
+      [companyId]
     );
     const seenIds = new Set(seenResult.rows.map(r => r.source_email_id));
 
@@ -230,7 +234,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
       if (seenIds.has(uidStr)) continue;
 
       try {
-        const email = await getImapMessage(uid);
+        const email = await getImapMessage(uid, creds);
 
         // Read any attachments (PDF / Excel / CSV / Word) so the plan
         // builder can work from them — e.g. an emailed schedule file.
@@ -307,14 +311,14 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
             console.log(`[email-poll] Question answering failed: ${qErr.message}`);
             result.errors.push(`Message ${uid}: question answering failed: ${qErr.message}`);
           }
-          await markImapAsRead(uid);
+          await markImapAsRead(uid, creds);
           continue;
         }
 
         // Skip if not a change/bulk/settings request
         const actionableTypes = ['change_request', 'settings_change', 'bulk_action'];
         if (!actionableTypes.includes(plan.emailType) || !plan.changes || plan.changes.length === 0) {
-          await markImapAsRead(uid);
+          await markImapAsRead(uid, creds);
           continue;
         }
 
@@ -341,7 +345,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           } catch (mailErr: any) {
             console.log(`[email-poll] Clarification email failed: ${mailErr.message}`);
           }
-          await markImapAsRead(uid);
+          await markImapAsRead(uid, creds);
           continue;
         }
 
@@ -505,7 +509,7 @@ export async function pollInbox(query: QueryFn, companyId: string): Promise<{
           // Don't fail the plan creation if notification fails
         }
 
-        await markImapAsRead(uid);
+        await markImapAsRead(uid, creds);
         result.newPlans++;
       } catch (err: any) {
         result.errors.push(`Message ${uid}: ${err.message}`);
