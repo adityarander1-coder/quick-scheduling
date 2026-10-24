@@ -638,7 +638,7 @@
   <header class="app-header">
     <div class="brand-row">
       <div class="brand"><div class="product-name"><span class="brand-mark">◈</span>Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
-      <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+      <div id="hdr-controls" style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
         <span class="avatar-wrap"><span id="user-avatar" class="user-avatar" hidden role="button" tabindex="0" title="Account" style="cursor:pointer"></span><span id="avatar-menu" class="avatar-menu" hidden>
           <span class="avatar-menu-head"><strong id="avatar-menu-name"></strong><span id="avatar-menu-sub"></span></span>
@@ -678,6 +678,37 @@
       <button type="button" class="tab-btn" data-etab="ehelp"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
     </nav>
   </header>
+
+  <!-- Desktop top bar (stage 7): department, view switch, bell + account move here on wide screens; the ☰ button hides/shows the sidebar. Phones keep the existing header. -->
+  <div id="topbar" hidden>
+    <button type="button" id="qs-burger" aria-label="Hide or show the side menu">☰</button>
+    <div id="tb-dept"></div>
+    <div class="tb-sp"></div>
+    <div id="tb-switch"></div>
+    <div id="tb-right"></div>
+  </div>
+  <script>
+    (function () {
+      if (window.innerWidth < 1024) return;
+      var bar = document.getElementById('topbar');
+      bar.hidden = false;
+      var dept = document.getElementById('admin-dept-select');
+      var sw = document.getElementById('view-switcher');
+      var ctl = document.getElementById('hdr-controls');
+      if (dept) document.getElementById('tb-dept').appendChild(dept);
+      if (sw) document.getElementById('tb-switch').appendChild(sw);
+      if (ctl) document.getElementById('tb-right').appendChild(ctl);
+      var row = document.getElementById('hdr-switch-row');
+      if (row) row.style.display = 'none';
+      try {
+        if (localStorage.getItem('qs-side-hidden') === '1') document.body.classList.add('qs-side-hidden');
+      } catch (e) {}
+      document.getElementById('qs-burger').addEventListener('click', function () {
+        var hidden = document.body.classList.toggle('qs-side-hidden');
+        try { localStorage.setItem('qs-side-hidden', hidden ? '1' : '0'); } catch (e) {}
+      });
+    })();
+  </script>
 
   <!-- B theme (Bold Ops) stage 1: frame + chrome. Presentation only.
        Rollback: redeploy git tag pre-restyle-b021131. -->
@@ -761,6 +792,25 @@
     html:not([data-theme="dark"]) .msg.them { background: #f1f2f8; border: none; border-bottom-left-radius: 4px; }
     .msg.mine { border-bottom-right-radius: 4px; }
     html:not([data-theme="dark"]) .msg-input input { border-color: #d5daee; }
+    /* ---- Restyle B, stage 7: teal desktop top bar + collapsible sidebar ---- */
+    #topbar { display: none; }
+    @media (min-width: 1024px) {
+      #topbar { display: flex; align-items: center; gap: 14px; background: var(--accent); padding: 9px 18px; position: sticky; top: 0; z-index: 950; margin-bottom: 6px; }
+      #topbar[hidden] { display: none; }
+      #qs-burger { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35); color: #fff; width: 34px; height: 34px; border-radius: 9px; font-size: 16px; cursor: pointer; display: grid; place-items: center; flex: none; padding: 0; }
+      #tb-dept { width: 220px; flex: none; }
+      #tb-dept #admin-dept-select { width: 100%; max-width: 220px; }
+      .tb-sp { flex: 1; }
+      #tb-switch .view-switcher { margin: 0; }
+      #tb-right { display: flex; align-items: center; }
+      #topbar #logout { display: none; }
+      #topbar #notif-bell { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35); border-radius: 9px; }
+      #topbar .user-chip { color: #fff; }
+      #topbar .user-avatar { box-shadow: 0 0 0 2px rgba(255,255,255,.55); }
+      body.qs-side-hidden { padding-left: 0; }
+      body.qs-side-hidden .app-header { display: none; }
+      html body #notif-panel { left: auto; right: 14px; top: 58px; }
+    }
     /* ---- Restyle B, stage 4: Settings screens as cards ---- */
     html:not([data-theme="dark"]) #tab-settings .sub-panel.active { background: #fff; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.08); padding: 18px; }
     html:not([data-theme="dark"]) #tab-settings input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) #tab-settings select, html:not([data-theme="dark"]) #tab-settings textarea { border-color: #d5daee; }
