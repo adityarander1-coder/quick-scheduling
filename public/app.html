@@ -679,9 +679,9 @@
     </nav>
   </header>
 
-  <!-- Desktop top bar (stage 7): department, view switch, bell + account move here on wide screens; the ☰ button hides/shows the sidebar. Phones keep the existing header. -->
+  <!-- Desktop top bar (stage 7): department, view switch, bell + account move here on wide screens. Phones keep the existing header. -->
+  <button type="button" id="qs-edge-toggle" aria-label="Hide or show the side menu" hidden>‹</button>
   <div id="topbar" hidden>
-    <button type="button" id="qs-burger" aria-label="Hide or show the side menu">☰</button>
     <div id="tb-dept"></div>
     <div class="tb-sp"></div>
     <div id="tb-switch"></div>
@@ -700,12 +700,19 @@
       if (ctl) document.getElementById('tb-right').appendChild(ctl);
       var row = document.getElementById('hdr-switch-row');
       if (row) row.style.display = 'none';
+      var edge = document.getElementById('qs-edge-toggle');
+      edge.hidden = false;
+      function paintArrow() {
+        edge.textContent = document.body.classList.contains('qs-side-hidden') ? '›' : '‹';
+      }
       try {
         if (localStorage.getItem('qs-side-hidden') === '1') document.body.classList.add('qs-side-hidden');
       } catch (e) {}
-      document.getElementById('qs-burger').addEventListener('click', function () {
+      paintArrow();
+      edge.addEventListener('click', function () {
         var hidden = document.body.classList.toggle('qs-side-hidden');
         try { localStorage.setItem('qs-side-hidden', hidden ? '1' : '0'); } catch (e) {}
+        paintArrow();
       });
     })();
   </script>
@@ -797,7 +804,10 @@
     @media (min-width: 1024px) {
       #topbar { display: flex; align-items: center; gap: 14px; background: var(--accent); padding: 9px 18px; position: sticky; top: 0; z-index: 950; margin-bottom: 6px; }
       #topbar[hidden] { display: none; }
-      #qs-burger { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35); color: #fff; width: 34px; height: 34px; border-radius: 9px; font-size: 16px; cursor: pointer; display: grid; place-items: center; flex: none; padding: 0; }
+      #qs-edge-toggle { position: fixed; left: 215px; top: 118px; z-index: 960; width: 26px; height: 26px; border-radius: 50%; background: #fff; color: var(--accent); border: 1px solid #d5daee; box-shadow: 0 2px 8px rgba(16,24,40,.18); font-size: 15px; font-weight: 800; cursor: pointer; display: grid; place-items: center; padding: 0; line-height: 1; transition: left .25s ease; }
+      #qs-edge-toggle[hidden] { display: none; }
+      body { transition: padding-left .25s ease; }
+      .app-header { transition: transform .25s ease; }
       #tb-dept { width: 220px; flex: none; }
       #tb-dept #admin-dept-select { width: 100%; max-width: 220px; }
       .tb-sp { flex: 1; }
@@ -808,7 +818,8 @@
       #topbar .user-chip { color: #fff; }
       #topbar .user-avatar { box-shadow: 0 0 0 2px rgba(255,255,255,.55); }
       body.qs-side-hidden { padding-left: 0; }
-      body.qs-side-hidden .app-header { display: none; }
+      body.qs-side-hidden .app-header { transform: translateX(-105%); }
+      body.qs-side-hidden #qs-edge-toggle { left: 10px; }
       html body #notif-panel { left: auto; right: 14px; top: 58px; }
     }
     /* ---- Restyle B, stage 4: Settings screens as cards ---- */
