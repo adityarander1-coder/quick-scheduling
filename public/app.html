@@ -109,6 +109,42 @@
       return ids.some(window.qsCanEditDept);
     };
     window.qsMemberViewable = function (u) { return window.qsCanViewDept(u && u.departmentId); };
+    // DEPARTMENT LOCK (Deepika's decision): when a specific department is
+    // selected at the top, Settings add forms are FORCED to that department
+    // and edit forms are FROZEN (department field disabled, value kept).
+    // "All departments" unlocks everything again.
+    window.qsDeptLockApply = function () {
+      try {
+        var active = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
+        function forceSelect(id) {
+          var sel = document.getElementById(id);
+          if (!sel) return;
+          if (active) {
+            var has = Array.prototype.some.call(sel.options, function (o) { return String(o.value) === active; });
+            if (has) { sel.value = active; sel.disabled = true; sel.title = 'Locked to the department selected at the top — choose "All departments" to change it.'; return; }
+          }
+          sel.disabled = false; sel.title = '';
+        }
+        function freezeSelect(id) {
+          var sel = document.getElementById(id);
+          if (!sel) return;
+          sel.disabled = !!active;
+          sel.title = active ? 'Locked while a department is selected at the top — choose "All departments" to change it.' : '';
+        }
+        forceSelect('team-add-dept');
+        forceSelect('jr-dept-select');
+        freezeSelect('team-edit-dept');
+        freezeSelect('cand-edit-dept');
+        // Dashboard create: department checkboxes forced to the active one.
+        var dashBoxes = document.querySelectorAll('.dash-new-dept');
+        if (dashBoxes.length) {
+          dashBoxes.forEach(function (cb) {
+            if (active) { cb.checked = String(cb.value) === active; cb.disabled = true; }
+            else cb.disabled = false;
+          });
+        }
+      } catch (e) {}
+    };
     window.qsMemberEditable = function (u) { return window.qsCanEditDept(u && u.departmentId); };
     window.qsDeptName = function (id) {
       var ds = window.qsDepartments || [];
@@ -128,6 +164,7 @@
       if (persist !== false) { try { localStorage.setItem(window.qsActiveDeptKey(), window.qsActiveDeptId || ''); } catch (e) {} }
       if (window.qsRenderActiveDeptSwitcher) window.qsRenderActiveDeptSwitcher();
       if (window.qsRefreshAdminAffordances) window.qsRefreshAdminAffordances();
+      if (window.qsDeptLockApply) window.qsDeptLockApply();
       renderDeptSwitcherBar();
     };
     // Global department switcher bar (schedulers only): pick which department
@@ -5474,6 +5511,13 @@
                   if (!window.qsStEditable(st)) {
                     if (st.id !== selectedId) return;
                   }
+                  // Department LOCK: with a department selected at the top, a new
+                  // rotation can only use that department's shift types (the one
+                  // already on an existing rotation stays selectable).
+                  if (window.qsActiveDeptId && st.id !== selectedId) {
+                    var sdeps = window.qsStDeptIds ? window.qsStDeptIds(st) : [];
+                    if (sdeps.length && !sdeps.some(window.qsDeptFilterAllows)) return;
+                  }
                   var o = document.createElement('option');
                   o.value = st.id; o.textContent = st.name;
                   if (st.id === selectedId) o.selected = true;
@@ -6265,6 +6309,7 @@
                   if (d.id === selectedId) opt.selected = true;
                   selectEl.appendChild(opt);
                 });
+                if (window.qsDeptLockApply) window.qsDeptLockApply();
               }
 
               // ---- General settings ----
@@ -7012,6 +7057,7 @@
                 } else {
                   deptId = '';
                 }
+                if (window.qsDeptLockApply) window.qsDeptLockApply();
               }
 
               function loadRoles() {
@@ -7390,7 +7436,8 @@
               function deptDropdownHTML(selectedIds, prefix) {
                 selectedIds = selectedIds || [];
                 // Global department filter: for non-owners, when a specific department is selected,
-                // only that department is available. Owners see all (filter is for focus, not restriction).
+                // only that department is available. Owners see all — but the checkboxes are
+                // LOCKED to the active department (see the checkbox rendering below).
                 var availDepts = departments.filter(function (d) {
                   if (!window.qsCanViewDept(d.id)) return false;
                   if (!window.isOwner && !window.qsDeptFilterAllows(d.id)) return false;
@@ -7405,9 +7452,17 @@
                   '<button type="button" class="dept-dd-btn" data-ddbtn="' + prefix + '" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.88rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:140px;max-width:200px"><span>' + esc(label) + '</span><span style="color:var(--dim)">▾</span></button>' +
                   '<div class="dept-dd-menu" data-ddmenu="' + prefix + '" style="display:none;position:absolute;top:100%;left:0;z-index:70;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;min-width:180px;max-height:200px;overflow-y:auto;padding:6px">' +
                   availDepts.map(function (d) {
+                    // Department LOCK (all users incl. owner): with a department
+                    // selected at the top, these checkboxes are frozen — a NEW
+                    // shift type is filed under the active department only, and
+                    // an existing one's departments can't change until "All
+                    // departments" is selected. Values render checked as-is so
+                    // saving never drops an association.
+                    var locked = !!window.qsActiveDeptId;
                     var on = selectedIds.indexOf(d.id) !== -1;
+                    if (locked && prefix === 'new') on = String(d.id) === String(window.qsActiveDeptId);
                     return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
-                      '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
+                      '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + (locked ? ' disabled' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
                   }).join('') +
                   '</div></div>';
               }
@@ -7821,6 +7876,7 @@
                   if (d.id === selectedId) opt.selected = true;
                   sel.appendChild(opt);
                 });
+                if (window.qsDeptLockApply) window.qsDeptLockApply();
               }
 
               function startEdit(id) {
@@ -11597,6 +11653,7 @@
         el('dash-new-depts').innerHTML = depts.map(function (x) {
           return '<label style="font-weight:400;margin-right:0.9rem;display:inline-flex;align-items:center;gap:0.3rem"><input type="checkbox" class="dash-new-dept" value="' + x.id + '"> ' + esc(x.name) + '</label>';
         }).join('') || '<span class="muted">No departments yet.</span>';
+        if (window.qsDeptLockApply) window.qsDeptLockApply();
       }
       function renderNewEditors() {
         var wrap = el('dash-new-editors');
@@ -13020,6 +13077,8 @@
         if (window.qsSyncJobRolesDept) window.qsSyncJobRolesDept();
         // Sync Promote tool's department picker.
         if (window.qsSyncPromoteDept) window.qsSyncPromoteDept();
+        // Department lock on Settings forms follows the top selector.
+        if (window.qsDeptLockApply) window.qsDeptLockApply();
       } catch (e) {}
     };
     // Re-render Bulk Actions when the global department filter changes.

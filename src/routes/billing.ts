@@ -150,6 +150,11 @@ billingRouter.post('/checkout', requireAuth, requireRole('owner'), async (req: R
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
+      // Deepika's pick (2026-10-23): Card + Bank (ACH) + Link only — no
+      // Cash App Pay / Klarna / Amazon Pay on a B2B subscription checkout.
+      // (Payment methods are dashboard-managed in this API version, so the
+      // unwanted ones are excluded per-session.)
+      excluded_payment_method_types: ['cashapp', 'klarna', 'amazon_pay'],
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: {
         trial_period_days: TRIAL_DAYS,
