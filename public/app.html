@@ -1220,7 +1220,6 @@
 
         <div class="sched-toolbar">
           <div class="view-tabs" role="tablist" aria-label="Schedule view">
-            <button type="button" data-view="day" role="tab">Day</button>
             <button type="button" data-view="week" role="tab" class="active">Week</button>
             <button type="button" data-view="month" role="tab">Month</button>
             <button type="button" data-view="range" role="tab">Range</button>
@@ -1229,7 +1228,6 @@
           <div class="sched-view-select-wrap">
             <label for="sched-view-select">View</label>
             <select id="sched-view-select" aria-label="Schedule view">
-              <option value="day">Day</option>
               <option value="week">Week</option>
               <option value="month">Month</option>
               <option value="range">Range</option>
@@ -1281,7 +1279,7 @@
 
       <div id="sched-range-picker" class="range-picker hidden">
         <label>From <input type="date" id="sched-range-from"></label>
-        <label>To <input type="date" id="sched-range-to"></label>
+        <label>To (optional) <input type="date" id="sched-range-to"></label>
         <button type="button" id="sched-range-apply" class="btn">Apply</button>
       </div>
 
@@ -1632,8 +1630,15 @@
             from = blockFromDate();
             var endRef = new Date(from); endRef.setFullYear(endRef.getFullYear() + 1); endRef.setDate(endRef.getDate() - 1);
             to = new Date(endRef); to.setDate(endRef.getDate() + (6 - weekStartOffset(endRef)));
-          } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
-            from = parseDate(sched.rangeFrom); to = parseDate(sched.rangeTo);
+          } else if (sched.view === 'range' && sched.rangeFrom) {
+            from = parseDate(sched.rangeFrom);
+            if (sched.rangeTo) { to = parseDate(sched.rangeTo); }
+            else {
+              // Open-ended range: render up to the horizon (Load more extends it, no end).
+              var hz = sched.rangeHorizon ? parseDate(sched.rangeHorizon) : null;
+              if (!hz || isNaN(hz.getTime())) { hz = new Date(from); hz.setDate(hz.getDate() + 90); }
+              to = hz;
+            }
           } else {
             from = new Date(a.getFullYear(), a.getMonth(), 1);
             to = new Date(a.getFullYear(), a.getMonth() + 1, 0);
@@ -1652,6 +1657,8 @@
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
           if (sched.view === 'block')
             return f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+          if (sched.view === 'range' && !sched.rangeTo)
+            return 'From ' + f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' onward';
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' \u2013 ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -1663,13 +1670,13 @@
           var isRange = sched.view === 'range';
           if (isRange) show($('sched-range-picker'));
           else hide($('sched-range-picker'));
-          if (isRange && (!sched.rangeFrom || !sched.rangeTo)) {
-            var a = new Date(sched.anchorDate);
-            var dow = weekStartOffset(a);
-            var f = new Date(a); f.setDate(a.getDate() - dow);
-            var t = new Date(f); t.setDate(f.getDate() + 13);
-            sched.rangeFrom = fmtDate(f); sched.rangeTo = fmtDate(t);
-            $('sched-range-from').value = sched.rangeFrom; $('sched-range-to').value = sched.rangeTo;
+          if (isRange && !sched.rangeFrom) {
+            // From is mandatory; To is optional (open-ended when empty).
+            sched.rangeFrom = fmtDate(new Date());
+            sched.rangeTo = '';
+            var hz0 = new Date(); hz0.setDate(hz0.getDate() + 90);
+            sched.rangeHorizon = fmtDate(hz0);
+            $('sched-range-from').value = sched.rangeFrom; $('sched-range-to').value = '';
           }
           var r = viewRange();
           $('sched-h1').textContent = schedTitle();
@@ -2235,6 +2242,11 @@
 
         function renderView() {
           var el = $('sched-view');
+          // Phone: Week is not offered — fall back to Month (kept view).
+          if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches && (sched.view === 'week' || sched.view === 'day')) {
+            sched.view = 'month';
+            try { saveSchedView(); } catch (e) {}
+          }
           try { syncWeekStartSel(); } catch (e) {}
           try { syncBlockSels(); } catch (e) {}
           try { syncBlockMake(); } catch (e) {}
@@ -2272,8 +2284,20 @@
               '</div>';
             html = panel + html;
           }
+          var openRange = sched.view === 'range' && sched.rangeFrom && !sched.rangeTo;
+          if (openRange) {
+            html += '<div style="text-align:center;margin:14px 0"><button type="button" class="btn-secondary" id="range-more-btn">Show more (next 3 months)</button></div>';
+          }
           el.innerHTML = html;
           bindDayRows(el);
+          var rb = el.querySelector('#range-more-btn');
+          if (rb) rb.addEventListener('click', function () {
+            var hz = sched.rangeHorizon ? parseDate(sched.rangeHorizon) : parseDate(sched.rangeFrom);
+            hz.setDate(hz.getDate() + 90);
+            sched.rangeHorizon = fmtDate(hz);
+            saveSchedView();
+            loadAll();
+          });
           var mb = el.querySelector('#empty-make-btn');
           if (mb) mb.addEventListener('click', function () {
             var tab = document.querySelector('#tab-schedule .view-tabs [data-view="block"]');
@@ -3641,6 +3665,7 @@
               anchorDate: sched.anchorDate ? fmtDate(sched.anchorDate) : null,
               rangeFrom: sched.rangeFrom,
               rangeTo: sched.rangeTo,
+              rangeHorizon: sched.rangeHorizon || null,
             }));
           } catch (e) { /* storage unavailable */ }
         }
@@ -3649,6 +3674,7 @@
             var raw = localStorage.getItem(SCHED_VIEW_KEY);
             if (!raw) return;
             var p = JSON.parse(raw);
+            if (p.view === 'day') p.view = 'week';
             if (p.view && ['day', 'week', 'month', 'range', 'block'].indexOf(p.view) !== -1) {
               sched.view = p.view;
               document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) {
@@ -3661,13 +3687,17 @@
               var ad = parseDate(p.anchorDate);
               if (ad && !isNaN(ad.getTime())) sched.anchorDate = ad;
             }
-            if (p.rangeFrom && p.rangeTo) {
+            if (p.rangeFrom) {
               sched.rangeFrom = p.rangeFrom;
-              sched.rangeTo = p.rangeTo;
-              var rf = $('sched-range-from'), rt = $('sched-range-to');
+              var rf = $('sched-range-from');
               if (rf) rf.value = p.rangeFrom;
+            }
+            if (p.rangeTo) {
+              sched.rangeTo = p.rangeTo;
+              var rt = $('sched-range-to');
               if (rt) rt.value = p.rangeTo;
             }
+            if (p.rangeHorizon) sched.rangeHorizon = p.rangeHorizon;
           } catch (e) { /* ignore bad stored data */ }
         }
 
@@ -4101,6 +4131,14 @@
         }
         var schedViewSel = $('sched-view-select');
         if (schedViewSel) {
+          // Phone: Week is not offered (Month is the kept view); the
+          // select is phone-only, so dropping the option is safe.
+          var wkOpt = schedViewSel.querySelector('option[value="week"]');
+          if (wkOpt) wkOpt.remove();
+          if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches && (sched.view === 'week' || sched.view === 'day')) {
+            sched.view = 'month';
+            saveSchedView();
+          }
           schedViewSel.value = sched.view;
           schedViewSel.addEventListener('change', function () {
             document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === schedViewSel.value); });
@@ -4120,7 +4158,15 @@
           });
         });
         $('sched-prev').addEventListener('click', function () {
-          if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
+          if (sched.view === 'range' && sched.rangeFrom && !sched.rangeTo) {
+            var hzP = sched.rangeHorizon ? parseDate(sched.rangeHorizon) : null;
+            if (!hzP || isNaN(hzP.getTime())) { hzP = parseDate(sched.rangeFrom); hzP.setDate(hzP.getDate() + 90); }
+            var spanP = Math.round((hzP - parseDate(sched.rangeFrom)) / 86400000) + 1;
+            var fP = parseDate(sched.rangeFrom); fP.setDate(fP.getDate() - spanP);
+            hzP.setDate(hzP.getDate() - spanP);
+            sched.rangeFrom = fmtDate(fP); sched.rangeHorizon = fmtDate(hzP);
+            $('sched-range-from').value = sched.rangeFrom;
+          } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
             var days = Math.round((Date.parse(sched.rangeTo) - Date.parse(sched.rangeFrom)) / 86400000) + 1;
             var f = parseDate(sched.rangeFrom); f.setDate(f.getDate() - days);
             var t = parseDate(sched.rangeTo); t.setDate(t.getDate() - days);
@@ -4137,7 +4183,15 @@
           loadAll();
         });
         $('sched-next').addEventListener('click', function () {
-          if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
+          if (sched.view === 'range' && sched.rangeFrom && !sched.rangeTo) {
+            var hzN = sched.rangeHorizon ? parseDate(sched.rangeHorizon) : null;
+            if (!hzN || isNaN(hzN.getTime())) { hzN = parseDate(sched.rangeFrom); hzN.setDate(hzN.getDate() + 90); }
+            var spanN = Math.round((hzN - parseDate(sched.rangeFrom)) / 86400000) + 1;
+            var fN = parseDate(sched.rangeFrom); fN.setDate(fN.getDate() + spanN);
+            hzN.setDate(hzN.getDate() + spanN);
+            sched.rangeFrom = fmtDate(fN); sched.rangeHorizon = fmtDate(hzN);
+            $('sched-range-from').value = sched.rangeFrom;
+          } else if (sched.view === 'range' && sched.rangeFrom && sched.rangeTo) {
             var days = Math.round((Date.parse(sched.rangeTo) - Date.parse(sched.rangeFrom)) / 86400000) + 1;
             var f = parseDate(sched.rangeFrom); f.setDate(f.getDate() + days);
             var t = parseDate(sched.rangeTo); t.setDate(t.getDate() + days);
@@ -4161,8 +4215,14 @@
         });
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
-          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
-          sched.rangeFrom = f; sched.rangeTo = t;
+          if (!f) { pageError('Pick a from date.'); return; }
+          if (t && t < f) { pageError('The to date must be after the from date.'); return; }
+          sched.rangeFrom = f; sched.rangeTo = t || '';
+          if (!t) {
+            // Open-ended: render the first 3 months; Load more extends it, no end.
+            var hz = parseDate(f); hz.setDate(hz.getDate() + 90);
+            sched.rangeHorizon = fmtDate(hz);
+          }
           saveSchedView();
           loadAll();
         });
