@@ -4821,6 +4821,31 @@
         #tab-dash .ac-blk b { display: block; font-size: 0.72rem; }
         #tab-dash .ac-selbtn { background: #0a6270; color: #fff; border: 1px solid #0e7c86; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 700; cursor: pointer; font-size: 0.9rem; }
         #tab-dash .ac-selbtn-ghost { background: transparent; border-color: rgba(255,255,255,0.45); }
+        /* Calendars teal band (Deepika, 2026-10-25, approved mock): heading +
+           date pill gone (sidebar names the tab, grid circles today); filters
+           + action buttons + toolbar form one light-teal edge-to-edge band.
+           View buttons are Month + Block only (Day/Week removed); the Day
+           drill-down from Schedule session boxes still works. */
+        #tab-dash .db-head { display: none; }
+        #tab-dash .db-date { display: none; }
+        #tab-dash #db-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; background: #d9efee; border-bottom: 1px solid #bfe3e1; margin: 0 -1.5rem; padding: 14px 1.5rem 12px; }
+        #tab-dash #db-actions { margin-left: auto; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+        #tab-dash #db-today-slot { display: none; }
+        #tab-dash .db-tbar { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; margin: 0 -1.5rem 0.9rem; padding: 0 1.5rem 14px; }
+        @media (min-width: 900px) {
+          body:has(#tab-dash.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
+          #tab-dash #db-filters { margin: 0 -2rem; padding: 14px 2rem 12px; }
+          #tab-dash .db-tbar { margin: 0 -2rem 0.9rem; padding: 0 2rem 14px; }
+        }
+        @media (max-width: 700px) {
+          #tab-dash #db-today-slot { display: flex; justify-content: flex-end; flex: 1 1 100%; margin-bottom: 10px; }
+          #tab-dash #db-today-slot .ac-nav { background: var(--accent); color: #fff; border-color: var(--accent); }
+          #tab-dash #db-filters label { flex: 1 1 100%; }
+          #tab-dash #db-filters label select { width: 100%; }
+          #tab-dash #db-actions { margin-left: 0; }
+          #tab-dash .ac-views { flex: 1 1 100%; }
+          #tab-dash .ac-views button { flex: 1; padding: 0.6rem 0.5rem; text-align: center; }
+        }
         @media (max-width: 860px) {
           #tab-dash .ac-week { grid-template-columns: 1fr; }
           #tab-dash .ac-wday { min-height: 0; }
@@ -4838,14 +4863,14 @@
       </style>
       <div class="db-head">
         <h1 class="db-h1">🎓 <span id="db-name">Dashboard</span></h1>
-        <div style="display:flex;gap:0.6rem;align-items:center">
+        <div id="db-actions" style="display:flex;gap:0.6rem;align-items:center">
           <span class="db-date" id="db-date"></span>
-          <button type="button" class="btn-secondary" id="db-select" style="padding:0.6rem 1rem;border-radius:10px;display:none">☑ Select</button>
+          <button type="button" class="btn-secondary" id="db-select" style="padding:0.6rem 1rem;border-radius:10px;display:none">☑ Select sessions</button>
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
       </div>
-      <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.9rem">
+      <div id="db-filters"><div id="db-today-slot"></div>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Department
           <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
         </label>
@@ -4873,6 +4898,13 @@
         </div>
         <div style="font-size:0.8rem;opacity:0.85;margin-top:0.35rem">Tap sessions to add or remove them — the change applies to the dates you picked.</div>
       </div>
+      <script>
+        (function () {
+          var acts = document.getElementById('db-actions');
+          var flt = document.getElementById('db-filters');
+          if (acts && flt && acts.parentNode !== flt) flt.appendChild(acts);
+        })();
+      </script>
     </section>
 
     <section id="tab-ask" class="tab-panel">
@@ -12355,7 +12387,7 @@
           el.classList.toggle('ac-selected', acSelMode && acSelected.has(el.getAttribute('data-acedit')));
         });
         var sb = document.getElementById('db-select');
-        if (sb) sb.textContent = acSelMode ? '☑ Selecting…' : '☑ Select';
+        if (sb) sb.textContent = acSelMode ? '☑ Selecting sessions…' : '☑ Select sessions';
       }
       function acRenderSelBar() {
         var bar = document.getElementById('ac-selbar');
@@ -12616,6 +12648,32 @@
         acRenderSelBar();
       }
 
+      // Calendars phone nav (mirrors the Schedule phone Today move): on
+      // phones the Today button sits top-right of the band and the month
+      // title sits between the arrows; on desktop both stay in the toolbar.
+      function placeDashPhoneNav() {
+        var tb = document.getElementById('db-toolbar');
+        if (!tb) return;
+        var tbar = tb.querySelector('.ac-tbar');
+        var tleft = tb.querySelector('.ac-tleft');
+        var title = tb.querySelector('.ac-title');
+        var views = tb.querySelector('.ac-views');
+        var slot = document.getElementById('db-today-slot');
+        if (!tbar || !tleft || !title || !views || !slot) return;
+        var today = tleft.querySelector('[data-nav="today"]') || slot.querySelector('[data-nav="today"]') || tb.querySelector('[data-nav="today"]');
+        var prev = tleft.querySelector('[data-nav="-1"]');
+        var next = tleft.querySelector('[data-nav="1"]');
+        if (!today || !prev || !next) return;
+        var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+        if (phone) {
+          if (today.parentNode !== slot) slot.appendChild(today);
+          if (title.parentNode !== tleft) tleft.insertBefore(title, next);
+        } else {
+          if (title.parentNode !== tbar) tbar.insertBefore(title, views);
+          if (today.parentNode !== tleft) tleft.insertBefore(today, next);
+        }
+      }
+      if (window.matchMedia) window.matchMedia('(max-width: 700px)').addEventListener('change', placeDashPhoneNav);
       function renderToolbar() {
         var tb = document.getElementById('db-toolbar');
         var title = acView === 'month'
@@ -12627,9 +12685,7 @@
           '<button type="button" class="ac-nav" data-nav="today">Today</button>' +
           '<button type="button" class="ac-nav" data-nav="1">›</button></div>' +
           '<h2 class="ac-title">' + esc(title) + '</h2>' +
-          '<div class="ac-views"><button type="button" data-aview="day"' + (acView === 'day' ? ' class="active"' : '') + '>Day</button>' +
-          '<button type="button" data-aview="week"' + (acView === 'week' ? ' class="active"' : '') + '>Week</button>' +
-          '<button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button>' +
+          '<div class="ac-views"><button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button>' +
           '<button type="button" data-aview="block"' + (acView === 'block' ? ' class="active"' : '') + '>Block</button></div></div>';
         tb.querySelectorAll('[data-aview]').forEach(function (b) {
           b.addEventListener('click', function () { acView = b.getAttribute('data-aview'); load(); });
@@ -12643,6 +12699,7 @@
             load();
           });
         });
+        placeDashPhoneNav();
       }
 
       // Block view (Deepika, 2026-10-21): the classic block schedule —
