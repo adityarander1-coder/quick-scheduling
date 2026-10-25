@@ -459,7 +459,7 @@
     #tab-requests .req-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 0.6rem; background: var(--surface); }
     #tab-requests .req-card .req-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
     #tab-requests .req-wrap { max-width: 860px; }
-    #tab-requests .sched-h1 { margin: 0 0 1rem; font-size: 1.5rem; color: var(--text); }
+    #tab-requests .sched-h1 { display: none; }
     .req-badge { font-weight: 800; font-size: 0.9em; opacity: 0.95; }
     #tab-myschedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
     #tab-myschedule .ms-open-nm { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; font-weight: 700; }
@@ -697,7 +697,7 @@
     <nav class="main-tabs" role="tablist">
       <button class="tab-btn active" data-tab="schedule"><span class="tab-ic">📅</span><span class="tab-tx">Schedule</span></button>
       <span id="dash-nav" style="display:contents"></span>
-      <button class="tab-btn" data-tab="requests"><span class="tab-ic">🔁</span><span class="tab-tx">Shift requests</span> <span class="req-badge" data-req-badge hidden></span></button>
+      <button class="tab-btn" data-tab="requests"><span class="tab-ic">🔁</span><span class="tab-tx">Requests</span> <span class="req-badge" data-req-badge hidden></span></button>
       <button class="tab-btn" data-tab="messages"><span class="tab-ic">💬</span><span class="tab-tx">Messages</span> <span class="msg-badge" data-msg-badge hidden></span></button>
       <button class="tab-btn" data-tab="bulk"><span class="tab-ic">🗂️</span><span class="tab-tx">Bulk Actions</span></button>
       <button class="tab-btn" data-tab="ask"><span class="tab-ic">✨</span><span class="tab-tx">Ask Q-Scheduler</span></button>
@@ -709,7 +709,7 @@
     <nav id="employee-tabs" class="main-tabs hidden" role="tablist" aria-label="Employee">
       <button type="button" class="tab-btn active" data-etab="myschedule"><span class="tab-ic">📅</span><span class="tab-tx">My schedule</span></button>
       <span id="dash-nav-emp" style="display:contents"></span>
-      <button type="button" class="tab-btn" data-etab="requests"><span class="tab-ic">🔁</span><span class="tab-tx">Shift requests</span> <span class="req-badge" data-req-badge hidden></span></button>
+      <button type="button" class="tab-btn" data-etab="requests"><span class="tab-ic">🔁</span><span class="tab-tx">Requests</span> <span class="req-badge" data-req-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="messages"><span class="tab-ic">💬</span><span class="tab-tx">Messages</span> <span class="msg-badge" data-msg-badge hidden></span></button>
       <button type="button" class="tab-btn" data-etab="ask"><span class="tab-ic">✨</span><span class="tab-tx">Ask Q-Scheduler</span></button>
       <button type="button" class="tab-btn" data-etab="ehelp"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
@@ -1125,12 +1125,28 @@
         }
         #tab-schedule .month-chip strong { font-weight: 800; }
         #tab-schedule .month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; margin-bottom: 0.15rem; }
-        /* Shift-request sub-tabs */
-        #tab-requests .req-subtabs { display: flex; gap: 0.25rem; border-bottom: 2px solid var(--border); margin: 0.75rem 0 1rem; }
-        #tab-requests .req-subtab { padding: 0.6rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.95rem; font-weight: 600; color: var(--dim); border-bottom: 3px solid transparent; margin-bottom: -2px; }
+        /* Requests tab: light-teal band + pill toggle (Deepika, 2026-10-25).
+           Toggle active = accent teal; counts ride inside each side. */
+        #tab-requests .req-band { background: #d9efee; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
+        #tab-requests .req-subtabs { display: inline-flex; background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+        #tab-requests .req-subtab { padding: 0.55rem 1.4rem; border: none; background: transparent; cursor: pointer; font-size: 0.95rem; font-weight: 700; color: var(--dim); border-radius: 999px; }
         #tab-requests .req-subtab:hover { color: var(--text); }
-        #tab-requests .req-subtab.active { color: var(--text); border-bottom-color: var(--teal); }
-        #tab-requests .req-subcount { font-weight: 400; color: var(--dim); }
+        #tab-requests .req-subtab.active { background: var(--accent); color: #fff; }
+        #tab-requests .req-subtab.active .req-subcount { color: rgba(255,255,255,0.85); }
+        #tab-requests .req-subcount { font-weight: 400; }
+        @media (max-width: 700px) {
+          #tab-requests .req-subtabs { display: flex; width: 100%; }
+          #tab-requests .req-subtab { flex: 1; text-align: center; }
+        }
+        @media (min-width: 900px) {
+          #tab-requests .req-band { margin: 0 -2rem 1rem; padding: 14px 2rem; }
+          /* One-line request bars on the webpage: text left, Approve/Decline
+             right, instead of a buttons row under the text. Phones keep the
+             stacked card (too narrow for one line). */
+          #tab-requests .req-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+          #tab-requests .req-card > div:first-child { flex: 1; min-width: 0; }
+          #tab-requests .req-card .req-actions { margin-top: 0; flex-shrink: 0; }
+        }
         /* Modals */
         #tab-schedule .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
         #tab-myschedule .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -11079,15 +11095,17 @@
     </section>
 
     <section id="tab-requests" class="tab-panel">
-      <div class="req-wrap">
-        <h2 class="sched-h1">Shift requests</h2>
-        <div id="req-error" class="alert alert-error hidden" role="alert"></div>
-        <div id="req-success" class="alert alert-success hidden" role="status"></div>
-        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem" id="req-sub">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
-        <div class="req-subtabs" role="tablist" aria-label="Shift request groups">
+      <div class="req-band">
+        <div class="req-subtabs" role="tablist" aria-label="Request groups">
           <button type="button" class="req-subtab active" data-req-subtab="received" role="tab">Received<span class="req-subcount" data-req-subcount="received"></span></button>
           <button type="button" class="req-subtab" data-req-subtab="sent" role="tab">Sent<span class="req-subcount" data-req-subcount="sent"></span></button>
         </div>
+      </div>
+      <div class="req-wrap">
+        <h2 class="sched-h1">Requests</h2>
+        <div id="req-error" class="alert alert-error hidden" role="alert"></div>
+        <div id="req-success" class="alert alert-success hidden" role="status"></div>
+        <p style="color:var(--dim);font-size:0.9rem;margin-top:-0.5rem" id="req-sub">Pickup and swap requests for you to answer, your outgoing requests, and recent history.</p>
         <div id="req-list"><p style="color:var(--dim)">Loading…</p></div>
       </div>
       <script>
