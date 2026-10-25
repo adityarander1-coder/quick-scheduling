@@ -12677,6 +12677,12 @@
         var next = tleft.querySelector('[data-nav="1"]');
         if (!today || !prev || !next) return;
         var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+        // The toolbar is rebuilt on every render, so each render creates a
+        // fresh Today button while the previous one still sits in the slot
+        // (the slot lives outside the toolbar, so rebuilding never destroys
+        // it). Drop every stale copy before placing the current one, or the
+        // slot grows by one button per click (seen live 2026-10-25).
+        slot.querySelectorAll('[data-nav="today"]').forEach(function (b) { if (b !== today) b.remove(); });
         if (phone) {
           if (today.parentNode !== slot) slot.appendChild(today);
           if (title.parentNode !== tleft) tleft.insertBefore(title, next);
