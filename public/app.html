@@ -919,6 +919,22 @@
     }
   </style>
 
+  <style>
+    /* Trial navy-teal chrome (Deepika, 2026-10-25): sidebar (laptop) +
+       phone header + phone bottom bar in #21414c. Desktop top bar,
+       footer, and content buttons keep their colors. Scoped to the
+       light theme so dark theme is untouched. */
+    html:not([data-theme="dark"]) .app-header { background: #21414c; }
+    @media (max-width: 1023px) {
+      html:not([data-theme="dark"]) .app-header .main-tabs { background: #21414c; }
+      html:not([data-theme="dark"]) .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
+    }
+    @media (min-width: 1024px) {
+      html:not([data-theme="dark"]) .app-header .tab-btn:hover,
+      html:not([data-theme="dark"]) .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
+    }
+  </style>
+
   <!-- Notifications (Phase 1, 2026-10-22) -->
   <style>
     #notif-panel{position:fixed;top:64px;right:12px;width:min(390px,94vw);max-height:72vh;overflow:auto;background:#fff;color:#111827;border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,0.30);z-index:1400;border:1px solid #e5e7eb;font-family:inherit}
