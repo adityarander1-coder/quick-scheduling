@@ -925,8 +925,14 @@
        (Light-only scoping let a dark/system-dark theme switch it off
        after load.) Desktop top bar, footer, and content buttons keep
        their colors. A saved personal header color still wins over the
-       header via inline style — that setting is left alone. */
+       header via inline style — that setting is left alone.
+       Footer joins the chrome (Deepika, 2026-10-25): after she cleared
+       her colors the header/tab bar went navy-teal but the footer fell
+       back to navy, since the original trial left it out — so the
+       footer now follows the same chrome (a saved footer color still
+       wins via inline style). */
     .app-header { background: #21414c; }
+    .app-footer { background: #21414c; }
     @media (max-width: 1023px) {
       .app-header .main-tabs { background: #21414c; }
       .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
