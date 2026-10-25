@@ -959,6 +959,9 @@
         #tab-schedule .view-tabs { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
         #tab-schedule .view-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 1rem; padding: 0.6rem 1.1rem; cursor: pointer; }
         #tab-schedule .view-tabs button.active { background: var(--accent); color: #fff; }
+        #tab-schedule .sched-view-select-wrap { display: none; }
+        #tab-schedule .sched-view-select-wrap label { font-size: 0.9rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
+        #tab-schedule .sched-view-select-wrap select { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: #fff; }
         #tab-schedule .date-nav { display: flex; gap: 0.4rem; align-items: center; }
         #tab-schedule .legend { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.95rem; font-weight: 600; color: #102d47; }
         #tab-schedule .legend-item { display: flex; align-items: center; gap: 0.35rem; }
@@ -1189,6 +1192,19 @@
         #tab-schedule .ev-unclaim-btn { background: none; border: none; color: #64748b; font-size: 0.72rem; cursor: pointer; text-decoration: underline; padding: 0; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
+        /* Phone: all Schedule controls in ONE card (approved mock 2026-10-24) */
+        @media (max-width: 700px) {
+          #tab-schedule .sched-control-box { background: #fff; border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 1rem; box-shadow: 0 2px 10px rgba(16,24,40,.08); }
+          #tab-schedule .sched-control-box .sched-h1 { margin: 0 0 12px; font-size: 1.25rem; }
+          #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
+          #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
+          #tab-schedule .sched-control-box .view-tabs { display: none; }
+          #tab-schedule .sched-control-box .sched-view-select-wrap { display: block; flex: 1 1 100%; }
+          #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
+          #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
+          #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+          #tab-schedule .sched-control-box .sched-toggles > label:first-child { white-space: nowrap; }
+        }
       </style>
 
       <div id="sched-active-dept" class="active-dept-bar hidden" aria-label="Active department">
@@ -1208,15 +1224,26 @@
             <button type="button" data-view="week" role="tab" class="active">Week</button>
             <button type="button" data-view="month" role="tab">Month</button>
             <button type="button" data-view="range" role="tab">Range</button>
-            <button type="button" data-view="block" role="tab">Block</button>
+            <button type="button" data-view="block" role="tab">Block view</button>
+          </div>
+          <div class="sched-view-select-wrap">
+            <label for="sched-view-select">View</label>
+            <select id="sched-view-select" aria-label="Schedule view">
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+              <option value="range">Range</option>
+              <option value="block">Block view</option>
+            </select>
           </div>
           <div class="date-nav">
             <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
           </div>
+          <div class="sched-toggles">
           <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
-            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Dashboard events
+            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Calendar events
           </label>
           <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem" title="Choose which day your weeks start on — applies everywhere, including Block view and the dashboard calendars">
             Week starts
@@ -1230,6 +1257,7 @@
               <option value="saturday">Saturday</option>
             </select>
           </label>
+          </div>
           <label id="sched-block-mode-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show the block schedule grouped by shift type, or by employee">
             Block view
             <select id="sched-block-mode" aria-label="Block view grouping" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
@@ -2184,6 +2212,8 @@
               sched.view = 'week';
               sched.anchorDate = parseDate(box.getAttribute('data-sbweek'));
               document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === 'week'); });
+              var svs2 = $('sched-view-select');
+              if (svs2) svs2.value = 'week';
               saveSchedView();
               loadAll();
             });
@@ -3624,6 +3654,8 @@
               document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) {
                 x.classList.toggle('active', x.getAttribute('data-view') === p.view);
               });
+              var svs = $('sched-view-select');
+              if (svs) svs.value = p.view;
             }
             if (p.anchorDate) {
               var ad = parseDate(p.anchorDate);
@@ -4067,11 +4099,22 @@
             renderView();
           });
         }
+        var schedViewSel = $('sched-view-select');
+        if (schedViewSel) {
+          schedViewSel.value = sched.view;
+          schedViewSel.addEventListener('change', function () {
+            document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === schedViewSel.value); });
+            sched.view = schedViewSel.value;
+            saveSchedView();
+            loadAll();
+          });
+        }
         document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (b) {
           b.addEventListener('click', function () {
             document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.remove('active'); });
             b.classList.add('active');
             sched.view = b.getAttribute('data-view');
+            if (schedViewSel) schedViewSel.value = sched.view;
             saveSchedView();
             loadAll();
           });
