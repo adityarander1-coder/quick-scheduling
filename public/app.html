@@ -1044,6 +1044,30 @@
           #tab-myschedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
           #tab-myschedule .shift-nm { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
         }
+        /* Desktop two-row teal band (Deepika, 2026-10-25, approved mock):
+           same light-teal edge-to-edge band as phones, controls in two
+           rows. Row 1: filters, Calendar events, tabs, Today/nav, Week
+           starts. Row 2 (Block only): Group by, Start, Team member, Make.
+           The toolbar and toggles flatten (display:contents) so their
+           children flow as box items in the order below; the break span
+           inside the Block options forces row 2. */
+        @media (min-width: 900px) {
+          #tab-schedule .sched-control-box, #tab-myschedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px 2rem; margin: 0 -2rem 1rem; box-shadow: none; gap: 10px; }
+          #tab-schedule .sched-control-box #sched-dept-filter, #tab-myschedule .sched-control-box #ms-filters { flex: none; margin-bottom: 0 !important; order: 1; }
+          #tab-schedule .sched-control-box .sched-toolbar, #tab-myschedule .sched-control-box .sched-toolbar { display: contents; }
+          #tab-schedule .sched-control-box .sched-toggles { display: contents; }
+          #tab-schedule .sched-control-box .sched-toggles > label:first-child { order: 2; }
+          #tab-schedule .sched-control-box .view-tabs, #tab-myschedule .sched-control-box .view-tabs { order: 3; }
+          #tab-schedule .sched-control-box .view-tabs button, #tab-myschedule .sched-control-box .view-tabs button { padding: 0.6rem 0.75rem; }
+          #tab-schedule .sched-control-box .date-nav, #tab-myschedule .sched-control-box .date-nav { order: 4; }
+          #tab-schedule .sched-control-box .sched-toggles > label:last-child { order: 5; }
+          #tab-schedule .sched-control-box .sched-row-break, #tab-myschedule .sched-control-box .sched-row-break { flex-basis: 100%; order: 6; }
+          #tab-schedule .sched-control-box #sched-block-mode-wrap, #tab-myschedule .sched-control-box #ms-block-mode-wrap { order: 7; }
+          #tab-schedule .sched-control-box #sched-block-start-wrap, #tab-myschedule .sched-control-box #ms-block-start-wrap { order: 8; }
+          #tab-schedule .sched-control-box #sched-block-member-wrap, #tab-myschedule .sched-control-box #ms-block-member-wrap { order: 9; }
+          #tab-schedule .sched-control-box #sched-block-make { order: 10; margin-left: auto; }
+          #tab-schedule .sched-control-box #sched-range-picker, #tab-myschedule .sched-control-box #ms-range-picker { order: 20; flex: 1 1 100%; }
+        }
         #tab-schedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm { background: #ffffff; border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
         #tab-schedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
@@ -1192,11 +1216,29 @@
         #tab-schedule .ev-unclaim-btn { background: none; border: none; color: #64748b; font-size: 0.72rem; cursor: pointer; text-decoration: underline; padding: 0; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
+        /* Block options group (Mock A, 2026-10-25): on desktop/tablet the
+           wrapper vanishes from layout so the three controls sit inline in
+           the toolbar exactly as before; on phones it becomes the section. */
+        #sched-block-opts, #ms-block-opts { display: contents; }
+        #sched-block-opts .sched-block-divider, #ms-block-opts .sched-block-divider { display: contents; }
+        #sched-block-opts .sched-block-sec, #ms-block-opts .sched-block-sec { display: none; }
+        #sched-block-opts .sched-block-row, #ms-block-opts .sched-block-row { display: contents; }
+        /* No date titles in the control box (Deepika, 2026-10-25): the grid
+           just below already shows the dates. Nodes stay in the DOM so the
+           Today-move code and title text updates keep working. */
+        #sched-h1, #tab-myschedule .sched-control-box .sched-h1, #ms-title { display: none; }
+        /* My Schedule toolbar: same flex as its old inline style, so the
+           desktop band can flatten it with display:contents. */
+        #tab-myschedule .sched-toolbar { display: flex; gap: 0.8rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+        /* Flex break for the desktop two-row band: zero-height everywhere,
+           full-width line break on desktop (inside the Block options, so it
+           hides with them outside Block view). */
+        .sched-row-break { display: block; height: 0; overflow: hidden; }
         /* Phone: all Schedule controls in ONE card (approved mock 2026-10-24) */
         @media (max-width: 700px) {
           #tab-schedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0 0 12px; font-size: 1.25rem; }
-          #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+          #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-schedule .sched-control-box .sched-h1-row .sched-h1 { margin: 0; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
@@ -1210,7 +1252,7 @@
           #tab-schedule .sched-control-box .range-picker button { width: 100%; }
           /* My schedule phone: same light-teal full-width band look */
           #tab-myschedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
-          #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+          #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-myschedule .sched-control-box .ms-h1-row .sched-h1 { margin: 0; }
           #tab-myschedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-myschedule .sched-control-box .view-tabs button { flex: 1; padding: 0.8rem 0.5rem; text-align: center; font-size: 1.05rem; }
@@ -1218,6 +1260,18 @@
           #tab-myschedule .sched-control-box #ms-range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
           #tab-myschedule .sched-control-box #ms-range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
           #tab-myschedule .sched-control-box #ms-range-picker button { width: 100%; }
+          /* Mock A (2026-10-25): Block options as their own phone section */
+          #tab-schedule #sched-block-opts, #tab-myschedule #ms-block-opts { display: block; }
+          #tab-schedule .sched-block-divider, #tab-myschedule .sched-block-divider { display: block; border: none; border-top: 1px solid #bfe3e1; margin: 2px 0 12px; }
+          #tab-schedule .sched-block-sec, #tab-myschedule .sched-block-sec { display: block; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em; color: #0a6270; margin-bottom: 8px; }
+          #tab-schedule .sched-block-row, #tab-myschedule .sched-block-row { display: flex; gap: 10px; margin-bottom: 10px; }
+          #tab-schedule .sched-block-row label, #tab-myschedule .sched-block-row label { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: flex-start !important; gap: 2px !important; }
+          #tab-schedule .sched-block-row label select, #tab-myschedule .sched-block-row label select,
+          #tab-schedule .sched-block-row label input, #tab-myschedule .sched-block-row label input { width: 100%; }
+          #tab-schedule #sched-block-member-wrap, #tab-myschedule #ms-block-member-wrap { flex-direction: column; align-items: flex-start !important; gap: 2px !important; }
+          #tab-schedule #sched-block-member-wrap select, #tab-myschedule #ms-block-member-wrap select { width: 100%; }
+          #tab-schedule .blk-lab, #tab-myschedule .blk-lab { font-weight: 600; }
+          #tab-schedule .sched-toolbar #sched-block-make { flex: 1 1 100%; padding: 11px; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
           #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -1274,23 +1328,30 @@
             </select>
           </label>
           </div>
-          <label id="sched-block-mode-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show the block schedule grouped by shift type, or by employee">
-            Block view
-            <select id="sched-block-mode" aria-label="Block view grouping" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-              <option value="shift">Block by shift type</option>
-              <option value="employee">Block by employee</option>
-            </select>
-          </label>
-          <label id="sched-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
-            Start
-            <input type="date" id="sched-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-          </label>
-          <label id="sched-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
-            Team member
-            <select id="sched-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-              <option value="">All team members</option>
-            </select>
-          </label>
+          <div id="sched-block-opts" style="display:none">
+            <hr class="sched-block-divider">
+            <div class="sched-block-sec">BLOCK OPTIONS</div>
+            <span class="sched-row-break"></span>
+            <div class="sched-block-row">
+              <label id="sched-block-mode-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show the block schedule grouped by shift type, or by employee">
+                <span class="blk-lab">Block view</span>
+                <select id="sched-block-mode" aria-label="Block view grouping" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+                  <option value="shift">Block by shift type</option>
+                  <option value="employee">Block by employee</option>
+                </select>
+              </label>
+              <label id="sched-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
+                <span class="blk-lab">Start</span>
+                <input type="date" id="sched-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+              </label>
+            </div>
+            <label id="sched-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
+              <span class="blk-lab">Team member</span>
+              <select id="sched-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+                <option value="">All team members</option>
+              </select>
+            </label>
+          </div>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
         </div>
 
@@ -3822,6 +3883,8 @@
         }
         function syncBlockSels() {
           var show = sched.view === 'block';
+          var bo = $('sched-block-opts');
+          if (bo) bo.style.display = show ? '' : 'none';
           var mw = $('sched-block-mode-wrap'), fw = $('sched-block-member-wrap');
           if (mw) mw.style.display = show ? 'flex' : 'none';
           if (fw) fw.style.display = (show && schedBlockMode === 'employee') ? 'flex' : 'none';
@@ -4181,10 +4244,10 @@
           // select is phone-only, so dropping the option is safe.
           var wkOpt = schedViewSel.querySelector('option[value="week"]');
           if (wkOpt) wkOpt.remove();
-          if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches && (sched.view === 'week' || sched.view === 'day')) {
-            sched.view = 'month';
-            saveSchedView();
-          }
+          // NOTE: do NOT convert week/day to month here — this wiring runs
+          // before restoreSchedView, and saving here would clobber the saved
+          // view (e.g. Block) with Month on every phone reload. The renderView
+          // guard below enforces the phone fallback after restore instead.
           schedViewSel.value = sched.view;
           schedViewSel.addEventListener('change', function () {
             document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === schedViewSel.value); });
@@ -9484,7 +9547,7 @@
 
       <div id="ms-filters" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
 
-      <div class="sched-toolbar" style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+      <div class="sched-toolbar">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
           <button type="button" data-msview="range" role="tab">Range</button>
           <button type="button" data-msview="month" role="tab" class="active">Month</button>
@@ -9496,23 +9559,30 @@
           <button type="button" id="ms-next" class="btn-secondary" aria-label="Next">&rarr;</button>
         </div>
         <span id="ms-title" style="font-weight:700"></span>
-        <label id="ms-block-mode-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show the block schedule grouped by shift type, or by employee">
-          Block view
-          <select id="ms-block-mode" aria-label="Block view grouping" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-            <option value="shift">Block by shift type</option>
-            <option value="employee">Block by employee</option>
-          </select>
-        </label>
-        <label id="ms-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
-          Start
-          <input type="date" id="ms-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-        </label>
-        <label id="ms-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
-          Team member
-          <select id="ms-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-            <option value="">All team members</option>
-          </select>
-        </label>
+        <div id="ms-block-opts" style="display:none">
+          <hr class="sched-block-divider">
+          <div class="sched-block-sec">BLOCK OPTIONS</div>
+          <span class="sched-row-break"></span>
+          <div class="sched-block-row">
+            <label id="ms-block-mode-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show the block schedule grouped by shift type, or by employee">
+              <span class="blk-lab">Block view</span>
+              <select id="ms-block-mode" aria-label="Block view grouping" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+                <option value="shift">Block by shift type</option>
+                <option value="employee">Block by employee</option>
+              </select>
+            </label>
+            <label id="ms-block-start-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Pick any date — the block view shows one full year starting that week">
+              <span class="blk-lab">Start</span>
+              <input type="date" id="ms-block-start" aria-label="Block view start date" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+            </label>
+          </div>
+          <label id="ms-block-member-wrap" style="display:none;align-items:center;gap:6px;font-size:0.85rem" title="Show one team member's block schedule">
+            <span class="blk-lab">Team member</span>
+            <select id="ms-block-member" aria-label="Team member" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+              <option value="">All team members</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div id="ms-range-picker" class="hidden" style="gap:0.6rem;align-items:center;flex-wrap:wrap">
@@ -9715,6 +9785,51 @@
           return s;
         }
 
+        // --- View preference persistence (mirrors the admin Schedule tab) ---
+        // Remember the My Schedule view (range/month/block), anchor date, and
+        // range dates across sessions so the tab reopens where she left it.
+        var MS_VIEW_KEY = 'qs-ms-view-pref';
+        function saveMsView() {
+          try {
+            localStorage.setItem(MS_VIEW_KEY, JSON.stringify({
+              view: msView,
+              anchorDate: anchorDate ? fmtDate(anchorDate) : null,
+              rangeFrom: rangeFrom,
+              rangeTo: rangeTo,
+              rangeHorizon: rangeHorizon || null,
+            }));
+          } catch (e) { /* storage unavailable */ }
+        }
+        function restoreMsView() {
+          try {
+            var raw = localStorage.getItem(MS_VIEW_KEY);
+            if (!raw) return;
+            var p = JSON.parse(raw);
+            if (p.view === 'day' || p.view === 'week') p.view = 'month';
+            if (p.view && ['range', 'month', 'block'].indexOf(p.view) !== -1) {
+              msView = p.view;
+              document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (x) {
+                x.classList.toggle('active', x.getAttribute('data-msview') === p.view);
+              });
+            }
+            if (p.anchorDate) {
+              var ad = parseDate(p.anchorDate);
+              if (ad && !isNaN(ad.getTime())) anchorDate = ad;
+            }
+            if (p.rangeFrom) {
+              rangeFrom = p.rangeFrom;
+              var rf = $('ms-range-from');
+              if (rf) rf.value = p.rangeFrom;
+            }
+            if (p.rangeTo) {
+              rangeTo = p.rangeTo;
+              var rt = $('ms-range-to');
+              if (rt) rt.value = p.rangeTo;
+            }
+            if (p.rangeHorizon) rangeHorizon = p.rangeHorizon;
+          } catch (e) { /* ignore bad stored data */ }
+        }
+
         // ---------- data ----------
         function loadData() {
           clearMsg();
@@ -9738,6 +9853,7 @@
           }
           var r = viewRange();
           $('ms-title').textContent = msTitle();
+          saveMsView();
           $('ms-view').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
           var efd = parseDate(r.from); efd.setDate(efd.getDate() - 7);
           var etd = parseDate(r.to); etd.setDate(etd.getDate() + 7);
@@ -9783,7 +9899,11 @@
             if (msDayModalDate && !$('ms-day-modal').classList.contains('hidden')) openMsDayModal(msDayModalDate);
           }).catch(function () { msError('Could not load your schedule.'); });
         }
-        window.qsLoadMySchedule = function () { loadData(); };
+        var msPrefRestored = false;
+        window.qsLoadMySchedule = function () {
+          if (!msPrefRestored) { msPrefRestored = true; restoreMsView(); }
+          loadData();
+        };
 
         // ---------- filters ----------
         function showEveryone() { return viewFilters.indexOf('everyone') !== -1; }
@@ -10797,6 +10917,8 @@
         }
         function syncMsBlockSels() {
           var show = msView === 'block';
+          var bo = $('ms-block-opts');
+          if (bo) bo.style.display = show ? '' : 'none';
           var mw = $('ms-block-mode-wrap'), fw = $('ms-block-member-wrap');
           if (mw) mw.style.display = show ? 'flex' : 'none';
           if (fw) fw.style.display = (show && msBlockMode === 'employee') ? 'flex' : 'none';
