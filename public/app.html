@@ -4776,6 +4776,9 @@
         #tab-dash .ac-views { margin-left: auto; display: flex; gap: 0.3rem; }
         #tab-dash .ac-views button { border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 0.35rem 0.85rem; font-weight: 700; cursor: pointer; color: var(--text); }
         #tab-dash .ac-views button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+        /* Bottom nav (Deepika, 2026-10-25): the same prev/next arrows at the
+           end of the view, so you can move months without scrolling back up. */
+        #tab-dash .ac-bottomnav { display: flex; align-items: center; justify-content: center; gap: 0.6rem; margin-top: 0.9rem; }
         #tab-dash .ac-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
         #tab-dash .ac-dow { background: var(--bg); padding: 0.55rem; text-align: center; font-weight: 700; font-size: 0.78rem; color: var(--dim); }
         #tab-dash .ac-day { background: var(--surface); min-height: 84px; padding: 5px; cursor: pointer; }
@@ -4843,7 +4846,9 @@
           #tab-dash #db-filters label { flex: 1 1 100%; }
           #tab-dash #db-filters label select { width: 100%; }
           #tab-dash #db-actions { margin-left: 0; }
-          #tab-dash .ac-views { flex: 1 1 100%; }
+          #tab-dash .ac-views { flex: 1 1 100%; order: 1; }
+          #tab-dash .ac-tleft { order: 2; }
+          #tab-dash #db-view { padding-bottom: 9rem; }
           #tab-dash .ac-views button { flex: 1; padding: 0.6rem 0.5rem; text-align: center; }
         }
         @media (max-width: 860px) {
@@ -12302,6 +12307,7 @@
       window.qsKindLabel = function (key, dashId) { return qsKindLookup(key, dashId, 'label'); };
       window.qsKindColor = function (key, dashId) { return qsKindLookup(key, dashId, 'color'); };
       var acView = 'month';
+      var acTitle = '';
       var acAnchor = new Date();
 
       function fmtD(d) {
@@ -12626,7 +12632,13 @@
             conflicts.slice(0, 4).map(function (c) { return '<div>⚠ ' + esc(c) + '</div>'; }).join('') +
             (conflicts.length > 4 ? '<div>…and ' + (conflicts.length - 4) + ' more.</div>' : '') + '</div>';
         }
-        el.innerHTML = banner + body;
+        el.innerHTML = banner + body +
+          '<div class="ac-bottomnav"><button type="button" class="ac-nav" data-acnav="-1">‹</button>' +
+          '<span class="ac-title">' + esc(acTitle) + '</span>' +
+          '<button type="button" class="ac-nav" data-acnav="1">›</button></div>';
+        el.querySelectorAll('[data-acnav]').forEach(function (b) {
+          b.addEventListener('click', function () { acStep(b.getAttribute('data-acnav')); });
+        });
         el.querySelectorAll('[data-acedit]').forEach(function (c) {
           c.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -12674,6 +12686,14 @@
         }
       }
       if (window.matchMedia) window.matchMedia('(max-width: 700px)').addEventListener('change', placeDashPhoneNav);
+      // Shared step for the top toolbar and the bottom nav: today jumps to
+      // today, Month steps a month, Block/Week step a week, Day steps a day.
+      function acStep(n) {
+        if (n === 'today') acAnchor = new Date();
+        else if (acView === 'month') acAnchor = new Date(acAnchor.getFullYear(), acAnchor.getMonth() + (n === '1' ? 1 : -1), 1);
+        else { acAnchor = new Date(acAnchor); acAnchor.setDate(acAnchor.getDate() + ((acView === 'week' || acView === 'block') ? 7 : 1) * (n === '1' ? 1 : -1)); }
+        load();
+      }
       function renderToolbar() {
         var tb = document.getElementById('db-toolbar');
         var title = acView === 'month'
@@ -12681,6 +12701,7 @@
           : ((acView === 'week' || acView === 'block')
             ? 'Week of ' + acAnchor.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
             : acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }));
+        acTitle = title;
         tb.innerHTML = '<div class="ac-tbar"><div class="ac-tleft"><button type="button" class="ac-nav" data-nav="-1">‹</button>' +
           '<button type="button" class="ac-nav" data-nav="today">Today</button>' +
           '<button type="button" class="ac-nav" data-nav="1">›</button></div>' +
@@ -12691,13 +12712,7 @@
           b.addEventListener('click', function () { acView = b.getAttribute('data-aview'); load(); });
         });
         tb.querySelectorAll('[data-nav]').forEach(function (b) {
-          b.addEventListener('click', function () {
-            var n = b.getAttribute('data-nav');
-            if (n === 'today') acAnchor = new Date();
-            else if (acView === 'month') acAnchor = new Date(acAnchor.getFullYear(), acAnchor.getMonth() + (n === '1' ? 1 : -1), 1);
-            else { acAnchor = new Date(acAnchor); acAnchor.setDate(acAnchor.getDate() + ((acView === 'week' || acView === 'block') ? 7 : 1) * (n === '1' ? 1 : -1)); }
-            load();
-          });
+          b.addEventListener('click', function () { acStep(b.getAttribute('data-nav')); });
         });
         placeDashPhoneNav();
       }
