@@ -8550,47 +8550,70 @@
 
     <!-- Bulk Actions tab -->
     <section id="tab-bulk" class="tab-panel">
+      <style>
+        #tab-bulk h2 { display: none; }
+        #tab-bulk .bulk-band { background: #d9efee; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
+        #tab-bulk .bulk-band .bulk-fld label { font-size: 0.9rem; font-weight: 600; display: block; margin-bottom: 4px; }
+        #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+        #tab-bulk #bulk-members > label:nth-child(even) { background: #d9efee; border-radius: 4px; }
+        @media (max-width: 700px) {
+          #tab-bulk .bulk-band .bulk-fld { flex: 1 1 100%; }
+          #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { width: 100%; }
+          #tab-bulk .bulk-band .bulk-date-fld { flex: 1 1 calc(50% - 0.5rem); }
+          #tab-bulk #bulk-run { flex: 1 1 100%; }
+        }
+        @media (min-width: 900px) {
+          #tab-bulk .bulk-band { margin: 0 -2rem 1rem; padding: 14px 2rem; flex-wrap: nowrap; }
+        }
+      </style>
+      <div class="bulk-band">
+        <div id="bulk-action-wrap" class="bulk-fld">
+          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
+          <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+            <option value="publish">Publish shifts</option>
+            <option value="unpublish">Move to draft</option>
+            <option value="delete-shifts">Delete shifts (manual + rotation)</option>
+            <option value="open-slots">Open extra slots</option>
+            <option value="close-shifts">Close shifts</option>
+          </select>
+        </div>
+        <div id="bulk-shifttype-filter-wrap" class="bulk-fld">
+          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
+          <select id="bulk-shifttype-filter" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+            <option value="">All shift types</option>
+          </select>
+        </div>
+        <div class="bulk-fld bulk-date-fld">
+          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
+          <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+        </div>
+        <div class="bulk-fld bulk-date-fld">
+          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To</label>
+          <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+        </div>
+        <div id="bulk-slot-options" class="hidden" style="display:flex;gap:1rem;align-items:flex-end">
+          <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
+            <select id="bulk-shifttype" style="padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+          </div>
+          <div id="bulk-count-wrap">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Slots per date</label>
+            <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
+          </div>
+        </div>
+        <button type="button" id="bulk-run" class="btn">Run</button>
+      </div>
       <div class="card">
         <h2>Bulk Actions</h2>
         <p style="color:var(--dim)">Apply an action to every date in a range.</p>
-        <div style="display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
-            <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-          </div>
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To</label>
-            <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-          </div>
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
-            <select id="bulk-jobrole-filter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px">
-              <option value="">All job roles</option>
-            </select>
-            <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
-            <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
-          </div>
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
-            <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-              <option value="publish">Publish shifts</option>
-              <option value="unpublish">Move to draft</option>
-              <option value="delete-shifts">Delete shifts (manual + rotation)</option>
-              <option value="open-slots">Open extra slots</option>
-              <option value="close-shifts">Close shifts</option>
-            </select>
-          </div>
-          <div id="bulk-slot-options" class="hidden" style="display:flex;gap:1rem;align-items:flex-end">
-            <div>
-              <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
-              <select id="bulk-shifttype" style="padding:8px;border:1px solid var(--border);border-radius:8px"></select>
-            </div>
-            <div id="bulk-count-wrap">
-              <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Slots per date</label>
-              <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
-            </div>
-          </div>
-          <button type="button" id="bulk-run" class="btn">Run</button>
+        <div id="bulk-members-wrap">
+          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
+          <select id="bulk-jobrole-filter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px">
+            <option value="">All job roles</option>
+          </select>
+          <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
+          <label id="bulk-select-all-wrap" style="display:block;font-size:0.9rem;font-weight:600;margin-bottom:4px;cursor:pointer"><input type="checkbox" id="bulk-select-all" style="margin-right:6px">Select all</label>
+          <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
         </div>
         <div id="bulk-result" class="alert hidden" role="status"></div>
       </div>
@@ -8672,10 +8695,17 @@
             .map(function (u) {
               var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
               var checked = document.querySelector('.bulk-member-cb[value="' + u.id + '"]:checked') ? ' checked' : '';
-              return '<label style="display:block;font-size:0.9rem;padding:2px 0;cursor:pointer">' +
+              return '<label style="display:block;font-size:0.9rem;padding:2px 6px;cursor:pointer">' +
                 '<input type="checkbox" class="bulk-member-cb" value="' + u.id + '"' + checked + ' style="margin-right:6px">' + esc(nm) + '</label>';
             }).join('');
           $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No matches.</p>';
+          syncBulkSelectAll();
+        }
+        function syncBulkSelectAll() {
+          var boxes = document.querySelectorAll('.bulk-member-cb');
+          var sa = $('bulk-select-all');
+          if (!sa) return;
+          sa.checked = boxes.length > 0 && Array.prototype.every.call(boxes, function (cb) { return cb.checked; });
         }
         function selectedMemberIds() {
           var ids = [];
@@ -8686,6 +8716,7 @@
           api('/api/schedule/shift-types').then(function (r) {
             if (!r.ok) return;
             var sel = $('bulk-shifttype');
+            var fsel = $('bulk-shifttype-filter');
             // Department scope: bulk writes apply to the active department only.
             // Global filter: non-owners only see shift types in the selected department.
             sel.innerHTML = (r.data.shiftTypes || []).filter(function (st) {
@@ -8698,6 +8729,7 @@
             }).map(function (st) {
               return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
             }).join('');
+            if (fsel) fsel.innerHTML = '<option value="">All shift types</option>' + sel.innerHTML;
           }).catch(function () {});
         }
         function updateBulkSlotVisibility() {
@@ -8705,12 +8737,10 @@
           var isSlotAction = (a === 'open-slots' || a === 'close-shifts');
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
-          var memberLabel = $('bulk-member-search');
-          var memberBox = $('bulk-members');
-          if (memberLabel) memberLabel.style.display = isSlotAction ? 'none' : '';
-          if (memberBox) memberBox.style.display = isSlotAction ? 'none' : '';
-          var memberTitle = memberBox ? memberBox.previousElementSibling : null;
-          if (memberTitle && memberTitle.tagName === 'LABEL') memberTitle.style.display = isSlotAction ? 'none' : '';
+          var mw = $('bulk-members-wrap');
+          if (mw) mw.style.display = isSlotAction ? 'none' : '';
+          var fw = $('bulk-shifttype-filter-wrap');
+          if (fw) fw.style.display = isSlotAction ? 'none' : '';
         }
         function datesInRange(from, to) {
           var out = [];
@@ -8769,7 +8799,10 @@
             return;
           }
           var memberIds = selectedMemberIds();
+          var stFilter = $('bulk-shifttype-filter') ? $('bulk-shifttype-filter').value : '';
+          var stFilterName = stFilter && $('bulk-shifttype-filter').selectedOptions[0] ? $('bulk-shifttype-filter').selectedOptions[0].textContent : '';
           var scope = memberIds.length ? memberIds.length + ' team member(s)' : 'all team members';
+          if (stFilter) scope += ' (' + stFilterName + ' only)';
           var actionLabel = action === 'publish' ? 'publish' : action === 'unpublish' ? 'move to draft' : 'delete shifts for';
           if (!confirm('Are you sure you want to ' + actionLabel + ' ' + scope + ' on ' + dates.length + ' date(s)?')) return;
           showResult('Working…', false);
@@ -8779,6 +8812,12 @@
               // Per-member: publish/draft their shifts only
               endpoint = '/api/schedule/shifts/bulk-publish-state';
               body = { dates: dates, userIds: memberIds, published: action === 'publish' };
+              if (stFilter) body.shiftTypeId = stFilter;
+            } else if (stFilter) {
+              // Filter picked but no members: per-shift publish for everyone
+              // (the date-flag endpoints cannot be shift-scoped).
+              endpoint = '/api/schedule/shifts/bulk-publish-state';
+              body = { dates: dates, userIds: [], published: action === 'publish', shiftTypeId: stFilter };
             } else {
               // No members selected: whole date
               endpoint = action === 'publish' ? '/api/schedule/days/publish' : '/api/schedule/days/unpublish';
@@ -8786,6 +8825,7 @@
             }
           } else {
             endpoint = '/api/schedule/shifts/bulk-delete'; body = { dates: dates, userIds: memberIds };
+            if (stFilter) body.shiftTypeId = stFilter;
           }
           api(endpoint, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
             if (r.ok) {
@@ -8800,6 +8840,11 @@
         window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); } });
         if (isActive()) { loadMembers(); loadBulkShiftTypes(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
+        $('bulk-select-all').addEventListener('change', function () {
+          var on = this.checked;
+          document.querySelectorAll('.bulk-member-cb').forEach(function (cb) { cb.checked = on; });
+        });
+        $('bulk-members').addEventListener('change', syncBulkSelectAll);
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
         // Expose refresh for department filter changes.

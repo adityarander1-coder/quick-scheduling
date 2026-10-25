@@ -1055,6 +1055,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
   try {
     const companyId = req.session.companyId!;
     const { dates, userIds } = req.body ?? {};
+    const shiftTypeId = typeof req.body?.shiftTypeId === 'string' && req.body.shiftTypeId ? req.body.shiftTypeId : '';
     if (!Array.isArray(dates) || !dates.length || dates.length > 366) {
       res.status(400).json({ error: 'Provide a list of dates (max 366).' });
       return;
@@ -1064,6 +1065,13 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       res.status(400).json({ error: 'No valid dates provided.' });
       return;
     }
+    if (shiftTypeId) {
+      const stRows = await query('SELECT id FROM shift_types WHERE id = $1 AND company_id = $2', [shiftTypeId, companyId]);
+      if (!stRows.rows.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return;
+      }
+    }
     // Department scoping: the scheduler's active department must be one of
     // the affected members' home departments (no userIds = company-wide;
     // needs an active Edit department).
@@ -1071,19 +1079,24 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       req, res,
       await usersDepartmentIds(Array.isArray(userIds) ? userIds : [], companyId)
     ))) return;
-    const userFilter = Array.isArray(userIds) && userIds.length
-      ? 'AND user_id = ANY($3::uuid[])'
-      : '';
     const params: any[] = [companyId, valid];
+    const userFilter = Array.isArray(userIds) && userIds.length
+      ? `AND user_id = ANY($${params.length + 1}::uuid[])`
+      : '';
     if (userFilter) params.push(userIds);
+    // Optional shift-type filter (Bulk Actions tab): only that type's shifts.
+    const typeFilter = shiftTypeId
+      ? `AND shift_type_id = $${params.length + 1}`
+      : '';
+    if (typeFilter) params.push(shiftTypeId);
     // Capture published rows first so their people can be told (below).
     const { rows: doomed } = await query(
       `SELECT user_id, shift_type_id, date::text AS date FROM shifts
-       WHERE company_id = $1 AND date = ANY($2::date[]) AND published = true ${userFilter}`,
+       WHERE company_id = $1 AND date = ANY($2::date[]) AND published = true ${userFilter} ${typeFilter}`,
       params
     );
     const { rowCount } = await query(
-      `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter}`,
+      `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter} ${typeFilter}`,
       params
     );
     // For rotation shifts: add skip periods covering the range for the affected users' rotations.
@@ -1092,14 +1105,20 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     const to = valid.slice().sort()[valid.length - 1];
     const rotParams: any[] = [companyId];
     const rotUserFilter = Array.isArray(userIds) && userIds.length
-      ? 'AND ra.user_id = ANY($2::uuid[])'
+      ? `AND ra.user_id = ANY($${rotParams.length + 1}::uuid[])`
       : '';
     if (rotUserFilter) rotParams.push(userIds);
+    // With a type filter, only pause rotations that produce that type
+    // (strictly narrower than the unfiltered all-rotations pause).
+    const rotTypeFilter = shiftTypeId
+      ? `AND EXISTS (SELECT 1 FROM rotation_assignments ra2 WHERE ra2.rotation_id = r.id AND ra2.shift_type_id = $${rotParams.length + 1})`
+      : '';
+    if (rotTypeFilter) rotParams.push(shiftTypeId);
     const { rows: rots } = await query(
       `SELECT DISTINCT r.id AS rotation_id, ra.user_id
        FROM rotations r
        JOIN rotation_assignments ra ON ra.rotation_id = r.id
-       WHERE r.company_id = $1 AND r.is_active = true ${rotUserFilter}`,
+       WHERE r.company_id = $1 AND r.is_active = true ${rotUserFilter} ${rotTypeFilter}`,
       rotParams
     );
     for (const rt of rots) {
@@ -1798,33 +1817,66 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
 
 // POST /api/schedule/shifts/bulk-publish-state — publish/unpublish specific members' shifts in a date range (owner/scheduler; department-scoped).
 // Body: { dates:[...], userIds:[...], published: bool }. Handles manual + rotation shifts.
+// Optional shiftTypeId limits the action to one shift type; with an empty
+// userIds it applies to everyone in scope (active department / company).
 router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
-    const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    let userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
     const published = req.body?.published !== false;
-    if (!dates.length || !userIds.length) {
+    // Optional shift-type filter (Bulk Actions tab): limits the action to
+    // one shift type. Must belong to this company.
+    const shiftTypeId = typeof req.body?.shiftTypeId === 'string' && req.body.shiftTypeId ? req.body.shiftTypeId : '';
+    if (!dates.length || (!userIds.length && !shiftTypeId)) {
       res.status(400).json({ error: 'Dates and team members are required.' });
       return;
     }
-    // Department scoping: the scheduler's active department must be one of
-    // the affected members' home departments.
-    if (!(await requireActiveDepartment(
-      req, res,
-      await usersDepartmentIds(userIds, companyId)
-    ))) return;
+    if (shiftTypeId) {
+      const stRows = await query('SELECT id FROM shift_types WHERE id = $1 AND company_id = $2', [shiftTypeId, companyId]);
+      if (!stRows.rows.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return;
+      }
+    }
+    // Department scoping: members given → their home departments (unchanged).
+    // No members + filter → the shift type's departments; the user list then
+    // resolves to the active department (scheduler) or company-wide (owner).
+    const deptCheck = userIds.length
+      ? await requireActiveDepartment(
+        req, res,
+        await usersDepartmentIds(userIds, companyId)
+      )
+      : await requireActiveDepartment(
+        req, res,
+        await shiftTypesDepartmentIds([shiftTypeId], companyId)
+      );
+    if (!deptCheck) return;
+    if (!userIds.length) {
+      const scopeSql = deptCheck.departmentId
+        ? 'SELECT id FROM users WHERE company_id = $1 AND is_active = true AND department_id = $2'
+        : 'SELECT id FROM users WHERE company_id = $1 AND is_active = true';
+      const scopeParams = deptCheck.departmentId ? [companyId, deptCheck.departmentId] : [companyId];
+      const { rows: allUsers } = await query(scopeSql, scopeParams);
+      userIds = allUsers.map((r: any) => r.id);
+      if (!userIds.length) {
+        res.status(400).json({ error: 'No team members found.' });
+        return;
+      }
+    }
     // Manual shifts — capture the rows that will flip so their people
     // can be told (published-only rule: flips are the notification).
+    const typeFilter = shiftTypeId ? ` AND shift_type_id = $${5}` : '';
+    const typeParams = shiftTypeId ? [shiftTypeId] : [];
     const { rows: flipRows } = await query(
       `SELECT user_id, date::text AS date FROM shifts
-       WHERE company_id = $1 AND date = ANY($2::date[]) AND user_id = ANY($3::uuid[]) AND published = $4`,
-      [companyId, dates, userIds, !published]
+       WHERE company_id = $1 AND date = ANY($2::date[]) AND user_id = ANY($3::uuid[]) AND published = $4${typeFilter}`,
+      [companyId, dates, userIds, !published, ...typeParams]
     );
     const { rowCount } = await query(
       `UPDATE shifts SET published = $1
-       WHERE company_id = $2 AND date = ANY($3::date[]) AND user_id = ANY($4::uuid[])`,
-      [published, companyId, dates, userIds]
+       WHERE company_id = $2 AND date = ANY($3::date[]) AND user_id = ANY($4::uuid[])${typeFilter}`,
+      [published, companyId, dates, userIds, ...typeParams]
     );
     // Rotation shifts: generate instances and upsert publish overrides
     let rotCount = 0;
@@ -1835,10 +1887,12 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
       [companyId]
     );
     for (const rot of rotations) {
+      const rotTypeFilter = shiftTypeId ? ' AND shift_type_id = $3' : '';
+      const rotTypeParams = shiftTypeId ? [shiftTypeId] : [];
       const { rows: assignments } = await query(
         `SELECT user_id AS "userId", cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId"
-         FROM rotation_assignments WHERE rotation_id = $1 AND user_id = ANY($2::uuid[])`,
-        [rot.id, userIds]
+         FROM rotation_assignments WHERE rotation_id = $1 AND user_id = ANY($2::uuid[])${rotTypeFilter}`,
+        [rot.id, userIds, ...rotTypeParams]
       );
       if (!assignments.length) continue;
       const byDay = new Map<number, typeof assignments>();
