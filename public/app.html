@@ -1194,14 +1194,20 @@
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
         /* Phone: all Schedule controls in ONE card (approved mock 2026-10-24) */
         @media (max-width: 700px) {
-          #tab-schedule .sched-control-box { background: #fff; border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 1rem; box-shadow: 0 2px 10px rgba(16,24,40,.08); }
+          #tab-schedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0 0 12px; font-size: 1.25rem; }
+          #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+          #tab-schedule .sched-control-box .sched-h1-row .sched-h1 { margin: 0; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
-          #tab-schedule .sched-control-box .view-tabs { display: flex; }
+          #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
-          #tab-schedule .sched-control-box .view-tabs button { flex: 1; padding: 0.6rem 0.5rem; text-align: center; }
+          #tab-schedule .sched-control-box .view-tabs button { flex: 1; padding: 0.8rem 0.5rem; text-align: center; font-size: 1.05rem; }
           #tab-schedule .sched-control-box .sched-view-select-wrap { display: none; }
+          #tab-schedule .sched-control-box .range-picker { flex-direction: row; flex-wrap: wrap; gap: 8px; margin-bottom: 0; }
+          #tab-schedule .sched-control-box .range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
+          #tab-schedule .sched-control-box .range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
+          #tab-schedule .sched-control-box .range-picker button { width: 100%; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
           #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -1222,17 +1228,17 @@
 
         <div class="sched-toolbar">
           <div class="view-tabs" role="tablist" aria-label="Schedule view">
-            <button type="button" data-view="week" role="tab" class="active">Week</button>
-            <button type="button" data-view="month" role="tab">Month</button>
             <button type="button" data-view="range" role="tab">Range</button>
+            <button type="button" data-view="month" role="tab">Month</button>
+            <button type="button" data-view="week" role="tab" class="active">Week</button>
             <button type="button" data-view="block" role="tab">Block view</button>
           </div>
           <div class="sched-view-select-wrap">
             <label for="sched-view-select">View</label>
             <select id="sched-view-select" aria-label="Schedule view">
-              <option value="week">Week</option>
-              <option value="month">Month</option>
               <option value="range">Range</option>
+              <option value="month">Month</option>
+              <option value="week">Week</option>
               <option value="block">Block view</option>
             </select>
           </div>
@@ -1277,12 +1283,12 @@
           </label>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
         </div>
-      </div>
 
-      <div id="sched-range-picker" class="range-picker hidden">
-        <label>From <input type="date" id="sched-range-from"></label>
-        <label>To (optional) <input type="date" id="sched-range-to"></label>
-        <button type="button" id="sched-range-apply" class="btn">Apply</button>
+        <div id="sched-range-picker" class="range-picker hidden">
+          <label>From <input type="date" id="sched-range-from"></label>
+          <label>To (optional) <input type="date" id="sched-range-to"></label>
+          <button type="button" id="sched-range-apply" class="btn">Apply</button>
+        </div>
       </div>
 
       <div class="legend hidden" id="sched-legend"></div>
@@ -1672,6 +1678,12 @@
           var isRange = sched.view === 'range';
           if (isRange) show($('sched-range-picker'));
           else hide($('sched-range-picker'));
+          // Arrows live in the month grid (Month view) or nowhere (Range view);
+          // Today stays on its own in the toolbar.
+          var hideArrows = (sched.view === 'range' || sched.view === 'month');
+          var pv = $('sched-prev'), nx = $('sched-next');
+          if (pv) pv.style.display = hideArrows ? 'none' : '';
+          if (nx) nx.style.display = hideArrows ? 'none' : '';
           if (isRange && !sched.rangeFrom) {
             // From is mandatory; To is optional (open-ended when empty).
             sched.rangeFrom = fmtDate(new Date());
@@ -2439,12 +2451,29 @@
           return html;
         }
 
+        function monthNavHtml() {
+          return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
+            '<button type="button" class="btn-secondary sched-month-nav" data-dir="-1" aria-label="Previous month">&larr;</button>' +
+            '<div style="font-weight:800;font-size:1.05rem">' + esc(schedTitle()) + '</div>' +
+            '<button type="button" class="btn-secondary sched-month-nav" data-dir="1" aria-label="Next month">&rarr;</button></div>';
+        }
+        function bindMonthNav(el) {
+          el.querySelectorAll('.sched-month-nav').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var a = sched.anchorDate;
+              a.setMonth(a.getMonth() + parseInt(b.getAttribute('data-dir'), 10));
+              saveSchedView();
+              loadAll();
+            });
+          });
+        }
+
         function renderMonthGrid(el) {
           var r = viewRange();
           var first = parseDate(r.from);
           var gridStart = new Date(first);
           gridStart.setDate(first.getDate() - weekStartOffset(first));
-          var html = '<div class="month-grid">';
+          var html = monthNavHtml() + '<div class="month-grid">';
           ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
             html += '<div class="month-dow">' + d + '</div>';
           });
@@ -2462,6 +2491,7 @@
           html += '</div>';
           el.innerHTML = html;
           bindStatusPills(el);
+          bindMonthNav(el);
           el.querySelectorAll('.day-box').forEach(function (box) {
             box.addEventListener('click', function (e) {
               if (e.target.closest('.status-pill')) return;
@@ -2475,7 +2505,7 @@
           var first = parseDate(r.from);
           var last = parseDate(r.to);
           // Mini date grid: tap a date to jump the strip there.
-          var html = '<div class="month-mini-grid">';
+          var html = monthNavHtml() + '<div class="month-mini-grid">';
           var mgStart = new Date(first);
           mgStart.setDate(first.getDate() - weekStartOffset(first));
           ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (dow) {
@@ -2523,6 +2553,7 @@
           html += '</div></div>';
           el.innerHTML = html;
           bindStatusPills(el);
+          bindMonthNav(el);
           el.querySelectorAll('.month-strip-day').forEach(function (box) {
             box.addEventListener('click', function (e) {
               if (e.target.closest('.status-pill')) return;
@@ -4213,11 +4244,54 @@
           loadAll();
         });
         $('sched-today').addEventListener('click', function () {
+          if (sched.view === 'range') {
+            // Today in Range view: start the range at today.
+            var t = fmtDate(new Date());
+            sched.rangeFrom = t;
+            if (sched.rangeTo && sched.rangeTo < t) sched.rangeTo = '';
+            $('sched-range-from').value = t; $('sched-range-to').value = sched.rangeTo || '';
+            if (!sched.rangeTo) { var hzT = parseDate(t); hzT.setDate(hzT.getDate() + 90); sched.rangeHorizon = fmtDate(hzT); }
+            saveSchedView();
+            loadAll();
+            return;
+          }
           sched.anchorDate = new Date();
           if (sched.view === 'block') schedBlockStart = '';
           saveSchedView();
           loadAll();
         });
+        // Phone: Today sits next to the Schedule heading (approved full-width mock).
+        // The node itself is moved, so its click handler moves with it.
+        var schedH1Row = null;
+        function placeSchedToday() {
+          var today = $('sched-today'), h1 = $('sched-h1');
+          var nav = document.querySelector('#tab-schedule .date-nav');
+          if (!today || !h1 || !nav) return;
+          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          if (phone) {
+            if (!schedH1Row) {
+              schedH1Row = document.createElement('div');
+              schedH1Row.className = 'sched-h1-row';
+              h1.parentNode.insertBefore(schedH1Row, h1);
+            }
+            if (h1.parentNode !== schedH1Row) schedH1Row.appendChild(h1);
+            if (today.parentNode !== schedH1Row) schedH1Row.appendChild(today);
+          } else {
+            var nx = $('sched-next');
+            if (today.parentNode !== nav) { if (nx) nav.insertBefore(today, nx); else nav.appendChild(today); }
+            if (schedH1Row && schedH1Row.parentNode) {
+              schedH1Row.parentNode.insertBefore(h1, schedH1Row);
+              schedH1Row.parentNode.removeChild(schedH1Row);
+              schedH1Row = null;
+            }
+          }
+        }
+        placeSchedToday();
+        if (window.matchMedia) {
+          var schedMql = window.matchMedia('(max-width: 700px)');
+          if (schedMql.addEventListener) schedMql.addEventListener('change', placeSchedToday);
+          else if (schedMql.addListener) schedMql.addListener(placeSchedToday);
+        }
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
           if (!f) { pageError('Pick a from date.'); return; }
@@ -9402,10 +9476,10 @@
 
       <div class="sched-toolbar" style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
+          <button type="button" data-msview="range" role="tab">Range</button>
+          <button type="button" data-msview="month" role="tab">Month</button>
           <button type="button" data-msview="day" role="tab">Day</button>
           <button type="button" data-msview="week" role="tab" class="active">Week</button>
-          <button type="button" data-msview="month" role="tab">Month</button>
-          <button type="button" data-msview="range" role="tab">Range</button>
           <button type="button" data-msview="block" role="tab">Block</button>
         </div>
         <div class="date-nav" style="display:flex;gap:0.4rem;align-items:center">
@@ -9634,6 +9708,13 @@
           var rp = $('ms-range-picker');
           if (msView === 'range') { rp.classList.remove('hidden'); rp.style.display = 'flex'; }
           else { rp.classList.add('hidden'); rp.style.display = 'none'; }
+          // Phone only: arrows live in the month grid (Month) or nowhere (Range);
+          // Today stays on its own. Desktop keeps its toolbar arrows.
+          var msPhone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          var msHideArrows = msPhone && (msView === 'range' || msView === 'month');
+          var msp = $('ms-prev'), msn = $('ms-next');
+          if (msp) msp.style.display = msHideArrows ? 'none' : '';
+          if (msn) msn.style.display = msHideArrows ? 'none' : '';
           if (msView === 'range' && (!rangeFrom || !rangeTo)) {
             var a = new Date(anchorDate);
             var dow = weekStartOffset(a);
@@ -10301,13 +10382,19 @@
         // Phone month layout (mirrors the admin month strip): mini date grid on
         // top — tap a date to jump the strip there — plus a horizontal sliding
         // strip of day cards below. Read-only; tapping a day card jumps to day view.
+        function msMonthNavHtml() {
+          return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
+            '<button type="button" class="btn-secondary ms-month-nav" data-dir="-1" aria-label="Previous month">&larr;</button>' +
+            '<div style="font-weight:800;font-size:1.05rem">' + esc(msTitle()) + '</div>' +
+            '<button type="button" class="btn-secondary ms-month-nav" data-dir="1" aria-label="Next month">&rarr;</button></div>';
+        }
         function renderMonthPhone(el) {
           var r = viewRange();
           var first = parseDate(r.from);
           var last = parseDate(r.to);
           var todayStr = fmtDate(new Date());
           // Mini date grid.
-          var html = '<div class="ms-month-mini-grid">';
+          var html = msMonthNavHtml() + '<div class="ms-month-mini-grid">';
           var mgStart = new Date(first);
           mgStart.setDate(first.getDate() - weekStartOffset(first));
           ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (dow) {
@@ -10366,6 +10453,13 @@
           }
           html += '</div></div>';
           el.innerHTML = html;
+          // Month arrows live in the grid header (same step as the toolbar arrows).
+          el.querySelectorAll('.ms-month-nav').forEach(function (b) {
+            b.addEventListener('click', function () {
+              anchorDate = addDays(anchorDate, parseInt(b.getAttribute('data-dir'), 10) * 30);
+              loadData();
+            });
+          });
           // Mini grid: tap a date to jump the strip there.
           el.querySelectorAll('[data-ms-mini]').forEach(function (cell) {
             cell.addEventListener('click', function () {
@@ -10577,7 +10671,19 @@
           var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'month' ? -30 : -14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
-        $('ms-today').addEventListener('click', function () { anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData(); });
+        $('ms-today').addEventListener('click', function () {
+          if (msView === 'range') {
+            // Today in Range view: start a fresh 14-day window at today
+            // (My Schedule ranges always carry both dates).
+            var tt = fmtDate(new Date());
+            var te = addDays(new Date(), 13);
+            rangeFrom = tt; rangeTo = fmtDate(te);
+            $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
+            loadData();
+            return;
+          }
+          anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData();
+        });
         $('ms-next').addEventListener('click', function () {
           if (msView === 'block') { var bn = msBlockFromDate(); bn.setFullYear(bn.getFullYear() + 1); msBlockStart = fmtDate(bn); loadData(); return; }
           var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'month' ? 30 : 14;
