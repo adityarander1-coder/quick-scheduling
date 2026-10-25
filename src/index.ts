@@ -20,6 +20,7 @@ import candidatesRouter from './routes/candidates';
 import invitesRouter from './routes/invites';
 import scheduleRouter from './routes/schedule';
 import notificationsRouter from './routes/notifications';
+import inboundRouter from './routes/inbound';
 import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
 import { billingWriteGate } from './middleware/billing';
 
@@ -69,6 +70,9 @@ if (!isProd) {
 }
 
 app.use('/api/auth', authRouter);
+// In-app mailbox webhook: provider secret, not a user session — mounted
+// before the billing write gate so inbound mail is never blocked by it.
+app.use('/api/inbound', inboundRouter);
 // Billing write gate: blocks POST/PUT/PATCH/DELETE for read_only, suspended,
 // canceled, or trial-expired-without-card companies. Reads always pass.
 app.use('/api', billingWriteGate);

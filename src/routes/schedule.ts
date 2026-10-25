@@ -17,6 +17,7 @@ import {
 import bcrypt from 'bcryptjs';
 import { escHtml } from '../util/mailer';
 import { auditLog, todayStr } from '../util/audit.js';
+import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
@@ -2838,6 +2839,46 @@ router.delete('/email-inbox', requireRole('owner'), async (req: Request, res: Re
   } catch (err) {
     console.error('[schedule] delete email inbox failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/inbound-addresses — this company's in-app addresses
+// (owner only). Local parts are shown in full when a sending domain is
+// configured; until then the address is the local part alone.
+router.get('/inbound-addresses', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT ia.id, ia.department_id, ia.local_part, ia.is_active, d.name AS department_name
+       FROM inbound_addresses ia
+       LEFT JOIN departments d ON d.id = ia.department_id
+       WHERE ia.company_id = $1 ORDER BY d.name NULLS FIRST, ia.local_part`,
+      [companyId]
+    );
+    res.json({
+      domainConfigured: !!inboundDomain(),
+      addresses: rows.map((r: any) => ({
+        id: r.id, departmentId: r.department_id, departmentName: r.department_name,
+        localPart: r.local_part, address: fullInboundAddress(r.local_part), isActive: r.is_active,
+      })),
+    });
+  } catch (err) {
+    console.error('[schedule] list inbound addresses failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/inbound-addresses/ensure — get or create the address
+// for a department (or the company when departmentId is omitted). Owner only.
+router.post('/inbound-addresses/ensure', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const departmentId = req.body.departmentId ? String(req.body.departmentId) : null;
+    const row = await ensureInboundAddress(query, companyId, departmentId);
+    res.json({ id: row.id, departmentId: row.department_id, localPart: row.local_part, address: fullInboundAddress(row.local_part), isActive: row.is_active });
+  } catch (err: any) {
+    console.error('[schedule] ensure inbound address failed:', err);
+    res.status(400).json({ error: err?.message || 'Something went wrong. Please try again.' });
   }
 });
 

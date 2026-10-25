@@ -21,6 +21,9 @@ export function mailFrom(): string {
 }
 
 export interface MailOptions {
+  /** Override the From header (e.g. a department's inbound address, so a
+   * company's mail thread lives on one address both ways). Defaults to mailFrom(). */
+  from?: string;
   to: string;
   cc?: string[];
   subject: string;
@@ -45,7 +48,7 @@ export async function sendMail(opts: MailOptions): Promise<void> {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: mailFrom(),
+      from: opts.from || mailFrom(),
       to: [opts.to],
       ...(opts.cc && opts.cc.length ? { cc: opts.cc } : {}),
       subject: opts.subject,
