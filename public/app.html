@@ -1198,8 +1198,10 @@
           #tab-schedule .sched-control-box .sched-h1 { margin: 0 0 12px; font-size: 1.25rem; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
-          #tab-schedule .sched-control-box .view-tabs { display: none; }
-          #tab-schedule .sched-control-box .sched-view-select-wrap { display: block; flex: 1 1 100%; }
+          #tab-schedule .sched-control-box .view-tabs { display: flex; }
+          #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
+          #tab-schedule .sched-control-box .view-tabs button { flex: 1; padding: 0.6rem 0.5rem; text-align: center; }
+          #tab-schedule .sched-control-box .sched-view-select-wrap { display: none; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
           #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -2246,6 +2248,9 @@
           if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches && (sched.view === 'week' || sched.view === 'day')) {
             sched.view = 'month';
             try { saveSchedView(); } catch (e) {}
+            document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === 'month'); });
+            var svsG = $('sched-view-select');
+            if (svsG) svsG.value = 'month';
           }
           try { syncWeekStartSel(); } catch (e) {}
           try { syncBlockSels(); } catch (e) {}
