@@ -1208,6 +1208,16 @@
           #tab-schedule .sched-control-box .range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker button { width: 100%; }
+          /* My schedule phone: same light-teal full-width band look */
+          #tab-myschedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
+          #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+          #tab-myschedule .sched-control-box .ms-h1-row .sched-h1 { margin: 0; }
+          #tab-myschedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
+          #tab-myschedule .sched-control-box .view-tabs button { flex: 1; padding: 0.8rem 0.5rem; text-align: center; font-size: 1.05rem; }
+          #tab-myschedule .sched-control-box #ms-today { background: var(--accent); color: #fff; border-color: var(--accent); }
+          #tab-myschedule .sched-control-box #ms-range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
+          #tab-myschedule .sched-control-box #ms-range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
+          #tab-myschedule .sched-control-box #ms-range-picker button { width: 100%; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
           #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -1678,9 +1688,9 @@
           var isRange = sched.view === 'range';
           if (isRange) show($('sched-range-picker'));
           else hide($('sched-range-picker'));
-          // Arrows live in the month grid (Month view) or nowhere (Range view);
+          // Arrows live in the month grid (Month view) or nowhere (Range/Block views);
           // Today stays on its own in the toolbar.
-          var hideArrows = (sched.view === 'range' || sched.view === 'month');
+          var hideArrows = (sched.view === 'range' || sched.view === 'month' || sched.view === 'block');
           var pv = $('sched-prev'), nx = $('sched-next');
           if (pv) pv.style.display = hideArrows ? 'none' : '';
           if (nx) nx.style.display = hideArrows ? 'none' : '';
@@ -9477,9 +9487,7 @@
       <div class="sched-toolbar" style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
         <div class="view-tabs" role="tablist" aria-label="Schedule view">
           <button type="button" data-msview="range" role="tab">Range</button>
-          <button type="button" data-msview="month" role="tab">Month</button>
-          <button type="button" data-msview="day" role="tab">Day</button>
-          <button type="button" data-msview="week" role="tab" class="active">Week</button>
+          <button type="button" data-msview="month" role="tab" class="active">Month</button>
           <button type="button" data-msview="block" role="tab">Block</button>
         </div>
         <div class="date-nav" style="display:flex;gap:0.4rem;align-items:center">
@@ -9506,12 +9514,12 @@
           </select>
         </label>
       </div>
-      </div>
 
-      <div id="ms-range-picker" class="hidden" style="gap:0.6rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+      <div id="ms-range-picker" class="hidden" style="gap:0.6rem;align-items:center;flex-wrap:wrap">
         <label>From <input type="date" id="ms-range-from" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;font-size:0.95rem"></label>
-        <label>To <input type="date" id="ms-range-to" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;font-size:0.95rem"></label>
+        <label>To (optional) <input type="date" id="ms-range-to" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;font-size:0.95rem"></label>
         <button type="button" id="ms-range-apply" class="btn">Apply</button>
+      </div>
       </div>
 
       <div id="ms-view"></div>
@@ -9535,9 +9543,9 @@
         var extraSlots = [], closedShifts = [], staffingTargets = [];
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
-        var msView = 'week';
+        var msView = 'month';
         var anchorDate = new Date();
-        var rangeFrom = null, rangeTo = null;
+        var rangeFrom = null, rangeTo = null, rangeHorizon = '';
         var deptFilters = [], shiftFilters = [];
         var viewFilters = ['everyone']; // 'my' | 'everyone' | 'available' (multi-select)
 
@@ -9676,8 +9684,11 @@
             from = msBlockFromDate();
             var endRef = new Date(from); endRef.setFullYear(endRef.getFullYear() + 1); endRef.setDate(endRef.getDate() - 1);
             to = new Date(endRef); to.setDate(endRef.getDate() + (6 - weekStartOffset(endRef)));
-          } else if (msView === 'range' && rangeFrom && rangeTo) {
-            from = parseDate(rangeFrom); to = parseDate(rangeTo);
+          } else if (msView === 'range' && rangeFrom) {
+            // Closed range: From–To. Open range: From + horizon (first 3 months,
+            // extended by "Show more"), mirroring the admin Schedule tab.
+            from = parseDate(rangeFrom);
+            to = rangeTo ? parseDate(rangeTo) : (rangeHorizon ? parseDate(rangeHorizon) : addDays(from, 90));
           } else {
             from = new Date(a.getFullYear(), a.getMonth(), 1);
             to = new Date(a.getFullYear(), a.getMonth() + 1, 0);
@@ -9695,6 +9706,8 @@
             return f.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
           if (msView === 'block')
             return f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+          if (msView === 'range' && rangeFrom && !rangeTo)
+            return 'From ' + f.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + ' onward';
           var s = f.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
             ' – ' + t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           if (f.getFullYear() !== t.getFullYear()) s += ', ' + t.getFullYear();
@@ -9708,14 +9721,14 @@
           var rp = $('ms-range-picker');
           if (msView === 'range') { rp.classList.remove('hidden'); rp.style.display = 'flex'; }
           else { rp.classList.add('hidden'); rp.style.display = 'none'; }
-          // Phone only: arrows live in the month grid (Month) or nowhere (Range);
+          // Phone only: arrows live in the month grid (Month) or nowhere (Range/Block);
           // Today stays on its own. Desktop keeps its toolbar arrows.
           var msPhone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
-          var msHideArrows = msPhone && (msView === 'range' || msView === 'month');
+          var msHideArrows = msPhone && (msView === 'range' || msView === 'month' || msView === 'block');
           var msp = $('ms-prev'), msn = $('ms-next');
           if (msp) msp.style.display = msHideArrows ? 'none' : '';
           if (msn) msn.style.display = msHideArrows ? 'none' : '';
-          if (msView === 'range' && (!rangeFrom || !rangeTo)) {
+          if (msView === 'range' && !rangeFrom) {
             var a = new Date(anchorDate);
             var dow = weekStartOffset(a);
             var f = new Date(a); f.setDate(a.getDate() - dow);
@@ -10199,7 +10212,7 @@
               var mine = me && String(m.id) === String(me.id);
               ehtml += '<div class="sbw-rowhead"><b>' + (mine ? '⭐ ' : '') + esc(msMemberName(m)) + '</b></div>';
               weeks.forEach(function (wk) {
-                ehtml += '<div class="sbw-cell"><div class="sbw-box" data-msbweek="' + wk.days[0] + '" title="Open this week in Week view" style="background:#ffffff;border-color:#cbd5e1">' +
+                ehtml += '<div class="sbw-cell"><div class="sbw-box" data-msbweek="' + wk.days[0] + '" title="Open this week in Range view" style="background:#ffffff;border-color:#cbd5e1">' +
                   msEmpCellHtml(m, wk) + '</div></div>';
               });
             });
@@ -10208,8 +10221,12 @@
             el.innerHTML = ehtml;
             el.querySelectorAll('[data-msbweek]').forEach(function (box) {
               box.addEventListener('click', function () {
-                msView = 'week';
-                anchorDate = parseDate(box.getAttribute('data-msbweek'));
+                // Week view is gone: open that week as a closed Range instead.
+                msView = 'range';
+                rangeFrom = box.getAttribute('data-msbweek');
+                rangeTo = fmtDate(addDays(parseDate(rangeFrom), 6));
+                rangeHorizon = '';
+                $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
                 loadData();
               });
             });
@@ -10231,7 +10248,7 @@
             html += '<div class="sbw-rowhead"><span class="sbw-sw" style="background:' + esc(st.color || '#637a8e') + '"></span><b>' + esc(st.name) + '</b>' +
               '<span>' + esc(times) + (maxTarget ? ' · needs ' + maxTarget : '') + '</span></div>';
             weeks.forEach(function (wk) {
-              html += '<div class="sbw-cell"><div class="sbw-box" data-msbweek="' + wk.days[0] + '" title="Open this week in Week view" style="background:' + tint(st.color || '#637a8e', 84) + ';border-color:' + tint(st.color || '#637a8e', 52) + '">' +
+              html += '<div class="sbw-cell"><div class="sbw-box" data-msbweek="' + wk.days[0] + '" title="Open this week in Range view" style="background:' + tint(st.color || '#637a8e', 84) + ';border-color:' + tint(st.color || '#637a8e', 52) + '">' +
                 msSbwCellHtml(st, wk) + '</div></div>';
             });
           });
@@ -10240,8 +10257,12 @@
           el.innerHTML = html;
           el.querySelectorAll('[data-msbweek]').forEach(function (box) {
             box.addEventListener('click', function () {
-              msView = 'week';
-              anchorDate = parseDate(box.getAttribute('data-msbweek'));
+              // Week view is gone: open that week as a closed Range instead.
+              msView = 'range';
+              rangeFrom = box.getAttribute('data-msbweek');
+              rangeTo = fmtDate(addDays(parseDate(rangeFrom), 6));
+              rangeHorizon = '';
+              $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
               loadData();
             });
           });
@@ -10280,6 +10301,9 @@
           var ndays = 0;
           eachDate(r.from, r.to, function (ds) { html += dayRowHtml(ds); ndays++; });
           html += '</div>';
+          if (msView === 'range' && rangeFrom && !rangeTo) {
+            html += '<button type="button" id="ms-range-more-btn" class="btn-secondary" style="width:100%;margin-top:0.75rem">Show more (next 3 months)</button>';
+          }
           var emptyDays = (html.match(/empty-day/g) || []).length;
           if (ndays >= 7 && emptyDays >= ndays && html.indexOf('shift-grid') === -1 && showEveryone()) {
             html = '<div class="empty-week"><div class="ew-ic">🗓️</div>' +
@@ -10287,6 +10311,13 @@
               '<div class="ew-s">Shifts will appear here as soon as they are assigned.</div></div>' + html;
           }
           el.innerHTML = html;
+          var msMore = el.querySelector('#ms-range-more-btn');
+          if (msMore) msMore.addEventListener('click', function () {
+            var h = parseDate(rangeHorizon || fmtDate(addDays(parseDate(rangeFrom), 90)));
+            h.setDate(h.getDate() + 90);
+            rangeHorizon = fmtDate(h);
+            loadData();
+          });
         }
 
         // Simplified read-only month grid. Own shifts highlighted; open days marked.
@@ -10668,24 +10699,79 @@
         });
         $('ms-prev').addEventListener('click', function () {
           if (msView === 'block') { var bp = msBlockFromDate(); bp.setFullYear(bp.getFullYear() - 1); msBlockStart = fmtDate(bp); loadData(); return; }
+          if (msView === 'range' && rangeFrom) {
+            // Shift the whole window back by its span (open ranges move From + horizon).
+            var rf = parseDate(rangeFrom);
+            var rt = rangeTo ? parseDate(rangeTo) : parseDate(rangeHorizon || fmtDate(addDays(rf, 90)));
+            var span = Math.round((rt - rf) / 86400000) + 1;
+            rangeFrom = fmtDate(addDays(rf, -span));
+            if (rangeTo) rangeTo = fmtDate(addDays(rt, -span));
+            else rangeHorizon = fmtDate(addDays(rt, -span));
+            $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
+            loadData(); return;
+          }
           var step = msView === 'day' ? -1 : msView === 'week' ? -7 : msView === 'month' ? -30 : -14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
         $('ms-today').addEventListener('click', function () {
           if (msView === 'range') {
-            // Today in Range view: start a fresh 14-day window at today
-            // (My Schedule ranges always carry both dates).
+            // Today in Range view: start at today; keep To unless it is past,
+            // and reset the horizon when the range is open-ended.
             var tt = fmtDate(new Date());
-            var te = addDays(new Date(), 13);
-            rangeFrom = tt; rangeTo = fmtDate(te);
+            rangeFrom = tt;
+            if (rangeTo && rangeTo < tt) rangeTo = '';
+            if (!rangeTo) rangeHorizon = fmtDate(addDays(new Date(), 90));
             $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
             loadData();
             return;
           }
           anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData();
         });
+        // Phone: Today sits next to the "My schedule" heading (same band look).
+        // The node itself is moved, so its click handler moves with it.
+        var msH1Row = null;
+        function placeMsToday() {
+          var today = $('ms-today');
+          var h2 = document.querySelector('#tab-myschedule .sched-control-box .sched-h1');
+          var nav = document.querySelector('#tab-myschedule .date-nav');
+          if (!today || !h2 || !nav) return;
+          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          if (phone) {
+            if (!msH1Row) {
+              msH1Row = document.createElement('div');
+              msH1Row.className = 'ms-h1-row';
+              h2.parentNode.insertBefore(msH1Row, h2);
+            }
+            if (h2.parentNode !== msH1Row) msH1Row.appendChild(h2);
+            if (today.parentNode !== msH1Row) msH1Row.appendChild(today);
+          } else {
+            var nx = $('ms-next');
+            if (today.parentNode !== nav) { if (nx) nav.insertBefore(today, nx); else nav.appendChild(today); }
+            if (msH1Row && msH1Row.parentNode) {
+              msH1Row.parentNode.insertBefore(h2, msH1Row);
+              msH1Row.parentNode.removeChild(msH1Row);
+              msH1Row = null;
+            }
+          }
+        }
+        placeMsToday();
+        if (window.matchMedia) {
+          var msMql = window.matchMedia('(max-width: 700px)');
+          if (msMql.addEventListener) msMql.addEventListener('change', placeMsToday);
+          else if (msMql.addListener) msMql.addListener(placeMsToday);
+        }
         $('ms-next').addEventListener('click', function () {
           if (msView === 'block') { var bn = msBlockFromDate(); bn.setFullYear(bn.getFullYear() + 1); msBlockStart = fmtDate(bn); loadData(); return; }
+          if (msView === 'range' && rangeFrom) {
+            var rf = parseDate(rangeFrom);
+            var rt = rangeTo ? parseDate(rangeTo) : parseDate(rangeHorizon || fmtDate(addDays(rf, 90)));
+            var span = Math.round((rt - rf) / 86400000) + 1;
+            rangeFrom = fmtDate(addDays(rf, span));
+            if (rangeTo) rangeTo = fmtDate(addDays(rt, span));
+            else rangeHorizon = fmtDate(addDays(rt, span));
+            $('ms-range-from').value = rangeFrom; $('ms-range-to').value = rangeTo;
+            loadData(); return;
+          }
           var step = msView === 'day' ? 1 : msView === 'week' ? 7 : msView === 'month' ? 30 : 14;
           anchorDate = addDays(anchorDate, step); loadData();
         });
@@ -10738,8 +10824,11 @@
         if (msBsInp) msBsInp.addEventListener('change', function () { if (msBsInp.value) { msBlockStart = msBsInp.value; loadData(); } });
         $('ms-range-apply').addEventListener('click', function () {
           var f = $('ms-range-from').value, t = $('ms-range-to').value;
-          if (!f || !t || f > t) { msError('Pick a valid date range.'); return; }
-          rangeFrom = f; rangeTo = t; loadData();
+          if (!f) { msError('Pick a from date.'); return; }
+          if (t && t < f) { msError('Pick a valid date range.'); return; }
+          rangeFrom = f; rangeTo = t || '';
+          if (!t) rangeHorizon = fmtDate(addDays(parseDate(f), 90));
+          loadData();
         });
       })();
       </script>
