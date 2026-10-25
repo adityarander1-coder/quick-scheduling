@@ -12688,11 +12688,15 @@
       if (window.matchMedia) window.matchMedia('(max-width: 700px)').addEventListener('change', placeDashPhoneNav);
       // Shared step for the top toolbar and the bottom nav: today jumps to
       // today, Month steps a month, Block/Week step a week, Day steps a day.
+      // Every step lands back at the top of the calendar (Deepika, 2026-10-25:
+      // after stepping from the bottom nav you should not be left at the
+      // bottom of the new month).
       function acStep(n) {
         if (n === 'today') acAnchor = new Date();
         else if (acView === 'month') acAnchor = new Date(acAnchor.getFullYear(), acAnchor.getMonth() + (n === '1' ? 1 : -1), 1);
         else { acAnchor = new Date(acAnchor); acAnchor.setDate(acAnchor.getDate() + ((acView === 'week' || acView === 'block') ? 7 : 1) * (n === '1' ? 1 : -1)); }
         load();
+        try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
       }
       function renderToolbar() {
         var tb = document.getElementById('db-toolbar');
