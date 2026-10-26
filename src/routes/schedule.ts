@@ -5073,6 +5073,12 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
     const companyId = req.session.companyId!;
     const task = String(req.body?.task || '').slice(0, 1000);
     if (!task.trim()) { res.status(400).json({ error: 'Describe the task.' }); return; }
+    // Task thread: earlier user messages + agent clarification questions, so
+    // follow-up answers refine the original task instead of replacing it.
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-10).map((h: any) => ({
+      q: String(h.q || '').slice(0, 500),
+      a: String(h.a || '').slice(0, 2000),
+    })).filter((h: any) => h.q) : [];
     const { planFromEmail } = await import('../util/gemini.js');
     let plan: any;
     try {
@@ -5090,6 +5096,7 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
         shiftTypes: stRows.map((r: any) => r.name),
         members: uRows.map((r: any) => r.name),
         today,
+        history,
         ...sessionCtx,
       });
       // Attach department names for settings actions.

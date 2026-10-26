@@ -115,6 +115,7 @@ export async function planFromEmail(
     rooms?: string[];               // room / location names
     sessions?: string[];            // upcoming calendar session lines
     dashboardDepartments?: string[];// "Calendars: Internal Medicine" lines
+    history?: Array<{ q: string; a: string }>; // in-app Task thread: earlier user messages + agent questions
     attachmentText?: string;        // spreadsheet/doc attachments converted to text
     pdfAttachments?: { filename: string; base64: string }[]; // PDFs, sent to Gemini as documents
     attachmentNotes?: string[];     // attachments that could not be read (name + reason)
@@ -136,7 +137,12 @@ Rooms / locations: ${(context.rooms || []).join(', ') || '(none listed)'}
 Calendar sessions:
 ${(context.sessions || []).join('\n') || '(none listed)'}
 
-Email subject: ${emailSubject}
+${(context.history || []).length ? `Earlier in this conversation:
+${(context.history || []).map(h => `User: ${h.q}\nQ-Scheduler: ${h.a}`).join('\n')}
+
+The messages above are context for the request below. The latest message refines the original request — carry forward every detail from earlier messages (names, patterns like "every 5th week", dates, weekends off) unless the user changed them. Do not ask again for details already given.
+
+` : ''}Email subject: ${emailSubject}
 Email body:
 ${emailBody}
 ${context.attachmentText ? `

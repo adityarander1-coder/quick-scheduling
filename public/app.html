@@ -5209,7 +5209,7 @@
           function bindFoot() {
             var again = panel.querySelector('[data-tb-foot="again"]');
             var open = panel.querySelector('[data-tb-foot="open"]');
-            if (again) again.addEventListener('click', function () { input.value = ''; closePanel(); input.focus(); });
+            if (again) again.addEventListener('click', function () { tbThread = []; input.value = ''; closePanel(); input.focus(); });
             if (open) open.addEventListener('click', function () { closePanel(); var t = document.querySelector('[data-tab="ask"]'); if (t) t.click(); });
           }
           function mirrorAsk(q, a) {
@@ -5221,6 +5221,9 @@
             }
             bubble(q, true); bubble(a, false); chat.scrollTop = chat.scrollHeight;
           }
+          // Header Task thread: same rule as the Ask tab — kept across
+          // clarification rounds, reset once a plan is shown.
+          var tbThread = [];
           function submit() {
             var q = (input.value || '').trim(); if (!q) return;
             if (mode === 'ask') {
@@ -5234,10 +5237,11 @@
               return;
             }
             openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Building a plan…</i></div>');
-            api('/api/schedule/agent-plan', { method: 'POST', body: JSON.stringify({ task: q }) }).then(function (res) {
+            api('/api/schedule/agent-plan', { method: 'POST', body: JSON.stringify({ task: q, history: tbThread }) }).then(function (res) {
               var d = res.data || {};
               if (!res.ok || d.error) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.error || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
               if (d.needsClarification) {
+                tbThread.push({ q: q, a: d.needsClarification });
                 var html = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.needsClarification) + '</div>';
                 var opts = d.clarificationOptions || []; var orig = d.originalTask || q;
                 if (opts.length) { html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">' + opts.map(function (o) { return '<button type="button" class="btn-secondary btn-sm" data-tb-clar="' + esc(o) + '">' + esc(o) + '</button>'; }).join('') + '</div>'; }
@@ -5246,6 +5250,7 @@
                 panel.querySelectorAll('[data-tb-clar]').forEach(function (c) { c.addEventListener('click', function () { input.value = orig + ' — ' + c.getAttribute('data-tb-clar'); submit(); }); });
                 return;
               }
+              tbThread = [];
               var desc = window.qsDescribeChange || function (c) { return c.action; };
               var html2 = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
                 '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + d.changes.map(function (c) { return '<li>' + esc(desc(c)) + '</li>'; }).join('') + '</ol>' +
@@ -5314,6 +5319,10 @@
             }
           }
           window.qsDescribeChange = describeChange;
+          // Task thread: kept only while a clarification round is open, so a
+          // typed follow-up answer still carries the original task. Reset
+          // once a plan is shown — the next message is a new task.
+          var thread = [];
           function sendTask() {
             var q = (input.value || '').trim();
             if (!q) return;
@@ -5322,12 +5331,13 @@
             var thinking = addMsg('<i style="color:var(--dim)">Building a plan…</i>', 'ai');
             api('/api/schedule/agent-plan', {
               method: 'POST',
-              body: JSON.stringify({ task: q }),
+              body: JSON.stringify({ task: q, history: thread }),
             }).then(function (res) {
               var d = res.data || {};
               if (!res.ok || d.error) { thinking.innerHTML = esc(d.error || 'Sorry, something went wrong.'); return; }
               if (d.needsClarification) {
                 thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.needsClarification);
+                thread.push({ q: q, a: d.needsClarification });
                 var opts = d.clarificationOptions || [];
                 var origTask = d.originalTask || q;
                 if (opts.length) {
@@ -5349,6 +5359,7 @@
                 }
                 return;
               }
+              thread = [];
               var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
                 '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
                 d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + '</li>'; }).join('') +
