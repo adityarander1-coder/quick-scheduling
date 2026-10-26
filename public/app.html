@@ -991,6 +991,19 @@
     #tab-dash .db-tbar .ac-views button { background: transparent; border-color: transparent; color: #cfe0e2; }
     #tab-dash .db-tbar .ac-views button.active { background: rgba(255,255,255,0.18); border-color: transparent; color: #fff; }
     #tab-dash .db-tbar .ac-nav[data-nav="today"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+    /* Ask tab band (Deepika, 2026-10-25): same dark band as Requests, with the
+       Ask / Task switch inside it. */
+    #tab-ask .ask-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
+    #tab-ask .ask-band .ask-subtabs { display: inline-flex; gap: 0; overflow: visible; padding-bottom: 0; border-bottom: none; margin-bottom: 0; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.20); border-radius: 999px; padding: 3px; }
+    #tab-ask .ask-band .subtab-btn { background: transparent; color: #cfe0e2; border-radius: 999px; padding: 0.55rem 1.4rem; }
+    #tab-ask .ask-band .subtab-btn.active { background: #fff; color: #21414c; }
+    @media (max-width: 700px) {
+      #tab-ask .ask-band .ask-subtabs { display: flex; width: 100%; }
+      #tab-ask .ask-band .subtab-btn { flex: 1; text-align: center; }
+    }
+    @media (min-width: 900px) {
+      #tab-ask .ask-band { margin: 0 -2rem 1rem; padding: 14px 2rem; }
+    }
     @media (max-width: 1023px) {
       .app-header .main-tabs { background: #21414c; }
       .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
@@ -5011,13 +5024,13 @@
     </section>
 
     <section id="tab-ask" class="tab-panel">
-      <div class="card">
-        <h2>Ask Q-Scheduler</h2>
-        <p style="color:var(--dim)">Q-Scheduler is your built-in scheduling assistant.</p>
-        <div class="ask-subtabs" id="ask-subtabs" style="display:none;margin-bottom:1rem">
+      <div class="ask-band" id="ask-band" style="display:none">
+        <div class="ask-subtabs" id="ask-subtabs" style="display:none">
           <button type="button" class="subtab-btn active" data-asktab="ask">Ask</button>
           <button type="button" class="subtab-btn" data-asktab="task">Task</button>
         </div>
+      </div>
+      <div class="card">
         <div id="ask-about-view">
           <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
           <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
@@ -5110,6 +5123,7 @@
           if (role !== 'owner' && role !== 'scheduler') return;
           $('ask-subtabs').dataset.shown = '1';
           $('ask-subtabs').style.display = '';
+          $('ask-band').style.display = '';
           tabs.forEach(function (t) {
             t.addEventListener('click', function () {
               tabs.forEach(function (x) { x.classList.toggle('active', x === t); });
