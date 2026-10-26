@@ -5509,6 +5509,18 @@
         #tab-settings .hint { font-weight: 400; color: var(--dim); font-size: 0.85em; }
         #tab-settings .sub-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.2rem; margin-bottom: 1rem; }
         #tab-settings .sub-card h3 { margin: 0 0 0.8rem; font-size: 1.1rem; color: var(--text); }
+        /* Settings band (Deepika, 2026-10-25): the 11 section switches live in
+           the dark band as a sideways-scrollable pill strip — same band language
+           as Calendars/Requests/Bulk. Active section is the white pill. The
+           strip scrolls on phones and laptops; the tapped pill scrolls itself
+           into view. Content panels below are untouched. */
+        #tab-settings .set-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
+        #tab-settings .set-band .sub-tabs { border-bottom: none; margin-bottom: 0; padding-bottom: 0; flex-wrap: nowrap; scrollbar-width: none; }
+        #tab-settings .set-band .sub-tabs::-webkit-scrollbar { display: none; }
+        #tab-settings .set-band .subtab-btn { flex-shrink: 0; color: #cfe0e2; }
+        #tab-settings .set-band .subtab-btn:hover { color: #fff; }
+        #tab-settings .set-band .subtab-btn.active, html:not([data-theme="dark"]) #tab-settings .set-band .subtab-btn.active { background: #fff; color: #21414c; }
+        @media (min-width: 900px) { #tab-settings .set-band { margin: 0 -2rem 1rem; padding: 14px 2rem; } }
         /* Staffing steppers */
         #tab-settings .target-row { display: flex; align-items: center; gap: 0.8rem; padding: 0.7rem 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
         #tab-settings .target-row:last-child { border-bottom: none; }
@@ -5532,8 +5544,7 @@
         #tab-settings .temp-password { background: #f0fdf4; border: 1px solid #86efac; border-radius: 12px; padding: 1rem; margin-top: 0.8rem; font-size: 1.05rem; }
         #tab-settings .temp-password code { font-size: 1.2rem; font-weight: 700; letter-spacing: 0.05em; }
       </style>
-      <div class="card">
-        <h2>Settings</h2>
+      <div class="set-band">
         <nav class="sub-tabs" role="tablist">
           <button class="subtab-btn active" data-subtab="general">General</button>
           <button class="subtab-btn" data-subtab="departments">Departments</button>
@@ -5547,6 +5558,8 @@
           <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
           <button class="subtab-btn" data-subtab="inbox">Email inbox</button>
         </nav>
+      </div>
+      <div class="card">
         <div class="subpanel-container">
           <div id="subtab-dashboards" class="sub-panel">
             <h3>🎓 Dashboards</h3>
@@ -13892,6 +13905,8 @@
         // the subtab buttons' own click handlers don't fire then.
         if (tabId === 'settings' && subtabId === 'dashboards' && window.qsLoadDashboardsSettings) window.qsLoadDashboardsSettings();
         if (tabId === 'settings' && subtabId === 'inbox') { var ib = document.querySelector('[data-subtab="inbox"]'); if (ib) ib.click(); }
+        // Keep the active section pill visible in the scrollable band.
+        if (tabId === 'settings') { try { var ab = document.querySelector('#tab-settings .set-band .subtab-btn.active'); if (ab && ab.scrollIntoView) ab.scrollIntoView({ inline: 'center', block: 'nearest' }); } catch (e) {} }
       }
     }
 
@@ -14003,7 +14018,10 @@
     });
     document.querySelector('#tab-settings .sub-tabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.subtab-btn');
-      if (btn && btn.getAttribute('data-subtab')) window.location.hash = 'settings/' + btn.getAttribute('data-subtab');
+      if (btn && btn.getAttribute('data-subtab')) {
+        window.location.hash = 'settings/' + btn.getAttribute('data-subtab');
+        if (btn.scrollIntoView) btn.scrollIntoView({ inline: 'center', block: 'nearest' });
+      }
     });
     window.addEventListener('hashchange', handleHash);
 
