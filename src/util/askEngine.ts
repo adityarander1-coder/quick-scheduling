@@ -6,7 +6,7 @@ import { query } from '../db.js';
 import { isGeminiConfigured, answerAskWithData } from './gemini.js';
 
 interface ShiftType { id: string; name: string; }
-interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; }
+interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; email?: string | null; phone?: string | null; departmentId?: string | null; }
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const MONTHS: Record<string, number> = {
@@ -24,6 +24,16 @@ function prettyDate(ds: string): string {
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return `${days[dt.getDay()]} ${months[dt.getMonth()]} ${dt.getDate()}`;
+}
+
+/** "Today" in the company timezone, as a local-midnight Date so the
+ *  existing getDay/getDate math below works in that frame. */
+function todayInTimezone(tz: string): Date {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date());
+    const get = (t: string) => Number(parts.find(p => p.type === t)?.value || 0);
+    return new Date(get('year'), get('month') - 1, get('day'));
+  } catch { return new Date(); }
 }
 
 /** Parse a date reference from the question. Returns YYYY-MM-DD or null. */
@@ -81,6 +91,8 @@ export interface AskContext {
   members: Member[];
   userId: string;
   role: string;
+  /** Company timezone for "today/tomorrow/Sunday" (default America/Chicago). */
+  timezone: string;
   /** Departments whose calendar sessions the asker may see; null = all (owner). */
   visibleDeptIds: string[] | null;
 }
@@ -469,7 +481,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   const q = question.trim();
   if (!q) return 'Ask me something like "who\'s on Friday night?"';
   const lower = q.toLowerCase();
-  const today = new Date();
+  const today = todayInTimezone(ctx.timezone || 'America/Chicago');
 
   // Load needed data lazily per intent.
   const isShort = /\bshort\b|understaffed|gaps?\b/.test(lower);
@@ -663,6 +675,26 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     }
     const head = member ? `${memberDisplay(member)}'s sessions` : mySessions ? 'Your sessions' : needsPresenter ? 'Sessions needing a presenter' : 'Calendar sessions';
     return `${head} ${when}:\n${formatCalendarBlock(sessions)}`;
+  }
+
+  // --- Team contact info — from this account's own directory, exactly as
+  // the in-app directory shows it: owner and employees see all members,
+  // schedulers see only view-access departments. Never another company
+  // (companyId is session-scoped). This must run before the schedule
+  // branch, or "what's Aditya's email" wrongly answers with his shifts.
+  if (member && /\b(email|e-mail|mail|phone|contact|number)\b/.test(lower)) {
+    const visible = ctx.role !== 'scheduler' || !member.departmentId ||
+      (ctx.visibleDeptIds !== null && ctx.visibleDeptIds.includes(member.departmentId));
+    if (!visible) return `I don't see a team member by that name in the departments you can view.`;
+    const name = memberDisplay(member);
+    const wantsEmail = /\b(email|e-mail|mail)\b/.test(lower);
+    const wantsPhone = /\b(phone|number)\b/.test(lower);
+    if (wantsEmail && wantsPhone) {
+      return `${name}'s email is ${member.email || 'not saved'}${member.phone ? ` and phone is ${member.phone}` : ' and no phone number is saved for them'}.`;
+    }
+    if (wantsEmail) return `${name}'s email is ${member.email || 'not saved'}.`;
+    if (wantsPhone) return member.phone ? `${name}'s phone is ${member.phone}.` : `No phone number is saved for ${name}.`;
+    return `${name}'s email is ${member.email || 'not saved'}${member.phone ? `, phone is ${member.phone}` : ''}.`;
   }
 
   // --- Person-specific: "what's John's schedule" / "how many shifts does Jane have" ---

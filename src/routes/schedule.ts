@@ -4918,10 +4918,15 @@ router.post('/ask', requireRole('owner', 'scheduler', 'employee'), async (req: R
       [companyId]
     );
     const { rows: uRows } = await query(
-      `SELECT id, first_name AS "firstName", last_name AS "lastName", nickname
+      `SELECT id, first_name AS "firstName", last_name AS "lastName", nickname,
+              email, phone, department_id AS "departmentId"
        FROM users WHERE company_id = $1 AND is_active = true`,
       [companyId]
     );
+    const { rows: tzRows } = await query(
+      `SELECT value FROM company_settings WHERE company_id = $1 AND key = 'timezone'`,
+      [companyId]);
+    const companyTimezone = tzRows[0]?.value || 'America/Chicago';
     // Department visibility for calendar answers — same rules as the
     // Calendars tab: owner sees all, scheduler sees view-access departments,
     // employees see only their own department. Answers never cross companies:
@@ -4945,6 +4950,7 @@ router.post('/ask', requireRole('owner', 'scheduler', 'employee'), async (req: R
       userId: req.session.userId!,
       role: askerRole,
       visibleDeptIds,
+      timezone: companyTimezone,
     });
     res.json({ answer });
   } catch (err) {
