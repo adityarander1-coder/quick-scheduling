@@ -5554,7 +5554,15 @@
         #tab-settings .shift-row:last-child { border-bottom: none; }
         #tab-settings .shift-row label { font-weight: 600; min-width: 140px; flex: 1; }
         #tab-settings .time-inputs { display: flex; align-items: center; gap: 0.4rem; }
-        #tab-settings .time-inputs input[type="time"] { padding: 0.4rem; font-size: 1rem; border: 1px solid var(--border); border-radius: 8px; }
+        #tab-settings .time-inputs input[type="time"] { flex: 1 1 110px; padding: 0.4rem; font-size: 1rem; border: 1px solid var(--border); border-radius: 8px; }
+        @media (max-width: 640px) {
+          /* Shifts on phones: the times take their own line, stacked full
+             width — shrinking them side-by-side hid the AM/PM, and they
+             crossed the card edge at natural size. */
+          #tab-settings .time-inputs { flex-basis: 100%; min-width: 0; flex-direction: column; align-items: stretch; }
+          #tab-settings .time-inputs input[type="time"] { min-width: 0; flex: none; width: 100%; }
+          #tab-settings .time-inputs span { align-self: center; }
+        }
         /* Candidates */
         #tab-settings .cand-tabs { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
         #tab-settings .cand-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
