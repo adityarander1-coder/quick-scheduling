@@ -6240,17 +6240,17 @@
             </script>
           </div>
           <div id="subtab-general" class="sub-panel active">
+            <h3 class="set-h3" style="margin:0">General</h3>
+            <p class="set-desc">Customize how the app looks and behaves for your company.</p>
             <div class="sub-card">
-              <h3>General</h3>
-              <p class="set-desc">Customize how the app looks and behaves for your company.</p>
-              <div style="margin:0.8rem 0">
-                <button type="button" id="gs-setup-wizard" class="btn-secondary">🧙 Re-run setup wizard</button>
-                <p class="set-desc" style="margin:0.4rem 0 0">Rebuild your departments, shift types, and job roles from a template or with Q-Scheduler.</p>
-              </div>
-              <div id="general-error" class="alert alert-error hidden" role="alert"></div>
-              <div id="general-saved" class="alert alert-success hidden" role="status">Saved.</div>
-              <form id="general-form" novalidate>
-                <h4 style="margin:0 0 0.6rem">Company</h4>
+              <button type="button" id="gs-setup-wizard" class="btn-secondary">🧙 Re-run setup wizard</button>
+              <p class="set-desc" style="margin:0.4rem 0 0">Rebuild your departments, shift types, and job roles from a template or with Q-Scheduler.</p>
+            </div>
+            <div id="general-error" class="alert alert-error hidden" role="alert"></div>
+            <div id="general-saved" class="alert alert-success hidden" role="status">Saved.</div>
+            <form id="general-form" novalidate>
+              <div class="sub-card">
+                <h3>Company</h3>
                 <p class="set-desc" style="margin-bottom:0.8rem">Applies to everyone in your company.</p>
                 <div class="form-row">
                   <label for="gs-company-name">Company display name</label>
@@ -6295,7 +6295,9 @@
                     <option value="month">Month</option>
                   </select>
                 </div>
-                <h4 style="margin:1.2rem 0 0.6rem">My appearance</h4>
+              </div>
+              <div class="sub-card">
+                <h3>My appearance</h3>
                 <p class="set-desc" style="margin-bottom:0.8rem">Just for you — each admin picks their own.</p>
                 <div class="form-row">
                   <label for="gs-theme">Appearance</label>
@@ -6323,9 +6325,9 @@
                     <button type="button" class="btn-secondary btn-sm" id="gs-footer-reset">Reset</button>
                   </div>
                 </div>
+              </div>
                 <button type="submit" class="btn">Save changes</button>
               </form>
-            </div>
           </div>
           <div id="subtab-departments" class="sub-panel">
             <div class="sub-card">
