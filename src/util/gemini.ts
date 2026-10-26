@@ -487,6 +487,43 @@ export interface OnboardingInterviewResult {
  * Conversational onboarding: given the chat history, either ask one follow-up
  * question or return a complete setup proposal (departments, shift types, job roles).
  */
+/**
+ * Ask Q-Scheduler fallback: answer an uncovered question from a scoped
+ * account data pack (shifts, sessions, open slots, team, settings). The
+ * model must answer ONLY from the pack — never invent names, dates, or
+ * numbers — and must refuse questions outside this account's schedule.
+ */
+export async function answerAskWithData(
+  question: string,
+  dataPack: string,
+  role: string
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('Gemini API key not configured.');
+  const model = await discoverModel(apiKey);
+  const prompt = `You are Q-Scheduler, a scheduling assistant. Answer the question using ONLY the account data below. Do not invent names, dates, numbers, or shifts. If the data does not contain the answer, say so plainly and suggest what to ask instead. If the question is not about this account's schedule, team, calendars, or settings, say you can only answer questions about this account's schedule. Keep the answer short and direct. Use the dates and names exactly as given.
+
+Account data:
+${dataPack}
+
+The person asking is a(n) ${role}.
+Their question: ${question}`;
+  const res = await fetch(
+    `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
+      }),
+    }
+  );
+  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
 export async function onboardingInterview(
   history: { role: 'user' | 'assistant'; text: string }[]
 ): Promise<OnboardingInterviewResult> {

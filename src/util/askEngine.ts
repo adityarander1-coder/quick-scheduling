@@ -3,6 +3,7 @@
 // shift counts. All data comes from live schedule tables.
 
 import { query } from '../db.js';
+import { isGeminiConfigured, answerAskWithData } from './gemini.js';
 
 interface ShiftType { id: string; name: string; }
 interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; }
@@ -344,6 +345,126 @@ async function loadAskerProfile(ctx: AskContext): Promise<any | null> {
   return rows[0] || null;
 }
 
+interface OpenSlotDay { name: string; open: number; }
+
+/** Open slots per date: staffing target + extra open slots − assigned shifts,
+ *  skipping closed dates — the same definition as the app's open-slots message. */
+async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes: { id: string; name: string }[]): Promise<{ byDate: Map<string, OpenSlotDay[]>; total: number }> {
+  const { rows: targets } = await query(
+    `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
+            weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+     FROM staffing_targets WHERE company_id = $1`,
+    [ctx.companyId]);
+  const { rows: adjustments } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+     FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [ctx.companyId, from, to]);
+  const { rows: closed } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+     FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [ctx.companyId, from, to]);
+  const { rows: assigned } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*) AS count
+     FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3
+     GROUP BY date, shift_type_id`,
+    [ctx.companyId, from, to]);
+  const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
+  const assignedMap = new Map(assigned.map((a: any) => [a.date + '|' + a.shiftTypeId, parseInt(a.count, 10)]));
+  const adjMap = new Map<string, number>();
+  for (const a of adjustments) {
+    const k = a.date + '|' + a.shiftTypeId;
+    adjMap.set(k, (adjMap.get(k) || 0) + (a.count || 0));
+  }
+  const byDate = new Map<string, OpenSlotDay[]>();
+  let total = 0;
+  const d = new Date(from + 'T00:00:00');
+  const endD = new Date(to + 'T00:00:00');
+  while (d <= endD) {
+    const ds = fmtDate(d);
+    for (const t of useTypes) {
+      const key = ds + '|' + t.id;
+      if (closedSet.has(key)) continue;
+      let target = 0;
+      for (const tg of targets) {
+        if (tg.shiftTypeId !== t.id) continue;
+        const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+        if (!weekdays.includes(d.getDay())) continue;
+        if (tg.startDate && ds < tg.startDate) continue;
+        if (tg.endDate && ds > tg.endDate) continue;
+        target = tg.targetCount || 0;
+        break;
+      }
+      const extra = adjMap.get(key) || 0;
+      if (!target && !extra) continue;
+      const open = Math.max(0, target + extra - (assignedMap.get(key) || 0));
+      if (open > 0) {
+        if (!byDate.has(ds)) byDate.set(ds, []);
+        byDate.get(ds)!.push({ name: t.name, open });
+        total += open;
+      }
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return { byDate, total };
+}
+
+/** Data pack for the AI fallback: everything the asker may see in this
+ *  account, and nothing else. No other member's phone/email, no other
+ *  company's data — companyId and visibleDeptIds come from the session. */
+export async function buildAskDataPack(ctx: AskContext, from: string, to: string): Promise<string> {
+  const parts: string[] = [];
+  const { rows: coRows } = await query('SELECT name FROM companies WHERE id = $1', [ctx.companyId]);
+  parts.push(`Company: ${coRows[0]?.name || ''}`);
+  const me = await loadAskerProfile(ctx);
+  if (me) {
+    const myName = me.nickname || `${me.firstName} ${me.lastName || ''}`.trim();
+    parts.push(`Asker: ${myName} (role: ${me.role}${me.deptName ? `, department: ${me.deptName}` : ''}${me.jobRoleName ? `, job role: ${me.jobRoleName}` : ''})`);
+  }
+  const deptClauses = ['company_id = $1']; const deptParams: any[] = [ctx.companyId];
+  if (ctx.visibleDeptIds !== null) { deptParams.push(ctx.visibleDeptIds); deptClauses.push(`id = ANY($${deptParams.length})`); }
+  const { rows: deptRows } = await query(`SELECT name FROM departments WHERE ${deptClauses.join(' AND ')} ORDER BY name`, deptParams);
+  if (deptRows.length) parts.push(`Departments: ${deptRows.map((r: any) => r.name).join(', ')}`);
+  const typeClauses = ['company_id = $1', 'is_active = true']; const typeParams: any[] = [ctx.companyId];
+  if (ctx.visibleDeptIds !== null) { typeParams.push(ctx.visibleDeptIds); typeClauses.push(`(department_id IS NULL OR department_id = ANY($${typeParams.length}))`); }
+  const { rows: typeRows } = await query(`SELECT id, name FROM shift_types WHERE ${typeClauses.join(' AND ')} ORDER BY sort_order, name`, typeParams);
+  if (typeRows.length) parts.push(`Shift types: ${typeRows.map((r: any) => r.name).join(', ')}`);
+  const dashClauses = ['d.company_id = $1']; const dashParams: any[] = [ctx.companyId];
+  if (ctx.visibleDeptIds !== null) {
+    dashParams.push(ctx.visibleDeptIds);
+    dashClauses.push(`(NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id AND dd.department_id = ANY($${dashParams.length})))`);
+  }
+  const { rows: dashRows } = await query(`SELECT d.name FROM dashboards d WHERE ${dashClauses.join(' AND ')} ORDER BY d.name`, dashParams);
+  if (dashRows.length) parts.push(`Calendars: ${dashRows.map((r: any) => r.name).join(', ')}`);
+  const teamClauses = ['u.company_id = $1', 'u.is_active = true']; const teamParams: any[] = [ctx.companyId];
+  if (ctx.visibleDeptIds !== null) { teamParams.push(ctx.visibleDeptIds); teamClauses.push(`(u.department_id IS NULL OR u.department_id = ANY($${teamParams.length}))`); }
+  const { rows: teamRows } = await query(
+    `SELECT u.first_name AS "firstName", u.last_name AS "lastName", u.nickname, u.role, d.name AS dept
+     FROM users u LEFT JOIN departments d ON d.id = u.department_id
+     WHERE ${teamClauses.join(' AND ')} ORDER BY u.first_name LIMIT 100`, teamParams);
+  if (teamRows.length) parts.push(`Team (names, roles, departments only):\n${teamRows.map((r: any) => `• ${r.nickname || `${r.firstName} ${r.lastName || ''}`.trim()} — ${r.role}${r.dept ? `, ${r.dept}` : ''}`).join('\n')}`);
+  const shiftClauses = ['s.company_id = $1', 's.date >= $2', 's.date <= $3']; const shiftParams: any[] = [ctx.companyId, from, to];
+  if (ctx.visibleDeptIds !== null) { shiftParams.push(ctx.visibleDeptIds); shiftClauses.push(`(st.department_id IS NULL OR st.department_id = ANY($${shiftParams.length}))`); }
+  const { rows: shiftRows } = await query(
+    `SELECT s.date::text AS date, u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
+            st.name AS "shiftTypeName", s.published
+     FROM shifts s JOIN users u ON u.id = s.user_id JOIN shift_types st ON st.id = s.shift_type_id
+     WHERE ${shiftClauses.join(' AND ')} ORDER BY s.date, st.sort_order LIMIT 200`, shiftParams);
+  if (shiftRows.length) parts.push(`Assigned shifts ${from} to ${to}:\n${shiftRows.map((r: any) => `• ${r.date} ${r.shiftTypeName}: ${r.nickname || `${r.firstName} ${r.lastName || ''}`.trim()}${r.published ? '' : ' (draft)'}`).join('\n')}`);
+  const sessions = await loadCalendarSessions(ctx, from, to);
+  if (sessions.length) parts.push(`Calendar sessions ${from} to ${to}:\n${formatCalendarBlock(sessions)}`);
+  const { byDate } = await loadOpenSlots(ctx, from, to, typeRows);
+  if (byDate.size) {
+    const openLines: string[] = [];
+    for (const ds of [...byDate.keys()].sort()) openLines.push(`• ${ds}: ${byDate.get(ds)!.map(o => `${o.name} — ${o.open} open`).join(', ')}`);
+    parts.push(`Open shifts ${from} to ${to}:\n${openLines.join('\n')}`);
+  }
+  if (ctx.role === 'owner' || ctx.role === 'scheduler') {
+    const { rows: setRows } = await query(`SELECT key, value FROM company_settings WHERE company_id = $1`, [ctx.companyId]);
+    if (setRows.length) parts.push(`Company settings: ${setRows.map((r: any) => `${r.key}=${r.value}`).join(', ')}`);
+  }
+  return parts.join('\n');
+}
+
 export async function answerQuestion(question: string, ctx: AskContext): Promise<string> {
   const q = question.trim();
   if (!q) return 'Ask me something like "who\'s on Friday night?"';
@@ -396,6 +517,46 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     }
     if (!gaps.length) return `You're fully staffed ${date ? 'on ' + prettyDate(date) : 'for that period'}.`;
     return `Short spots:\n${gaps.join('\n')}`;
+  }
+
+  // --- Open shifts: staffing target + extra open slots − assigned shifts,
+  // skipping closed dates — the same definition as the app's open-slots
+  // message. "How many shifts are open Sunday?" / "What shifts are open
+  // this week?" / "What night shifts are open tomorrow?"
+  if (/\bopen\b/.test(lower) && /\bshifts?\b/.test(lower)) {
+    const from = date || week?.from || fmtDate(today);
+    const to = date || week?.to || from;
+    const typeClauses = ['company_id = $1', 'is_active = true'];
+    const typeParams: any[] = [ctx.companyId];
+    if (ctx.visibleDeptIds !== null) {
+      typeParams.push(ctx.visibleDeptIds);
+      typeClauses.push(`(department_id IS NULL OR department_id = ANY($${typeParams.length}))`);
+    }
+    const { rows: types } = await query(
+      `SELECT id, name FROM shift_types WHERE ${typeClauses.join(' AND ')} ORDER BY sort_order, name`,
+      typeParams);
+    const wanted = matchShiftTypes(q, ctx.shiftTypes);
+    const useTypes = wanted.length
+      ? types.filter((t: any) => wanted.some(w => w.id === t.id))
+      : types;
+    const { byDate, total } = await loadOpenSlots(ctx, from, to, useTypes);
+    const when = date ? prettyDate(date) : `from ${prettyDate(from)} to ${prettyDate(to)}`;
+    if (!total) {
+      const { rows: tgRows } = await query('SELECT 1 FROM staffing_targets WHERE company_id = $1 LIMIT 1', [ctx.companyId]);
+      const { rows: adjRows } = await query('SELECT 1 FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3 LIMIT 1', [ctx.companyId, from, to]);
+      if (!tgRows.length && !adjRows.length) {
+        return 'No staffing targets are set up yet, so there are no open shifts to count. Set targets in Settings so I can check.';
+      }
+      return `No open shifts ${date ? 'on ' + prettyDate(date) : when}.`;
+    }
+    const lines: string[] = [];
+    for (const ds of [...byDate.keys()].sort()) {
+      lines.push(`${prettyDate(ds)}: ${byDate.get(ds)!.map(o => `${o.name} — ${o.open} open`).join(', ')}`);
+    }
+    if (isCount) {
+      return `${total} open shift${total === 1 ? '' : 's'} ${date ? 'on ' + prettyDate(date) : when}:\n${lines.join('\n')}`;
+    }
+    return `Open shifts ${date ? 'on ' + prettyDate(date) : when}:\n${lines.join('\n')}`;
   }
 
   // --- "My" profile / settings — the asker's own account only. Personal
@@ -573,6 +734,22 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     return parts.join('\n');
   }
 
+  // --- General AI fallback: anything the rules above don't cover goes to
+  // Gemini with this account's scoped data, so new question types work
+  // without building a new intent each time. Rules stay first for exact
+  // numbers; the AI only answers from the data pack, never from memory.
+  if (isGeminiConfigured()) {
+    try {
+      const from = date || week?.from || fmtDate(today);
+      let to = date || week?.to || '';
+      if (!to) { const d = new Date(today); d.setDate(d.getDate() + 7); to = fmtDate(d); }
+      const pack = await buildAskDataPack(ctx, from, to);
+      const aiAnswer = await answerAskWithData(question, pack, ctx.role);
+      if (aiAnswer) return aiAnswer;
+    } catch (err) {
+      console.error('[ask] AI fallback failed:', err);
+    }
+  }
   // --- Fallback ---
-  return `I can answer things like:\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a presenter?"\n• "Tell me my settings" / "What's my name?"`;
+  return `I can answer things like:\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a presenter?"\n• "Tell me my settings" / "What's my name?"\n• "How many shifts are open Sunday?"`;
 }
