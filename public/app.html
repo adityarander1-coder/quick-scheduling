@@ -5530,6 +5530,10 @@
            phones so long names never split mid-word; laptops unchanged. */
         #tab-settings .set-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
         #tab-settings .set-row-name { flex: 1; font-size: 0.95rem; }
+        /* Departments zebra (Deepika 2026-10-26): alternate white / pale-grey
+           rows, same band style as Bulk members. Web rows stay one
+           horizontal line; phones stay stacked. */
+        #team-dept-list .set-row:nth-child(even) { background: #e8edee; border-radius: 4px; }
         @media (max-width: 640px) {
           #tab-settings .set-row { flex-wrap: wrap; }
           #tab-settings .set-row-name { flex-basis: 100%; }
