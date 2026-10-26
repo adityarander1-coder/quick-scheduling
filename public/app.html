@@ -946,6 +946,39 @@
       .app-header.light-chrome .tab-btn.active { color: #131a2c; background: rgba(20,40,50,0.10); }
     }
     .app-footer.light-chrome { color: rgba(19,26,44,0.75); }
+    /* Dark bands (Deepika, 2026-10-25): Bulk navy-teal extended to Schedule,
+       My Schedule, Calendars, Requests. Dropdowns/inputs stay white; only
+       the text inside the bands flips light. */
+    #tab-schedule .sched-control-box .sched-h1,
+    #tab-myschedule .sched-control-box .sched-h1,
+    #tab-schedule .sched-control-box .sched-toggles label,
+    #tab-myschedule .sched-control-box .sched-toggles label,
+    #tab-schedule .sched-control-box .range-picker label,
+    #tab-myschedule .sched-control-box .range-picker label,
+    #tab-schedule .sched-control-box #sched-range-picker label,
+    #tab-myschedule .sched-control-box #ms-range-picker label,
+    #tab-schedule .sched-control-box .sched-block-row label,
+    #tab-myschedule .sched-control-box .sched-block-row label,
+    #tab-schedule .sched-control-box .blk-lab,
+    #tab-myschedule .sched-control-box .blk-lab,
+    #tab-schedule .sched-control-box .date-nav,
+    #tab-myschedule .sched-control-box .date-nav { color: #fff; }
+    #tab-schedule .sched-control-box .view-tabs button,
+    #tab-myschedule .sched-control-box .view-tabs button { background: transparent; color: #cfe0e2; }
+    #tab-schedule .sched-control-box .view-tabs button.active,
+    #tab-myschedule .sched-control-box .view-tabs button.active { background: rgba(255,255,255,0.18); color: #fff; }
+    #tab-schedule .sched-control-box #sched-today,
+    #tab-myschedule .sched-control-box #ms-today { background: var(--accent); color: #fff; border-color: var(--accent); }
+    #tab-requests .req-band .req-subtabs { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.20); }
+    #tab-requests .req-band .req-subtab { color: #cfe0e2; }
+    #tab-requests .req-band .req-subtab:hover { color: #fff; }
+    #tab-requests .req-band .req-subtab.active { background: #fff; color: #21414c; }
+    #tab-requests .req-band .req-subtab.active .req-subcount { color: rgba(33,65,76,0.75); }
+    #tab-dash #db-filters label { color: #fff; }
+    #tab-dash .db-tbar .ac-title { color: #fff; }
+    #tab-dash .db-tbar .ac-views button { background: transparent; border-color: transparent; color: #cfe0e2; }
+    #tab-dash .db-tbar .ac-views button.active { background: rgba(255,255,255,0.18); border-color: transparent; color: #fff; }
+    #tab-dash .db-tbar .ac-nav[data-nav="today"] { background: var(--accent); color: #fff; border-color: var(--accent); }
     @media (max-width: 1023px) {
       .app-header .main-tabs { background: #21414c; }
       .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
@@ -1089,7 +1122,7 @@
            children flow as box items in the order below; the break span
            inside the Block options forces row 2. */
         @media (min-width: 900px) {
-          #tab-schedule .sched-control-box, #tab-myschedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px 2rem; margin: 0 -2rem 1rem; box-shadow: none; gap: 10px; }
+          #tab-schedule .sched-control-box, #tab-myschedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px 2rem; margin: 0 -2rem 1rem; box-shadow: none; gap: 10px; }
           #tab-schedule .sched-control-box #sched-dept-filter, #tab-myschedule .sched-control-box #ms-filters { flex: none; margin-bottom: 0 !important; order: 1; }
           #tab-schedule .sched-control-box .sched-toolbar, #tab-myschedule .sched-control-box .sched-toolbar { display: contents; }
           #tab-schedule .sched-control-box .sched-toggles { display: contents; }
@@ -1164,7 +1197,7 @@
         #tab-schedule .month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; margin-bottom: 0.15rem; }
         /* Requests tab: light-teal band + pill toggle (Deepika, 2026-10-25).
            Toggle active = accent teal; counts ride inside each side. */
-        #tab-requests .req-band { background: #d9efee; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
+        #tab-requests .req-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
         #tab-requests .req-subtabs { display: inline-flex; background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
         #tab-requests .req-subtab { padding: 0.55rem 1.4rem; border: none; background: transparent; cursor: pointer; font-size: 0.95rem; font-weight: 700; color: var(--dim); border-radius: 999px; }
         #tab-requests .req-subtab:hover { color: var(--text); }
@@ -1289,7 +1322,7 @@
         .sched-row-break { display: block; height: 0; overflow: hidden; }
         /* Phone: all Schedule controls in ONE card (approved mock 2026-10-24) */
         @media (max-width: 700px) {
-          #tab-schedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
+          #tab-schedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0 0 12px; font-size: 1.25rem; }
           #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-schedule .sched-control-box .sched-h1-row .sched-h1 { margin: 0; }
@@ -1304,7 +1337,7 @@
           #tab-schedule .sched-control-box .range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker button { width: 100%; }
           /* My schedule phone: same light-teal full-width band look */
-          #tab-myschedule .sched-control-box { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
+          #tab-myschedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-myschedule .sched-control-box .ms-h1-row .sched-h1 { margin: 0; }
           #tab-myschedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
@@ -1315,8 +1348,8 @@
           #tab-myschedule .sched-control-box #ms-range-picker button { width: 100%; }
           /* Mock A (2026-10-25): Block options as their own phone section */
           #tab-schedule #sched-block-opts, #tab-myschedule #ms-block-opts { display: block; }
-          #tab-schedule .sched-block-divider, #tab-myschedule .sched-block-divider { display: block; border: none; border-top: 1px solid #bfe3e1; margin: 2px 0 12px; }
-          #tab-schedule .sched-block-sec, #tab-myschedule .sched-block-sec { display: block; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em; color: #0a6270; margin-bottom: 8px; }
+          #tab-schedule .sched-block-divider, #tab-myschedule .sched-block-divider { display: block; border: none; border-top: 1px solid rgba(255,255,255,0.15); margin: 2px 0 12px; }
+          #tab-schedule .sched-block-sec, #tab-myschedule .sched-block-sec { display: block; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.06em; color: #cfe0e2; margin-bottom: 8px; }
           #tab-schedule .sched-block-row, #tab-myschedule .sched-block-row { display: flex; gap: 10px; margin-bottom: 10px; }
           #tab-schedule .sched-block-row label, #tab-myschedule .sched-block-row label { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: flex-start !important; gap: 2px !important; }
           #tab-schedule .sched-block-row label select, #tab-myschedule .sched-block-row label select,
@@ -1327,7 +1360,7 @@
           #tab-schedule .sched-toolbar #sched-block-make { flex: 1 1 100%; padding: 11px; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
-          #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
+          #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
           #tab-schedule .sched-control-box .sched-toggles > label:first-child { white-space: nowrap; }
         }
       </style>
@@ -4884,10 +4917,10 @@
            drill-down from Schedule session boxes still works. */
         #tab-dash .db-head { display: none; }
         #tab-dash .db-date { display: none; }
-        #tab-dash #db-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; background: #d9efee; border-bottom: 1px solid #bfe3e1; margin: 0 -1.5rem; padding: 14px 1.5rem 12px; }
+        #tab-dash #db-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; background: #21414c; border-bottom: 1px solid #1a3540; margin: 0 -1.5rem; padding: 14px 1.5rem 12px; }
         #tab-dash #db-actions { margin-left: auto; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
         #tab-dash #db-today-slot { display: none; }
-        #tab-dash .db-tbar { background: #d9efee; border: none; border-bottom: 1px solid #bfe3e1; border-radius: 0; margin: 0 -1.5rem 0.9rem; padding: 0 1.5rem 14px; }
+        #tab-dash .db-tbar { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; margin: 0 -1.5rem 0.9rem; padding: 0 1.5rem 14px; }
         @media (min-width: 900px) {
           body:has(#tab-dash.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
           #tab-dash #db-filters { margin: 0 -2rem; padding: 14px 2rem 12px; }
