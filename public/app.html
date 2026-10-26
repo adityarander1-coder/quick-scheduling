@@ -701,7 +701,7 @@
       <button class="tab-btn" data-tab="messages"><span class="tab-ic">💬</span><span class="tab-tx">Messages</span> <span class="msg-badge" data-msg-badge hidden></span></button>
       <button class="tab-btn" data-tab="bulk"><span class="tab-ic">🗂️</span><span class="tab-tx">Bulk Actions</span></button>
       <button class="tab-btn" data-tab="ask"><span class="tab-ic">✨</span><span class="tab-tx">Ask Q-Scheduler</span></button>
-      <button class="tab-btn" data-tab="link"><span class="tab-ic">🔗</span><span class="tab-tx">Share Links</span></button>
+      <button class="tab-btn" data-tab="link"><span class="tab-ic">🔗</span><span class="tab-tx">Sharable Links</span></button>
       <button class="tab-btn" data-tab="settings"><span class="tab-ic">⚙️</span><span class="tab-tx">Settings</span></button>
       <button class="tab-btn" data-tab="billing"><span class="tab-ic">💳</span><span class="tab-tx">Billing</span></button>
       <button class="tab-btn" data-tab="help"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
@@ -1003,6 +1003,24 @@
     }
     @media (min-width: 900px) {
       #tab-ask .ask-band { margin: 0 -2rem 1rem; padding: 14px 2rem; }
+    }
+    /* Sharable Links flip cards (Deepika, 2026-10-25) */
+    #tab-link .link-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; color: #fff; font-size: 1.05rem; font-weight: 800; }
+    #tab-link .flip-grid { display: grid; gap: 1rem; }
+    #tab-link .flip-card { perspective: 1200px; }
+    #tab-link .flip-inner { position: relative; display: grid; align-items: start; transition: transform 0.6s, height 0.6s; transform-style: preserve-3d; }
+    #tab-link .flip-card.flipped .flip-inner { transform: rotateY(180deg); }
+    #tab-link .flip-front, #tab-link .flip-back { grid-area: 1 / 1; backface-visibility: hidden; -webkit-backface-visibility: hidden; min-width: 0; }
+    #tab-link .flip-front { background: var(--fc); color: #fff; padding: 1.1rem 1.2rem; border-radius: 16px; cursor: pointer; }
+    #tab-link .flip-front h3 { margin: 0 0 0.3rem; color: #fff; }
+    #tab-link .flip-front p { color: rgba(255,255,255,0.92); margin: 0; }
+    #tab-link .flip-ic { font-size: 1.8rem; margin-bottom: 0.3rem; }
+    #tab-link .flip-hint { display: block; text-align: right; margin-top: 0.6rem; font-size: 0.8rem; font-weight: 700; opacity: 0.9; }
+    #tab-link .flip-back { transform: rotateY(180deg); border: 2px solid var(--fc); margin-bottom: 0; }
+    #tab-link .flip-back-btn { float: right; background: var(--fc); color: #fff; border: none; border-radius: 999px; padding: 0.35rem 0.9rem; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+    @media (min-width: 900px) {
+      #tab-link .link-band { margin: 0 -2rem 1rem; padding: 14px 2rem; }
+      #tab-link .flip-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 1023px) {
       .app-header .main-tabs { background: #21414c; }
@@ -8949,14 +8967,21 @@
       </div>
     </section>
 
-    <!-- Share Links tab -->
+    <!-- Sharable Links tab -->
     <section id="tab-link" class="tab-panel">
-      <div class="card">
-        <h2>Share Links</h2>
-        <p style="color:var(--dim)">Generate shareable links for your team. More link types coming.</p>
-      </div>
-      <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Schedule links</h3>
+      <div class="link-band">Sharable Links</div>
+      <div class="flip-grid">
+      <div class="flip-card" style="--fc:#0e7c86">
+        <div class="flip-inner">
+          <div class="flip-front" role="button" tabindex="0" aria-label="Show Schedule links form">
+            <div class="flip-ic">🔗</div>
+            <h3>Schedule links</h3>
+            <p>View-only links to the published schedule — no login needed.</p>
+            <span class="flip-hint">Tap to flip ↻</span>
+          </div>
+          <div class="flip-back card">
+            <button type="button" class="flip-back-btn">↻ Flip back</button>
+            <h3 style="margin-top:0">Schedule links</h3>
         <p style="color:var(--dim)">Share view-only links to the published schedule. No login needed. Good for temps and non-team members.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>Department <select id="share-dept"><option value="">All departments</option></select></label>
@@ -8966,9 +8991,20 @@
         </div>
         <div id="share-link-list" style="margin-top:0.5rem"></div>
         <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Only published shifts are visible — the date itself doesn't need to be published. Copy the link right after generating — it can't be shown again later.</p>
+          </div>
+        </div>
       </div>
-      <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Open shifts broadcast</h3>
+      <div class="flip-card" style="--fc:#e8590c">
+        <div class="flip-inner">
+          <div class="flip-front" role="button" tabindex="0" aria-label="Show Open shifts broadcast form">
+            <div class="flip-ic">📣</div>
+            <h3>Open shifts broadcast</h3>
+            <p>Copy-paste message of open shifts for a date range.</p>
+            <span class="flip-hint">Tap to flip ↻</span>
+          </div>
+          <div class="flip-back card">
+            <button type="button" class="flip-back-btn">↻ Flip back</button>
+            <h3 style="margin-top:0">Open shifts broadcast</h3>
         <p style="color:var(--dim)">Generate a copy-paste message listing open shifts for a date range. Share it in group chats.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>From <input type="date" id="msg-from"></label>
@@ -8991,9 +9027,20 @@
           <pre id="msg-output" style="background:var(--bg);padding:1rem;border-radius:12px;white-space:pre-wrap;font-family:inherit"></pre>
           <button type="button" id="msg-copy" class="btn-secondary" style="margin-top:0.5rem">Copy message</button>
         </div>
+          </div>
+        </div>
       </div>
-      <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Pickup link — open shifts to pick up</h3>
+      <div class="flip-card" style="--fc:#7048e8">
+        <div class="flip-inner">
+          <div class="flip-front" role="button" tabindex="0" aria-label="Show Pickup link form">
+            <div class="flip-ic">🙌</div>
+            <h3>Pickup link</h3>
+            <p>Only open shifts — staff pick up, no login.</p>
+            <span class="flip-hint">Tap to flip ↻</span>
+          </div>
+          <div class="flip-back card">
+            <button type="button" class="flip-back-btn">↻ Flip back</button>
+            <h3 style="margin-top:0">Pickup link — open shifts to pick up</h3>
         <p style="color:var(--dim)">Shareable link showing <strong>only</strong> open shifts in a date range. Staff pick their name and tap to pick up — no login, no full schedule visible.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>From <input type="date" id="pk-from"></label>
@@ -9004,9 +9051,20 @@
         <div id="pk-types" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem"></div>
         <div id="pk-list" style="margin-top:0.5rem"></div>
         <p style="color:var(--dim);font-size:0.85rem;margin-top:0.8rem">Copy the link right after generating — it can't be shown again later.</p>
+          </div>
+        </div>
       </div>
-      <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Availability link</h3>
+      <div class="flip-card" style="--fc:#2f9e44">
+        <div class="flip-inner">
+          <div class="flip-front" role="button" tabindex="0" aria-label="Show Availability link form">
+            <div class="flip-ic">✅</div>
+            <h3>Availability link</h3>
+            <p>Staff tap the dates they're available.</p>
+            <span class="flip-hint">Tap to flip ↻</span>
+          </div>
+          <div class="flip-back card">
+            <button type="button" class="flip-back-btn">↻ Flip back</button>
+            <h3 style="margin-top:0">Availability link</h3>
         <p style="color:var(--dim)">Ask staff to tap the dates they're available. Share the link in group chats.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>From <input type="date" id="av-from"></label>
@@ -9015,18 +9073,20 @@
           <button type="button" id="av-generate" class="btn">Generate link</button>
         </div>
         <div id="av-list" style="margin-top:0.5rem"></div>
-      </div>
-      <div id="av-resp-modal" class="modal-backdrop hidden">
-        <div class="modal" style="max-width:560px">
-          <h3 id="av-resp-title" style="margin-top:0">Responses</h3>
-          <div id="av-resp-body" style="max-height:60vh;overflow-y:auto"></div>
-          <div style="display:flex;justify-content:flex-end;margin-top:1rem">
-            <button type="button" class="btn-secondary" id="av-resp-close">Close</button>
           </div>
         </div>
       </div>
-      <div class="card" style="margin-top:1rem">
-        <h3 style="margin-top:0">Payroll hours</h3>
+      <div class="flip-card" style="--fc:#e67700">
+        <div class="flip-inner">
+          <div class="flip-front" role="button" tabindex="0" aria-label="Show Payroll hours form">
+            <div class="flip-ic">💰</div>
+            <h3>Payroll hours</h3>
+            <p>Hours by date and person — PDF, CSV, or email.</p>
+            <span class="flip-hint">Tap to flip ↻</span>
+          </div>
+          <div class="flip-back card">
+            <button type="button" class="flip-back-btn">↻ Flip back</button>
+            <h3 style="margin-top:0">Payroll hours</h3>
         <p style="color:var(--dim)">Hours worked for a date range, by date and by person. Download as PDF or email it.</p>
         <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
           <label>From <input type="date" id="pay-from"></label>
@@ -9060,7 +9120,48 @@
           </div>
           <div id="sched-list"></div>
         </div>
+          </div>
+        </div>
       </div>
+      </div>
+      <div id="av-resp-modal" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:560px">
+          <h3 id="av-resp-title" style="margin-top:0">Responses</h3>
+          <div id="av-resp-body" style="max-height:60vh;overflow-y:auto"></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+            <button type="button" class="btn-secondary" id="av-resp-close">Close</button>
+          </div>
+        </div>
+      </div>
+      <script>
+      /* Sharable Links flip cards (Deepika, 2026-10-25): tap a card front to
+         flip it 180 deg to its form; the Flip back button returns it. Card
+         height tracks the visible face so tall forms never clip. */
+      (function () {
+        var tab = document.getElementById('tab-link');
+        function visible() { return tab && tab.offsetParent !== null; }
+        function size(card) {
+          var inner = card.querySelector('.flip-inner');
+          var face = card.classList.contains('flipped') ? card.querySelector('.flip-back') : card.querySelector('.flip-front');
+          if (inner && face && face.offsetHeight) inner.style.height = face.offsetHeight + 'px';
+        }
+        function sizeAll() { document.querySelectorAll('#tab-link .flip-card').forEach(size); }
+        function sizeIfVisible() { if (visible()) sizeAll(); }
+        document.querySelectorAll('#tab-link .flip-card').forEach(function (card) {
+          var front = card.querySelector('.flip-front');
+          var backBtn = card.querySelector('.flip-back-btn');
+          front.addEventListener('click', function () { card.classList.add('flipped'); size(card); card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); });
+          front.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); front.click(); } });
+          backBtn.addEventListener('click', function (e) { e.stopPropagation(); card.classList.remove('flipped'); size(card); });
+          new MutationObserver(function () { if (card.classList.contains('flipped')) size(card); }).observe(card.querySelector('.flip-back'), { childList: true, subtree: true, characterData: true });
+        });
+        document.querySelectorAll('[data-tab="link"]').forEach(function (b) { b.addEventListener('click', function () { setTimeout(sizeIfVisible, 60); }); });
+        window.addEventListener('hashchange', function () { setTimeout(sizeIfVisible, 60); });
+        window.addEventListener('resize', sizeIfVisible);
+        if (tab) new MutationObserver(sizeIfVisible).observe(tab, { attributes: true, attributeFilter: ['class', 'style'] });
+        sizeIfVisible();
+      })();
+      </script>
       <script>
       (function () {
         function isActive() {
@@ -9600,9 +9701,9 @@
       </div>
 
       <div class="card">
-        <h3>Share Links</h3>
+        <h3>Sharable Links</h3>
         <div class="help-carousel"><div class="help-carousel-track">
-          <div class="help-carousel-slide"><img src="help-img/help-share-links.png" alt="Share Links"><div class="cap">Share Links — schedule, availability, and open-slot links</div></div>
+          <div class="help-carousel-slide"><img src="help-img/help-share-links.png" alt="Sharable Links"><div class="cap">Sharable Links — schedule, availability, and open-slot links</div></div>
         </div></div>
         <p>No-login links for people outside the team:</p>
         <ul>
@@ -13782,7 +13883,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Share Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Sharable Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
