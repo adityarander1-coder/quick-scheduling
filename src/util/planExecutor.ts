@@ -55,6 +55,10 @@ interface ExecuteResult {
   action: string;
   success: boolean;
   message: string;
+  /** Expanded dates for assign_recurring (used by the Change-report audit). */
+  dates?: string[];
+  /** Resolved display name, when the executor looked the person up. */
+  personDisplay?: string;
 }
 
 /** Find a user ID by fuzzy name match. */
@@ -531,7 +535,7 @@ export async function executePlan(
           );
           if ((inserted as any).rowCount) added++;
         }
-        results.push({ action: 'assign_recurring', success: true, message: `Assigned ${user.display} to ${st.name} every ${change.intervalWeeks} weeks from ${change.startDate}${change.weekendsOff ? ' (weekdays only)' : ''} until ${change.untilDate} (${added} new, ${dates.length - added} already on)` });
+        results.push({ action: 'assign_recurring', success: true, dates, personDisplay: user.display, message: `Assigned ${user.display} to ${st.name} every ${change.intervalWeeks} weeks from ${change.startDate}${change.weekendsOff ? ' (weekdays only)' : ''} until ${change.untilDate} (${added} new, ${dates.length - added} already on)` });
       } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
         // Swap exchanges two people's shifts. Same-day swap uses `date`;
         // cross-date swap uses fromDate/toDate. Runs in one transaction so a

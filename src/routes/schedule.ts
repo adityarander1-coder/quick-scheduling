@@ -16,7 +16,7 @@ import {
 } from '../util/departmentAccess';
 import bcrypt from 'bcryptjs';
 import { escHtml } from '../util/mailer';
-import { auditLog, todayStr } from '../util/audit.js';
+import { auditLog, auditPlanChanges, todayStr } from '../util/audit.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
@@ -5352,34 +5352,10 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
          decided_by = $2, executed_at = now() WHERE id = $1`,
         [plan.id, req.session.userId!]
       );
-      // Audit: record each applied change (agent + email plans).
+      // Audit: record each applied change — shared with the email approve
+      // path so no approved change is missing from the Change report.
       try {
-        const planSrc = plan.source_subject === 'In-app agent task' ? 'agent' : 'email';
-        const changes = (plan.plan && (plan.plan as any).changes) || [];
-        const settingsActions = new Set(['add_job_role', 'rename_job_role', 'delete_job_role',
-          'add_department', 'rename_department', 'add_team_member', 'update_team_member',
-          'add_shift_type', 'rename_shift_type', 'set_staffing_target']);
-        for (let i = 0; i < changes.length; i++) {
-          const c = changes[i];
-          const r = (results as any[])[i];
-          if (!r || r.success === false) continue;
-          const isSettings = settingsActions.has(c.action);
-          await auditLog({
-            companyId,
-            date: c.date || c.fromDate || c.startDate || todayStr(),
-            action: (c.action === 'unassign' || c.action.startsWith('delete')) ? 'deleted'
-              : (c.action === 'bulk_publish') ? 'published'
-              : (c.action === 'bulk_unpublish') ? 'unpublished'
-              : (c.action.startsWith('add')) ? 'created' : 'updated',
-            category: isSettings ? 'settings' : 'schedule',
-            personName: c.person || c.toPerson || c.firstName || null,
-            shiftTypeName: c.shiftType || null,
-            source: planSrc as any,
-            changedBy: req.session.userId!,
-            description: r.message || plan.plan_summary || null,
-            details: { planId: plan.id, action: c.action, summary: plan.plan_summary },
-          });
-        }
+        await auditPlanChanges(companyId, plan, results, req.session.userId!);
       } catch (auditErr) {
         console.error('[schedule] plan audit log failed:', (auditErr as any)?.message);
       }
@@ -5432,7 +5408,7 @@ router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Reques
 router.get('/plans/approve/:token', async (req: Request, res: Response) => {
   try {
     const { rows } = await query(
-      `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, decided_at FROM schedule_plans WHERE approve_token = $1`,
+      `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, source_subject, decided_at FROM schedule_plans WHERE approve_token = $1`,
       [req.params.token]
     );
     if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
@@ -5473,6 +5449,11 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now() WHERE id = $1`,
       [plan.id, allOk ? 'approved' : 'partial']
     );
+    // Audit: same Change-report rows as in-app approvals — email-approved
+    // changes used to be invisible in the report.
+    try {
+      await auditPlanChanges(plan.company_id, plan, results, sessionUserId);
+    } catch { /* audit must never break approval */ }
     const itemHtml = results.map((r: any, i: number) => {
       const badge = r.success
         ? '<span style="display:inline-block;font-size:0.75rem;font-weight:700;color:#166534;background:#dcfce7;border-radius:6px;padding:2px 8px;margin-right:6px">Applied</span>'
