@@ -12108,7 +12108,7 @@
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
     <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
       <h3 style="margin-top:0">Change report</h3>
-      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI.</p>
+      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI. The date you pick is the schedule date the change is for — not the date it was made.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
         <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
         <label><input type="radio" name="audit-mode" value="range"> Date range</label>
@@ -14092,38 +14092,82 @@
           if (!r.ok) { pageError((r.data && r.data.error) || 'Could not run report.'); return; }
           var box = $('audit-results');
           if (!r.data.entries.length) {
-            box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started today — past changes are not available.</p>';
+            box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started October 9, 2026 — earlier changes are not available.</p>';
             return;
           }
           var actionWords = { created: 'Added', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
           var scheduleWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
+          function fmtDay(iso) {
+            if (!iso) return '';
+            var parts = String(iso).split('-');
+            var dd = new Date(+parts[0], (+parts[1] || 1) - 1, +parts[2] || 1);
+            return dd.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+          }
+          function fmtTime(ts) {
+            return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+          }
+          var entries = r.data.entries || [];
+          // Merge a same-second manual add + manual removal on the same shift
+          // into one swap line — on the schedule grid that is one gesture, and
+          // two separate lines read like chaos. Same person, different actors,
+          // or anything involving a rotation stays as separate lines.
+          var removedByKey = {};
+          entries.forEach(function (e) {
+            if ((e.category || 'schedule') === 'schedule' && e.action === 'deleted' && e.source !== 'rotation' && !e.description) {
+              var k = String(e.changedAt).slice(0, 19) + '|' + (e.date || '') + '|' + (e.shiftTypeName || '') + '|' + (e.changedBy || '');
+              (removedByKey[k] = removedByKey[k] || []).push(e);
+            }
+          });
+          var usedRemoved = new Set();
           var html = '';
+          if (mode === 'date') {
+            html += '<p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule on ' + esc(fmtDay(d)) + '.</p>';
+          } else {
+            html += '<p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + '.</p>';
+          }
           var lastDate = '';
           var lastCat = '';
-          r.data.entries.forEach(function (e) {
+          entries.forEach(function (e) {
+            if (usedRemoved.has(e)) return;
             var cat = e.category || 'schedule';
-            if (e.date !== lastDate || cat !== lastCat) {
-              if (cat !== lastCat) {
-                html += '<h4 style="margin:0.75rem 0 0.25rem;color:var(--primary)">' +
-                  (cat === 'settings' ? '⚙️ Settings changes' : '📅 Schedule changes') + '</h4>';
-              } else {
-                html += '<h4 style="margin:0.75rem 0 0.25rem">' + e.date + '</h4>';
-              }
+            if (e.date !== lastDate) {
+              html += '<h4 style="margin:0.75rem 0 0.25rem">' + esc(fmtDay(e.date)) + '</h4>';
               lastDate = e.date;
+            }
+            if (cat !== lastCat) {
+              html += '<h4 style="margin:0.75rem 0 0.25rem;color:var(--primary)">' +
+                (cat === 'settings' ? '⚙️ Settings changes' : '📅 Schedule changes') + '</h4>';
               lastCat = cat;
             }
             var words = cat === 'settings' ? actionWords : scheduleWords;
-            var what = e.description ? esc(e.description)
-              : (e.personName ? (esc(e.personName) + (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) : '')) : 'Schedule');
+            var line = '';
             var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '')
               : e.source === 'agent' ? 'via Q-Scheduler Task'
               : e.source === 'email' ? 'via Email Q-Scheduler'
               : 'manual';
-            var when = new Date(e.changedAt).toLocaleString();
-            html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
-              '<strong>' + (words[e.action] || e.action) + '</strong>: ' + what +
+            if (cat === 'schedule' && e.action === 'created' && e.source !== 'rotation' && !e.description) {
+              var k = String(e.changedAt).slice(0, 19) + '|' + (e.date || '') + '|' + (e.shiftTypeName || '') + '|' + (e.changedBy || '');
+              var queue = removedByKey[k] || [];
+              var partner = null;
+              for (var qi = 0; qi < queue.length; qi++) {
+                if (!usedRemoved.has(queue[qi]) && queue[qi].personName !== e.personName) { partner = queue[qi]; break; }
+              }
+              if (partner) {
+                usedRemoved.add(partner);
+                line = '<strong>Swapped</strong>: ' + esc(partner.personName) + ' → ' + esc(e.personName) +
+                  (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '') +
+                  ' <span style="color:var(--dim)">(manual)</span><br>' +
+                  '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
+                html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
+                return;
+              }
+            }
+            var what = e.description ? esc(e.description)
+              : (e.personName ? (esc(e.personName) + (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '')) : 'Schedule');
+            line = '<strong>' + (words[e.action] || e.action) + '</strong>: ' + what +
               ' <span style="color:var(--dim)">(' + via + ')</span><br>' +
-              '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' on ' + when + '</span></div>';
+              '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
+            html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
           });
           box.innerHTML = html;
         }).catch(function () { pageError('Could not run report.'); });

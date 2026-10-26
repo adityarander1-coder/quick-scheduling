@@ -5264,7 +5264,7 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
     // Imperatives are tasks, not questions: "put Nancy on nights" must not be
     // misread as a question about Nancy. Questions go through the rule engine;
     // instructions skip straight to the plan path.
-    const isInstruction = /^(please\s+)?(put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book)\b/i.test(message.trim());
+    const isInstruction = /^[\s"'\u201c\u201d\u2018\u2019\(\[]*(please\s+)?(put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book)\b/i.test(message.trim());
     let fallbackAnswer = '';
     if (!isInstruction) {
       const ctx = await buildAskContext(req);
