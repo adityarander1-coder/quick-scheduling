@@ -5526,6 +5526,14 @@
            existing .grid-2 on laptops (phones stay stacked). */
         #tab-settings .swatch-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
         #tab-settings .swatch-group-label { font-size: 0.82rem; font-weight: 700; color: var(--dim); margin: 0.5rem 0 0.3rem; }
+        /* Departments polish (one-by-one, after General): rows stack on
+           phones so long names never split mid-word; laptops unchanged. */
+        #tab-settings .set-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+        #tab-settings .set-row-name { flex: 1; font-size: 0.95rem; }
+        @media (max-width: 640px) {
+          #tab-settings .set-row { flex-wrap: wrap; }
+          #tab-settings .set-row-name { flex-basis: 100%; }
+        }
         /* Staffing steppers */
         #tab-settings .target-row { display: flex; align-items: center; gap: 0.8rem; padding: 0.7rem 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
         #tab-settings .target-row:last-child { border-bottom: none; }
@@ -6918,9 +6926,9 @@
                 if (!viewDepts.length) { list.textContent = 'No departments yet.'; return; }
                 viewDepts.forEach(function (d) {
                   var div = document.createElement('div');
-                  div.style.cssText = 'display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border)';
+                  div.className = 'set-row';
                   var nameSpan = document.createElement('span');
-                  nameSpan.style.flex = '1'; nameSpan.textContent = d.name;
+                  nameSpan.className = 'set-row-name'; nameSpan.textContent = d.name;
                   var renameBtn = document.createElement('button');
                   renameBtn.type = 'button'; renameBtn.className = 'btn-secondary'; renameBtn.textContent = 'Rename';
                   renameBtn.addEventListener('click', function () {
