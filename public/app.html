@@ -717,7 +717,7 @@
   </header>
 
   <!-- Desktop top bar (stage 7): department, view switch, bell + account move here on wide screens. Phones keep the existing header. -->
-  <button type="button" id="qs-edge-toggle" aria-label="Hide or show the side menu" hidden>‹</button>
+  <button type="button" id="qs-edge-toggle" aria-label="Collapse or expand the side menu" hidden>‹</button>
   <div id="topbar" hidden>
     <div id="tb-dept"></div>
     <div class="tb-sp"></div>
@@ -854,7 +854,7 @@
       #qs-edge-toggle { position: fixed; left: 215px; top: 118px; z-index: 960; width: 26px; height: 26px; border-radius: 50%; background: #fff; color: var(--accent); border: 1px solid #d5daee; box-shadow: 0 2px 8px rgba(16,24,40,.18); font-size: 15px; font-weight: 800; cursor: pointer; display: grid; place-items: center; padding: 0; line-height: 1; transition: left .25s ease; }
       #qs-edge-toggle[hidden] { display: none; }
       body { transition: padding-left .25s ease; }
-      .app-header { transition: transform .25s ease; }
+      .app-header { transition: transform .25s ease, width .25s ease; }
       #tb-dept { width: 220px; flex: none; }
       #tb-dept #admin-dept-select { width: 100%; max-width: 220px; }
       .tb-sp { flex: 1; }
@@ -864,9 +864,19 @@
       #topbar #notif-bell { background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35); border-radius: 9px; }
       #topbar .user-chip { color: #fff; }
       #topbar .user-avatar { box-shadow: 0 0 0 2px rgba(255,255,255,.55); }
-      body.qs-side-hidden { padding-left: 0; }
-      body.qs-side-hidden .app-header { transform: translateX(-105%); }
-      body.qs-side-hidden #qs-edge-toggle { left: 10px; }
+      body.qs-side-hidden { padding-left: 72px; }
+      body.qs-side-hidden .app-header { width: 72px; padding: 16px 8px; }
+      body.qs-side-hidden .app-header .brand-row { align-items: center; }
+      body.qs-side-hidden .app-header .brand { text-align: center; }
+      body.qs-side-hidden .app-header .brand .product-name { font-size: 0; }
+      body.qs-side-hidden .app-header .brand .company-line { display: none; }
+      body.qs-side-hidden .app-header .brand .brand-mark { font-size: 15px; margin-right: 0; }
+      body.qs-side-hidden .app-header .tab-btn { text-align: center; padding: 10px 0; position: relative; }
+      body.qs-side-hidden .app-header .tab-btn .tab-tx { display: none; }
+      body.qs-side-hidden .app-header .tab-btn .tab-ic { font-size: 1.35rem; }
+      body.qs-side-hidden .app-header .tab-btn .req-badge, body.qs-side-hidden .app-header .tab-btn .msg-badge { position: absolute; top: 2px; right: 6px; background: #e5484d; color: #fff; border-radius: 999px; font-size: 0.6rem; font-weight: 800; padding: 0 4px; min-width: 15px; height: 15px; line-height: 15px; text-align: center; }
+      body.qs-side-hidden #notif-panel { left: 84px; }
+      body.qs-side-hidden #qs-edge-toggle { left: 59px; }
       html body #notif-panel { left: auto; right: 14px; top: 58px; }
     }
     /* ---- Restyle B, stage 4: Settings screens as cards ---- */
