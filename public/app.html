@@ -720,7 +720,15 @@
   <button type="button" id="qs-edge-toggle" aria-label="Collapse or expand the side menu" hidden>‹</button>
   <div id="topbar" hidden>
     <div id="tb-dept"></div>
-    <div class="tb-sp"></div>
+    <div class="tb-sp"><div id="tb-ask">
+      <div id="tb-ask-toggle" style="display:none">
+        <button type="button" class="active" data-tbmode="ask">Ask</button>
+        <button type="button" data-tbmode="task">Task</button>
+      </div>
+      <input type="text" id="tb-ask-input" placeholder="Ask Q-Scheduler anything…" aria-label="Ask Q-Scheduler">
+      <button type="button" id="tb-ask-go">Ask</button>
+      <div id="tb-ask-panel" class="hidden"></div>
+    </div></div>
     <div id="tb-switch"></div>
     <div id="tb-right"></div>
   </div>
@@ -997,6 +1005,21 @@
     #tab-ask .ask-band .ask-subtabs { display: inline-flex; gap: 0; overflow: visible; padding-bottom: 0; border-bottom: none; margin-bottom: 0; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.20); border-radius: 999px; padding: 3px; }
     #tab-ask .ask-band .subtab-btn { background: transparent; color: #cfe0e2; border-radius: 999px; padding: 0.55rem 1.4rem; }
     #tab-ask .ask-band .subtab-btn.active { background: #fff; color: #21414c; }
+    /* Header Ask bar (Deepika, 2026-10-25): Ask/Task search inside the desktop
+       top bar's middle space. Desktop only — #topbar is hidden below 1024px. */
+    #topbar .tb-sp { display: flex; justify-content: center; }
+    #tb-ask { position: relative; display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
+    #tb-ask-toggle { display: inline-flex; background: rgba(0,0,0,0.20); border-radius: 999px; padding: 3px; flex: none; }
+    #tb-ask-toggle button { border: none; background: transparent; color: rgba(255,255,255,0.8); border-radius: 999px; padding: 5px 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
+    #tb-ask-toggle button.active { background: #fff; color: var(--accent); }
+    #tb-ask-input { flex: 1; min-width: 0; border: none; border-radius: 999px; padding: 8px 14px; font-size: 0.9rem; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+    #tb-ask-go { flex: none; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 0.85rem; font-weight: 800; cursor: pointer; }
+    #tb-ask-panel { position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 32px rgba(16,24,40,0.20); padding: 1rem 1.1rem; max-height: 60vh; overflow-y: auto; z-index: 960; }
+    #tb-ask-panel.hidden { display: none; }
+    #tb-ask-panel .tb-q { font-weight: 700; margin-bottom: 0.4rem; }
+    #tb-ask-panel .tb-a { line-height: 1.55; white-space: pre-wrap; }
+    #tb-ask-panel .tb-foot { margin-top: 0.8rem; display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    #tb-ask-panel .tb-foot button { background: none; border: none; color: var(--accent); font-weight: 700; font-size: 0.85rem; cursor: pointer; padding: 0; }
     @media (max-width: 700px) {
       #tab-ask .ask-band .ask-subtabs { display: flex; width: 100%; }
       #tab-ask .ask-band .subtab-btn { flex: 1; text-align: center; }
@@ -5152,6 +5175,105 @@
           });
         };
         window.qsShowAskTabs();
+        // Header Ask bar (Deepika, 2026-10-25): Ask/Task search inside the
+        // desktop top bar's middle space. Answers/plans drop down under the
+        // bar — no tab switch. Ask tab itself is untouched.
+        (function () {
+          var bar = document.getElementById('tb-ask');
+          if (!bar) return;
+          var input = document.getElementById('tb-ask-input');
+          var go = document.getElementById('tb-ask-go');
+          var panel = document.getElementById('tb-ask-panel');
+          var toggle = document.getElementById('tb-ask-toggle');
+          var mode = 'ask';
+          function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+          function refreshToggle() {
+            var role = window.currentRole;
+            toggle.style.display = (role === 'owner' || role === 'scheduler') ? '' : 'none';
+            if (role === 'employee') setMode('ask');
+          }
+          function setMode(m) {
+            mode = m;
+            toggle.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tbmode') === m); });
+            go.textContent = m === 'task' ? 'Send' : 'Ask';
+            input.placeholder = m === 'task' ? 'Give Q-Scheduler a task…' : 'Ask Q-Scheduler anything…';
+          }
+          toggle.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { setMode(b.getAttribute('data-tbmode')); input.focus(); }); });
+          function openPanel(html) { panel.innerHTML = html; panel.classList.remove('hidden'); }
+          function closePanel() { panel.classList.add('hidden'); }
+          function foot() {
+            var again = mode === 'task' ? 'Another task ↑' : 'Ask another ↑';
+            var open = mode === 'task' ? 'Open Ask tab →' : 'Open full conversation in Ask tab →';
+            return '<div class="tb-foot"><button type="button" data-tb-foot="again">' + again + '</button><button type="button" data-tb-foot="open">' + open + '</button></div>';
+          }
+          function bindFoot() {
+            var again = panel.querySelector('[data-tb-foot="again"]');
+            var open = panel.querySelector('[data-tb-foot="open"]');
+            if (again) again.addEventListener('click', function () { input.value = ''; closePanel(); input.focus(); });
+            if (open) open.addEventListener('click', function () { closePanel(); var t = document.querySelector('[data-tab="ask"]'); if (t) t.click(); });
+          }
+          function mirrorAsk(q, a) {
+            var chat = document.getElementById('ask-chat'); if (!chat) return;
+            function bubble(text, you) {
+              var d = document.createElement('div');
+              d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;' + (you ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+              d.textContent = text; chat.appendChild(d);
+            }
+            bubble(q, true); bubble(a, false); chat.scrollTop = chat.scrollHeight;
+          }
+          function submit() {
+            var q = (input.value || '').trim(); if (!q) return;
+            if (mode === 'ask') {
+              openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Thinking…</i></div>');
+              api('/api/schedule/ask', { method: 'POST', body: JSON.stringify({ question: q }) }).then(function (r) {
+                var a = (r.ok ? r.data.answer : ((r.data && r.data.error) || 'Sorry, something went wrong.'));
+                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(a) + '</div>' + foot());
+                bindFoot();
+                if (r.ok) mirrorAsk(q, a);
+              }).catch(function () { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">Sorry, something went wrong.</div>' + foot()); bindFoot(); });
+              return;
+            }
+            openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Building a plan…</i></div>');
+            api('/api/schedule/agent-plan', { method: 'POST', body: JSON.stringify({ task: q }) }).then(function (res) {
+              var d = res.data || {};
+              if (!res.ok || d.error) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.error || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
+              if (d.needsClarification) {
+                var html = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.needsClarification) + '</div>';
+                var opts = d.clarificationOptions || []; var orig = d.originalTask || q;
+                if (opts.length) { html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">' + opts.map(function (o) { return '<button type="button" class="btn-secondary btn-sm" data-tb-clar="' + esc(o) + '">' + esc(o) + '</button>'; }).join('') + '</div>'; }
+                html += foot();
+                openPanel(html); bindFoot();
+                panel.querySelectorAll('[data-tb-clar]').forEach(function (c) { c.addEventListener('click', function () { input.value = orig + ' — ' + c.getAttribute('data-tb-clar'); submit(); }); });
+                return;
+              }
+              var desc = window.qsDescribeChange || function (c) { return c.action; };
+              var html2 = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
+                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + d.changes.map(function (c) { return '<li>' + esc(desc(c)) + '</li>'; }).join('') + '</ol>' +
+                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem"><button type="button" class="btn btn-sm" data-tb-approve="' + d.planId + '">Approve</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-tb-reject="' + d.planId + '">Reject</button></div></div>' + foot();
+              openPanel(html2); bindFoot();
+              var ap = panel.querySelector('[data-tb-approve]');
+              var rj = panel.querySelector('[data-tb-reject]');
+              if (ap) ap.addEventListener('click', function () { var b = this; b.disabled = true; b.textContent = 'Applying…';
+                api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' }).then(function (res2) {
+                  if (res2.ok) { var n = ((res2.data && res2.data.results) || []).length; openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.</div>' + foot()); }
+                  else openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot());
+                  bindFoot();
+                }).catch(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Network error.</div>' + foot()); bindFoot(); });
+              });
+              if (rj) rj.addEventListener('click', function () { var b = this; b.disabled = true;
+                api('/api/schedule/plans/' + d.planId + '/reject', { method: 'POST' }).then(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Plan rejected — nothing was changed.</div>' + foot()); bindFoot(); })
+                .catch(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Network error.</div>' + foot()); bindFoot(); });
+              });
+            }).catch(function () { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">Sorry, something went wrong.</div>' + foot()); bindFoot(); });
+          }
+          go.addEventListener('click', submit);
+          input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); if (e.key === 'Escape') closePanel(); });
+          document.addEventListener('click', function (e) { if (!bar.contains(e.target)) closePanel(); });
+          var origShow = window.qsShowAskTabs;
+          window.qsShowAskTabs = function () { if (origShow) origShow(); refreshToggle(); };
+          refreshToggle();
+        })();
         // Command chat — in-app agent: plan, approve, done.
         (function initAgentChat() {
           var chat = $('agent-chat'), input = $('agent-input'), sendBtn = $('agent-send');
@@ -5191,6 +5313,7 @@
               default: return c.action;
             }
           }
+          window.qsDescribeChange = describeChange;
           function sendTask() {
             var q = (input.value || '').trim();
             if (!q) return;
