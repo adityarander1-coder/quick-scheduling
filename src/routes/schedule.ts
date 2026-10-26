@@ -5056,6 +5056,9 @@ async function buildClarification(
   } else if (p.includes('shift')) {
     question = 'Which shift type?';
     options = await shiftNames();
+  } else if (p.includes('end date')) {
+    question = 'Until when should this repeat?';
+    options = ['6 months', '1 year'];
   } else if (p.includes('date')) {
     question = 'Which date? (e.g. "Oct 25" or "next Monday")';
   } else if (p.includes('target count') || p.includes('count')) {
@@ -5068,73 +5071,235 @@ async function buildClarification(
   return { question, options };
 }
 
+// ---------------------------------------------------------------------------
+// Shared Task-planner helpers — used by /agent-plan and the unified /ask-task
+// endpoint, so both surfaces classify, validate and insert plans identically.
+// ---------------------------------------------------------------------------
+
+// Task thread: earlier user messages + agent clarification questions, so
+// follow-up answers refine the original task instead of replacing it.
+function parseTaskHistory(body: any): Array<{ q: string; a: string }> {
+  return Array.isArray(body?.history) ? body.history.slice(-10).map((h: any) => ({
+    q: String(h.q || '').slice(0, 500),
+    a: String(h.a || '').slice(0, 2000),
+  })).filter((h: any) => h.q) : [];
+}
+
+// Build a plan from a plain-language task: roster context + Gemini, with one
+// retry when Gemini's answer is unparseable (a fresh attempt usually parses).
+async function runTaskPlan(companyId: string, task: string, history: Array<{ q: string; a: string }>) {
+  const { planFromEmail } = await import('../util/gemini.js');
+  const { rows: stRows } = await query(
+    'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
+  const { rows: uRows } = await query(
+    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+     FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
+  const { rows: dRows } = await query(
+    'SELECT name FROM departments WHERE company_id = $1', [companyId]);
+  const today = new Date().toISOString().slice(0, 10);
+  const { buildSessionContext } = await import('../util/emailPoller.js');
+  const sessionCtx = await buildSessionContext(query, companyId, today);
+  const ctx: any = {
+    shiftTypes: stRows.map((r: any) => r.name),
+    members: uRows.map((r: any) => r.name),
+    today,
+    history,
+    ...sessionCtx,
+  };
+  let plan: any;
+  try {
+    plan = await planFromEmail(task, 'In-app agent task', ctx);
+  } catch (e: any) {
+    if (/valid JSON/i.test(e?.message || '')) {
+      plan = await planFromEmail(task, 'In-app agent task', ctx); // one retry
+    } else throw e;
+  }
+  // Attach department names for settings actions.
+  (plan as any).departments = dRows.map((r: any) => r.name);
+  return { plan, memberNames: uRows.map((r: any) => r.name), shiftNames: stRows.map((r: any) => r.name) };
+}
+
+// Match typed person/shift names against the real roster. Exact and unique
+// first-name matches are fixed silently (the plan preview still shows the
+// resolved name before approval); ambiguous or unknown names become one
+// targeted clarification question instead of a generic failure.
+async function validateTaskNames(plan: any, memberNames: string[], shiftNames: string[]) {
+  const { matchName } = await import('../util/planHelpers.js');
+  const personFields: Array<[any, string]> = [];
+  const shiftFields: Array<[any, string]> = [];
+  for (const c of plan.changes || []) {
+    if (['assign', 'assign_recurring', 'unassign', 'update_team_member'].includes(c.action) && c.person) personFields.push([c, 'person']);
+    if (['move', 'swap'].includes(c.action)) {
+      if (c.fromPerson) personFields.push([c, 'fromPerson']);
+      if (c.toPerson) personFields.push([c, 'toPerson']);
+    }
+    if (['assign', 'assign_recurring', 'set_staffing_target'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
+  }
+  for (const [c, f] of personFields) {
+    const m = matchName(c[f], memberNames);
+    if (m.status === 'exact') { c[f] = m.name; continue; }
+    if (m.status === 'suggestions') {
+      return { question: `Which team member do you mean by "${c[f]}"?`, options: m.names };
+    }
+    return { question: `I don't see a team member named "${c[f]}". Check the spelling, or pick one:`, options: memberNames.slice(0, 10) };
+  }
+  for (const [c, f] of shiftFields) {
+    const m = matchName(c[f], shiftNames);
+    if (m.status === 'exact') { c[f] = m.name; continue; }
+    if (m.status === 'suggestions') {
+      return { question: `Which shift type do you mean by "${c[f]}"?`, options: m.names };
+    }
+    return { question: `I don't see a shift type named "${c[f]}". Pick one:`, options: shiftNames.slice(0, 10) };
+  }
+  return null;
+}
+
+// Validate a parsed plan (names, then completeness) and insert it as pending,
+// or return the one clarification question that unblocks it.
+async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[]) {
+  const nameQ = await validateTaskNames(plan, memberNames, shiftNames);
+  if (nameQ) return { type: 'clarification' as const, question: nameQ.question, options: nameQ.options };
+  const { changeProblems } = await import('../util/emailPoller.js');
+  const incomplete = (plan.changes || [])
+    .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
+    .filter((x: any) => x.problems.length > 0);
+  if (!plan.changes?.length || incomplete.length || (plan as any).needsClarification) {
+    let question = (plan as any).needsClarification || 'I could not understand the task well enough to build a plan.';
+    let options: string[] = [];
+    if (incomplete.length) {
+      const ch = plan.changes[incomplete[0].i];
+      const prob = incomplete[0].problems[0];
+      const built = await buildClarification(ch, prob, companyId, query);
+      question = built.question;
+      options = built.options;
+    }
+    return { type: 'clarification' as const, question, options };
+  }
+  const { rows } = await query(
+    `INSERT INTO schedule_plans
+     (company_id, source_subject, source_body, plan_summary, plan, status, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'pending', NOW()) RETURNING id`,
+    [companyId, 'In-app agent task', task, plan.summary, JSON.stringify(plan)]
+  );
+  return { type: 'plan' as const, planId: rows[0].id, summary: plan.summary, changes: plan.changes };
+}
+
+// Ask context for /ask-task (same roster + department-visibility rules as
+// /ask: owner all, scheduler view-access, employee own department only).
+async function buildAskContext(req: Request) {
+  const companyId = req.session.companyId!;
+  const { rows: stRows } = await query(
+    'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+    [companyId]
+  );
+  const { rows: uRows } = await query(
+    `SELECT id, first_name AS "firstName", last_name AS "lastName", nickname,
+            email, phone, department_id AS "departmentId"
+     FROM users WHERE company_id = $1 AND is_active = true`,
+    [companyId]
+  );
+  const { rows: tzRows } = await query(
+    `SELECT value FROM company_settings WHERE company_id = $1 AND key = 'timezone'`,
+    [companyId]);
+  const companyTimezone = tzRows[0]?.value || 'America/Chicago';
+  const askerRole = req.session.role!;
+  let visibleDeptIds: string[] | null = null;
+  if (askerRole !== 'owner') {
+    const access = await getDepartmentAccess(req.session.userId!, companyId);
+    if (askerRole === 'scheduler') visibleDeptIds = access.view || [];
+    else {
+      const { rows: meRows } = await query(
+        'SELECT department_id FROM users WHERE id = $1 AND company_id = $2',
+        [req.session.userId!, companyId]);
+      visibleDeptIds = meRows[0] && meRows[0].department_id ? [meRows[0].department_id] : [];
+    }
+  }
+  return {
+    companyId,
+    shiftTypes: stRows,
+    members: uRows,
+    userId: req.session.userId!,
+    role: askerRole,
+    visibleDeptIds,
+    timezone: companyTimezone,
+  };
+}
+
 router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const task = String(req.body?.task || '').slice(0, 1000);
     if (!task.trim()) { res.status(400).json({ error: 'Describe the task.' }); return; }
-    // Task thread: earlier user messages + agent clarification questions, so
-    // follow-up answers refine the original task instead of replacing it.
-    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-10).map((h: any) => ({
-      q: String(h.q || '').slice(0, 500),
-      a: String(h.a || '').slice(0, 2000),
-    })).filter((h: any) => h.q) : [];
-    const { planFromEmail } = await import('../util/gemini.js');
-    let plan: any;
+    const history = parseTaskHistory(req.body);
+    let plan: any, memberNames: string[], shiftNames: string[];
     try {
-      const { rows: stRows } = await query(
-        'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
-      const { rows: uRows } = await query(
-        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
-         FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
-      const { rows: dRows } = await query(
-        'SELECT name FROM departments WHERE company_id = $1', [companyId]);
-      const today = new Date().toISOString().slice(0, 10);
-      const { buildSessionContext } = await import('../util/emailPoller.js');
-      const sessionCtx = await buildSessionContext(query, companyId, today);
-      plan = await planFromEmail(task, 'In-app agent task', {
-        shiftTypes: stRows.map((r: any) => r.name),
-        members: uRows.map((r: any) => r.name),
-        today,
-        history,
-        ...sessionCtx,
-      });
-      // Attach department names for settings actions.
-      (plan as any).departments = dRows.map((r: any) => r.name);
+      ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, task, history));
     } catch (planErr: any) {
-      console.error('[schedule] agent-plan parse failed:', planErr?.message);
-      res.json({ ok: false, needsClarification: 'I had trouble understanding that task. Try rephrasing it, e.g. "delete the secretary job role from internal medicine".' });
+      const { classifyPlanError } = await import('../util/planHelpers.js');
+      console.error('[schedule] agent-plan failed:', planErr?.message, 'task:', task.slice(0, 200));
+      res.json({ ok: false, error: classifyPlanError(planErr?.message || '') });
       return;
     }
-    // Validate completeness.
-    const { changeProblems } = await import('../util/emailPoller.js');
-    const incomplete = (plan.changes || [])
-      .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
-      .filter((x: any) => x.problems.length > 0);
-    if (!plan.changes?.length || incomplete.length || (plan as any).needsClarification) {
-      // Build a friendly question + tappable options for the first missing detail.
-      let question = (plan as any).needsClarification || 'I could not understand the task well enough to build a plan.';
-      let options: string[] = [];
-      if (incomplete.length) {
-        const ch = plan.changes[incomplete[0].i];
-        const prob = incomplete[0].problems[0];
-        const built = await buildClarification(ch, prob, companyId, query);
-        question = built.question;
-        options = built.options;
-      }
-      res.json({ ok: false, needsClarification: question, clarificationOptions: options, originalTask: task });
+    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames);
+    if (fin.type === 'clarification') {
+      res.json({ ok: false, needsClarification: fin.question, clarificationOptions: fin.options, originalTask: task });
       return;
     }
-    const { rows } = await query(
-      `INSERT INTO schedule_plans
-       (company_id, source_subject, source_body, plan_summary, plan, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'pending', NOW()) RETURNING id`,
-      [companyId, 'In-app agent task', task, plan.summary, JSON.stringify(plan)]
-    );
-    res.json({ ok: true, planId: rows[0].id, summary: plan.summary, changes: plan.changes });
+    res.json({ ok: true, planId: fin.planId, summary: fin.summary, changes: fin.changes });
   } catch (err) {
     console.error('[schedule] agent-plan failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/ask-task — the unified bar: one input for questions and
+// tasks, no mode switch. Rule engine + AI data pack answer questions; anything
+// else becomes a plan (admins) or a pointer to Requests (employees).
+router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const message = String(req.body?.message || req.body?.task || req.body?.question || '').slice(0, 1000);
+    if (!message.trim()) { res.status(400).json({ kind: 'error', error: 'Say something.' }); return; }
+    const history = parseTaskHistory(req.body);
+    // Imperatives are tasks, not questions: "put Nancy on nights" must not be
+    // misread as a question about Nancy. Questions go through the rule engine;
+    // instructions skip straight to the plan path.
+    const isInstruction = /^(please\s+)?(put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book)\b/i.test(message.trim());
+    let fallbackAnswer = '';
+    if (!isInstruction) {
+      const ctx = await buildAskContext(req);
+      const { answerQuestionDetailed } = await import('../util/askEngine.js');
+      const { answer, fallback } = await answerQuestionDetailed(message, ctx);
+      if (!fallback) { res.json({ kind: 'answer', answer }); return; }
+      fallbackAnswer = answer;
+    }
+    // Not answerable as a question — treat it as a task (admins only).
+    if (req.session.role === 'employee') {
+      res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+      return;
+    }
+    let plan: any, memberNames: string[], shiftNames: string[];
+    try {
+      ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, message, history));
+    } catch (planErr: any) {
+      const { classifyPlanError } = await import('../util/planHelpers.js');
+      console.error('[schedule] ask-task plan failed:', planErr?.message, 'task:', message.slice(0, 200));
+      res.json({ kind: 'error', error: classifyPlanError(planErr?.message || '') });
+      return;
+    }
+    if ((plan as any).emailType === 'schedule_question') {
+      res.json({ kind: 'answer', answer: fallbackAnswer || (plan as any).summary || 'I could not answer that question.' });
+      return;
+    }
+    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames);
+    if (fin.type === 'clarification') {
+      res.json({ kind: 'clarification', question: fin.question, options: fin.options, originalTask: message });
+      return;
+    }
+    res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });
+  } catch (err) {
+    console.error('[schedule] ask-task failed:', err);
+    res.status(500).json({ kind: 'error', error: 'Something went wrong. Please try again.' });
   }
 });
 
@@ -5201,7 +5366,7 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
           const isSettings = settingsActions.has(c.action);
           await auditLog({
             companyId,
-            date: c.date || c.fromDate || todayStr(),
+            date: c.date || c.fromDate || c.startDate || todayStr(),
             action: (c.action === 'unassign' || c.action.startsWith('delete')) ? 'deleted'
               : (c.action === 'bulk_publish') ? 'published'
               : (c.action === 'bulk_unpublish') ? 'unpublished'

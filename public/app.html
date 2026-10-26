@@ -538,10 +538,6 @@
       border-radius: 8px;
       white-space: nowrap;
     }
-    .ask-subtabs {
-      display: flex; gap: 0.25rem; overflow-x: auto; padding-bottom: 0.5rem;
-      border-bottom: 2px solid var(--border); margin-bottom: 1.25rem;
-    }
     .subtab-btn.active {
       background: #eaf3fb;
       color: var(--accent);
@@ -721,12 +717,8 @@
   <div id="topbar" hidden>
     <div id="tb-dept"></div>
     <div class="tb-sp"><div id="tb-ask">
-      <div id="tb-ask-toggle" style="display:none">
-        <button type="button" class="active" data-tbmode="ask">Ask</button>
-        <button type="button" data-tbmode="task">Task</button>
-      </div>
-      <input type="text" id="tb-ask-input" placeholder="Ask Q-Scheduler anything…" aria-label="Ask Q-Scheduler">
-      <button type="button" id="tb-ask-go">Ask</button>
+      <input type="text" id="tb-ask-input" placeholder="Ask anything or give Q-Scheduler a task…" aria-label="Ask Q-Scheduler anything or give it a task">
+      <button type="button" id="tb-ask-go">Send</button>
       <div id="tb-ask-panel" class="hidden"></div>
     </div></div>
     <div id="tb-switch"></div>
@@ -999,19 +991,10 @@
     #tab-dash .db-tbar .ac-views button { background: transparent; border-color: transparent; color: #cfe0e2; }
     #tab-dash .db-tbar .ac-views button.active { background: rgba(255,255,255,0.18); border-color: transparent; color: #fff; }
     #tab-dash .db-tbar .ac-nav[data-nav="today"] { background: var(--accent); color: #fff; border-color: var(--accent); }
-    /* Ask tab band (Deepika, 2026-10-25): same dark band as Requests, with the
-       Ask / Task switch inside it. */
-    #tab-ask .ask-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; }
-    #tab-ask .ask-band .ask-subtabs { display: inline-flex; gap: 0; overflow: visible; padding-bottom: 0; border-bottom: none; margin-bottom: 0; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.20); border-radius: 999px; padding: 3px; }
-    #tab-ask .ask-band .subtab-btn { background: transparent; color: #cfe0e2; border-radius: 999px; padding: 0.55rem 1.4rem; }
-    #tab-ask .ask-band .subtab-btn.active { background: #fff; color: #21414c; }
-    /* Header Ask bar (Deepika, 2026-10-25): Ask/Task search inside the desktop
+    /* Header Ask bar (Deepika, 2026-10-25): the unified bar inside the desktop
        top bar's middle space. Desktop only — #topbar is hidden below 1024px. */
     #topbar .tb-sp { display: flex; justify-content: center; }
     #tb-ask { position: relative; display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
-    #tb-ask-toggle { display: inline-flex; background: rgba(0,0,0,0.20); border-radius: 999px; padding: 3px; flex: none; }
-    #tb-ask-toggle button { border: none; background: transparent; color: rgba(255,255,255,0.8); border-radius: 999px; padding: 5px 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; }
-    #tb-ask-toggle button.active { background: #fff; color: var(--accent); }
     #tb-ask-input { flex: 1; min-width: 0; border: none; border-radius: 999px; padding: 8px 14px; font-size: 0.9rem; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
     #tb-ask-go { flex: none; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 0.85rem; font-weight: 800; cursor: pointer; }
     #tb-ask-panel { position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 32px rgba(16,24,40,0.20); padding: 1rem 1.1rem; max-height: 60vh; overflow-y: auto; z-index: 960; }
@@ -1020,13 +1003,6 @@
     #tb-ask-panel .tb-a { line-height: 1.55; white-space: pre-wrap; }
     #tb-ask-panel .tb-foot { margin-top: 0.8rem; display: flex; gap: 0.75rem; flex-wrap: wrap; }
     #tb-ask-panel .tb-foot button { background: none; border: none; color: var(--accent); font-weight: 700; font-size: 0.85rem; cursor: pointer; padding: 0; }
-    @media (max-width: 700px) {
-      #tab-ask .ask-band .ask-subtabs { display: flex; width: 100%; }
-      #tab-ask .ask-band .subtab-btn { flex: 1; text-align: center; }
-    }
-    @media (min-width: 900px) {
-      #tab-ask .ask-band { margin: 0 -2rem 1rem; padding: 14px 2rem; }
-    }
     /* Sharable Links flip cards (Deepika, 2026-10-25) */
     #tab-link .link-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; color: #fff; font-size: 1.05rem; font-weight: 800; }
     #tab-link .flip-grid { display: grid; gap: 1rem; }
@@ -5065,35 +5041,18 @@
     </section>
 
     <section id="tab-ask" class="tab-panel">
-      <div class="ask-band" id="ask-band" style="display:none">
-        <div class="ask-subtabs" id="ask-subtabs" style="display:none">
-          <button type="button" class="subtab-btn active" data-asktab="ask">Ask</button>
-          <button type="button" class="subtab-btn" data-asktab="task">Task</button>
-        </div>
-      </div>
       <div class="card">
-        <div id="ask-about-view">
-          <p style="color:var(--dim)">Ask in plain language — answers come from your live schedule.</p>
-          <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
-            <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
-            <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
-            <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
-          </div>
-          <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
-          <div style="display:flex;gap:0.5rem">
-            <input type="text" id="ask-input" placeholder='Try "who&#39;s on Friday night?"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
-            <button type="button" id="ask-mic" class="btn-secondary" title="Speak your question" aria-label="Speak your question" style="padding:0.7rem 0.9rem">🎤</button>
-            <button type="button" id="ask-send" class="btn">Ask</button>
-          </div>
+        <p style="color:var(--dim)">Ask Q-Scheduler anything, or give it a task in plain language — it answers, or builds a plan you approve right here.</p>
+        <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
+          <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
+          <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
+          <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
         </div>
-        <div id="ask-task-view" style="display:none">
-          <p style="color:var(--dim)">Give Q-Scheduler tasks in plain language — it builds a plan and you approve it right here.</p>
-          <div id="agent-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
-          <div style="display:flex;gap:0.5rem">
-            <input type="text" id="agent-input" placeholder='Try "put Priya on day hospitalist Oct 20-22"' style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
-            <button type="button" id="agent-mic" class="btn-secondary" title="Speak your task" aria-label="Speak your task" style="padding:0.7rem 0.9rem">🎤</button>
-            <button type="button" id="agent-send" class="btn">Send</button>
-          </div>
+        <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
+        <div style="display:flex;gap:0.5rem">
+          <input type="text" id="ask-input" placeholder="Ask anything or give Q-Scheduler a task…" style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+          <button type="button" id="ask-mic" class="btn-secondary" title="Speak your message" aria-label="Speak your message" style="padding:0.7rem 0.9rem">🎤</button>
+          <button type="button" id="ask-send" class="btn">Send</button>
         </div>
       </div>
       <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
@@ -5132,79 +5091,181 @@
           chat.appendChild(div);
           chat.scrollTop = chat.scrollHeight;
         }
+        function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+        function addHtml(html, who) {
+          var div = document.createElement('div');
+          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;' +
+            (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+          div.innerHTML = html;
+          chat.appendChild(div);
+          chat.scrollTop = chat.scrollHeight;
+          return div;
+        }
+        function describeChange(c) {
+          switch (c.action) {
+            case 'assign': return 'Assign ' + c.person + ' → ' + c.shiftType + ' on ' + c.date;
+            case 'assign_recurring': return 'Assign ' + c.person + ' → ' + c.shiftType + ' every ' + c.intervalWeeks + ' weeks from ' + c.startDate + (c.weekendsOff ? ', weekdays only' : '') + (c.untilDate ? ' until ' + c.untilDate : '');
+            case 'unassign': return 'Remove ' + c.person + ' from ' + c.date;
+            case 'move': return 'Move ' + c.fromPerson + ' → ' + c.toPerson + ' on ' + (c.date || c.fromDate);
+            case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
+            case 'add_job_role': return 'Add job role "' + c.jobRoleName + '"' + (c.department ? ' to ' + c.department : '');
+            case 'rename_job_role': return 'Rename role "' + c.jobRoleName + '" → "' + c.newJobRoleName + '"';
+            case 'delete_job_role': return 'Delete job role "' + c.jobRoleName + '"' + (c.department ? ' from ' + c.department : '');
+            case 'add_department': return 'Add department "' + c.department + '"';
+            case 'rename_department': return 'Rename department "' + c.department + '" → "' + c.newDepartment + '"';
+            case 'add_team_member': return 'Add team member ' + c.firstName + ' ' + c.lastName + (c.department ? ' to ' + c.department : '');
+            case 'update_team_member': return 'Update ' + c.person + (c.jobRoleName ? ' → role ' + c.jobRoleName : '') + (c.department ? ' → ' + c.department : '');
+            case 'add_shift_type': return 'Add shift type "' + c.shiftType + '"' + (c.department ? ' to ' + c.department : '');
+            case 'rename_shift_type': return 'Rename shift "' + c.shiftType + '" → "' + c.newShiftType + '"';
+            case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
+            case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
+            case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
+            case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
+            case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.supervisor ? ' — supervisor ' + c.supervisor : '') + (c.location ? ' — in ' + c.location : '');
+            case 'cancel_session': return 'Cancel session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '');
+            default: return c.action;
+          }
+        }
+        window.qsDescribeChange = describeChange;
+        // Unified thread: kept only while a clarification round is open, so a
+        // typed follow-up still carries the original task. Reset on answers
+        // and plans — the next message is a new message.
+        var thread = [];
         function send(q) {
           q = (q || '').trim();
           if (!q) return;
           addMsg(q, 'you');
           $('ask-input').value = '';
-          var thinking = document.createElement('div');
-          thinking.style.cssText = 'margin-bottom:0.75rem;color:var(--dim);font-style:italic';
-          thinking.textContent = 'Thinking…';
-          chat.appendChild(thinking);
-          chat.scrollTop = chat.scrollHeight;
-          api('/api/schedule/ask', {
+          var thinking = addHtml('<i style="color:var(--dim)">Thinking…</i>', 'ai');
+          api('/api/schedule/ask-task', {
             method: 'POST',
-            body: JSON.stringify({ question: q }),
+            body: JSON.stringify({ message: q, history: thread }),
           }).then(function (r) {
-            thinking.remove();
-            if (r.ok) addMsg(r.data.answer, 'ai');
-            else addMsg((r.data && r.data.error) || 'Sorry, something went wrong.', 'ai');
-          }).catch(function () {
-            thinking.remove();
-            addMsg('Sorry, something went wrong.', 'ai');
-          });
+            var d = r.data || {};
+            if (!r.ok) { thinking.innerHTML = esc((d && d.error) || 'Sorry, something went wrong.'); return; }
+            if (d.kind === 'answer') {
+              thread = [];
+              thinking.innerHTML = esc(d.answer);
+              thinking.style.whiteSpace = 'pre-wrap';
+              return;
+            }
+            if (d.kind === 'error') { thread = []; thinking.innerHTML = esc(d.error); return; }
+            if (d.kind === 'clarification') {
+              thread.push({ q: q, a: d.question });
+              thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.question);
+              var opts = d.options || [];
+              if (opts.length) {
+                var optWrap = document.createElement('div');
+                optWrap.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                opts.forEach(function (o) {
+                  var c = document.createElement('button');
+                  c.type = 'button';
+                  c.className = 'btn-secondary btn-sm';
+                  c.textContent = o;
+                  c.addEventListener('click', function () { send(o); });
+                  optWrap.appendChild(c);
+                });
+                thinking.appendChild(optWrap);
+                chat.scrollTop = chat.scrollHeight;
+              }
+              return;
+            }
+            thread = [];
+            var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
+              '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
+              d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + '</li>'; }).join('') +
+              '</ol><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+              '<button type="button" class="btn btn-sm" data-approve="' + d.planId + '">Approve</button>' +
+              '<button type="button" class="btn-secondary btn-sm" data-reject="' + d.planId + '">Reject</button></div>';
+            thinking.innerHTML = html;
+            thinking.querySelector('[data-approve]').addEventListener('click', function () {
+              var b = this; b.disabled = true; b.textContent = 'Applying…';
+              api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' })
+                .then(function (res2) {
+                  if (res2.ok) {
+                    var n = ((res2.data && res2.data.results) || []).length;
+                    thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
+                    var firstAction = (d.changes && d.changes[0] && d.changes[0].action) || '';
+                    api('/api/schedule/agent-suggest', {
+                      method: 'POST',
+                      body: JSON.stringify({ task: q, planSummary: d.summary || '', action: firstAction }),
+                    }).then(function (res3) {
+                      var suggs = (res3.data && res3.data.suggestions) || [];
+                      if (!suggs.length) {
+                        addMsg('Give me another task any time.', 'ai');
+                        return;
+                      }
+                      var wrap = addHtml('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
+                      var chips = document.createElement('div');
+                      chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                      var ctxSummary = d.summary || '';
+                      suggs.forEach(function (sg) {
+                        var c = document.createElement('button');
+                        c.type = 'button';
+                        c.className = 'btn-secondary btn-sm';
+                        c.textContent = sg;
+                        c.addEventListener('click', function () {
+                          send(ctxSummary ? (sg + ' (context: ' + ctxSummary + ')') : sg);
+                        });
+                        chips.appendChild(c);
+                      });
+                      wrap.appendChild(chips);
+                      chat.scrollTop = chat.scrollHeight;
+                    }).catch(function () {
+                      addMsg('Give me another task any time.', 'ai');
+                    });
+                  } else {
+                    thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
+                  }
+                }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+            });
+            thinking.querySelector('[data-reject]').addEventListener('click', function () {
+              var b = this; b.disabled = true;
+              api('/api/schedule/plans/' + d.planId + '/reject', { method: 'POST' }).then(function () {
+                thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
+              }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+            });
+          }).catch(function () { thinking.innerHTML = 'Sorry, something went wrong.'; });
         }
+        // Voice input for the unified bar.
+        (function initAskMic() {
+          var btn = $('ask-mic'), askInput = $('ask-input');
+          if (!btn || btn.dataset.micInit) return;
+          btn.dataset.micInit = '1';
+          var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (!Rec) { btn.style.display = 'none'; return; }
+          var rec = new Rec();
+          rec.lang = 'en-US';
+          rec.interimResults = false;
+          rec.maxAlternatives = 1;
+          var listening = false;
+          rec.onresult = function (e) {
+            askInput.value = (askInput.value ? askInput.value + ' ' : '') + e.results[0][0].transcript;
+            askInput.focus();
+          };
+          rec.onerror = function () { listening = false; btn.textContent = '🎤'; };
+          rec.onend = function () { listening = false; btn.textContent = '🎤'; };
+          btn.addEventListener('click', function () {
+            if (listening) { rec.stop(); return; }
+            try { rec.start(); listening = true; btn.textContent = '🔴'; } catch (err) {}
+          });
+        })();
         $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
         $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
-        // Ask / Task sub-tabs (admins only). Role loads async, so this runs when called.
-        window.qsShowAskTabs = function () {
-          var tabs = document.querySelectorAll('#ask-subtabs [data-asktab]');
-          if (!tabs.length || $('ask-subtabs').dataset.shown) return;
-          var role = window.currentRole;
-          if (role !== 'owner' && role !== 'scheduler') return;
-          $('ask-subtabs').dataset.shown = '1';
-          $('ask-subtabs').style.display = '';
-          $('ask-band').style.display = '';
-          tabs.forEach(function (t) {
-            t.addEventListener('click', function () {
-              tabs.forEach(function (x) { x.classList.toggle('active', x === t); });
-              var isTask = t.getAttribute('data-asktab') === 'task';
-              $('ask-about-view').style.display = isTask ? 'none' : '';
-              $('ask-task-view').style.display = isTask ? '' : 'none';
-            });
-          });
-        };
-        window.qsShowAskTabs();
-        // Header Ask bar (Deepika, 2026-10-25): Ask/Task search inside the
+        // Header Ask bar (Deepika, 2026-10-25): the unified bar inside the
         // desktop top bar's middle space. Answers/plans drop down under the
-        // bar — no tab switch. Ask tab itself is untouched.
+        // bar — no tab switch, no mode toggle.
         (function () {
           var bar = document.getElementById('tb-ask');
           if (!bar) return;
           var input = document.getElementById('tb-ask-input');
           var go = document.getElementById('tb-ask-go');
           var panel = document.getElementById('tb-ask-panel');
-          var toggle = document.getElementById('tb-ask-toggle');
-          var mode = 'ask';
           function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-          function refreshToggle() {
-            var role = window.currentRole;
-            toggle.style.display = (role === 'owner' || role === 'scheduler') ? '' : 'none';
-            if (role === 'employee') setMode('ask');
-          }
-          function setMode(m) {
-            mode = m;
-            toggle.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tbmode') === m); });
-            go.textContent = m === 'task' ? 'Send' : 'Ask';
-            input.placeholder = m === 'task' ? 'Give Q-Scheduler a task…' : 'Ask Q-Scheduler anything…';
-          }
-          toggle.querySelectorAll('button').forEach(function (b) { b.addEventListener('click', function () { setMode(b.getAttribute('data-tbmode')); input.focus(); }); });
           function openPanel(html) { panel.innerHTML = html; panel.classList.remove('hidden'); }
           function closePanel() { panel.classList.add('hidden'); }
           function foot() {
-            var again = mode === 'task' ? 'Another task ↑' : 'Ask another ↑';
-            var open = mode === 'task' ? 'Open Ask tab →' : 'Open full conversation in Ask tab →';
-            return '<div class="tb-foot"><button type="button" data-tb-foot="again">' + again + '</button><button type="button" data-tb-foot="open">' + open + '</button></div>';
+            return '<div class="tb-foot"><button type="button" data-tb-foot="again">New message ↑</button><button type="button" data-tb-foot="open">Open full conversation in Ask tab →</button></div>';
           }
           function bindFoot() {
             var again = panel.querySelector('[data-tb-foot="again"]');
@@ -5226,44 +5287,49 @@
           var tbThread = [];
           function submit() {
             var q = (input.value || '').trim(); if (!q) return;
-            if (mode === 'ask') {
-              openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Thinking…</i></div>');
-              api('/api/schedule/ask', { method: 'POST', body: JSON.stringify({ question: q }) }).then(function (r) {
-                var a = (r.ok ? r.data.answer : ((r.data && r.data.error) || 'Sorry, something went wrong.'));
-                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(a) + '</div>' + foot());
-                bindFoot();
-                if (r.ok) mirrorAsk(q, a);
-              }).catch(function () { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">Sorry, something went wrong.</div>' + foot()); bindFoot(); });
-              return;
-            }
-            openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Building a plan…</i></div>');
-            api('/api/schedule/agent-plan', { method: 'POST', body: JSON.stringify({ task: q, history: tbThread }) }).then(function (res) {
+            openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Thinking…</i></div>');
+            api('/api/schedule/ask-task', { method: 'POST', body: JSON.stringify({ message: q, history: tbThread }) }).then(function (res) {
               var d = res.data || {};
-              if (!res.ok || d.error) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.error || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
-              if (d.needsClarification) {
-                tbThread.push({ q: q, a: d.needsClarification });
-                var html = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.needsClarification) + '</div>';
-                var opts = d.clarificationOptions || []; var orig = d.originalTask || q;
+              if (!res.ok) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc((d && d.error) || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
+              if (d.kind === 'answer') {
+                tbThread = [];
+                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.answer) + '</div>' + foot());
+                bindFoot();
+                mirrorAsk(q, d.answer);
+                return;
+              }
+              if (d.kind === 'error') {
+                tbThread = [];
+                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.error) + '</div>' + foot()); bindFoot(); return;
+              }
+              if (d.kind === 'clarification') {
+                tbThread.push({ q: q, a: d.question });
+                var html = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.question) + '</div>';
+                var opts = d.options || [];
                 if (opts.length) { html += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">' + opts.map(function (o) { return '<button type="button" class="btn-secondary btn-sm" data-tb-clar="' + esc(o) + '">' + esc(o) + '</button>'; }).join('') + '</div>'; }
                 html += foot();
                 openPanel(html); bindFoot();
-                panel.querySelectorAll('[data-tb-clar]').forEach(function (c) { c.addEventListener('click', function () { input.value = orig + ' — ' + c.getAttribute('data-tb-clar'); submit(); }); });
+                panel.querySelectorAll('[data-tb-clar]').forEach(function (c) { c.addEventListener('click', function () { input.value = c.getAttribute('data-tb-clar'); submit(); }); });
                 return;
               }
               tbThread = [];
               var desc = window.qsDescribeChange || function (c) { return c.action; };
               var html2 = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
                 '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + d.changes.map(function (c) { return '<li>' + esc(desc(c)) + '</li>'; }).join('') + '</ol>' +
-                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem"><button type="button" class="btn btn-sm" data-tb-approve="' + d.planId + '">Approve</button>' +
+                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                '<button type="button" class="btn btn-sm" data-tb-approve="' + d.planId + '">Approve</button>' +
                 '<button type="button" class="btn-secondary btn-sm" data-tb-reject="' + d.planId + '">Reject</button></div></div>' + foot();
               openPanel(html2); bindFoot();
               var ap = panel.querySelector('[data-tb-approve]');
               var rj = panel.querySelector('[data-tb-reject]');
               if (ap) ap.addEventListener('click', function () { var b = this; b.disabled = true; b.textContent = 'Applying…';
                 api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' }).then(function (res2) {
-                  if (res2.ok) { var n = ((res2.data && res2.data.results) || []).length; openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.</div>' + foot()); }
-                  else openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot());
-                  bindFoot();
+                  if (res2.ok) {
+                    var n = ((res2.data && res2.data.results) || []).length;
+                    openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.</div>' + foot()); bindFoot();
+                  } else {
+                    openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot()); bindFoot();
+                  }
                 }).catch(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Network error.</div>' + foot()); bindFoot(); });
               });
               if (rj) rj.addEventListener('click', function () { var b = this; b.disabled = true;
@@ -5275,211 +5341,8 @@
           go.addEventListener('click', submit);
           input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); if (e.key === 'Escape') closePanel(); });
           document.addEventListener('click', function (e) { if (!bar.contains(e.target)) closePanel(); });
-          var origShow = window.qsShowAskTabs;
-          window.qsShowAskTabs = function () { if (origShow) origShow(); refreshToggle(); };
-          refreshToggle();
         })();
         // Command chat — in-app agent: plan, approve, done.
-        (function initAgentChat() {
-          var chat = $('agent-chat'), input = $('agent-input'), sendBtn = $('agent-send');
-          if (!chat || sendBtn.dataset.init) return;
-          sendBtn.dataset.init = '1';
-          function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-          function addMsg(html, who) {
-            var div = document.createElement('div');
-            div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;' +
-              (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
-            div.innerHTML = html;
-            chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
-            return div;
-          }
-          function describeChange(c) {
-            switch (c.action) {
-              case 'assign': return 'Assign ' + c.person + ' → ' + c.shiftType + ' on ' + c.date;
-              case 'unassign': return 'Remove ' + c.person + ' from ' + c.date;
-              case 'move': return 'Move ' + c.fromPerson + ' → ' + c.toPerson + ' on ' + (c.date || c.fromDate);
-              case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
-              case 'add_job_role': return 'Add job role "' + c.jobRoleName + '"' + (c.department ? ' to ' + c.department : '');
-              case 'rename_job_role': return 'Rename role "' + c.jobRoleName + '" → "' + c.newJobRoleName + '"';
-              case 'delete_job_role': return 'Delete job role "' + c.jobRoleName + '"' + (c.department ? ' from ' + c.department : '');
-              case 'add_department': return 'Add department "' + c.department + '"';
-              case 'rename_department': return 'Rename department "' + c.department + '" → "' + c.newDepartment + '"';
-              case 'add_team_member': return 'Add team member ' + c.firstName + ' ' + c.lastName + (c.department ? ' to ' + c.department : '');
-              case 'update_team_member': return 'Update ' + c.person + (c.jobRoleName ? ' → role ' + c.jobRoleName : '') + (c.department ? ' → ' + c.department : '');
-              case 'add_shift_type': return 'Add shift type "' + c.shiftType + '"' + (c.department ? ' to ' + c.department : '');
-              case 'rename_shift_type': return 'Rename shift "' + c.shiftType + '" → "' + c.newShiftType + '"';
-              case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
-              case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
-              case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
-              case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
-              case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.supervisor ? ' — supervisor ' + c.supervisor : '') + (c.location ? ' — in ' + c.location : '');
-              case 'cancel_session': return 'Cancel session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '');
-              default: return c.action;
-            }
-          }
-          window.qsDescribeChange = describeChange;
-          // Task thread: kept only while a clarification round is open, so a
-          // typed follow-up answer still carries the original task. Reset
-          // once a plan is shown — the next message is a new task.
-          var thread = [];
-          function sendTask() {
-            var q = (input.value || '').trim();
-            if (!q) return;
-            addMsg(esc(q), 'you');
-            input.value = '';
-            var thinking = addMsg('<i style="color:var(--dim)">Building a plan…</i>', 'ai');
-            api('/api/schedule/agent-plan', {
-              method: 'POST',
-              body: JSON.stringify({ task: q, history: thread }),
-            }).then(function (res) {
-              var d = res.data || {};
-              if (!res.ok || d.error) { thinking.innerHTML = esc(d.error || 'Sorry, something went wrong.'); return; }
-              if (d.needsClarification) {
-                thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(d.needsClarification);
-                thread.push({ q: q, a: d.needsClarification });
-                var opts = d.clarificationOptions || [];
-                var origTask = d.originalTask || q;
-                if (opts.length) {
-                  var optWrap = document.createElement('div');
-                  optWrap.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
-                  opts.forEach(function (o) {
-                    var c = document.createElement('button');
-                    c.type = 'button';
-                    c.className = 'btn-secondary btn-sm';
-                    c.textContent = o;
-                    c.addEventListener('click', function () {
-                      input.value = origTask + ' — ' + o;
-                      sendTask();
-                    });
-                    optWrap.appendChild(c);
-                  });
-                  thinking.appendChild(optWrap);
-                  chat.scrollTop = chat.scrollHeight;
-                }
-                return;
-              }
-              thread = [];
-              var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
-                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
-                d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + '</li>'; }).join('') +
-                '</ol><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
-                '<button type="button" class="btn btn-sm" data-approve="' + d.planId + '">Approve</button>' +
-                '<button type="button" class="btn-secondary btn-sm" data-reject="' + d.planId + '">Reject</button></div>';
-              thinking.innerHTML = html;
-              thinking.querySelector('[data-approve]').addEventListener('click', function () {
-                var b = this; b.disabled = true; b.textContent = 'Applying…';
-                api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' })
-                  .then(function (res2) {
-                    if (res2.ok) {
-                      var n = ((res2.data && res2.data.results) || []).length;
-                      thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
-                      // Suggest logical next tasks as tappable chips.
-                      var firstAction = (d.changes && d.changes[0] && d.changes[0].action) || '';
-                      api('/api/schedule/agent-suggest', {
-                        method: 'POST',
-                        body: JSON.stringify({ task: q, planSummary: d.summary || '', action: firstAction }),
-                      }).then(function (res3) {
-                        var suggs = (res3.data && res3.data.suggestions) || [];
-                        if (!suggs.length) {
-                          addMsg('<i style="color:var(--dim)">Give me another task any time.</i>', 'ai');
-                          return;
-                        }
-                        var wrap = addMsg('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
-                        var chips = document.createElement('div');
-                        chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
-                        var ctxSummary = d.summary || '';
-                        suggs.forEach(function (s) {
-                          var c = document.createElement('button');
-                          c.type = 'button';
-                          c.className = 'btn-secondary btn-sm';
-                          c.textContent = s;
-                          c.addEventListener('click', function () {
-                            input.value = ctxSummary ? (s + ' (context: ' + ctxSummary + ')') : s;
-                            sendTask();
-                          });
-                          chips.appendChild(c);
-                        });
-                        wrap.appendChild(chips);
-                        chat.scrollTop = chat.scrollHeight;
-                      }).catch(function () {
-                        addMsg('<i style="color:var(--dim)">Give me another task any time.</i>', 'ai');
-                      });
-                    } else {
-                      thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
-                    }
-                  }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
-              });
-              thinking.querySelector('[data-reject]').addEventListener('click', function () {
-                var b = this; b.disabled = true;
-                api('/api/schedule/plans/' + d.planId + '/reject', { method: 'POST' }).then(function () {
-                  thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
-                }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
-              });
-            }).catch(function () { thinking.innerHTML = 'Sorry, something went wrong.'; });
-          }
-          sendBtn.addEventListener('click', sendTask);
-          input.addEventListener('keydown', function (e) { if (e.key === 'Enter') sendTask(); });
-          // Voice input: speech-to-text via the browser's built-in recognition.
-          (function initMic(btnId, inputEl) {
-            var btn = $(btnId);
-            if (!btn || btn.dataset.micInit) return;
-            btn.dataset.micInit = '1';
-            var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!Rec) { btn.style.display = 'none'; return; }
-            var rec = new Rec();
-            rec.lang = 'en-US';
-            rec.interimResults = false;
-            rec.maxAlternatives = 1;
-            var listening = false;
-            rec.onresult = function (e) {
-              var text = e.results[0][0].transcript;
-              inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
-              inputEl.focus();
-            };
-            rec.onerror = function (e) {
-              listening = false;
-              btn.textContent = '🎤';
-              if (e.error === 'not-allowed') {
-                addMsg('<i style="color:var(--dim)">Microphone blocked — allow mic access in your browser settings to use voice input.</i>', 'ai');
-              }
-            };
-            rec.onend = function () {
-              listening = false;
-              btn.textContent = '🎤';
-            };
-            btn.addEventListener('click', function () {
-              if (listening) { rec.stop(); return; }
-              try {
-                rec.start();
-                listening = true;
-                btn.textContent = '🔴';
-              } catch (err) { /* already started */ }
-            });
-          })('agent-mic', input);
-          (function initAskMic() {
-            var btn = $('ask-mic'), askInput = $('ask-input');
-            if (!btn || btn.dataset.micInit) return;
-            btn.dataset.micInit = '1';
-            var Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!Rec) { btn.style.display = 'none'; return; }
-            var rec = new Rec();
-            rec.lang = 'en-US';
-            rec.interimResults = false;
-            rec.maxAlternatives = 1;
-            var listening = false;
-            rec.onresult = function (e) {
-              askInput.value = (askInput.value ? askInput.value + ' ' : '') + e.results[0][0].transcript;
-              askInput.focus();
-            };
-            rec.onerror = function () { listening = false; btn.textContent = '🎤'; };
-            rec.onend = function () { listening = false; btn.textContent = '🎤'; };
-            btn.addEventListener('click', function () {
-              if (listening) { rec.stop(); return; }
-              try { rec.start(); listening = true; btn.textContent = '🔴'; } catch (err) {}
-            });
-          })();
-        })();
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
         });
@@ -14418,7 +14281,6 @@
       window.isOwner = (role === 'owner');
       window.currentRole = role;
       window.qsUserName = r.data.user.name || '';
-      if (window.qsShowAskTabs) window.qsShowAskTabs();
       if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav();
       // Apply company name + personal appearance immediately on login.
       api('/api/schedule/general-settings').then(function (gr) {

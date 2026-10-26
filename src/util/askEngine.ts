@@ -477,6 +477,10 @@ export async function buildAskDataPack(ctx: AskContext, from: string, to: string
   return parts.join('\n');
 }
 
+/** The examples-list fallback text — also the marker that the rule engine
+ *  (rules + AI data pack) could not answer, so a caller can route elsewhere. */
+export const FALLBACK_INTRO = 'I can answer things like:';
+
 export async function answerQuestion(question: string, ctx: AskContext): Promise<string> {
   const q = question.trim();
   if (!q) return 'Ask me something like "who\'s on Friday night?"';
@@ -783,5 +787,11 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     }
   }
   // --- Fallback ---
-  return `I can answer things like:\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a presenter?"\n• "Tell me my settings" / "What's my name?"\n• "How many shifts are open Sunday?"`;
+  return `${FALLBACK_INTRO}\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a presenter?"\n• "Tell me my settings" / "What's my name?"\n• "How many shifts are open Sunday?"`;
+}
+
+/** Same as answerQuestion, plus whether it fell through to the examples list. */
+export async function answerQuestionDetailed(question: string, ctx: AskContext): Promise<{ answer: string; fallback: boolean }> {
+  const answer = await answerQuestion(question, ctx);
+  return { answer, fallback: answer.startsWith(FALLBACK_INTRO) };
 }

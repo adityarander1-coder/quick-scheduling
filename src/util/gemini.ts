@@ -165,7 +165,7 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
+      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
       "person": "Full Name (for assign/unassign/update_team_member)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
@@ -196,6 +196,10 @@ Respond with JSON only, no other text:
       "recurRule": "none|daily|weekly|monthly|yearly (for add_session)",
       "recurInterval": "Number, every N (for add_session, e.g. 2 = every 2 weeks)",
       "recurUntil": "YYYY-MM-DD (for add_session, repeat until)",
+      "startDate": "YYYY-MM-DD, first day of the pattern (for assign_recurring)",
+      "intervalWeeks": "Number, every N weeks (for assign_recurring)",
+      "weekendsOff": "true when weekends are off (for assign_recurring)",
+      "untilDate": "YYYY-MM-DD, repeat until, inclusive (for assign_recurring)",
       "notes": "Notes (for session actions)"
     }
   ],
@@ -212,7 +216,8 @@ Respond with JSON only, no other text:
 }
 
 Rules:
-- For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
+- For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; assign_recurring needs person + shiftType + startDate + intervalWeeks + untilDate.
+- Repeating shifts: when a request repeats on a pattern ("every 5 weeks", "every other week", "every Monday"), return ONE "assign_recurring" change — NEVER expand it into many "assign" changes and NEVER do calendar math by hand beyond the first date. Compute startDate from the request against today's date ("first Monday of November" with today in late October → the first Monday of the coming November). Set intervalWeeks from the pattern ("every 5 weeks" → 5, "every other week" → 2). Set weekendsOff true when the request says weekends are off. Set untilDate when an end is given ("for a year", "till November next year"); if no end is given, set "needsClarification" to ask until when, and "confidence" to "low". unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
 - Attachments: when the email has attached file contents or PDFs, they are part of the request. If an attachment is a schedule list or grid of shifts, create one "assign" change per person per shift per day — expand week-long blocks and date ranges into one change per day — following any instructions in the email body. If the email body is empty, the attachment alone is the request. Attached documents can also hold the details for any other request type (e.g. a list of team members to add).
 - For "settings_change": fill in "changes" with settings actions. Supported actions:
   - "add_job_role": needs jobRoleName + department. Example: "Add PGY4 role to IM Residency" → jobRoleName "PGY4", department "IM Residency".

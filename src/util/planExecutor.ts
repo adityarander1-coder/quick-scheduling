@@ -5,7 +5,7 @@ import { query } from '../db.js';
 import { getDepartmentAccess } from './departmentAccess.js';
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
+  action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
           'add_department' | 'rename_department' |
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
@@ -18,6 +18,11 @@ interface PlanChange {
   date?: string;
   fromDate?: string;
   toDate?: string;
+  // Recurring shift fields (assign_recurring)
+  startDate?: string;
+  intervalWeeks?: number;
+  weekendsOff?: boolean;
+  untilDate?: string;
   shiftType?: string;
   jobRoleName?: string;
   newJobRoleName?: string;
@@ -506,6 +511,27 @@ export async function executePlan(
         } else {
           results.push({ action: 'assign', success: true, message: `Assigned ${user.display} to ${st.name} on ${change.date}` });
         }
+      } else if (change.action === 'assign_recurring' && change.person && change.shiftType && change.startDate && change.intervalWeeks && change.untilDate) {
+        // One recurring change expands here, in code — Gemini only describes
+        // the pattern, it never does the calendar math.
+        const { expandRecurring } = await import('./planHelpers.js');
+        const user = await findUser(companyId, change.person);
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!user) throw new Error(`Person not found: ${change.person}`);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const dates = expandRecurring(change.startDate, change.intervalWeeks, !!change.weekendsOff, change.untilDate);
+        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
+        let added = 0;
+        for (const d of dates) {
+          const inserted = await query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, true, $6)
+             ON CONFLICT DO NOTHING`,
+            [uuidv4(), companyId, user.id, st.id, d, createdBy]
+          );
+          if ((inserted as any).rowCount) added++;
+        }
+        results.push({ action: 'assign_recurring', success: true, message: `Assigned ${user.display} to ${st.name} every ${change.intervalWeeks} weeks from ${change.startDate}${change.weekendsOff ? ' (weekdays only)' : ''} until ${change.untilDate} (${added} new, ${dates.length - added} already on)` });
       } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
         // Swap exchanges two people's shifts. Same-day swap uses `date`;
         // cross-date swap uses fromDate/toDate. Runs in one transaction so a
@@ -937,6 +963,15 @@ export async function executePlan(
           companyId, userIds: [user.id], category: 'schedule', type: 'shift_assigned',
           title: `New shift: ${change.shiftType} on ${fmtDateLong(change.date)}`,
           body: `You were assigned ${change.shiftType} on ${fmtDateLong(change.date)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${user.id}`,
+          bundleTitle: 'You were assigned {count} new shifts', excludeUserId: createdBy,
+        });
+      } else if (change.action === 'assign_recurring' && change.person && change.startDate) {
+        const user = await findUser(companyId, change.person);
+        if (user) await notify({
+          companyId, userIds: [user.id], category: 'schedule', type: 'shift_assigned',
+          title: `New recurring shifts: ${change.shiftType} from ${fmtDateLong(change.startDate)}`,
+          body: `You were assigned ${change.shiftType} every ${change.intervalWeeks} weeks from ${fmtDateLong(change.startDate)} until ${change.untilDate ? fmtDateLong(change.untilDate) : 'further notice'}.`,
           link: 'my-schedule', bundleKey: `shift_assigned:${user.id}`,
           bundleTitle: 'You were assigned {count} new shifts', excludeUserId: createdBy,
         });

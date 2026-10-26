@@ -45,6 +45,13 @@ export function changeProblems(change: any): string[] {
       if (missing(change.date)) problems.push('no date given');
       if (missing(change.shiftType)) problems.push('no shift type given');
       break;
+    case 'assign_recurring':
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      if (missing(change.startDate)) problems.push('no start date given');
+      if (change.intervalWeeks === undefined || change.intervalWeeks === null) problems.push('no repeat interval given');
+      if (missing(change.untilDate)) problems.push('no end date given');
+      break;
     case 'unassign':
       if (missing(change.person)) problems.push('no person named');
       if (missing(change.date)) problems.push('no date given');
@@ -401,7 +408,8 @@ export async function processScheduleEmail(
         // Include original CC recipients so they follow the request too.
         const ccList = String(email.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
         const changeList = (plan.changes || []).map((c: any, i: number) => {
-          const desc = c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
+          const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
+            : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
             : c.action === 'unassign' ? `Remove ${c.person} on ${c.date}`
             : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
             : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
