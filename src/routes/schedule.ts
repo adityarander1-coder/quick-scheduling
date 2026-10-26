@@ -4922,10 +4922,29 @@ router.post('/ask', requireRole('owner', 'scheduler', 'employee'), async (req: R
        FROM users WHERE company_id = $1 AND is_active = true`,
       [companyId]
     );
+    // Department visibility for calendar answers — same rules as the
+    // Calendars tab: owner sees all, scheduler sees view-access departments,
+    // employees see only their own department. Answers never cross companies:
+    // companyId comes from the signed-in session.
+    const askerRole = req.session.role!;
+    let visibleDeptIds: string[] | null = null;
+    if (askerRole !== 'owner') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      if (askerRole === 'scheduler') visibleDeptIds = access.view || [];
+      else {
+        const { rows: meRows } = await query(
+          'SELECT department_id FROM users WHERE id = $1 AND company_id = $2',
+          [req.session.userId!, companyId]);
+        visibleDeptIds = meRows[0] && meRows[0].department_id ? [meRows[0].department_id] : [];
+      }
+    }
     const answer = await answerQuestion(question, {
       companyId,
       shiftTypes: stRows,
       members: uRows,
+      userId: req.session.userId!,
+      role: askerRole,
+      visibleDeptIds,
     });
     res.json({ answer });
   } catch (err) {
