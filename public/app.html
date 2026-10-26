@@ -973,6 +973,8 @@
     #tab-myschedule .sched-control-box .blk-lab,
     #tab-schedule .sched-control-box .date-nav,
     #tab-myschedule .sched-control-box .date-nav { color: #fff; }
+    #tab-schedule .sched-control-box .view-tabs,
+    #tab-myschedule .sched-control-box .view-tabs { background: transparent; border-color: transparent; }
     #tab-schedule .sched-control-box .view-tabs button,
     #tab-myschedule .sched-control-box .view-tabs button { background: transparent; color: #cfe0e2; }
     #tab-schedule .sched-control-box .view-tabs button.active,
@@ -1981,7 +1983,7 @@
             ? sched.deptFilters.length + ' department' + (sched.deptFilters.length > 1 ? 's' : '')
             : 'All departments';
           el.innerHTML =
-            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
             '<button type="button" id="sched-dept-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-dept-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             depts.map(function (d) {
@@ -1990,7 +1992,7 @@
                 '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
             }).join('') +
             '</div></div>' +
-            '<div style="flex:1;min-width:130px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            '<div style="flex:1;min-width:130px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
             (function () {
               var sts = visibleShiftTypes();
               var btnLabel = sched.shiftFilters.length
@@ -4972,17 +4974,17 @@
         </div>
       </div>
       <div id="db-filters"><div id="db-today-slot"></div>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Department
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Department
           <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Show
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Show
           <select id="db-show-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:190px;background:var(--surface);color:var(--text)">
             <option value="all">All sessions</option>
             <option value="mine">⭐ Mine</option>
             <option value="open">Needs presenter</option>
           </select>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:var(--dim)">Session type
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Session type
           <select id="db-kind-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text)"></select>
         </label>
       </div>
@@ -10101,18 +10103,18 @@
           var viewLabel = showEveryone() ? "Everyone's schedule"
             : viewFilters.length ? viewFilters.map(function (v) { return viewNames[v]; }).join(', ') : 'Select view';
           el.innerHTML =
-            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Department</label>' +
+            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
             ddBtn('ms-dept-btn', deptLabel) + ddMenu('ms-dept-menu') +
             departments.map(function (d) {
               return ddCheck(d.name, 'data-msdept', d.id, deptFilters.indexOf(String(d.id)) !== -1);
             }).join('') + '</div></div>' +
-            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">Shift</label>' +
+            '<div style="flex:1;min-width:160px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
             ddBtn('ms-shift-btn', shiftLabel) + ddMenu('ms-shift-menu') +
             ddCheck('All shifts', 'data-msshift', '__all', shiftFilters.length === 0, true) +
             shiftTypes.map(function (st) {
               return ddCheck(st.name, 'data-msshift', st.id, shiftFilters.indexOf(String(st.id)) !== -1);
             }).join('') + '</div></div>' +
-            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:var(--muted);display:block;margin-bottom:4px">View</label>' +
+            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">View</label>' +
             ddBtn('ms-view-btn', viewLabel) + ddMenu('ms-view-menu') +
             ddCheck("Everyone's schedule", 'data-msviewf', 'everyone', showEveryone()) +
             ddCheck('My shifts', 'data-msviewf', 'my', viewFilters.indexOf('my') !== -1) +
