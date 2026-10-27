@@ -8734,7 +8734,13 @@
               <h3 class="set-h3" style="margin:0">Email inbox</h3>
             </div>
             <p class="set-desc">Connect this company's own Gmail mailbox so Email Q-Scheduler reads <em>your</em> schedule emails — not a shared inbox. The app checks it every 5 minutes and builds plans for your approval; it never changes the schedule on its own.</p>
-            <p class="set-desc">To connect: in that Gmail account, turn on 2-Step Verification, then Google Account → Security → App passwords → generate one for "Mail" and paste the 16 characters here (spaces are fine). Use an app password, never the account's normal password. The password is stored encrypted and is never shown back.</p>
+            <p class="set-desc">To connect:</p>
+            <ol class="set-desc" style="margin:0 0 0.8rem;padding-left:1.4rem">
+              <li>In that Gmail account, turn on 2-Step Verification.</li>
+              <li>Go to Google Account → Security → App passwords and generate one for "Mail".</li>
+              <li>Paste the 16 characters here (spaces are fine).</li>
+            </ol>
+            <p class="set-desc">Use an app password, never the account's normal password. The password is stored encrypted and is never shown back.</p>
             <div id="inbox-status" style="margin-bottom:1rem"></div>
             <div class="form-row"><label>Gmail address</label><input type="email" id="inbox-user" autocomplete="off" placeholder="schedules@yourcompany.com" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></div>
             <div class="form-row"><label>Gmail app password</label><input type="password" id="inbox-pass" autocomplete="off" placeholder="16-character app password" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></div>
