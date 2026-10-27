@@ -789,9 +789,9 @@
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
-    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 5px; min-height: 30px; background: var(--surface-alt); }
-    #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.42rem 0.55rem; font-size: 12.5px; display: flex; align-items: center; }
-    #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.42rem 0.55rem 0.42rem 0.35rem; font-size: 13.5px; flex: 1; }
+    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
+    #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
+    #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
     #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
     input[type="text"], input[type="email"], input[type="password"], input[type="tel"],
     input[type="number"], input[type="date"], input[type="time"], input[type="search"],
@@ -1094,7 +1094,7 @@
         #tab-schedule .add-shift-btn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--navy); color: #fff; font-size: 1.4rem; font-weight: 700; cursor: pointer; line-height: 1; padding: 0; }
         #tab-schedule .add-shift-btn:hover { filter: brightness(1.15); }
         #tab-schedule .day-row-body { padding: 0.15rem 0.4rem; }
-        #tab-schedule .shift-grid { gap: 0; min-height: 30px; margin-bottom: 5px; }
+        #tab-schedule .shift-grid { gap: 0; min-height: 22px; margin-bottom: 2px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
         /* Weekly Block view (main Schedule): shift names on the vertical axis, weeks across, one box per shift per week with the people's names inside. */
         #tab-schedule .sbw-wrap { background: #fff; border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; }
@@ -1152,7 +1152,7 @@
           #tab-myschedule .dow { font-size: 12px; }
           #tab-myschedule .dnum { font-size: 10px; }
           #tab-myschedule .day-row-body { padding: 0.15rem 0.4rem; }
-          #tab-myschedule .shift-grid { gap: 0; min-height: 30px; margin-bottom: 5px; }
+          #tab-myschedule .shift-grid { gap: 0; min-height: 22px; margin-bottom: 2px; }
           #tab-myschedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
           #tab-myschedule .shift-nm { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
         }
@@ -1188,8 +1188,8 @@
         #tab-schedule button.open-slot:hover .shift-cat { filter: brightness(0.96); }
         #tab-schedule button.open-slot:hover .shift-nm { background: #f8fafc; }
         #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; gap: 6px; }
-        .open-badge { font-size: 10px; font-weight: 800; letter-spacing: .04em; background: #0e7c86; color: #fff; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
-        .open-hint { font-size: 11px; font-weight: 500; color: var(--dim); }
+        .open-badge { font-size: 9px; font-weight: 800; letter-spacing: .04em; background: #0e7c86; color: #fff; border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+        .open-hint { font-size: 10px; font-weight: 500; color: var(--dim); }
         #tab-schedule .month-open { display: inline-block; border: 1.5px solid #bfe3e1; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #0b3b43; background: #eef5f4; }
         #tab-schedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
         #tab-schedule .type-group-h { margin: 0.6rem 0 0.4rem; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; color: var(--text); }
@@ -2112,17 +2112,17 @@
             var hlBg = highlightColorFor(s.userId) || '#fff';
             cBtn += '<button type="button" class="shift-hl-btn" onclick="event.stopPropagation();window.qsHighlightShift(\'' + s.userId + '\')"' +
               ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
-              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:14px;line-height:1">🎨</button>';
+              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:11px;line-height:1">🎨</button>';
             // Replace and delete buttons (show on all shifts)
             cBtn += '<button type="button" class="shift-replace-btn" onclick="event.stopPropagation();window.qsReplaceShift(\'' + s.id + '\')"' +
               ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
-              ' style="width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:14px;line-height:1">🔄</button>';
+              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:11px;line-height:1">🔄</button>';
             cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\')"' +
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
-              ' style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;line-height:1;color:#bd3d4a">🗑️</button>';
+              ' style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;line-height:1;color:#bd3d4a">🗑️</button>';
           } else if (sched.canEdit && s.userId) {
             // Viewable but not in the active department: read-only with a hint.
-            cBtn = '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;font-size:14px">🔒</span>';
+            cBtn = '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>';
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
@@ -3209,7 +3209,7 @@
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
                 '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
-                '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:28px;height:28px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:14px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
+                '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
           });
