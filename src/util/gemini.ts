@@ -110,6 +110,7 @@ export async function planFromEmail(
   emailSubject: string,
   context: {
     shiftTypes: string[]; members: string[]; today: string;
+    shiftTypeRules?: string[];  // "Red Team: only PGY1, PGY2, PGY3" lines for restricted types
     dashboards?: string[];          // dashboard names, e.g. ["Calendars"]
     sessionKinds?: string[];        // "Calendars: Lecture, Event" lines
     rooms?: string[];               // room / location names
@@ -129,6 +130,7 @@ export async function planFromEmail(
 Today's date: ${context.today}
 
 Available shift types: ${context.shiftTypes.join(', ') || '(none listed)'}
+Job-role rules for shift types (only assign someone to a shift type when their job role is listed here; types not listed are open to everyone): ${(context.shiftTypeRules || []).join(' | ') || '(none — everyone may take every shift type)'}
 Team members: ${context.members.join(', ') || '(none listed)'}
 Dashboards (calendars): ${(context.dashboards || []).join(', ') || '(none)'}
 Session types by dashboard: ${(context.sessionKinds || []).join(' | ') || '(none)'}
@@ -216,6 +218,7 @@ Respond with JSON only, no other text:
 }
 
 Rules:
+- Respect the job-role rules above when choosing people: prefer someone whose role is listed for that shift type. If the request explicitly names someone whose role is NOT listed, still build the change exactly as asked (the approver will see a role-rule warning and may override) — never silently substitute a different person.
 - For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; assign_recurring needs person + shiftType + startDate + intervalWeeks + untilDate.
 - Repeating shifts: when a request repeats on a pattern ("every 5 weeks", "every other week", "every Monday"), return ONE "assign_recurring" change — NEVER expand it into many "assign" changes and NEVER do calendar math by hand beyond the first date. Compute startDate from the request against today's date ("first Monday of November" with today in late October → the first Monday of the coming November). Set intervalWeeks from the pattern ("every 5 weeks" → 5, "every other week" → 2). Set weekendsOff true when the request says weekends are off. Set untilDate when an end is given ("for a year", "till November next year"); if no end is given, set "needsClarification" to ask until when, and "confidence" to "low". unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Match person names fuzzily against the team member list. Match shift descriptions (night, day) against shift type names. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
 - Attachments: when the email has attached file contents or PDFs, they are part of the request. If an attachment is a schedule list or grid of shifts, create one "assign" change per person per shift per day — expand week-long blocks and date ranges into one change per day — following any instructions in the email body. If the email body is empty, the attachment alone is the request. Attached documents can also hold the details for any other request type (e.g. a list of team members to add).

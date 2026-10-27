@@ -49,6 +49,13 @@ interface PlanChange {
   recurInterval?: number;
   recurUntil?: string;
   notes?: string;
+  /**
+   * Role-rule warning attached at plan-creation time (warn-and-override):
+   * the change assigns someone whose job role is not on the shift type's
+   * eligible list. Shown in every plan preview; approving the plan
+   * overrides it. Never blocks plan creation or execution.
+   */
+  warning?: string;
 }
 
 interface ExecuteResult {
@@ -459,6 +466,124 @@ function cleanRecurE(change: PlanChange): { recurRule: string; recurInterval: nu
 }
 
 /** Execute a plan's changes. Returns per-change results. */
+/**
+ * Check one person against one shift type's eligible job-role list.
+ * Same gate as the manual-assign / pickup paths: an empty list means
+ * everyone is eligible; otherwise the member's linked job role must be
+ * in the list (members with no role set fail restricted types).
+ */
+async function checkPersonEligible(
+  companyId: string,
+  userId: string,
+  shiftTypeId: string
+): Promise<{ ok: true } | { ok: false; roleName: string | null; eligibleNames: string }> {
+  const { rows: trows } = await query(
+    'SELECT eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2',
+    [shiftTypeId, companyId]
+  );
+  if (!trows.length) return { ok: true };
+  const list: string[] = Array.isArray(trows[0].eligible_job_role_ids) ? trows[0].eligible_job_role_ids : [];
+  if (!list.length) return { ok: true };
+  const { rows: urows } = await query(
+    'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
+    [userId, companyId]
+  );
+  const roleId: string | null = urows.length ? urows[0].job_role_id : null;
+  if (roleId && list.includes(roleId)) return { ok: true };
+  const { rows: rrows } = await query(
+    'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
+    [list, companyId]
+  );
+  const eligibleNames = rrows.map((r: any) => r.name).join(', ') || 'specific job roles';
+  let roleName: string | null = null;
+  if (roleId) {
+    const { rows: prows } = await query(
+      'SELECT name FROM job_roles WHERE id = $1 AND company_id = $2',
+      [roleId, companyId]
+    );
+    roleName = prows.length ? prows[0].name : null;
+  }
+  return { ok: false, roleName, eligibleNames };
+}
+
+/**
+ * Warn-and-override validation for a plan's changes (Deepika, 2026-10-26).
+ * Attaches a `warning` to every assign / assign_recurring / move / swap
+ * change that puts someone on a shift type their job role is not eligible
+ * for, and returns how many changes were flagged. Best-effort by design:
+ * an unresolvable person/shift (or any error) skips that change's warning
+ * instead of blocking plan creation — execution still decides the change,
+ * and approval is the override.
+ */
+export async function validatePlanEligibility(companyId: string, changes: PlanChange[]): Promise<number> {
+  let warned = 0;
+  const check = async (personDisplay: string, userId: string, shiftTypeId: string, shiftTypeName: string) => {
+    const res = await checkPersonEligible(companyId, userId, shiftTypeId);
+    if (res.ok) return null;
+    return `Role-rule warning: ${personDisplay} (${res.roleName || 'no job role set'}) → ${shiftTypeName} allows only: ${res.eligibleNames}. Approving overrides this rule.`;
+  };
+  for (const c of changes || []) {
+    try {
+      if ((c.action === 'assign' || c.action === 'assign_recurring') && c.person && c.shiftType) {
+        const user = await findUser(companyId, c.person);
+        const st = await findShiftType(companyId, c.shiftType);
+        if (!user || !st) continue;
+        const w = await check(user.display, user.id, st.id, st.name);
+        if (w) { c.warning = w; warned++; }
+      } else if (c.action === 'move' && c.fromPerson && c.toPerson && (c.date || c.fromDate)) {
+        const fromUser = await findUser(companyId, c.fromPerson);
+        const toUser = await findUser(companyId, c.toPerson);
+        if (!fromUser || !toUser) continue;
+        const row = await findShiftRow(companyId, fromUser.id, (c.date || c.fromDate)!, c.shiftType);
+        if (!row) continue;
+        const w = await check(toUser.display, toUser.id, row.shift_type_id, row.shift_type_name);
+        if (w) { c.warning = w; warned++; }
+      } else if (c.action === 'swap' && c.fromPerson && c.toPerson) {
+        const fromUser = await findUser(companyId, c.fromPerson);
+        const toUser = await findUser(companyId, c.toPerson);
+        if (!fromUser || !toUser) continue;
+        const fromDate = c.fromDate || c.date;
+        const toDate = c.toDate || c.date;
+        if (!fromDate || !toDate) continue;
+        const fromRow = await findShiftRow(companyId, fromUser.id, fromDate, c.shiftType);
+        if (!fromRow) continue;
+        const warnings: string[] = [];
+        const w1 = await check(toUser.display, toUser.id, fromRow.shift_type_id, fromRow.shift_type_name);
+        if (w1) warnings.push(w1);
+        const toRow = await findShiftRow(companyId, toUser.id, toDate, c.shiftType);
+        if (toRow) {
+          const w2 = await check(fromUser.display, fromUser.id, toRow.shift_type_id, toRow.shift_type_name);
+          if (w2) warnings.push(w2);
+        }
+        if (warnings.length) { c.warning = warnings.join(' '); warned++; }
+      }
+    } catch { /* a warning must never block plan creation */ }
+  }
+  return warned;
+}
+
+/**
+ * Human-readable job-role rules for the planner prompt, restricted types
+ * only: e.g. ["Red Team: only PGY1, PGY2, PGY3"]. Empty when nothing is
+ * restricted (everyone may take every shift type).
+ */
+export async function getShiftTypeRules(companyId: string): Promise<string[]> {
+  const { rows: stRows } = await query(
+    'SELECT name, eligible_job_role_ids FROM shift_types WHERE company_id = $1 AND is_active = true',
+    [companyId]
+  );
+  const restricted = stRows.filter((r: any) => Array.isArray(r.eligible_job_role_ids) && r.eligible_job_role_ids.length);
+  if (!restricted.length) return [];
+  const ids = [...new Set(restricted.flatMap((r: any) => r.eligible_job_role_ids))];
+  const { rows: rRows } = await query(
+    'SELECT id, name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2',
+    [ids, companyId]
+  );
+  const byId = new Map(rRows.map((r: any) => [r.id, r.name]));
+  return restricted.map((r: any) =>
+    `${r.name}: only ${r.eligible_job_role_ids.map((id: string) => byId.get(id) || 'a job role').join(', ')}`);
+}
+
 export async function executePlan(
   companyId: string,
   plan: { changes: PlanChange[] },
@@ -951,6 +1076,14 @@ export async function executePlan(
     } catch (err: any) {
       results.push({ action: change.action, success: false, message: err?.message || 'Failed' });
     }
+  }
+  // Warn-and-override record: a change that carried a role-rule warning was
+  // approved with eyes open — note the override on its result message so
+  // the post-approval record stays honest.
+  for (let i = 0; i < (plan.changes || []).length; i++) {
+    const w = (plan.changes[i] as any)?.warning;
+    const r = results[i];
+    if (w && r && r.success && r.message) r.message += ' (Role-rule warning overridden.)';
   }
   // Notifications (Phase 1): tell people what this approved plan changed
   // for them. Best-effort — a notification failure never fails the plan.

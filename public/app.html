@@ -5175,7 +5175,7 @@
             thread = [];
             var html = '<b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
               '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
-              d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + '</li>'; }).join('') +
+              d.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + '</li>'; }).join('') +
               '</ol><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
               '<button type="button" class="btn btn-sm" data-approve="' + d.planId + '">Approve</button>' +
               '<button type="button" class="btn-secondary btn-sm" data-reject="' + d.planId + '">Reject</button></div>';
@@ -5317,7 +5317,7 @@
               tbThread = [];
               var desc = window.qsDescribeChange || function (c) { return c.action; };
               var html2 = '<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(d.summary || 'Here is my plan:') +
-                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + d.changes.map(function (c) { return '<li>' + esc(desc(c)) + '</li>'; }).join('') + '</ol>' +
+                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + d.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + '</li>'; }).join('') + '</ol>' +
                 '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
                 '<button type="button" class="btn btn-sm" data-tb-approve="' + d.planId + '">Approve</button>' +
                 '<button type="button" class="btn-secondary btn-sm" data-tb-reject="' + d.planId + '">Reject</button></div></div>' + foot();

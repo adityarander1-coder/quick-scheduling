@@ -281,8 +281,10 @@ export async function processScheduleEmail(
     // Parse with Gemini (calendar context included so session
     // requests — add / change / cancel a session — can be planned)
     const sessionCtx = await buildSessionContext(query, companyId, today);
+    const { getShiftTypeRules } = await import('./planExecutor.js');
     const plan = await planFromEmail(email.body, email.subject, {
       shiftTypes,
+      shiftTypeRules: await getShiftTypeRules(companyId),
       members,
       today,
       ...sessionCtx,
@@ -362,6 +364,16 @@ export async function processScheduleEmail(
       return { kind: 'clarification_sent' };
     }
 
+    // Warn-and-override: flag every change that puts someone on a shift type
+    // their job role is not eligible for. The warning rides on the change
+    // into the requester email and the summary flag carries it into the
+    // approver email + Requests list; approving overrides it.
+    const { validatePlanEligibility } = await import('./planExecutor.js');
+    const warned = await validatePlanEligibility(companyId, plan.changes || []);
+    if (warned > 0) {
+      plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
+    }
+
     // Create pending plan with secure approve/reject tokens
     const approveToken = crypto.randomBytes(32).toString('hex');
     const rejectToken = crypto.randomBytes(32).toString('hex');
@@ -417,7 +429,7 @@ export async function processScheduleEmail(
             : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
             : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
             : `${c.action}`;
-          return `${i + 1}. ${desc}`;
+          return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
         }).join('\n');
         await sendConfirm({
           ...(fromAddr ? { from: fromAddr } : {}),

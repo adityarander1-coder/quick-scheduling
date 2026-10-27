@@ -5099,8 +5099,10 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   const today = new Date().toISOString().slice(0, 10);
   const { buildSessionContext } = await import('../util/emailPoller.js');
   const sessionCtx = await buildSessionContext(query, companyId, today);
+  const { getShiftTypeRules } = await import('../util/planExecutor.js');
   const ctx: any = {
     shiftTypes: stRows.map((r: any) => r.name),
+    shiftTypeRules: await getShiftTypeRules(companyId),
     members: uRows.map((r: any) => r.name),
     today,
     history,
@@ -5174,6 +5176,14 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
       options = built.options;
     }
     return { type: 'clarification' as const, question, options };
+  }
+  // Warn-and-override: flag every change that puts someone on a shift type
+  // their job role is not eligible for. The warning rides on the change into
+  // every preview; approving the plan overrides it (execution never blocks).
+  const { validatePlanEligibility } = await import('../util/planExecutor.js');
+  const warned = await validatePlanEligibility(companyId, plan.changes || []);
+  if (warned > 0) {
+    plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
   }
   const { rows } = await query(
     `INSERT INTO schedule_plans
