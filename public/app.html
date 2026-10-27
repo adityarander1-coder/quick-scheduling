@@ -5621,6 +5621,9 @@
         #tab-settings #subtab-candidates .cand-tabs button.active { background: #21414c; color: #fff; border-color: #21414c; }
         #tab-settings .cand-link-box { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem; background: var(--surface-alt); }
         #tab-settings .cand-link-box code { flex: 1; min-width: 200px; }
+        /* Notifications dept cards (Deepika 2026-10-26): cards alternate
+           white / pale-grey like the other Settings lists. */
+        #tab-settings #dept-notif-list .sub-card:nth-child(even) { background: #e8edee; }
         @media (max-width: 700px) {
           #tab-settings #subtab-candidates .cand-tabs button { padding: 6px 10px; font-size: 12px; }
         }
@@ -8664,7 +8667,7 @@
                         '<select data-dept="' + d.id + '" data-primary style="padding:6px;border:1px solid var(--border);border-radius:8px">' + primaryOpts + '</select></div>' +
                         '<div style="margin-bottom:0.5rem"><span style="font-size:0.9rem;font-weight:600">CC:</span><div style="margin-top:4px">' + ccBoxes + '</div></div>' +
                         '<div><span style="font-size:0.9rem;font-weight:600">Additional emails:</span><div style="margin-top:4px" data-extra-list="' + d.id + '">' + extraList + '</div>' +
-                        '<div style="display:flex;gap:6px;margin-top:6px"><input type="email" placeholder="name@example.com" data-extra-input="' + d.id + '" style="padding:6px;border:1px solid var(--border);border-radius:8px;flex:1">' +
+                        '<div style="display:flex;gap:6px;margin-top:6px"><input type="email" placeholder="name@example.com" data-extra-input="' + d.id + '" style="padding:6px;border:1px solid var(--border);border-radius:8px;flex:1;min-width:0">' +
                         '<button type="button" class="btn-secondary" data-add-email="' + d.id + '">Add</button></div></div></div>';
                     });
                     $('dept-notif-list').innerHTML = html || '<p>No departments yet.</p>';
