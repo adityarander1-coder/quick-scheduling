@@ -477,7 +477,7 @@
     #tab-myschedule .ms-month-chip .ms-chip-text strong { display: block; }
     #tab-myschedule .ms-month-chip .ms-chip-who { display: block; font-weight: 500; }
     #tab-myschedule .ms-month-more { font-size: 0.7rem; font-weight: 700; color: #64748b; padding: 0 0.4rem; }
-    #tab-myschedule .ms-month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-top: 0.2rem; font-size: 0.72rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
+    #tab-myschedule .ms-month-open { display: inline-block; border: 1.5px solid #bfe3e1; border-radius: 6px; padding: 0.15rem 0.4rem; margin-top: 0.2rem; font-size: 0.72rem; font-weight: 700; color: #0b3b43; background: #eef5f4; }
     @media (max-width: 700px) {
       #tab-myschedule .ms-day-box { min-height: 80px; padding: 0.35rem; }
       #tab-myschedule .ms-month-chip { font-size: 0.65rem; padding: 0.15rem 0.3rem; }
@@ -789,7 +789,7 @@
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
-    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: flex; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 5px; min-height: 30px; background: var(--surface-alt); }
+    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 5px; min-height: 30px; background: var(--surface-alt); }
     #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.42rem 0.55rem; font-size: 12.5px; display: flex; align-items: center; }
     #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.42rem 0.55rem 0.42rem 0.35rem; font-size: 13.5px; flex: 1; }
     #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
@@ -1094,7 +1094,7 @@
         #tab-schedule .add-shift-btn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--navy); color: #fff; font-size: 1.4rem; font-weight: 700; cursor: pointer; line-height: 1; padding: 0; }
         #tab-schedule .add-shift-btn:hover { filter: brightness(1.15); }
         #tab-schedule .day-row-body { padding: 0.15rem 0.4rem; }
-        #tab-schedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 1px; min-height: 14px; margin-bottom: 2px; }
+        #tab-schedule .shift-grid { gap: 0; min-height: 30px; margin-bottom: 5px; }
         #tab-schedule .shift-grid:last-child { margin-bottom: 0; }
         /* Weekly Block view (main Schedule): shift names on the vertical axis, weeks across, one box per shift per week with the people's names inside. */
         #tab-schedule .sbw-wrap { background: #fff; border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; }
@@ -1152,7 +1152,7 @@
           #tab-myschedule .dow { font-size: 12px; }
           #tab-myschedule .dnum { font-size: 10px; }
           #tab-myschedule .day-row-body { padding: 0.15rem 0.4rem; }
-          #tab-myschedule .shift-grid { gap: 1px; min-height: 14px; margin-bottom: 2px; }
+          #tab-myschedule .shift-grid { gap: 0; min-height: 30px; margin-bottom: 5px; }
           #tab-myschedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
           #tab-myschedule .shift-nm { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; }
         }
@@ -1187,8 +1187,10 @@
         #tab-schedule button.open-slot { border: 0; background: none; padding: 0; width: 100%; cursor: pointer; font: inherit; text-align: left; }
         #tab-schedule button.open-slot:hover .shift-cat { filter: brightness(0.96); }
         #tab-schedule button.open-slot:hover .shift-nm { background: #f8fafc; }
-        #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; }
-        #tab-schedule .month-open { display: inline-block; border: 1.5px dashed #94a3b8; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #5c7185; background: #f8fafc; }
+        #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; gap: 6px; }
+        .open-badge { font-size: 10px; font-weight: 800; letter-spacing: .04em; background: #0e7c86; color: #fff; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
+        .open-hint { font-size: 11px; font-weight: 500; color: var(--dim); }
+        #tab-schedule .month-open { display: inline-block; border: 1.5px solid #bfe3e1; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #0b3b43; background: #eef5f4; }
         #tab-schedule .empty-day { color: #94a3b8; font-size: 0.9rem; padding: 0.4rem 0; }
         #tab-schedule .type-group-h { margin: 0.6rem 0 0.4rem; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; color: var(--text); }
         /* Draft / Published circle badges */
@@ -2177,8 +2179,8 @@
           var label = st.name;
           return '<button type="button" class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '"' +
             ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
-            '<span class="shift-cat" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(label) + '</span>' +
-            '<span class="shift-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">+ Open slot' +
+            '<span class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</span>' +
+            '<span class="shift-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '"><span class="open-badge">OPEN</span><span class="open-hint">tap to assign</span>' +
             (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') +
             '</span></button>';
         }
@@ -10566,9 +10568,9 @@
             btn = '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>';
           }
           return '<div class="shift-grid open-slot">' +
-            '<div class="shift-cat" style="background:' + tint(color, 88) + ';border-color:' + tint(color, 45) + ';border-style:dashed">' + esc(st.name) + '</div>' +
-            '<div class="shift-nm ms-open-nm" style="border-color:' + tint(color, 45) + ';border-style:dashed;color:' + esc(color) + '">' +
-            '<span>+ Open slot</span>' + btn + '</div></div>';
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st.name) + '</div>' +
+            '<div class="shift-nm ms-open-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '">' +
+            '<span class="open-badge">OPEN</span>' + btn + '</div></div>';
         }
 
         // --- Dashboard sessions on My Schedule (Deepika, 2026-10-20): same
