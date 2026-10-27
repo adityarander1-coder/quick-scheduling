@@ -5598,6 +5598,16 @@
         #tab-settings .warn-badge.exact { background: #fee2e2; color: #991b1b; }
         #tab-settings .temp-password { background: #f0fdf4; border: 1px solid #86efac; border-radius: 12px; padding: 1rem; margin-top: 0.8rem; font-size: 1.05rem; }
         #tab-settings .temp-password code { font-size: 1.2rem; font-weight: 700; letter-spacing: 0.05em; }
+        /* Dashboards multi-select dropdowns (Deepika 2026-10-26): long
+           dept/scheduler checkbox lists collapse to one line; the boxes
+           live inside the dropdown panel. Dashboard rows alternate
+           white / pale-grey like the other Settings lists. */
+        #tab-settings #dash-list .dash-row { background: var(--surface); }
+        #tab-settings #dash-list .dash-row:nth-child(even) { background: #e8edee; }
+        #tab-settings .dash-ms-btn { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 14px; cursor: pointer; text-align: left; }
+        #tab-settings .dash-ms-btn.open { border-radius: 8px 8px 0 0; }
+        #tab-settings .dash-ms-panel { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 8px 8px; padding: 6px 12px; background: #fff; max-height: 220px; overflow-y: auto; }
+        #tab-settings .dash-ms-hint { font-size: 12px; color: var(--dim); margin-top: 4px; }
       </style>
       <div class="set-band">
         <nav class="sub-tabs" role="tablist">
@@ -5627,11 +5637,11 @@
             </div>
             <div class="form-row">
               <label style="font-weight:600">Departments (leave all unchecked = all departments)</label>
-              <div id="dash-new-depts" class="checklist" style="display:flex;flex-wrap:wrap;gap:0.5rem"></div>
+              <div id="dash-new-depts" class="checklist" style="max-width:340px"></div>
             </div>
             <div class="form-row">
               <label style="font-weight:600">Who can adjust it (leave all unchecked = schedulers who can edit its departments)</label>
-              <div id="dash-new-editors" class="checklist" style="display:flex;flex-wrap:wrap;gap:0.5rem"></div>
+              <div id="dash-new-editors" class="checklist" style="max-width:340px"></div>
             </div>
             <button type="button" class="btn" id="dash-new-save">＋ Add dashboard</button>
             <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
@@ -12467,6 +12477,51 @@
       var dashes = [], depts = [], scheds = [];
       function el(id) { return document.getElementById(id); }
       function uname(u) { return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; }
+      // Multi-select dropdown (Deepika 2026-10-26): dept/scheduler checkbox
+      // lists collapse to one line; the boxes live inside the panel so the
+      // existing save logic (which reads :checked boxes) is unchanged.
+      function msDropdown(boxesHtml, allLabel, multiLabel, emptyHtml) {
+        if (!boxesHtml) return emptyHtml;
+        return '<div class="dash-ms" data-ms-all="' + esc(allLabel) + '" data-ms-multi="' + esc(multiLabel) + '">' +
+          '<button type="button" class="dash-ms-btn" data-ms-btn><span data-ms-label>' + esc(allLabel) + '</span><span aria-hidden="true">▾</span></button>' +
+          '<div class="dash-ms-panel hidden" data-ms-panel>' + boxesHtml + '</div></div>';
+      }
+      function msSummary(root) {
+        var boxes = root.querySelectorAll('input[type="checkbox"]:checked');
+        if (!boxes.length) return root.getAttribute('data-ms-all');
+        if (boxes.length === 1) return boxes[0].closest('label').textContent.trim();
+        return boxes.length + ' ' + root.getAttribute('data-ms-multi');
+      }
+      function refreshMsLabels(scope) {
+        scope.querySelectorAll('.dash-ms').forEach(function (root) {
+          var lab = root.querySelector('[data-ms-label]');
+          if (lab) lab.textContent = msSummary(root);
+        });
+      }
+      function closeAllMs() {
+        document.querySelectorAll('[data-ms-panel]').forEach(function (p) { p.classList.add('hidden'); });
+        document.querySelectorAll('[data-ms-btn]').forEach(function (b) { b.classList.remove('open'); });
+      }
+      // Delegated (renders replace innerHTML, so per-element listeners would
+      // not survive): toggle panels, close on outside click / Escape, and
+      // refresh the summary whenever a box inside a dropdown changes.
+      document.addEventListener('click', function (e) {
+        var btn = e.target.closest ? e.target.closest('[data-ms-btn]') : null;
+        if (btn) {
+          var root = btn.closest('.dash-ms');
+          var panel = root.querySelector('[data-ms-panel]');
+          var wasOpen = !panel.classList.contains('hidden');
+          closeAllMs();
+          if (!wasOpen) { panel.classList.remove('hidden'); btn.classList.add('open'); }
+          return;
+        }
+        if (!(e.target.closest && e.target.closest('.dash-ms'))) closeAllMs();
+      });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAllMs(); });
+      document.addEventListener('change', function (e) {
+        var root = e.target.closest ? e.target.closest('.dash-ms') : null;
+        if (root) { var lab = root.querySelector('[data-ms-label]'); if (lab) lab.textContent = msSummary(root); }
+      });
 
       function load() {
         Promise.all([api('/api/schedule/dashboards'), api('/api/departments'), api('/api/users')]).then(function (rs) {
@@ -12482,30 +12537,25 @@
         var wrap = el('dash-list');
         if (!dashes.length) { wrap.innerHTML = '<p class="muted">No dashboards yet.</p>'; return; }
         wrap.innerHTML = dashes.map(function (d) {
-          var names = d.departmentIds.length
-            ? depts.filter(function (x) { return d.departmentIds.includes(x.id); }).map(function (x) { return esc(x.name); }).join(', ')
-            : 'All departments';
           var boxes = depts.map(function (x) {
             var on = d.departmentIds.includes(x.id);
-            return '<label style="font-weight:400;margin-right:0.7rem"><input type="checkbox" data-dash-edit-dept="' + d.id + '" value="' + x.id + '"' + (on ? ' checked' : '') + '> ' + esc(x.name) + '</label>';
+            return '<label style="display:flex;align-items:center;gap:0.5rem;font-weight:400;padding:5px 0"><input type="checkbox" data-dash-edit-dept="' + d.id + '" value="' + x.id + '"' + (on ? ' checked' : '') + '> ' + esc(x.name) + '</label>';
           }).join('');
-          var edNames = (d.editorIds && d.editorIds.length)
-            ? scheds.filter(function (x) { return d.editorIds.includes(x.id); }).map(uname).join(', ')
-            : '';
           var editorBoxes = scheds.map(function (x) {
             var on = (d.editorIds || []).includes(x.id);
-            return '<label style="font-weight:400;margin-right:0.7rem"><input type="checkbox" data-dash-edit-editor="' + d.id + '" value="' + x.id + '"' + (on ? ' checked' : '') + '> ' + esc(uname(x)) + '</label>';
+            return '<label style="display:flex;align-items:center;gap:0.5rem;font-weight:400;padding:5px 0"><input type="checkbox" data-dash-edit-editor="' + d.id + '" value="' + x.id + '"' + (on ? ' checked' : '') + '> ' + esc(uname(x)) + '</label>';
           }).join('');
-          return '<div class="dash-row" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+          return '<div class="dash-row" style="border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
             '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">' +
             '<input type="text" value="' + esc(d.name) + '" data-dash-edit-name="' + d.id + '" style="font-weight:700;max-width:280px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
             '<button type="button" class="btn-secondary" data-dash-save="' + d.id + '" style="padding:0.5rem 0.9rem;border-radius:8px">Save</button>' +
             '<button type="button" data-dash-del="' + d.id + '" style="padding:0.5rem 0.9rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button>' +
-            '</div><div style="margin-top:0.5rem;font-size:0.85rem;color:var(--dim)">' + esc(names) + (edNames ? ' · Adjusted by: ' + esc(edNames) : '') + '</div>' +
-            '<div style="margin-top:0.5rem;font-size:0.85rem"><label style="font-weight:600">Departments:</label> ' + (boxes || '<span class="muted">none</span>') + '</div>' +
-            '<div style="margin-top:0.5rem;font-size:0.85rem"><label style="font-weight:600">Who can adjust it:</label> ' + (editorBoxes || '<span class="muted">No schedulers yet</span>') +
-            '<div style="color:var(--dim);font-size:0.8rem;margin-top:0.2rem">Leave all unchecked = any scheduler who can edit its departments can adjust this dashboard. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div></div>';
+            '</div><div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-top:0.8rem">' +
+            '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Departments</label>' + msDropdown(boxes, 'All departments', 'departments selected', '<span class="muted">none</span>') + '<div class="dash-ms-hint">Leave all unchecked = all departments</div></div>' +
+            '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Who can adjust it</label>' + msDropdown(editorBoxes, 'All schedulers who can edit', 'schedulers selected', '<span class="muted">No schedulers yet</span>') + '<div class="dash-ms-hint">Leave all unchecked = any scheduler who can edit its departments can adjust this dashboard. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div>' +
+            '</div></div>';
         }).join('');
+        refreshMsLabels(wrap);
         wrap.querySelectorAll('[data-dash-save]').forEach(function (b) {
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-dash-save');
@@ -12532,17 +12582,21 @@
         });
       }
       function renderNewDepts() {
-        el('dash-new-depts').innerHTML = depts.map(function (x) {
-          return '<label style="font-weight:400;margin-right:0.9rem;display:inline-flex;align-items:center;gap:0.3rem"><input type="checkbox" class="dash-new-dept" value="' + x.id + '"> ' + esc(x.name) + '</label>';
-        }).join('') || '<span class="muted">No departments yet.</span>';
+        var boxes = depts.map(function (x) {
+          return '<label style="display:flex;align-items:center;gap:0.5rem;font-weight:400;padding:5px 0"><input type="checkbox" class="dash-new-dept" value="' + x.id + '"> ' + esc(x.name) + '</label>';
+        }).join('');
+        el('dash-new-depts').innerHTML = msDropdown(boxes, 'All departments', 'departments selected', '<span class="muted">No departments yet.</span>');
         if (window.qsDeptLockApply) window.qsDeptLockApply();
+        refreshMsLabels(el('dash-new-depts'));
       }
       function renderNewEditors() {
         var wrap = el('dash-new-editors');
         if (!wrap) return;
-        wrap.innerHTML = scheds.map(function (x) {
-          return '<label style="font-weight:400;margin-right:0.9rem;display:inline-flex;align-items:center;gap:0.3rem"><input type="checkbox" class="dash-new-editor" value="' + x.id + '"> ' + esc(uname(x)) + '</label>';
-        }).join('') || '<span class="muted">No schedulers yet — you can pick editors later.</span>';
+        var boxes = scheds.map(function (x) {
+          return '<label style="display:flex;align-items:center;gap:0.5rem;font-weight:400;padding:5px 0"><input type="checkbox" class="dash-new-editor" value="' + x.id + '"> ' + esc(uname(x)) + '</label>';
+        }).join('');
+        wrap.innerHTML = msDropdown(boxes, 'All schedulers who can edit', 'schedulers selected', '<span class="muted">No schedulers yet — you can pick editors later.</span>');
+        refreshMsLabels(wrap);
       }
 
       // --- Rooms manager (same sub-tab) ---
