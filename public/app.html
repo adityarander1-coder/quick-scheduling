@@ -5544,6 +5544,12 @@
            Settings lists). Rows were already clean: one line on web, tidy
            wrap on phones. */
         #staff-targets-list .target-row:nth-child(even) { background: #e8edee; border-radius: 4px; }
+        /* Team members (Deepika 2026-10-26): the lines under each name
+           (role · department, email · phone) wrap instead of cutting off
+           mid-word with an ellipsis on narrow rows. The name itself keeps
+           its single-line ellipsis. Team rows are already distinct cards,
+           so their white backgrounds stay as-is. */
+        #tab-settings .team-name small { white-space: normal; overflow: visible; text-overflow: clip; }
         @media (max-width: 640px) {
           #tab-settings .set-row { flex-wrap: wrap; }
           #tab-settings .set-row-name { flex-basis: 100%; }
