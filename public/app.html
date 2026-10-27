@@ -5547,9 +5547,23 @@
         /* Team members (Deepika 2026-10-26): the lines under each name
            (role · department, email · phone) wrap instead of cutting off
            mid-word with an ellipsis on narrow rows. The name itself keeps
-           its single-line ellipsis. Team rows are already distinct cards,
-           so their white backgrounds stay as-is. */
+           its single-line ellipsis. */
         #tab-settings .team-name small { white-space: normal; overflow: visible; text-overflow: clip; }
+        /* Team members web single-line rows (Deepika 2026-10-26, Option B
+           mock): avatar + name + details + actions on one horizontal
+           line, alternating white / pale-grey cards. Phones keep the
+           stacked card layout. */
+        #team-members-list .team-row:nth-child(even) { background: #e8edee; }
+        @media (min-width: 641px) {
+          #tab-settings .team-list { gap: 6px; }
+          #tab-settings .team-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 20px; border-radius: 14px; min-height: 0; }
+          #tab-settings .team-row .avatar { width: 28px; height: 28px; font-size: 13px; }
+          #tab-settings .team-name { flex-direction: row; align-items: center; gap: 10px; flex: 1; min-width: 0; flex-wrap: wrap; }
+          #tab-settings .team-name strong { font-size: 14px; white-space: nowrap; }
+          #tab-settings .team-name small { font-size: 12px; margin-top: 0; }
+          #tab-settings .team-name small + small::before { content: "|"; color: #cbd5e1; margin-right: 10px; }
+          #tab-settings .team-row-actions { flex-direction: row; align-items: center; gap: 14px; margin-left: auto; }
+        }
         @media (max-width: 640px) {
           #tab-settings .set-row { flex-wrap: wrap; }
           #tab-settings .set-row-name { flex-basis: 100%; }
