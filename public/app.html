@@ -5607,6 +5607,7 @@
           <button class="subtab-btn" data-subtab="shifts">Shifts</button>
           <button class="subtab-btn" data-subtab="staffing">Staffing</button>
           <button class="subtab-btn" data-subtab="team">Team members</button>
+          <button class="subtab-btn" data-subtab="team-promote">Promote job roles</button>
           <button class="subtab-btn" data-subtab="dashboards">Dashboards</button>
           <button class="subtab-btn" data-subtab="rotations">Rotations</button>
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
@@ -6416,41 +6417,13 @@
                 <p>Add and manage employee profiles used throughout the schedule.</p>
               </div>
             </div>
-            <div style="margin-bottom:0.8rem">
-              <input type="text" id="team-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
+            <div style="display:flex;gap:0.8rem;margin-bottom:0.8rem;align-items:center;flex-wrap:wrap">
+              <input type="text" id="team-search" placeholder="Search team members…" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
+              <button type="button" id="team-add-toggle" class="btn">+ Add team member</button>
             </div>
             <div class="team-list" id="team-members-list"></div>
 
-            <div class="sub-card" id="team-promote-card" style="margin-top:1.2rem">
-              <h3>Promote job roles</h3>
-              <p class="set-desc">Move people from one job role to another at year-end (e.g., PGY1 → PGY2). Uncheck anyone who should not be promoted.</p>
-              <div id="team-promote-error" class="alert alert-error hidden" role="alert"></div>
-              <div id="team-promote-success" class="alert alert-success hidden" role="status"></div>
-              <div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;align-items:flex-end">
-                <div>
-                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Department</label>
-                  <select id="promote-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:160px"></select>
-                </div>
-                <div>
-                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From role</label>
-                  <select id="promote-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
-                </div>
-                <div>
-                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To role</label>
-                  <select id="promote-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
-                </div>
-                <div>
-                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Effective date</label>
-                  <input type="date" id="promote-date" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-                </div>
-                <button type="button" id="promote-load" class="btn-secondary">Find members</button>
-              </div>
-              <div id="promote-members" style="border:1px solid var(--border);border-radius:8px;padding:0.6rem;max-height:200px;overflow-y:auto;margin-bottom:0.8rem;display:none"></div>
-              <button type="button" id="promote-run" class="btn" style="display:none">Schedule promotion</button>
-              <div id="promote-scheduled" style="margin-top:1rem"></div>
-            </div>
-
-            <div class="sub-card" id="team-add-card">
+            <div class="sub-card hidden" id="team-add-card">
               <h3>Add a team member</h3>
               <div id="team-add-error" class="alert alert-error hidden" role="alert"></div>
               <div id="team-add-success" class="alert alert-success hidden" role="status"></div>
@@ -6473,7 +6446,7 @@
                     </div>
                   </div>
                 </div>
-                <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button></div>
+                <div style="margin-top:0.8rem"><button type="submit" id="team-add-submit" class="btn">Add team member</button> <button type="button" id="team-add-cancel" class="btn-secondary">Cancel</button></div>
               </form>
               <div id="team-invite-box" class="hidden" style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem">
                 <p><strong>Send invite</strong> — the invite link will be emailed to the new team member so they can set their own password:</p>
@@ -7151,6 +7124,22 @@
                   if (r === 'employee') opt.selected = true;
                   roleSelect.appendChild(opt);
                 });
+                // Add form stays closed until the + Add team member button
+                // opens it (Deepika 2026-10-26) — never visible by default.
+                $('team-add-toggle').addEventListener('click', function () {
+                  var card = $('team-add-card');
+                  if (card.classList.contains('hidden')) {
+                    card.classList.remove('hidden');
+                    card.scrollIntoView({ block: 'nearest' });
+                    var fn = $('team-add-firstname');
+                    if (fn) fn.focus();
+                  } else {
+                    card.classList.add('hidden');
+                  }
+                });
+                $('team-add-cancel').addEventListener('click', function () {
+                  $('team-add-card').classList.add('hidden');
+                });
                 $('team-add-form').addEventListener('submit', function (e) {
                   e.preventDefault();
                   var errEl = $('team-add-error');
@@ -7403,7 +7392,7 @@
                   if (window.qsSetDeptAccess) window.qsSetDeptAccess(myRole === 'owner' ? null : (r.data.departmentAccess || null));
                   // Department scope: no edit access anywhere -> hide the add forms.
                   if (window.qsDeptAccess && !window.qsDeptAccess.edit.length) {
-                    ['team-add-card', 'team-dept-form'].forEach(function (id) {
+                    ['team-add-card', 'team-add-toggle', 'team-dept-form'].forEach(function (id) {
                       var ae = $(id); if (ae) hide(ae);
                     });
                   }
@@ -7437,6 +7426,36 @@
               }
             })();
             </script>
+          </div>
+          <div id="subtab-team-promote" class="sub-panel">
+            <div class="sub-card" id="team-promote-card">
+              <h3>Promote job roles</h3>
+              <p class="set-desc">Move people from one job role to another at year-end (e.g., PGY1 → PGY2). Uncheck anyone who should not be promoted.</p>
+              <div id="team-promote-error" class="alert alert-error hidden" role="alert"></div>
+              <div id="team-promote-success" class="alert alert-success hidden" role="status"></div>
+              <div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-bottom:0.8rem;align-items:flex-end">
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Department</label>
+                  <select id="promote-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:160px"></select>
+                </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From role</label>
+                  <select id="promote-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
+                </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To role</label>
+                  <select id="promote-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;min-width:140px"></select>
+                </div>
+                <div>
+                  <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Effective date</label>
+                  <input type="date" id="promote-date" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+                </div>
+                <button type="button" id="promote-load" class="btn-secondary">Find members</button>
+              </div>
+              <div id="promote-members" style="border:1px solid var(--border);border-radius:8px;padding:0.6rem;max-height:200px;overflow-y:auto;margin-bottom:0.8rem;display:none"></div>
+              <button type="button" id="promote-run" class="btn" style="display:none">Schedule promotion</button>
+              <div id="promote-scheduled" style="margin-top:1rem"></div>
+            </div>
           </div>
           <div id="subtab-jobroles" class="sub-panel">
             <div class="set-head-row">
