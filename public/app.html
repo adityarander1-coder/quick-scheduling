@@ -5613,6 +5613,17 @@
         /* Candidates */
         #tab-settings .cand-tabs { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
         #tab-settings .cand-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        /* Candidates pill toggle + link box (Deepika 2026-10-26): the
+           Pending/Approved/Declined buttons become one pill toggle like
+           the Rotations tabs; the share link sits in a bordered box. */
+        #tab-settings #subtab-candidates .cand-tabs { background: #eef2f5; border-radius: 999px; padding: 3px; display: inline-flex; flex-wrap: nowrap; }
+        #tab-settings #subtab-candidates .cand-tabs button { border: 0; background: transparent; padding: 6px 16px; border-radius: 999px; }
+        #tab-settings #subtab-candidates .cand-tabs button.active { background: #21414c; color: #fff; border-color: #21414c; }
+        #tab-settings .cand-link-box { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem; background: var(--surface-alt); }
+        #tab-settings .cand-link-box code { flex: 1; min-width: 200px; }
+        @media (max-width: 700px) {
+          #tab-settings #subtab-candidates .cand-tabs button { padding: 6px 10px; font-size: 12px; }
+        }
         #tab-settings .warn-badge { display: inline-block; background: #fef3c7; color: #92400e; border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.8rem; font-weight: 600; margin: 0.1rem 0.2rem 0.1rem 0; }
         #tab-settings .warn-badge.exact { background: #fee2e2; color: #991b1b; }
         #tab-settings .temp-password { background: #f0fdf4; border: 1px solid #86efac; border-radius: 12px; padding: 1rem; margin-top: 0.8rem; font-size: 1.05rem; }
@@ -8246,9 +8257,10 @@
               <h3 class="set-h3" style="margin:0">Candidate intake</h3>
             </div>
             <p class="set-desc">Share this link with applicants — no login needed:</p>
-            <p><code id="cand-apply-link" style="word-break:break-all"></code>
-              <button type="button" id="cand-copy-link" class="btn-secondary" style="margin-left:0.5rem">Copy</button>
-            </p>
+            <div class="cand-link-box">
+              <code id="cand-apply-link" style="word-break:break-all"></code>
+              <button type="button" id="cand-copy-link" class="btn-secondary">Copy</button>
+            </div>
             <div class="cand-tabs">
               <button type="button" data-status="pending" class="btn-secondary active">Pending</button>
               <button type="button" data-status="approved" class="btn-secondary">Approved</button>
