@@ -5465,13 +5465,32 @@
         #tab-settings .assign-chip { border-radius: 8px; padding: 0.5rem 0.7rem; font-size: 0.9rem; font-weight: 600; color: #0a0a0a; border: 1px solid; }
         #tab-settings .rot-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
         /* Rotations: employee cards (demo structure) */
-        #tab-settings .employee-rotation-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.1rem 1.2rem; margin-bottom: 1rem; box-shadow: var(--shadow-soft); }
-        #tab-settings .erc-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
-        #tab-settings .erc-avatar { width: 44px; height: 44px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 1.2rem; flex-shrink: 0; }
+        /* Rotations one-line rows (Deepika 2026-10-26): web rows are a
+           single horizontal line; phones keep stacked cards. Rows
+           alternate white / pale-grey like the other Settings lists.
+           Inner tabs are a pill toggle. */
+        #tab-settings .employee-rotation-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 10px 20px; margin-bottom: 6px; }
+        #tab-settings #rot-emp-list .employee-rotation-card:nth-child(even) { background: #e8edee; }
+        #tab-settings .erc-head { display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; }
+        #tab-settings .erc-avatar { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 13px; flex-shrink: 0; }
         #tab-settings .erc-id { flex: 1; min-width: 140px; display: flex; flex-direction: column; }
-        #tab-settings .erc-id strong { font-size: 1.05rem; color: var(--text); }
-        #tab-settings .erc-id span { font-size: 0.85rem; color: var(--dim); }
+        #tab-settings .erc-id strong { font-size: 14px; color: var(--text); }
+        #tab-settings .erc-id span { font-size: 12px; color: var(--dim); }
+        #tab-settings .erc-status { margin-left: auto; color: var(--dim); font-size: 12px; white-space: nowrap; }
         #tab-settings .erc-empty { color: var(--dim); font-size: 0.9rem; margin: 0.6rem 0 0; }
+        #tab-settings #subtab-rotations .sub-tabs { background: #eef2f5; border: none; border-radius: 999px; padding: 3px; display: inline-flex; }
+        #tab-settings #subtab-rotations .subtab-btn { padding: 6px 16px; border-radius: 999px; }
+        #tab-settings #subtab-rotations .subtab-btn.active { background: #21414c; color: #fff; }
+        @media (max-width: 700px) {
+          #tab-settings .erc-head { flex-wrap: wrap; }
+          #tab-settings .erc-avatar { width: 36px; height: 36px; font-size: 15px; }
+          #tab-settings .erc-id strong { font-size: 15px; }
+          #tab-settings .erc-id span { font-size: 13px; }
+          #tab-settings .rot-add-btn { order: 3; }
+          #tab-settings .erc-status { order: 4; flex-basis: 100%; margin-left: 0; font-size: 13px; }
+          /* Pill toggle must fit narrow panels (~292px): shrink its buttons. */
+          #tab-settings #subtab-rotations .subtab-btn { padding: 6px 10px; font-size: 12px; }
+        }
         #tab-settings .erc-rots { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.7rem; }
         #tab-settings .erc-rot { display: flex; align-items: center; gap: 0.7rem; text-align: left; width: 100%; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 0.9rem; cursor: pointer; font-family: inherit; }
         #tab-settings .erc-rot:hover { border-color: var(--accent); }
@@ -5817,6 +5836,7 @@
                     $('rot-emp-search').dataset.bound = '1';
                     $('rot-emp-search').addEventListener('input', renderEmployees);
                   }
+                  syncRotTabs();
                 }).catch(function () { pageError('Could not load rotations.'); });
               }
 
@@ -5895,11 +5915,10 @@
                     '<span class="erc-avatar" style="background:' + avatarColor(nm) + '">' + esc(initial) + '</span>' +
                     '<div class="erc-id"><strong>' + esc(nm) + '</strong>' +
                     (roleDept ? '<span>' + esc(roleDept) + '</span>' : '') + '</div>' +
+                    (!rots.length ? '<span class="erc-status">No rotations yet.</span>' : '') +
                     (mEditable ? '<button type="button" class="btn rot-add-btn" data-user="' + m.id + '">+ Add rotation</button>' : '') +
                     '</div>';
-                  if (!rots.length) {
-                    html += '<p class="erc-empty">No rotations yet.</p>';
-                  } else {
+                  if (rots.length) {
                     html += '<div class="erc-rots">';
                     rots.forEach(function (r) {
                       var stMap = {};
@@ -6211,6 +6230,16 @@
 
               window.addEventListener('hashchange', function () { if (isActive()) loadAll(); });
               if (isActive()) loadAll();
+
+              // Keep the inner-tab pill in sync with the visible panel:
+              // the .active from the HTML is lost when switching Settings
+              // sections, so re-apply it on every load.
+              function syncRotTabs() {
+                var listVisible = !$('rottab-rot-list').classList.contains('hidden');
+                document.querySelectorAll('[data-rottab]').forEach(function (b) {
+                  b.classList.toggle('active', (b.getAttribute('data-rottab') === 'rot-list') === listVisible);
+                });
+              }
 
               // Nested tabs: Rotations | Skip rotations
               document.querySelectorAll('[data-rottab]').forEach(function (btn) {
