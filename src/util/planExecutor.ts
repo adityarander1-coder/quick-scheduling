@@ -141,22 +141,25 @@ async function findMember(companyId: string, name: string): Promise<{ id: string
 /**
  * Exclude rotation-generated instances for a user on a date (the "give off"
  * path for rotation days, which have no shift row). Returns the number of
- * rotation instances actually excluded.
+ * rotation instances actually excluded. queryFn defaults to the global
+ * query; pass a transaction's query to run the exclusion atomically
+ * inside a swap.
  */
 async function excludeRotationInstances(
   companyId: string,
   userId: string,
   date: string,
-  shiftTypeId: string | null
+  shiftTypeId: string | null,
+  queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
 ): Promise<number> {
-  const { rows: rotations } = await query(
+  const { rows: rotations } = await queryFn(
     `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
     [companyId]
   );
   let excluded = 0;
   for (const rot of rotations) {
-    const { rows: assignments } = await query(
+    const { rows: assignments } = await queryFn(
       `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
        FROM rotation_assignments ra
        JOIN users u ON u.id = ra.user_id
@@ -175,14 +178,14 @@ async function excludeRotationInstances(
     );
     if (!matches.length) continue;
     // Skip dates inside a pause period (vacation etc.).
-    const { rows: pauses } = await query(
+    const { rows: pauses } = await queryFn(
       `SELECT 1 FROM rotation_pauses
        WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
       [rot.id, date]
     );
     if (pauses.length) continue;
     for (const m of matches) {
-      const ins = await query(
+      const ins = await queryFn(
         `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
@@ -217,9 +220,87 @@ async function findShiftRow(
   return rows[0] ?? null;
 }
 
-function noManualShiftMsg(display: string, date: string, shiftTypeName?: string): string {
-  return `No shift found for ${display} on ${date}${shiftTypeName ? ` (${shiftTypeName})` : ''}. ` +
-    `Only manually-assigned shifts can be swapped — rotation-generated shifts need the scheduler.`;
+type SwapSide =
+  | { kind: 'manual'; row: { id: string; shift_type_id: string; date: string; published: boolean; notes: string | null; shift_type_name: string } }
+  | { kind: 'rotation'; rotationId: string; shiftTypeId: string; shiftTypeName: string };
+
+/**
+ * Resolve one side of a swap: what is this user working on this date?
+ * A manual shift row wins first (today's swap behavior, unchanged). If
+ * there is no manual row, fall back to the rotation-generated instance
+ * for that day — computed with the same rules the schedule read path
+ * uses (active rotation, active user, end date, cycle math, pause skip),
+ * minus instances already excluded (a day the person is already off).
+ * Returns null when the user has neither. Throws when a named shift
+ * type does not exist, mirroring findShiftRow.
+ */
+async function resolveSwapSide(
+  companyId: string,
+  userId: string,
+  date: string,
+  shiftTypeName?: string
+): Promise<SwapSide | null> {
+  const manual = await findShiftRow(companyId, userId, date, shiftTypeName);
+  if (manual) return { kind: 'manual', row: manual };
+  let wantedTypeId: string | null = null;
+  if (shiftTypeName) {
+    const st = await findShiftType(companyId, shiftTypeName);
+    if (!st) throw new Error(`Shift type not found: ${shiftTypeName}`);
+    wantedTypeId = st.id;
+  }
+  const { rows: rotations } = await query(
+    `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
+     FROM rotations WHERE company_id = $1 AND is_active = true ORDER BY created_at`,
+    [companyId]
+  );
+  for (const rot of rotations) {
+    const { rows: assignments } = await query(
+      `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
+       FROM rotation_assignments ra
+       JOIN users u ON u.id = ra.user_id
+       WHERE ra.rotation_id = $1 AND ra.user_id = $2 AND u.is_active = true
+         AND (u.end_date IS NULL OR u.end_date::text >= $3)`,
+      [rot.id, userId, date]
+    );
+    if (!assignments.length) continue;
+    const startDate = new Date(rot.startDate + 'T00:00:00');
+    const target = new Date(date + 'T00:00:00');
+    if (isNaN(startDate.getTime()) || isNaN(target.getTime()) || target < startDate) continue;
+    const daysSinceStart = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
+    const cycleDay = (daysSinceStart % rot.cycleDays) + 1; // 1-indexed, matches schedule.ts
+    const matches = assignments.filter(
+      (a: any) => a.cycleDay === cycleDay && (!wantedTypeId || a.shiftTypeId === wantedTypeId)
+    );
+    if (!matches.length) continue;
+    const { rows: pauses } = await query(
+      `SELECT 1 FROM rotation_pauses
+       WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
+      [rot.id, date]
+    );
+    if (pauses.length) continue;
+    for (const m of matches) {
+      const { rows: excl } = await query(
+        `SELECT 1 FROM rotation_shift_exclusions
+         WHERE rotation_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
+        [rot.id, userId, date, m.shiftTypeId]
+      );
+      if (excl.length) continue; // already off this rotation day
+      const { rows: stRows } = await query(
+        'SELECT name FROM shift_types WHERE id = $1', [m.shiftTypeId]
+      );
+      return {
+        kind: 'rotation',
+        rotationId: rot.id,
+        shiftTypeId: m.shiftTypeId,
+        shiftTypeName: stRows[0]?.name || 'rotation shift',
+      };
+    }
+  }
+  return null;
+}
+
+function noShiftFoundMsg(display: string, date: string, shiftTypeName?: string): string {
+  return `No shift found for ${display} on ${date}${shiftTypeName ? ` (${shiftTypeName})` : ''} — checked manual assignments and rotation days.`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -545,14 +626,18 @@ export async function validatePlanEligibility(companyId: string, changes: PlanCh
         const fromDate = c.fromDate || c.date;
         const toDate = c.toDate || c.date;
         if (!fromDate || !toDate) continue;
-        const fromRow = await findShiftRow(companyId, fromUser.id, fromDate, c.shiftType);
-        if (!fromRow) continue;
+        const fromSide = await resolveSwapSide(companyId, fromUser.id, fromDate, c.shiftType);
+        if (!fromSide) continue;
+        const fromTypeId = fromSide.kind === 'manual' ? fromSide.row.shift_type_id : fromSide.shiftTypeId;
+        const fromTypeName = fromSide.kind === 'manual' ? fromSide.row.shift_type_name : fromSide.shiftTypeName;
         const warnings: string[] = [];
-        const w1 = await check(toUser.display, toUser.id, fromRow.shift_type_id, fromRow.shift_type_name);
+        const w1 = await check(toUser.display, toUser.id, fromTypeId, fromTypeName);
         if (w1) warnings.push(w1);
-        const toRow = await findShiftRow(companyId, toUser.id, toDate, c.shiftType);
-        if (toRow) {
-          const w2 = await check(fromUser.display, fromUser.id, toRow.shift_type_id, toRow.shift_type_name);
+        const toSide = await resolveSwapSide(companyId, toUser.id, toDate, c.shiftType);
+        if (toSide) {
+          const toTypeId = toSide.kind === 'manual' ? toSide.row.shift_type_id : toSide.shiftTypeId;
+          const toTypeName = toSide.kind === 'manual' ? toSide.row.shift_type_name : toSide.shiftTypeName;
+          const w2 = await check(fromUser.display, fromUser.id, toTypeId, toTypeName);
           if (w2) warnings.push(w2);
         }
         if (warnings.length) { c.warning = warnings.join(' '); warned++; }
@@ -672,51 +757,75 @@ export async function executePlan(
         const fromDate = change.fromDate || change.date;
         const toDate = change.toDate || change.date;
         if (!fromDate || !toDate) throw new Error('Swap needs a date (or fromDate/toDate).');
-        const fromShift = await findShiftRow(companyId, fromUser.id, fromDate, change.shiftType);
-        if (!fromShift) throw new Error(noManualShiftMsg(fromUser.display, fromDate, change.shiftType));
-        const toShift = await findShiftRow(companyId, toUser.id, toDate, change.shiftType);
+        const fromSide = await resolveSwapSide(companyId, fromUser.id, fromDate, change.shiftType);
+        if (!fromSide) throw new Error(noShiftFoundMsg(fromUser.display, fromDate, change.shiftType));
+        const toSide = await resolveSwapSide(companyId, toUser.id, toDate, change.shiftType);
+        const fromTypeName = fromSide.kind === 'manual' ? fromSide.row.shift_type_name : fromSide.shiftTypeName;
+        const fromRot = fromSide.kind === 'rotation' ? ' (rotation day)' : '';
+        const toTypeName = toSide ? (toSide.kind === 'manual' ? toSide.row.shift_type_name : toSide.shiftTypeName) : null;
+        const toRot = toSide && toSide.kind === 'rotation' ? ' (rotation day)' : '';
         const { withTransaction } = await import('../db.js');
-        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
-        if (!toShift) {
-          // toPerson has no shift on that date: treat as a move of fromPerson's shift.
-          await withTransaction(async (tx) => {
-            const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromShift.id, companyId]);
+        await withTransaction(async (tx) => {
+          // Remove fromUser's shift: delete a manual row, or exclude a
+          // rotation day (the rotation pattern itself is untouched).
+          if (fromSide.kind === 'manual') {
+            const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromSide.row.id, companyId]);
             if (del.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${fromDate} — it may have changed.`);
+          } else {
             const ins = await tx.query(
+              `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+               VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+              [companyId, fromSide.rotationId, fromUser.id, fromDate, fromSide.shiftTypeId]
+            );
+            if (ins.rowCount === 0) throw new Error(`${fromUser.display}'s shift on ${fromDate} may have changed — please review and try again.`);
+          }
+          if (toSide) {
+            // Remove toUser's shift the same way, then hand each person
+            // the other's shift: toUser covers fromDate, fromUser covers
+            // toDate (same-day swaps: both on that date).
+            if (toSide.kind === 'manual') {
+              const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [toSide.row.id, companyId]);
+              if (del.rowCount === 0) throw new Error(`Could not remove ${toUser.display}'s shift on ${toDate} — it may have changed.`);
+            } else {
+              const ins = await tx.query(
+                `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+                [companyId, toSide.rotationId, toUser.id, toDate, toSide.shiftTypeId]
+              );
+              if (ins.rowCount === 0) throw new Error(`${toUser.display}'s shift on ${toDate} may have changed — please review and try again.`);
+            }
+          }
+          // toUser receives fromUser's shift as a manual row. When there
+          // was no shift to exchange, this is the move: toUser covers it
+          // on toDate instead of fromDate.
+          const fromTypeId = fromSide.kind === 'manual' ? fromSide.row.shift_type_id : fromSide.shiftTypeId;
+          const coverDate = toSide ? fromDate : toDate;
+          const ins2 = await tx.query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+            [crypto.randomUUID(), companyId, toUser.id, fromTypeId, coverDate, fromSide.kind === 'manual' ? fromSide.row.notes : null, fromSide.kind === 'manual' ? fromSide.row.published : true, createdBy]
+          );
+          if (ins2.rowCount === 0) throw new Error(`Could not place ${toUser.display} on ${fromTypeName} on ${coverDate} — conflicting shift exists.`);
+          // fromUser receives toUser's shift (exchange only).
+          if (toSide) {
+            const toTypeId = toSide.kind === 'manual' ? toSide.row.shift_type_id : toSide.shiftTypeId;
+            const ins3 = await tx.query(
               `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
-              [uuidv4(), companyId, toUser.id, fromShift.shift_type_id, toDate, fromShift.notes, fromShift.published, createdBy]
+              [crypto.randomUUID(), companyId, fromUser.id, toTypeId, toDate, toSide.kind === 'manual' ? toSide.row.notes : null, toSide.kind === 'manual' ? toSide.row.published : true, createdBy]
             );
-            if (ins.rowCount === 0) throw new Error(`${toUser.display} is already on ${fromShift.shift_type_name} on ${toDate} — no change made.`);
-          });
-          results.push({ action: 'swap', success: true, message: `Moved ${fromUser.display}'s ${fromShift.shift_type_name} on ${fromDate} to ${toUser.display} on ${toDate} (${toUser.display} had no shift to swap)` });
+            if (ins3.rowCount === 0) throw new Error(`Could not place ${fromUser.display} on ${toTypeName} on ${toDate} — conflicting shift exists.`);
+          }
+        });
+        if (!toSide) {
+          results.push({ action: 'swap', success: true, message: `Moved ${fromUser.display}'s ${fromTypeName}${fromRot} on ${fromDate} to ${toUser.display} on ${toDate} (${toUser.display} had no shift to swap)` });
         } else {
-          // Exchange the two assignments: delete both rows, re-insert with
-          // swapped people (avoids UNIQUE conflicts on same-type same-day swaps).
-          await withTransaction(async (tx) => {
-            const del1 = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromShift.id, companyId]);
-            if (del1.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${fromDate} — it may have changed.`);
-            const del2 = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [toShift.id, companyId]);
-            if (del2.rowCount === 0) throw new Error(`Could not remove ${toUser.display}'s shift on ${toDate} — it may have changed.`);
-            const ins1 = await tx.query(
-              `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
-              [uuidv4(), companyId, toUser.id, fromShift.shift_type_id, fromDate, fromShift.notes, fromShift.published, createdBy]
-            );
-            if (ins1.rowCount === 0) throw new Error(`Could not place ${toUser.display} on ${fromShift.shift_type_name} on ${fromDate} — conflicting shift exists.`);
-            const ins2 = await tx.query(
-              `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
-              [uuidv4(), companyId, fromUser.id, toShift.shift_type_id, toDate, toShift.notes, toShift.published, createdBy]
-            );
-            if (ins2.rowCount === 0) throw new Error(`Could not place ${fromUser.display} on ${toShift.shift_type_name} on ${toDate} — conflicting shift exists.`);
-          });
           const sameDay = fromDate === toDate;
           results.push({
             action: 'swap', success: true,
             message: sameDay
-              ? `Swapped ${fromUser.display} (${fromShift.shift_type_name}) ↔ ${toUser.display} (${toShift.shift_type_name}) on ${fromDate}`
-              : `Swapped ${fromUser.display}'s ${fromShift.shift_type_name} on ${fromDate} ↔ ${toUser.display}'s ${toShift.shift_type_name} on ${toDate}`,
+              ? `Swapped ${fromUser.display} (${fromTypeName}${fromRot}) ↔ ${toUser.display} (${toTypeName}${toRot}) on ${fromDate}`
+              : `Swapped ${fromUser.display}'s ${fromTypeName}${fromRot} on ${fromDate} ↔ ${toUser.display}'s ${toTypeName}${toRot} on ${toDate}`,
           });
         }
       } else if (change.action === 'unassign' && change.person && change.date) {
