@@ -489,46 +489,20 @@ export async function processScheduleEmail(
       const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
       const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
       const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
-      // Quick session link (Deepika, 2026-10-21): a standalone
-      // session form next to Approve / Reject — add or change a
-      // session straight from the email, no app needed. Prefilled
-      // from the plan's first session change when there is one.
-      let quickUrl = '';
-      try {
-        const quickToken = crypto.randomBytes(32).toString('hex');
-        let qDash: string | null = null, qSess: string | null = null, qDate: string | null = null;
-        const sc: any = (plan.changes || []).find((c: any) =>
-          ['add_session', 'update_session', 'cancel_session'].includes(c.action));
-        if (sc && sc.dashboard) {
-          const { rows: dRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
-          const dHit = dRows.find((d: any) => d.name.toLowerCase() === String(sc.dashboard).toLowerCase());
-          if (dHit) {
-            qDash = dHit.id;
-            if (sc.sessionTitle) {
-              const { rows: sRows } = await query(
-                'SELECT id FROM academic_sessions WHERE company_id = $1 AND dashboard_id = $2 AND lower(title) = lower($3) LIMIT 1',
-                [companyId, qDash, sc.sessionTitle]);
-              if (sRows.length) qSess = sRows[0].id;
-            }
-            qDate = sc.date || null;
-          }
-        }
-        await query(
-          `INSERT INTO quick_session_links (token, company_id, dashboard_id, session_id, occ_date, expires_at)
-           VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')`,
-          [quickToken, companyId, qDash, qSess, qDate]
-        );
-        quickUrl = `${baseUrl}/api/schedule/quick-session/${quickToken}`;
-      } catch { /* non-fatal: the email still goes out without the button */ }
       const fromLine = email.fromName ? `${email.fromName} <${email.from}>` : email.from;
       const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
+      // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
+      // from plan emails for now — it rendered overlapping the Approve /
+      // Reject buttons in Gmail. The quick-session page itself stays live;
+      // the button comes back once its email layout is fixed. So no token
+      // is generated for the email anymore.
       await sendMail({
         ...(fromAddr ? { from: fromAddr } : {}),
         to: toAddr,
         cc: ccRest.length ? ccRest : undefined,
         subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-        text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}${quickUrl ? `\n\nQuick session — add or change a session without opening the app: ${quickUrl}` : ''}\n\nOr review in the app: ${baseUrl}`,
-        html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p>${quickUrl ? `<p><a href="${quickUrl}" style="background:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">📅 Quick session — add / change a session</a> <span style="color:#6b7280;font-size:13px;">(no app needed)</span></p>` : ''}<p><a href="${baseUrl}">Or review in the app</a></p>`,
+        text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+        html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
       });
       console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
       } // end else (notifications enabled)
