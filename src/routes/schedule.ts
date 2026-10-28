@@ -5121,61 +5121,34 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   return { plan, memberNames: uRows.map((r: any) => r.name), shiftNames: stRows.map((r: any) => r.name) };
 }
 
-// Match typed person/shift names against the real roster. Exact and unique
-// first-name matches are fixed silently (the plan preview still shows the
-// resolved name before approval); ambiguous or unknown names become one
-// targeted clarification question instead of a generic failure.
-async function validateTaskNames(plan: any, memberNames: string[], shiftNames: string[]) {
-  const { matchName } = await import('../util/planHelpers.js');
-  const personFields: Array<[any, string]> = [];
-  const shiftFields: Array<[any, string]> = [];
-  for (const c of plan.changes || []) {
-    if (['assign', 'assign_recurring', 'unassign', 'update_team_member'].includes(c.action) && c.person) personFields.push([c, 'person']);
-    if (['move', 'swap'].includes(c.action)) {
-      if (c.fromPerson) personFields.push([c, 'fromPerson']);
-      if (c.toPerson) personFields.push([c, 'toPerson']);
-    }
-    if (['assign', 'assign_recurring', 'set_staffing_target'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
-  }
-  for (const [c, f] of personFields) {
-    const m = matchName(c[f], memberNames);
-    if (m.status === 'exact') { c[f] = m.name; continue; }
-    if (m.status === 'suggestions') {
-      return { question: `Which team member do you mean by "${c[f]}"?`, options: m.names };
-    }
-    return { question: `I don't see a team member named "${c[f]}". Check the spelling, or pick one:`, options: memberNames.slice(0, 10) };
-  }
-  for (const [c, f] of shiftFields) {
-    const m = matchName(c[f], shiftNames);
-    if (m.status === 'exact') { c[f] = m.name; continue; }
-    if (m.status === 'suggestions') {
-      return { question: `Which shift type do you mean by "${c[f]}"?`, options: m.names };
-    }
-    return { question: `I don't see a shift type named "${c[f]}". Pick one:`, options: shiftNames.slice(0, 10) };
-  }
-  return null;
-}
-
 // Validate a parsed plan (names, then completeness) and insert it as pending,
-// or return the one clarification question that unblocks it.
+// or return the clarification that unblocks it. Every blocking problem is
+// gathered first: one problem keeps today's targeted question + tappable
+// options, several become ONE question listing everything needed, so the
+// user answers once instead of one question per detail.
 async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[]) {
-  const nameQ = await validateTaskNames(plan, memberNames, shiftNames);
-  if (nameQ) return { type: 'clarification' as const, question: nameQ.question, options: nameQ.options };
+  const { collectNameProblems, decideClarification } = await import('../util/askRouting.js');
+  const nameProblems = collectNameProblems(plan, memberNames, shiftNames);
   const { changeProblems } = await import('../util/emailPoller.js');
   const incomplete = (plan.changes || [])
     .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
     .filter((x: any) => x.problems.length > 0);
-  if (!plan.changes?.length || incomplete.length || (plan as any).needsClarification) {
-    let question = (plan as any).needsClarification || 'I could not understand the task well enough to build a plan.';
-    let options: string[] = [];
-    if (incomplete.length) {
-      const ch = plan.changes[incomplete[0].i];
-      const prob = incomplete[0].problems[0];
-      const built = await buildClarification(ch, prob, companyId, query);
-      question = built.question;
-      options = built.options;
+  const problems: Array<{ text: string; options: string[] }> = [...nameProblems];
+  for (const entry of incomplete) {
+    for (const prob of entry.problems) {
+      const built = await buildClarification(plan.changes[entry.i], prob, companyId, query);
+      problems.push({ text: built.question, options: built.options });
     }
-    return { type: 'clarification' as const, question, options };
+  }
+  if ((plan as any).needsClarification) {
+    problems.push({ text: (plan as any).needsClarification, options: [] });
+  }
+  if (!plan.changes?.length || problems.length) {
+    if (!problems.length) {
+      return { type: 'clarification' as const, question: 'I could not understand the task well enough to build a plan.', options: [] };
+    }
+    const d = decideClarification(problems);
+    return { type: 'clarification' as const, question: d.question, options: d.options };
   }
   // Warn-and-override: flag every change that puts someone on a shift type
   // their job role is not eligible for. The warning rides on the change into
@@ -5271,12 +5244,20 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
     const message = String(req.body?.message || req.body?.task || req.body?.question || '').slice(0, 1000);
     if (!message.trim()) { res.status(400).json({ kind: 'error', error: 'Say something.' }); return; }
     const history = parseTaskHistory(req.body);
-    // Imperatives are tasks, not questions: "put Nancy on nights" must not be
-    // misread as a question about Nancy. Questions go through the rule engine;
-    // instructions skip straight to the plan path.
-    const isInstruction = /^[\s"'\u201c\u201d\u2018\u2019\(\[]*(please\s+)?(put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book)\b/i.test(message.trim());
+    // Routing is decided from state + wording (see util/askRouting): a
+    // follow-up inside an open clarification round goes straight to the
+    // planner, plain sentences stating a staffing change count as tasks,
+    // and employees get the Requests pointer before the question engine
+    // runs. Questions go through the rule engine; anything the engine
+    // can't answer falls through to the plan path below.
+    const { routeAskTask } = await import('../util/askRouting.js');
+    const route = routeAskTask(message, history, req.session.role!);
+    if (route === 'employee-pointer') {
+      res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+      return;
+    }
     let fallbackAnswer = '';
-    if (!isInstruction) {
+    if (route === 'question') {
       const ctx = await buildAskContext(req);
       const { answerQuestionDetailed } = await import('../util/askEngine.js');
       const { answer, fallback } = await answerQuestionDetailed(message, ctx);
