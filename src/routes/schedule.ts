@@ -24,6 +24,44 @@ import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverId
 
 const router = Router();
 
+/**
+ * Get all department IDs affected by a plan's changes. Used to check the
+ * approver's department access before executing.
+ */
+async function getPlanDepartmentIds(companyId: string, plan: any): Promise<string[]> {
+  const deptIds = new Set<string>();
+  const changes = plan?.changes || [];
+  for (const c of changes) {
+    // Direct department reference.
+    if (c.department) {
+      const { rows } = await query('SELECT id FROM departments WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, String(c.department).trim()]);
+      if (rows.length) deptIds.add(rows[0].id);
+    }
+    // Shift type → its departments (look up ID by name first).
+    if (c.shiftType) {
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, String(c.shiftType).trim()]);
+      if (stRows.length) {
+        const ids = await shiftTypesDepartmentIds([stRows[0].id], companyId);
+        ids.forEach((id: string) => deptIds.add(id));
+      }
+    }
+    // Person → their home department (look up ID by name first).
+    if (c.person || c.fromPerson || c.toPerson) {
+      const names = [c.person, c.fromPerson, c.toPerson].filter(Boolean);
+      for (const n of names) {
+        const { rows: uRows } = await query(
+          `SELECT id FROM users WHERE company_id = $1 AND lower(first_name || ' ' || last_name) = lower($2)`,
+          [companyId, String(n).trim()]
+        );
+        if (uRows.length) {
+          const ids = await usersDepartmentIds([uRows[0].id], companyId);
+          ids.forEach((id: string) => deptIds.add(id));
+        }
+      }
+    }
+  }
+  return [...deptIds];
+}
 
 
 /** Look up display names for a shift (person + shift type). */
@@ -5370,13 +5408,26 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       const when = plan.decided_at ? ` on ${new Date(plan.decided_at).toLocaleString()}` : '';
       return res.send(`<h1>Already ${escHtml(plan.status)}</h1><p>This plan was already ${escHtml(plan.status)}${escHtml(when)}. No further action needed.</p>`);
     }
-    // Login-free approval (Deepika 2026-10-28): the approve token IS the
-    // auth, exactly like the reject token and the quick-session token.
-    // The token is 32 random bytes, and the pending-status check above
-    // makes the link one-shot — a used link can never apply twice. The
-    // approval email only goes to the company's approvers. When the
-    // approver happens to be logged in, their id is still recorded.
-    const sessionUserId = (req.session as any)?.userId || null;
+    // Department access check: the approver must be logged in and have edit
+    // access to all departments affected by the plan. Owners bypass.
+    const sessionUserId = (req.session as any)?.userId;
+    const sessionRole = (req.session as any)?.role;
+    const sessionCompanyId = (req.session as any)?.companyId;
+    if (!sessionUserId || sessionCompanyId !== plan.company_id) {
+      const loginUrl = `/login.html?redirect=${encodeURIComponent(req.originalUrl)}`;
+      return res.send(`<h1>Login required</h1><p>Please <a href="${loginUrl}">log in</a> to approve this plan. This ensures you have access to the affected departments.</p>`);
+    }
+    if (sessionRole !== 'owner') {
+      const { getDepartmentAccess } = await import('../util/departmentAccess.js');
+      const access = await getDepartmentAccess(sessionUserId, plan.company_id);
+      const planDepts = await getPlanDepartmentIds(plan.company_id, plan.plan);
+      const missing = planDepts.filter((d: string) => !access.edit.includes(d));
+      if (missing.length) {
+        const { rows: drows } = await query('SELECT name FROM departments WHERE id = ANY($1)', [missing]);
+        const names = drows.map((r: any) => r.name).join(', ');
+        return res.status(403).send(`<h1>Access denied</h1><p>You don't have edit access to: ${escHtml(names)}. Please ask the owner to approve this plan.</p>`);
+      }
+    }
     // Execute the plan
     const { executePlan } = await import('../util/planExecutor.js');
     const results = await executePlan(plan.company_id, plan.plan, 'email-approval');
