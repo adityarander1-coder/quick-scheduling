@@ -11435,8 +11435,11 @@
 
         <div class="card" style="padding:16px;margin-bottom:14px">
           <h3 style="margin:0 0 6px">🔔 Notifications</h3>
-          <p style="font-size:0.85rem;color:var(--dim);margin:0 0 8px">Everything always appears under the 🔔 bell in the app. These settings control the <strong>email</strong> copies. <em>Digest emails start with the next update — until then Digest means no email (the bell still records everything).</em></p>
+          <p style="font-size:0.85rem;color:var(--dim);margin:0 0 8px">Everything always appears under the 🔔 bell in the app. These settings control the <strong>email</strong> copies. <em>Daily digest sends one email each morning (~7 AM) with everything from the last day — the bell still records everything right away.</em></p>
           <div id="ms-notif-rows"></div>
+          <h4 style="margin:16px 0 4px">⏰ Reminders (just for you)</h4>
+          <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">Pick up to 2 times for each row — reminders are personal, nobody sets them for you. They always email right away, never in the digest.</p>
+          <div id="ms-reminder-rows"></div>
           <div id="ms-defaults-wrap" hidden>
             <h4 style="margin:16px 0 4px">Company defaults (owner)</h4>
             <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">The starting setting for everyone who hasn't chosen their own above.</p>
@@ -15393,9 +15396,12 @@
     schedule: 'Shifts assigned to you, changed, removed, or published.',
     calendar: 'Sessions you present or supervise, and sessions that need a presenter.',
     approvals: 'Shift requests sent to you, decisions on your requests, and emailed plans waiting for approval.',
-    messages: 'New messages in your conversations (email summaries arrive with the next update).'
+    messages: 'New messages in your conversations — if they sit unread 30 minutes, one summary email (never one per message).'
   };
   var SPEED_LABEL = { instant: 'Instant email', digest: 'Daily digest', off: 'No email' };
+  var REMINDER_LABEL = { '30m': '30 min before', '1h': '1 hr before', 'evening': 'Evening before (6 PM)', 'morning': 'Morning of (7 AM)' };
+  var REMINDER_KIND_LABEL = { shift: '📅 My shifts', session: '🎓 My sessions' };
+  var reminderPicks = { shift: ['evening'], session: ['evening'] };
   var myId = null;
   var appearance = { theme: 'system', header_color: '', footer_color: '' };
 
@@ -15410,6 +15416,31 @@
       opts += '<option value="' + s + '"' + (current === s ? ' selected' : '') + '>' + SPEED_LABEL[s] + '</option>';
     });
     return '<select id="' + id + '" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;min-width:170px">' + opts + '</select>';
+  }
+
+  function renderReminderRows() {
+    var host = $('ms-reminder-rows');
+    if (!host) return;
+    host.innerHTML = ['shift', 'session'].map(function (kind) {
+      var chips = ['30m', '1h', 'evening', 'morning'].map(function (pick) {
+        var on = reminderPicks[kind].indexOf(pick) >= 0;
+        return '<button type="button" class="ms-rem-chip" data-kind="' + kind + '" data-pick="' + pick + '" aria-pressed="' + on + '" style="padding:5px 10px;border-radius:999px;font-size:0.8rem;cursor:pointer;border:1px solid ' + (on ? '#0e7c86' : '#d1d5db') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : '#111827') + '">' + esc(REMINDER_LABEL[pick]) + '</button>';
+      }).join('');
+      return '<div style="padding:9px 0;border-bottom:1px solid #f3f4f6">' +
+        '<div style="font-weight:600;font-size:0.92rem;margin-bottom:6px">' + esc(REMINDER_KIND_LABEL[kind]) + '</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' + chips + '</div></div>';
+    }).join('');
+    host.querySelectorAll('.ms-rem-chip').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var kind = chip.getAttribute('data-kind'), pick = chip.getAttribute('data-pick');
+        var arr = reminderPicks[kind];
+        var i = arr.indexOf(pick);
+        if (i >= 0) arr.splice(i, 1);
+        else if (arr.length < 2) arr.push(pick);
+        else { msg('ms-notif-msg', 'Up to 2 reminders per row — turn one off first.', false); return; }
+        renderReminderRows();
+      });
+    });
   }
 
   window.qsLoadMySettings = function () {
@@ -15432,6 +15463,12 @@
           '<div style="font-size:0.8rem;color:var(--dim)">' + esc(CAT_DESC[c.category] || '') + '</div></div>' +
           speedSelect('ms-npref-' + c.category, c.mine, 'Company default (' + SPEED_LABEL[def] + ')') + '</div>';
       }).join('');
+      var rem = (r && r.data && r.data.reminders) || {};
+      reminderPicks = {
+        shift: Array.isArray(rem.shift) ? rem.shift.slice() : ['evening'],
+        session: Array.isArray(rem.session) ? rem.session.slice() : ['evening']
+      };
+      renderReminderRows();
       var wrap = $('ms-defaults-wrap');
       if (window.isOwner) {
         wrap.hidden = false;
@@ -15470,7 +15507,7 @@
       var dsel = $('ms-ndef-' + cat);
       if (dsel && window.isOwner) defaults[cat] = dsel.value || null;
     });
-    var saves = [api('/api/notifications/prefs', { method: 'PUT', body: JSON.stringify({ prefs: prefs }) })];
+    var saves = [api('/api/notifications/prefs', { method: 'PUT', body: JSON.stringify({ prefs: prefs, reminders: { shift: reminderPicks.shift.slice(), session: reminderPicks.session.slice() } }) })];
     if (window.isOwner) saves.push(api('/api/notifications/company-defaults', { method: 'PUT', body: JSON.stringify({ defaults: defaults }) }));
     Promise.all(saves).then(function (results) {
       var bad = results.some(function (r) { return !r || !r.ok; });

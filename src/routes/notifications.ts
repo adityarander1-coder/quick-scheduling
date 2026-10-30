@@ -7,6 +7,7 @@ import { Router, Request, Response } from 'express';
 import { query } from '../db';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { NOTIF_CATEGORIES, NotifSpeed } from '../util/notify.js';
+import { REMINDER_KINDS, getReminderPrefs, validateReminderPicks } from '../util/notifyJobs.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -107,7 +108,10 @@ async function loadPrefs(userId: string, companyId: string) {
     companyDefault: compMap.get(category) || null,
     effective: mineMap.get(category) || compMap.get(category) || 'instant',
   }));
-  return { categories, companyDefaults: Object.fromEntries(compMap) };
+  // Personal reminder picks (Phase 2): per kind, up to 2 timings;
+  // a kind never chosen reports the default ['evening'].
+  const reminders = await getReminderPrefs(userId);
+  return { categories, companyDefaults: Object.fromEntries(compMap), reminders };
 }
 
 // GET /api/notifications/prefs — my speeds + the company defaults.
@@ -122,11 +126,28 @@ router.get('/prefs', async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/notifications/prefs — set/clear my per-category speeds.
-// Body: { prefs: { schedule: 'instant'|'digest'|'off'|null, ... } }
+// PUT /api/notifications/prefs — set/clear my per-category speeds, and
+// (Phase 2) my personal reminder picks.
+// Body: { prefs: { schedule: 'instant'|'digest'|'off'|null, ... },
+//         reminders: { shift: ['evening'], session: ['30m', '1h'] } }
 router.put('/prefs', async (req: Request, res: Response) => {
   try {
     const userId = (req.session as any).userId;
+    // Validate reminder picks BEFORE writing anything, so a bad payload
+    // never half-saves. Absent kind = leave unchanged; [] = no reminders.
+    const reminders = (req.body && req.body.reminders) || null;
+    const cleanReminders: Record<string, string[]> = {};
+    if (reminders) {
+      for (const kind of REMINDER_KINDS) {
+        if (!(kind in reminders)) continue;
+        const picks = validateReminderPicks(reminders[kind]);
+        if (!picks) {
+          res.status(400).json({ error: `Invalid reminder picks for ${kind} — pick up to 2 of: 30m, 1h, evening, morning.` });
+          return;
+        }
+        cleanReminders[kind] = picks;
+      }
+    }
     const prefs = (req.body && req.body.prefs) || {};
     for (const category of NOTIF_CATEGORIES) {
       if (!(category in prefs)) continue;
@@ -143,6 +164,13 @@ router.put('/prefs', async (req: Request, res: Response) => {
         res.status(400).json({ error: `Invalid speed for ${category}.` });
         return;
       }
+    }
+    for (const kind of Object.keys(cleanReminders)) {
+      await query(
+        `INSERT INTO notification_reminder_prefs (user_id, kind, picks) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, kind) DO UPDATE SET picks = $3`,
+        [userId, kind, JSON.stringify(cleanReminders[kind])]
+      );
     }
     res.json({ ok: true });
   } catch (err) {

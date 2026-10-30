@@ -6611,7 +6611,7 @@ router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Reque
 type IcsEvent = { start: Date; end: Date; summary: string; rrule: string | null; allDay: boolean };
 const icsCache = new Map<string, { at: number; events: IcsEvent[] }>();
 
-function zonedToUtc(y: number, mo: number, d: number, h: number, mi: number, s: number, tz: string): Date {
+export function zonedToUtc(y: number, mo: number, d: number, h: number, mi: number, s: number, tz: string): Date {
   const guess = Date.UTC(y, mo - 1, d, h, mi, s);
   try {
     const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -7207,7 +7207,7 @@ function ovDateStr(d: any): string {
   return d instanceof Date ? d.toISOString().slice(0, 10) : String(d);
 }
 
-async function loadOverrides(companyId: string, sessionIds: string[], from: string, to: string): Promise<Map<string, any>> {
+export async function loadOverrides(companyId: string, sessionIds: string[], from: string, to: string): Promise<Map<string, any>> {
   const map = new Map<string, any>();
   if (!sessionIds.length) return map;
   const { rows } = await query(
@@ -7374,6 +7374,110 @@ router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (re
   }
 });
 
+// Expand raw academic_sessions rows into the [from, to] window: recurring
+// series become occurrence rows (id = "<base>@@<date>", seriesId = base id)
+// with per-date overrides applied and cancelled dates dropped. Extracted
+// verbatim from the GET /academic-sessions handler (2026-10-29) so the
+// notification reminder engine expands sessions exactly the same way.
+export function expandAcademicSessions(rows: any[], from: string | null, to: string | null, ovMap: Map<string, any>, userName: Map<string, string>): any[] {
+  const out: any[] = [];
+  for (const r of rows) {
+    const base = academicRow(r);
+    const rule = base.recurRule;
+    if (!from || !to || !rule || rule === 'none') {
+      if (!from || (base.date >= from && base.date <= (to || '9999-99-99'))) out.push(base);
+      continue;
+    }
+    const end = base.recurUntil && base.recurUntil < to ? base.recurUntil : to;
+    const startD = new Date(base.date + 'T00:00:00Z');
+    const endD = new Date(end + 'T00:00:00Z');
+    const interval = Math.max(1, base.recurInterval || 1);
+    const maxCount = base.recurCount && base.recurCount > 0 ? base.recurCount : Infinity;
+    let occCount = 0;
+    const pushOcc = function (d: Date): boolean {
+      if (occCount >= maxCount) return false;
+      occCount++;
+      const ds = d.toISOString().slice(0, 10);
+      if (ds >= from && ds <= to) {
+        const ov = ovMap.get(base.id + '|' + ds);
+        if (ov && ov.cancelled) return occCount < maxCount; // this date is cancelled on its own
+        const occ0 = ds === base.date
+          ? { ...base, seriesId: base.id }
+          : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true };
+        out.push(ov ? applyOverride(occ0, ov, userName) : occ0);
+      }
+      return occCount < maxCount;
+    };
+    if (rule === 'daily') {
+      const cur = new Date(startD);
+      while (cur <= endD) {
+        if (!pushOcc(cur)) break;
+        cur.setUTCDate(cur.getUTCDate() + interval);
+      }
+    } else if (rule === 'weekly') {
+      const days: number[] = base.recurDays && base.recurDays.length ? base.recurDays : [startD.getUTCDay()];
+      const week0 = new Date(startD);
+      week0.setUTCDate(week0.getUTCDate() - week0.getUTCDay());
+      const cur = new Date(startD);
+      let go = true;
+      while (cur <= endD && go) {
+        const weekIdx = Math.floor((cur.getTime() - week0.getTime()) / (7 * 86400000));
+        if (days.includes(cur.getUTCDay()) && weekIdx % interval === 0) go = pushOcc(cur);
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    } else if (rule === 'monthly-weekday') {
+      const wd = startD.getUTCDay();
+      const nth = Math.floor((startD.getUTCDate() - 1) / 7) + 1;
+      const dimStart = new Date(Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth() + 1, 0)).getUTCDate();
+      const isLast = startD.getUTCDate() + 7 > dimStart;
+      let y = startD.getUTCFullYear(), mo = startD.getUTCMonth();
+      let go = true;
+      while (Date.UTC(y, mo, 1) <= endD.getTime() && go) {
+        const dim = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+        let day = 0;
+        if (isLast) {
+          const lastD = new Date(Date.UTC(y, mo, dim));
+          day = dim - ((lastD.getUTCDay() - wd + 7) % 7);
+        } else {
+          const firstD = new Date(Date.UTC(y, mo, 1));
+          const firstOcc = 1 + ((wd - firstD.getUTCDay() + 7) % 7);
+          const cand = firstOcc + (nth - 1) * 7;
+          if (cand <= dim) day = cand;
+        }
+        if (day) {
+          const d = new Date(Date.UTC(y, mo, day));
+          if (d >= startD && d <= endD) go = pushOcc(d);
+        }
+        mo += interval; while (mo > 11) { mo -= 12; y++; }
+      }
+    } else if (rule === 'yearly') {
+      const cur = new Date(startD);
+      const baseDayY = cur.getUTCDate();
+      const baseMonth = cur.getUTCMonth();
+      while (cur <= endD) {
+        if (!pushOcc(cur)) break;
+        const ny = cur.getUTCFullYear() + interval;
+        const dimY = new Date(Date.UTC(ny, baseMonth + 1, 0)).getUTCDate();
+        cur.setUTCFullYear(ny);
+        cur.setUTCMonth(baseMonth);
+        cur.setUTCDate(Math.min(baseDayY, dimY));
+      }
+    } else {
+      // monthly (same date) — step interval months, clamp the day.
+      const cur = new Date(startD);
+      const baseDay = cur.getUTCDate();
+      while (cur <= endD) {
+        if (!pushOcc(cur)) break;
+        cur.setUTCDate(1);
+        cur.setUTCMonth(cur.getUTCMonth() + interval);
+        var lastDay2 = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
+        cur.setUTCDate(Math.min(baseDay, lastDay2));
+      }
+    }
+  }
+  return out;
+}
+
 // GET /api/schedule/academic-sessions?from=YYYY-MM-DD&to=YYYY-MM-DD&dashboardId= —
 // all roles, department-scoped. Recurring series are expanded into the window
 // as occurrence rows (id = "<base>@@<date>", seriesId = base id).
@@ -7415,101 +7519,7 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
       const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
       for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
     }
-    const out: any[] = [];
-    for (const r of rows) {
-      const base = academicRow(r);
-      const rule = base.recurRule;
-      if (!from || !to || !rule || rule === 'none') {
-        if (!from || (base.date >= from && base.date <= (to || '9999-99-99'))) out.push(base);
-        continue;
-      }
-      const end = base.recurUntil && base.recurUntil < to ? base.recurUntil : to;
-      const startD = new Date(base.date + 'T00:00:00Z');
-      const endD = new Date(end + 'T00:00:00Z');
-      const interval = Math.max(1, base.recurInterval || 1);
-      const maxCount = base.recurCount && base.recurCount > 0 ? base.recurCount : Infinity;
-      let occCount = 0;
-      const pushOcc = function (d: Date): boolean {
-        if (occCount >= maxCount) return false;
-        occCount++;
-        const ds = d.toISOString().slice(0, 10);
-        if (ds >= from && ds <= to) {
-          const ov = ovMap.get(base.id + '|' + ds);
-          if (ov && ov.cancelled) return occCount < maxCount; // this date is cancelled on its own
-          const occ0 = ds === base.date
-            ? { ...base, seriesId: base.id }
-            : { ...base, id: base.id + '@@' + ds, seriesId: base.id, date: ds, isOccurrence: true };
-          out.push(ov ? applyOverride(occ0, ov, userName) : occ0);
-        }
-        return occCount < maxCount;
-      };
-      if (rule === 'daily') {
-        const cur = new Date(startD);
-        while (cur <= endD) {
-          if (!pushOcc(cur)) break;
-          cur.setUTCDate(cur.getUTCDate() + interval);
-        }
-      } else if (rule === 'weekly') {
-        const days: number[] = base.recurDays && base.recurDays.length ? base.recurDays : [startD.getUTCDay()];
-        const week0 = new Date(startD);
-        week0.setUTCDate(week0.getUTCDate() - week0.getUTCDay());
-        const cur = new Date(startD);
-        let go = true;
-        while (cur <= endD && go) {
-          const weekIdx = Math.floor((cur.getTime() - week0.getTime()) / (7 * 86400000));
-          if (days.includes(cur.getUTCDay()) && weekIdx % interval === 0) go = pushOcc(cur);
-          cur.setUTCDate(cur.getUTCDate() + 1);
-        }
-      } else if (rule === 'monthly-weekday') {
-        const wd = startD.getUTCDay();
-        const nth = Math.floor((startD.getUTCDate() - 1) / 7) + 1;
-        const dimStart = new Date(Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth() + 1, 0)).getUTCDate();
-        const isLast = startD.getUTCDate() + 7 > dimStart;
-        let y = startD.getUTCFullYear(), mo = startD.getUTCMonth();
-        let go = true;
-        while (Date.UTC(y, mo, 1) <= endD.getTime() && go) {
-          const dim = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
-          let day = 0;
-          if (isLast) {
-            const lastD = new Date(Date.UTC(y, mo, dim));
-            day = dim - ((lastD.getUTCDay() - wd + 7) % 7);
-          } else {
-            const firstD = new Date(Date.UTC(y, mo, 1));
-            const firstOcc = 1 + ((wd - firstD.getUTCDay() + 7) % 7);
-            const cand = firstOcc + (nth - 1) * 7;
-            if (cand <= dim) day = cand;
-          }
-          if (day) {
-            const d = new Date(Date.UTC(y, mo, day));
-            if (d >= startD && d <= endD) go = pushOcc(d);
-          }
-          mo += interval; while (mo > 11) { mo -= 12; y++; }
-        }
-      } else if (rule === 'yearly') {
-        const cur = new Date(startD);
-        const baseDayY = cur.getUTCDate();
-        const baseMonth = cur.getUTCMonth();
-        while (cur <= endD) {
-          if (!pushOcc(cur)) break;
-          const ny = cur.getUTCFullYear() + interval;
-          const dimY = new Date(Date.UTC(ny, baseMonth + 1, 0)).getUTCDate();
-          cur.setUTCFullYear(ny);
-          cur.setUTCMonth(baseMonth);
-          cur.setUTCDate(Math.min(baseDayY, dimY));
-        }
-      } else {
-        // monthly (same date) — step interval months, clamp the day.
-        const cur = new Date(startD);
-        const baseDay = cur.getUTCDate();
-        while (cur <= endD) {
-          if (!pushOcc(cur)) break;
-          cur.setUTCDate(1);
-          cur.setUTCMonth(cur.getUTCMonth() + interval);
-          var lastDay2 = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0)).getUTCDate();
-          cur.setUTCDate(Math.min(baseDay, lastDay2));
-        }
-      }
-    }
+    const out = expandAcademicSessions(rows, from, to, ovMap, userName);
     out.sort(function (a, b) {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       return (a.startTime || '99') < (b.startTime || '99') ? -1 : 1;

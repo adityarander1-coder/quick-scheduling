@@ -7,8 +7,10 @@
  * settled (no merges for 3 minutes — bundling window is 10 minutes).
  * Speed resolution per user: personal pref -> company default ->
  * per-type built-in -> category built-in ("instant"; open shifts and
- * needs-a-presenter default to "digest" so they record in-app only
- * until the Phase 2 digest email exists).
+ * needs-a-presenter default to "digest"). "digest" rows are emailed
+ * once a day by the Phase 2 digest job in util/notifyJobs.ts; reminder
+ * rows (shift_reminder / session_reminder) are never digested — they
+ * email on the instant path even when the resolved speed is "digest".
  *
  * Notification is always best-effort: a failure here must never break
  * the schedule change that triggered it, so notify() swallows errors.
@@ -195,7 +197,11 @@ export async function dispatchNotificationEmails(): Promise<void> {
         await query(`UPDATE notifications SET email_state = 'skipped' WHERE id = $1`, [n.id]);
         continue;
       }
-      if (speed === 'digest') continue; // Phase 2 digest job owns these.
+      // Reminders are never digested (a reminder in tomorrow's digest is
+      // useless) — a digest speed still emails them right away.
+      if (speed === 'digest' && n.type !== 'shift_reminder' && n.type !== 'session_reminder') {
+        continue; // the Phase 2 digest job (util/notifyJobs.ts) owns these.
+      }
       try {
         await sendMail({
           to: n.email,

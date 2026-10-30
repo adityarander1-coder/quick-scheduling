@@ -177,6 +177,8 @@ async function main(): Promise<void> {
   startEmailPollScheduler();
   const { startNotificationDispatcher } = await import('./util/notify.js');
   startNotificationDispatcher();
+  const { startNotificationJobs } = await import('./util/notifyJobs.js');
+  startNotificationJobs(); // Phase 2: daily digest + reminders + message bundles (15-min tick)
   startBillingSync(); // daily Stripe reconciliation + grace -> read_only -> suspended
   // Apply due scheduled role promotions on boot and daily.
   import('./routes/schedule.js').then(m => {
