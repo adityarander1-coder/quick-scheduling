@@ -90,6 +90,13 @@ export function classifyPlanError(message: string): string {
   if (/API key not configured/i.test(m)) {
     return 'The scheduling AI is not connected yet. Ask your admin to add the AI key, then try again.';
   }
+  // Billing exhaustion (2026-10-31): when the prepay balance ran out,
+  // this classifier had no match and the generic fallback told the
+  // user to "try rephrasing" — she rephrased three times chasing a
+  // wording problem that did not exist. Name the real cause.
+  if (/402|RESOURCE_EXHAUSTED|prepayment|credit balance|credits are depleted/i.test(m)) {
+    return 'The AI service is out of prepaid credits — the account owner needs to top up the Gemini billing in AI Studio before tasks can run again.';
+  }
   if (/503|429|overloaded|rate limit|service unavailable/i.test(m)) {
     return 'The AI service is busy right now — please try again in a moment.';
   }

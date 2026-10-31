@@ -6,41 +6,128 @@ export function isGeminiConfigured(): boolean {
   return !!process.env.GEMINI_API_KEY;
 }
 
-// Cache the working model name after first successful discovery
+// Cache the working model name after discovery. The cache carries a
+// TTL (2026-10-31): before that, discovery ran on every process start
+// with no expiry, which both spammed ListModels (134 calls in Oct
+// 2026) and pinned the pick forever once made. After the TTL the list
+// is re-read, so a retired model gets replaced on its own.
 let cachedModel: string | null = null;
+let cachedModelAt = 0;
+const MODEL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+export interface GeminiModelInfo {
+  name: string;
+  supportedGenerationMethods?: string[];
+}
+
+/** Variants that are not plain stable text models: previews and
+ * experimentals (unstable, can vanish), image/audio specialists, TTS,
+ * embeddings. Excluded whenever a stable text model exists. */
+const NON_TEXT_MODEL_RE = /preview|experimental|-exp|image|audio|tts|embedding/i;
+
+/** Cost tier of a model name, cheapest first: flash-lite < flash <
+ * everything else < pro. */
+function modelTierOf(name: string): number {
+  const n = name.toLowerCase();
+  if (n.includes('flash-lite') || n.includes('flash_lite') || n.includes('flashlite')) return 0;
+  if (n.includes('flash')) return 1;
+  if (n.includes('pro')) return 3;
+  return 2;
+}
+
+/** Version key for a model name ("gemini-2.5-..." -> 205). LOWER is
+ * preferred within a tier: older Flash generations are cheaper.
+ * Unversioned names ("...-latest" aliases, which drift to the newest
+ * release) sort after every pinned version in their tier. */
+function modelVersionOf(name: string): number {
+  const n = name.toLowerCase();
+  const m = n.match(/gemini-(\d+)\.(\d+)/);
+  if (m) return parseInt(m[1]) * 100 + parseInt(m[2]);
+  const major = n.match(/gemini-(\d+)(?![\d.])/);
+  if (major) return parseInt(major[1]) * 100;
+  return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Pick the model a call should use — pure and unit-testable.
+ * The GEMINI_MODEL override wins above everything. Otherwise the
+ * CHEAPEST suitable model (2026-10-31 cost controls; discovery used
+ * to pick the NEWEST Flash, i.e. the priciest tier — gemini-3.8-flash
+ * burned the Oct 2026 prepay balance): stable text models that
+ * support generateContent, flash-lite before flash, lower version
+ * before higher within a tier. When NO stable text model exists,
+ * fall back to ranking the full generateContent list the same way
+ * and flag it (`fallback: true`) so the caller can log a warning.
+ * `model: null` when nothing supports generateContent at all.
+ */
+export function pickGeminiModel(
+  models: GeminiModelInfo[],
+  override?: string | null
+): { model: string | null; fallback: boolean } {
+  if (override && override.trim()) return { model: override.trim(), fallback: false };
+  const usable = (models || []).filter((m) =>
+    m.supportedGenerationMethods?.includes('generateContent')
+  );
+  if (!usable.length) return { model: null, fallback: false };
+  const bare = (name: string) => name.replace(/^models\//, '');
+  const stable = usable.filter((m) => !NON_TEXT_MODEL_RE.test(bare(m.name)));
+  const fallback = stable.length === 0;
+  const pool = fallback ? usable : stable;
+  const sorted = [...pool].sort((a, b) =>
+    modelTierOf(a.name) - modelTierOf(b.name) ||
+    modelVersionOf(a.name) - modelVersionOf(b.name) ||
+    a.name.localeCompare(b.name));
+  return { model: bare(sorted[0].name), fallback };
+}
 
 /** Discover an available model that supports generateContent */
 async function discoverModel(apiKey: string): Promise<string> {
-  if (cachedModel) return cachedModel;
+  // The env override sits above discovery, always.
   if (process.env.GEMINI_MODEL) {
     cachedModel = process.env.GEMINI_MODEL;
+    cachedModelAt = Date.now();
     return cachedModel;
   }
-  // List available models and pick the best one supporting generateContent.
-  // Prefer newer models (higher version numbers) as older ones get retired.
-  const res = await fetch(`${GEMINI_API_BASE}/models?key=${apiKey}`);
-  if (!res.ok) throw new Error(`Gemini list models failed: ${res.status}`);
-  const data = await res.json() as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> };
-  const models = (data.models || []).filter(m =>
-    m.supportedGenerationMethods?.includes('generateContent')
-  );
-  if (!models.length) throw new Error('No Gemini models support generateContent for this API key');
-  // Sort by version number descending (e.g. 3.8 > 2.5 > 1.5), prefer flash models
-  const versionOf = (name: string) => {
-    const m = name.match(/gemini-(\d+)\.(\d+)/);
-    return m ? parseInt(m[1]) * 100 + parseInt(m[2]) : 0;
-  };
-  models.sort((a, b) => {
-    const aFlash = a.name.toLowerCase().includes('flash') ? 1 : 0;
-    const bFlash = b.name.toLowerCase().includes('flash') ? 1 : 0;
-    if (aFlash !== bFlash) return bFlash - aFlash;
-    return versionOf(b.name) - versionOf(a.name);
-  });
-  const picked = models[0];
-  // name is like "models/gemini-2.5-flash" — strip the prefix
-  cachedModel = picked.name.replace('models/', '');
-  console.log(`[gemini] using model: ${cachedModel}`);
-  return cachedModel;
+  if (cachedModel && Date.now() - cachedModelAt < MODEL_CACHE_TTL_MS) return cachedModel;
+  try {
+    const res = await fetch(`${GEMINI_API_BASE}/models?key=${apiKey}`);
+    if (!res.ok) throw new Error(`Gemini list models failed: ${res.status}`);
+    const data = await res.json() as { models?: GeminiModelInfo[] };
+    const { model, fallback } = pickGeminiModel(data.models || []);
+    if (!model) throw new Error('No Gemini models support generateContent for this API key');
+    if (fallback) {
+      console.log(`[gemini] warning: no stable text model in the list — falling back to ${model}`);
+    }
+    cachedModel = model;
+    cachedModelAt = Date.now();
+    console.log(`[gemini] using model: ${cachedModel}`);
+    return cachedModel;
+  } catch (err) {
+    // A failed re-discovery must not break calls that a stale cached
+    // model would still serve (the pre-TTL behavior cached forever).
+    if (cachedModel) {
+      console.log(`[gemini] model re-discovery failed (${(err as Error).message}) — keeping ${cachedModel}`);
+      cachedModelAt = Date.now();
+      return cachedModel;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Per-call token usage, one log line per successful call (2026-10-31
+ * cost controls): `[gemini] usage model=<m> input=<n> output=<n>`.
+ * Before this, the app logged nothing about call sizes, so a drained
+ * balance could not be attributed from the app's own logs. Missing
+ * usageMetadata fields log as 0. Logging never breaks a call.
+ */
+function logGeminiUsage(model: string, data: any): void {
+  try {
+    const u = data?.usageMetadata || {};
+    const input = typeof u.promptTokenCount === 'number' ? u.promptTokenCount : 0;
+    const output = typeof u.candidatesTokenCount === 'number' ? u.candidatesTokenCount : 0;
+    console.log(`[gemini] usage model=${model} input=${input} output=${output}`);
+  } catch { /* logging is best-effort */ }
 }
 
 interface PlanChange {
@@ -282,6 +369,7 @@ Rules:
   }
 
   const data = await res.json();
+  logGeminiUsage(model, data);
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   // Extract JSON from response (may have markdown code fences).
   const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -373,6 +461,7 @@ Rules:
       return fallbackSuggestions(action || '', task);
     }
     const data = await res.json();
+    logGeminiUsage(model, data);
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log(`[gemini] suggestFollowUps raw: ${text.slice(0, 300)}`);
     const arrMatch = text.match(/\[[\s\S]*\]/);
@@ -472,6 +561,7 @@ Only list files from the catalog above. If no screenshot fits, omit the VISUAL l
   );
   if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
   const data = await res.json();
+  logGeminiUsage(model, data);
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Sorry, I could not answer that. Try rephrasing.';
   const visuals: string[] = [];
   const m = text.match(/^VISUAL:\s*(.+)$/m);
@@ -535,6 +625,7 @@ Their question: ${question}`;
   );
   if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
   const data = await res.json();
+  logGeminiUsage(model, data);
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 }
 
@@ -593,6 +684,7 @@ or
   }
   if (!res || !res.ok) throw new Error(`Gemini API error: ${res?.status || 'no response'}`);
   const data = await res.json();
+  logGeminiUsage(model, data);
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini did not return valid JSON.');
@@ -671,6 +763,7 @@ Rules:
     throw new Error(`Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`);
   }
   const data: any = await res.json();
+  logGeminiUsage(model, data);
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('The AI did not return readable assignments.');

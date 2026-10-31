@@ -4,11 +4,20 @@
  */
 
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
-import type { ImapCreds } from './gmailImap.js';
+import type { ImapCreds, ImapMessage } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
 import type { ImapAttachment } from './gmailImap.js';
 import { extractAttachmentContent } from './emailAttachments.js';
-import { notify, planApproverIds } from './notify.js';
+import { notify, planApproverIds, companyOwnerIds } from './notify.js';
+import {
+  MAX_EMAIL_ATTEMPTS,
+  getEmailAttempt,
+  recordEmailFailure,
+  clearEmailAttempt,
+  isParked,
+  parkedEmailReport,
+} from './emailAttempts.js';
+import type { EmailAttemptRecord } from './emailAttempts.js';
 import { outboundFromFor, senderAllowed } from './inboundAddresses.js';
 import {
   savePendingClarification,
@@ -761,11 +770,70 @@ export async function getEmailPollStatus(
   return { lastPollAt, timezone };
 }
 
+/** The IMAP operations pollInbox needs — injectable so tests can drive
+ * the poll loop without a live Gmail connection. Production callers
+ * omit it and get the real Gmail functions. */
+export interface PollImapDeps {
+  listUnreadUids: (maxResults: number, creds?: ImapCreds) => Promise<number[]>;
+  getImapMessage: (uid: number, creds?: ImapCreds) => Promise<ImapMessage>;
+  markImapAsRead: (uid: number, creds?: ImapCreds) => Promise<void>;
+}
+
+const realImapDeps: PollImapDeps = { listUnreadUids, getImapMessage, markImapAsRead };
+
+/**
+ * Bookkeeping for one failed processing attempt (retry cap, 2026-10-31).
+ * Below the cap the message simply stays unread and is retried on the
+ * next poll, exactly as before. At the cap the message is PARKED:
+ * marked read so it leaves the retry set, reported once in the poll
+ * outcome, and the company owner gets a one-line bell notification.
+ * Best-effort throughout — bookkeeping must never break the poll.
+ */
+async function notePollFailure(
+  query: QueryFn,
+  companyId: string,
+  mailbox: string,
+  uid: number,
+  error: string,
+  result: { errors: string[] },
+  deps: PollImapDeps,
+  creds?: ImapCreds
+): Promise<void> {
+  let rec: EmailAttemptRecord;
+  try {
+    rec = await recordEmailFailure(query, companyId, mailbox, String(uid), error);
+  } catch (e: any) {
+    console.log(`[email-poll] Message ${uid}: could not record the failed attempt: ${e.message}`);
+    return;
+  }
+  if (!rec.parked) {
+    console.log(`[email-poll] Message ${uid}: failed attempt ${rec.count}/${MAX_EMAIL_ATTEMPTS} — will retry on the next poll.`);
+    return;
+  }
+  console.log(`[email-poll] ${parkedEmailReport(String(uid), rec)}`);
+  try { await deps.markImapAsRead(uid, creds); } catch (e: any) {
+    // Still parked in the store: the poll loop will skip it even if it
+    // shows up unread again, so the retry loop stays dead either way.
+    console.log(`[email-poll] Message ${uid}: could not mark the parked message read: ${e.message}`);
+  }
+  result.errors.push(parkedEmailReport(String(uid), rec));
+  try {
+    const owners = await companyOwnerIds(companyId);
+    if (owners.length) {
+      await notify({
+        companyId, userIds: owners, category: 'approvals', type: 'email_parked',
+        title: 'An emailed schedule request could not be processed',
+        body: `One emailed request was tried ${rec.count} times and has been set aside (message ${uid}). Last error: ${rec.lastError}`.slice(0, 500),
+      });
+    }
+  } catch { /* notification is best-effort */ }
+}
+
 /**
  * Poll the Gmail inbox for new schedule change emails.
  * Creates pending plans for Deepika to approve. Never modifies the schedule directly.
  */
-export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapCreds): Promise<{
+export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapCreds, deps: PollImapDeps = realImapDeps): Promise<{
   checked: number;
   newPlans: number;
   questionsAnswered: number;
@@ -780,8 +848,12 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
     return result;
   }
 
+  // Attempt records are scoped per mailbox: this company's own inbox
+  // when it has one, else the legacy shared inbox identity.
+  const mailbox = (creds?.user || process.env.GMAIL_USER || 'unknown').toLowerCase();
+
   try {
-    const uids = await listUnreadUids(10, creds);
+    const uids = await deps.listUnreadUids(10, creds);
     result.checked = uids.length;
 
     // Get already-processed message UIDs
@@ -797,14 +869,43 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
       const uidStr = String(uid);
       if (seenIds.has(uidStr)) continue;
 
+      // Retry cap: a parked message is NEVER processed again, even if
+      // it shows up unread once more (the park-time mark-read failed,
+      // or someone re-marked it). Try to mark it read again and move
+      // on — no AI call, no second report.
+      let attempt: EmailAttemptRecord | null = null;
+      try { attempt = await getEmailAttempt(query, companyId, mailbox, uidStr); } catch { /* store unreadable — process as before */ }
+      if (isParked(attempt)) {
+        try { await deps.markImapAsRead(uid, creds); } catch { /* best-effort */ }
+        continue;
+      }
+
+      const errorsBefore = result.errors.length;
+      let failure: string | null = null;
       try {
-        const email = await getImapMessage(uid, creds);
+        const email = await deps.getImapMessage(uid, creds);
         const outcome = await processScheduleEmail(query, companyId, email, uidStr, result, {
-          markRead: () => markImapAsRead(uid, creds),
+          markRead: () => deps.markImapAsRead(uid, creds),
         });
         applyOutcomeToCounts(result, outcome);
+        if (outcome === undefined) {
+          // The engine caught a failure (already logged into
+          // result.errors by the engine) and left the message unread.
+          failure = result.errors.slice(errorsBefore).join('; ')
+            .replace(new RegExp(`^Message ${uidStr}: `), '') || 'Processing failed.';
+        }
       } catch (err: any) {
+        failure = err.message;
         result.errors.push(`Message ${uid}: ${err.message}`);
+      }
+
+      if (failure === null) {
+        // Processed — any earlier failure count for this message clears.
+        if (attempt) {
+          try { await clearEmailAttempt(query, companyId, mailbox, uidStr); } catch { /* best-effort */ }
+        }
+      } else {
+        await notePollFailure(query, companyId, mailbox, uid, failure, result, deps, creds);
       }
     }
   } catch (err: any) {
