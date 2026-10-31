@@ -17,16 +17,39 @@ import { matchName } from './planHelpers.js';
 
 export type AskRoute = 'question' | 'plan' | 'employee-pointer';
 
+// Task verbs: ONE list, shared by every task matcher below, so the
+// imperative form ("Move Nancy…") and the request form ("Can we move
+// Nancy…?") can never drift into recognising different tasks.
+const TASK_VERBS =
+  'put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book';
+
 // Leading imperatives: "put Nancy on nights" must never be misread as a
 // question about Nancy.
-const IMPERATIVE =
-  /^[\s"'“”‘’\(\[]*(please\s+)?(put|add|assign|move|remove|delete|schedule|create|publish|unpublish|swap|cancel|set|change|update|give|make|book)\b/i;
+const IMPERATIVE = new RegExp(
+  `^[\\s"'“”‘’\\(\\[]*(please\\s+)?(${TASK_VERBS})\\b`,
+  'i',
+);
 
 // Question forms: starts with a question word, or ends with "?" (except
 // requests phrased as "can we / can I ...").
 const QUESTION_WORD =
   /^\s*(who|what|when|where|which|whose|how|is|are|do|does|did|tell me|show me)\b/i;
 const REQUEST_OPENING = /^\s*(can we|can i|please)\b/i;
+
+// Request-phrased tasks (Finding F1): "Can we move Nancy…?", "Could you
+// put…?", "Will you swap…?" are tasks even though no imperative leads.
+// isQuestionForm already exempts "can we / can I" openings from question
+// form, but nothing positively matched the task. The opener alone is NOT
+// enough — "Can I see my schedule?" is a genuine question — so a task verb
+// from the shared list must follow the opener directly (an optional
+// "please" may sit between), the same leading position IMPERATIVE
+// requires. A verb buried later in the sentence does not count: in "Can I
+// see my schedule?" the verb-list word "schedule" is a noun, and matching
+// it would misroute a real question to the planner.
+const REQUEST_TASK = new RegExp(
+  `^\\s*(can we|can i|could we|could you|would you|will you|please)\\s+(please\\s+)?(${TASK_VERBS})\\b`,
+  'i',
+);
 
 // Staffing-change words in a declarative sentence: "Lin is sick tomorrow
 // and binod is covering", "Sam called out, who covers?" is NOT this — it
@@ -44,6 +67,7 @@ export function isQuestionForm(message: string): boolean {
 export function isTaskLike(message: string): boolean {
   const m = message.trim();
   if (IMPERATIVE.test(m)) return true;
+  if (REQUEST_TASK.test(m)) return true;
   if (!isQuestionForm(m) && DECLARATIVE_TASK.test(m)) return true;
   return false;
 }
