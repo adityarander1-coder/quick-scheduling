@@ -23,7 +23,7 @@ type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 export const MAX_EMAIL_ATTEMPTS = 3;
 
 export interface EmailAttemptRecord {
-  /** Failed attempts so far. */
+  /** Failed attempts so far (billing-outage failures never count). */
   count: number;
   /** Most recent failure's error text ('' when none recorded). */
   lastError: string;
@@ -32,6 +32,18 @@ export interface EmailAttemptRecord {
   firstFailedAt: string;
   lastFailedAt: string;
   parkedAt: string | null;
+  /**
+   * True once this message has been forwarded to the approvers during
+   * an AI credit outage (forward add-on, 2026-10-31). The forward is
+   * one-shot per message per outage: while the marker stands, later
+   * polls do not forward again. The marker (and the whole record) is
+   * cleared when the message processes to any real outcome — but the
+   * poller reads outageForwardedAt BEFORE that clear so the plan
+   * notification can note the earlier manual forward.
+   */
+  outageForwarded: boolean;
+  /** When the outage forward was sent (ISO; null = never). */
+  outageForwardedAt: string | null;
 }
 
 /** Mailboxes are identities (Gmail addresses) — case-insensitive. */
@@ -57,6 +69,10 @@ export function parseEmailAttemptRecord(value: unknown): EmailAttemptRecord | nu
       firstFailedAt: String(o.firstFailedAt || ''),
       lastFailedAt: String(o.lastFailedAt || ''),
       parkedAt: o.parkedAt ? String(o.parkedAt) : null,
+      // Records written before the forward add-on have no marker —
+      // they read as "never outage-forwarded".
+      outageForwarded: !!o.outageForwarded,
+      outageForwardedAt: o.outageForwardedAt ? String(o.outageForwardedAt) : null,
     };
   } catch {
     return null;
@@ -102,6 +118,42 @@ export async function recordEmailFailure(
     firstFailedAt: prev?.firstFailedAt || now,
     lastFailedAt: now,
     parkedAt: parked ? (prev?.parkedAt || now) : null,
+    // A counted failure never clears an outage forward that already
+    // happened — the marker clears only on a real outcome.
+    outageForwarded: !!prev?.outageForwarded,
+    outageForwardedAt: prev?.outageForwardedAt || null,
+  };
+  await query(
+    `INSERT INTO company_settings (company_id, key, value, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [companyId, emailAttemptKey(mailbox, uid), JSON.stringify(rec)]
+  );
+  return rec;
+}
+
+/**
+ * Mark that this message's one outage forward has been sent. Creates
+ * the record when none exists (an outage can be a message's first
+ * failure of any kind) with a zero attempt count — a billing failure
+ * is not the message's fault and never counts toward the cap. The
+ * FIRST forward's timestamp is kept: the plan-note line quotes the
+ * day the admins actually received the email.
+ */
+export async function markOutageForwarded(
+  query: QueryFn, companyId: string, mailbox: string, uid: string
+): Promise<EmailAttemptRecord> {
+  const prev = await getEmailAttempt(query, companyId, mailbox, uid);
+  const now = new Date().toISOString();
+  const rec: EmailAttemptRecord = {
+    count: prev?.count || 0,
+    lastError: prev?.lastError || '',
+    parked: !!prev?.parked,
+    firstFailedAt: prev?.firstFailedAt || '',
+    lastFailedAt: prev?.lastFailedAt || '',
+    parkedAt: prev?.parkedAt || null,
+    outageForwarded: true,
+    outageForwardedAt: prev?.outageForwardedAt || now,
   };
   await query(
     `INSERT INTO company_settings (company_id, key, value, updated_at)

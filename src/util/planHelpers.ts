@@ -83,6 +83,21 @@ export function matchName(
   return { status: 'none' };
 }
 
+/**
+ * Billing-exhaustion matcher, shared by classifyPlanError (user-facing
+ * wording) and the email poller (forward add-on, 2026-10-31: a failure
+ * matching this is an AI credit outage — the email is not at fault, so
+ * it never counts toward the retry cap; it is forwarded to the
+ * approvers once, instead). One token list, two consumers, so the
+ * poller and the UI can never drift apart on what "billing" means.
+ */
+export const BILLING_ERROR_PATTERN = /402|RESOURCE_EXHAUSTED|prepayment|credit balance|credits are depleted/i;
+
+/** True when an error text is a Gemini billing/prepay failure. */
+export function isBillingError(message: string): boolean {
+  return BILLING_ERROR_PATTERN.test(message || '');
+}
+
 /** Turn a planner failure into the honest user-facing reason — no more
  *  one generic "I had trouble understanding" line for every cause. */
 export function classifyPlanError(message: string): string {
@@ -94,7 +109,7 @@ export function classifyPlanError(message: string): string {
   // this classifier had no match and the generic fallback told the
   // user to "try rephrasing" — she rephrased three times chasing a
   // wording problem that did not exist. Name the real cause.
-  if (/402|RESOURCE_EXHAUSTED|prepayment|credit balance|credits are depleted/i.test(m)) {
+  if (isBillingError(m)) {
     return 'The AI service is out of prepaid credits — the account owner needs to top up the Gemini billing in AI Studio before tasks can run again.';
   }
   if (/503|429|overloaded|rate limit|service unavailable/i.test(m)) {
