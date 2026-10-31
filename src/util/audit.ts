@@ -85,7 +85,7 @@ function planChangeDates(c: any, r: any): string[] {
  * Per-date rows (recurring, bulk) stand alone in their date's report, so
  * they carry no pattern summary — person + shift says it.
  */
-export async function auditPlanChanges(companyId: string, plan: any, results: any[], changedBy: string): Promise<void> {
+export async function auditPlanChanges(companyId: string, plan: any, results: any[], changedBy: string | null): Promise<void> {
   try {
     const planSrc = plan.source_subject === 'In-app agent task' ? 'agent' : 'email';
     const changes = (plan.plan && (plan.plan as any).changes) || [];

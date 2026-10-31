@@ -502,11 +502,12 @@ export async function processScheduleEmail(
     // Create pending plan with secure approve/reject tokens
     const approveToken = crypto.randomBytes(32).toString('hex');
     const rejectToken = crypto.randomBytes(32).toString('hex');
-    await query(
+    const { rows: insertedPlans } = await query(
       `INSERT INTO schedule_plans
        (company_id, source_email_id, source_subject, source_from, source_from_name, source_cc, source_body,
         plan_summary, plan, status, approve_token, reject_token, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW())
+       RETURNING id`,
       [
         companyId,
         sourceId,
@@ -521,6 +522,7 @@ export async function processScheduleEmail(
         rejectToken,
       ]
     );
+    const planId = insertedPlans[0].id;
 
     // Bell + instant email for the approvers: a plan is waiting
     // (Phase 1 notifications). Best-effort.
@@ -567,10 +569,61 @@ export async function processScheduleEmail(
       }
     } catch { /* non-fatal */ }
 
-    // Notify schedulers (primary) and owner (CC) that a plan is ready for approval
+    // Notify the approvers that a plan is ready for approval.
+    // Per-approver links (Deepika 2026-10-31, migration 068): every
+    // approver (planApproverIds — owners, plus schedulers when the
+    // company notifies them) gets their OWN token pair and their own
+    // email carrying only their links. A per-approver token was sent
+    // to exactly one approver, so the handlers treat it as the auth
+    // (login-free) and record the click under that approver's name.
+    // Everyone else who hears about the plan today — department
+    // notification CCs, extra addresses, the fallback inbox — still
+    // gets the shared plan-level links, exactly as before (approve
+    // needs a logged-in approver with department access; reject free).
     try {
       const { sendMail } = await import('./mailer.js');
       const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+      const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+      // fromLine comes from the one ingest parse (batch 1) — always
+      // `Name <address>`, never a name nested inside the brackets.
+      const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
+      // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
+      // from plan emails for now — it rendered overlapping the Approve /
+      // Reject buttons in Gmail. The quick-session page itself stays live;
+      // the button comes back once its email layout is fixed. So no token
+      // is generated for the email anymore.
+      const planMail = (approveUrl: string, rejectUrl: string) => ({
+        subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
+        text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+        html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+      });
+
+      // One token pair per approver (deduped by email address — two
+      // accounts sharing one inbox get one personal email).
+      const approverIds = await planApproverIds(companyId);
+      const { rows: approverUsers } = approverIds.length ? await query(
+        'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
+        [approverIds, companyId]
+      ) : { rows: [] as any[] };
+      const approverMail: Array<{ email: string; approveUrl: string; rejectUrl: string }> = [];
+      const approverEmails = new Set<string>();
+      for (const u of approverUsers) {
+        const addr = String(u.email).toLowerCase();
+        if (approverEmails.has(addr)) continue;
+        approverEmails.add(addr);
+        const aTok = crypto.randomBytes(32).toString('hex');
+        const rTok = crypto.randomBytes(32).toString('hex');
+        await query(
+          `INSERT INTO plan_approver_tokens (plan_id, user_id, approve_token, reject_token) VALUES ($1, $2, $3, $4)`,
+          [planId, u.id, aTok, rTok]
+        );
+        approverMail.push({
+          email: u.email,
+          approveUrl: `${baseUrl}/api/schedule/plans/approve/${aTok}`,
+          rejectUrl: `${baseUrl}/api/schedule/plans/reject/${rTok}`,
+        });
+      }
+
       // Per-department recipients from the Email AI notification tab.
       // Primary recipients go in To:, CCs go in Cc:, owner is always CC'd.
       const toAddrs: string[] = [];
@@ -608,30 +661,36 @@ export async function processScheduleEmail(
       if (!toAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase()) && !ccAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase())) {
         ccAddrs.push(notifyEmail);
       }
-      {
-        const toAddr = toAddrs[0];
-        const ccRest = [...new Set([...ccAddrs, ...toAddrs.slice(1)])].filter(e => e.toLowerCase() !== toAddr.toLowerCase());
-      const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
-      const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
-      const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
-      // fromLine comes from the one ingest parse (batch 1) — always
-      // `Name <address>`, never a name nested inside the brackets.
-      const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
-      // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
-      // from plan emails for now — it rendered overlapping the Approve /
-      // Reject buttons in Gmail. The quick-session page itself stays live;
-      // the button comes back once its email layout is fixed. So no token
-      // is generated for the email anymore.
-      await sendMail({
-        ...(fromAddr ? { from: fromAddr } : {}),
-        to: toAddr,
-        cc: ccRest.length ? ccRest : undefined,
-        subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-        text: `A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-        html: `<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
-      });
-      console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
-      } // end else (notifications enabled)
+      // Approvers come OFF the shared send — each gets the personal
+      // email below instead, so no inbox ever holds another approver's
+      // links. Everyone else keeps the shared plan-level links, with
+      // the same To/CC shape as before (first address To, rest CC).
+      const sharedAddrs = [...toAddrs, ...ccAddrs].filter((e) => !approverEmails.has(e.toLowerCase()));
+      for (const m of approverMail) {
+        try {
+          await sendMail({
+            ...(fromAddr ? { from: fromAddr } : {}),
+            to: m.email,
+            ...planMail(m.approveUrl, m.rejectUrl),
+          });
+          console.log(`[email-poll] Approver notification sent to ${m.email}`);
+        } catch (mailErr: any) {
+          console.log(`[email-poll] Approver notification to ${m.email} failed: ${mailErr.message}`);
+        }
+      }
+      if (sharedAddrs.length) {
+        const toAddr = sharedAddrs[0];
+        const ccRest = [...new Set(sharedAddrs.slice(1))].filter((e) => e.toLowerCase() !== toAddr.toLowerCase());
+        const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
+        const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
+        await sendMail({
+          ...(fromAddr ? { from: fromAddr } : {}),
+          to: toAddr,
+          cc: ccRest.length ? ccRest : undefined,
+          ...planMail(approveUrl, rejectUrl),
+        });
+        console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
+      }
     } catch (notifyErr: any) {
       console.log(`[email-poll] Notification failed: ${notifyErr.message}`);
       // Don't fail the plan creation if notification fails

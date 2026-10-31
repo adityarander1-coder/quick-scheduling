@@ -5413,39 +5413,68 @@ router.get('/email-poll-status', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
-// GET /api/schedule/plans/approve/:token — approve via email link (no login, token is auth).
-// One-tap: executes immediately.
+// GET /api/schedule/plans/approve/:token — approve via email link.
+// One-tap: executes immediately. Two token kinds share this URL:
+//  - Per-approver tokens (plan_approver_tokens, migration 068): the
+//    link was emailed to ONE approver, so the token IS the auth
+//    (login-free, like the reject link) and it names the approver —
+//    the click is recorded under their id, session or no session.
+//  - The plan-level token (schedule_plans.approve_token; every link
+//    sent before per-approver tokens, plus the shared copies still
+//    sent to non-approver recipients): unchanged behavior — the
+//    clicker must be logged in with edit access to the plan's
+//    departments, and the session identity is recorded.
 router.get('/plans/approve/:token', async (req: Request, res: Response) => {
   try {
-    const { rows } = await query(
-      `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, source_subject, decided_at FROM schedule_plans WHERE approve_token = $1`,
+    // Per-approver token first: it identifies the approver by itself.
+    const { rows: trows } = await query(
+      `SELECT p.id, p.company_id, p.plan, p.plan_summary, p.status, p.source_from, p.source_cc, p.source_subject, p.decided_at,
+              pat.user_id AS approver_id
+       FROM plan_approver_tokens pat
+       JOIN schedule_plans p ON p.id = pat.plan_id
+       WHERE pat.approve_token = $1`,
       [req.params.token]
     );
-    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
-    const plan = rows[0];
+    let plan: any = null;
+    let decidedBy: string | null = null;
+    if (trows.length) {
+      plan = trows[0];
+      decidedBy = trows[0].approver_id;
+    } else {
+      const { rows } = await query(
+        `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, source_subject, decided_at FROM schedule_plans WHERE approve_token = $1`,
+        [req.params.token]
+      );
+      if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
+      plan = rows[0];
+    }
     if (plan.status !== 'pending') {
       const when = plan.decided_at ? ` on ${new Date(plan.decided_at).toLocaleString()}` : '';
       return res.send(`<h1>Already ${escHtml(plan.status)}</h1><p>This plan was already ${escHtml(plan.status)}${escHtml(when)}. No further action needed.</p>`);
     }
-    // Department access check: the approver must be logged in and have edit
-    // access to all departments affected by the plan. Owners bypass.
-    const sessionUserId = (req.session as any)?.userId;
-    const sessionRole = (req.session as any)?.role;
-    const sessionCompanyId = (req.session as any)?.companyId;
-    if (!sessionUserId || sessionCompanyId !== plan.company_id) {
-      const loginUrl = `/login.html?redirect=${encodeURIComponent(req.originalUrl)}`;
-      return res.send(`<h1>Login required</h1><p>Please <a href="${loginUrl}">log in</a> to approve this plan. This ensures you have access to the affected departments.</p>`);
-    }
-    if (sessionRole !== 'owner') {
-      const { getDepartmentAccess } = await import('../util/departmentAccess.js');
-      const access = await getDepartmentAccess(sessionUserId, plan.company_id);
-      const planDepts = await getPlanDepartmentIds(plan.company_id, plan.plan);
-      const missing = planDepts.filter((d: string) => !access.edit.includes(d));
-      if (missing.length) {
-        const { rows: drows } = await query('SELECT name FROM departments WHERE id = ANY($1)', [missing]);
-        const names = drows.map((r: any) => r.name).join(', ');
-        return res.status(403).send(`<h1>Access denied</h1><p>You don't have edit access to: ${escHtml(names)}. Please ask the owner to approve this plan.</p>`);
+    if (decidedBy === null) {
+      // Plan-level (shared) link: department access check — the approver
+      // must be logged in and have edit access to all departments
+      // affected by the plan. Owners bypass. Unchanged behavior.
+      const sessionUserId = (req.session as any)?.userId;
+      const sessionRole = (req.session as any)?.role;
+      const sessionCompanyId = (req.session as any)?.companyId;
+      if (!sessionUserId || sessionCompanyId !== plan.company_id) {
+        const loginUrl = `/login.html?redirect=${encodeURIComponent(req.originalUrl)}`;
+        return res.send(`<h1>Login required</h1><p>Please <a href="${loginUrl}">log in</a> to approve this plan. This ensures you have access to the affected departments.</p>`);
       }
+      if (sessionRole !== 'owner') {
+        const { getDepartmentAccess } = await import('../util/departmentAccess.js');
+        const access = await getDepartmentAccess(sessionUserId, plan.company_id);
+        const planDepts = await getPlanDepartmentIds(plan.company_id, plan.plan);
+        const missing = planDepts.filter((d: string) => !access.edit.includes(d));
+        if (missing.length) {
+          const { rows: drows } = await query('SELECT name FROM departments WHERE id = ANY($1)', [missing]);
+          const names = drows.map((r: any) => r.name).join(', ');
+          return res.status(403).send(`<h1>Access denied</h1><p>You don't have edit access to: ${escHtml(names)}. Please ask the owner to approve this plan.</p>`);
+        }
+      }
+      decidedBy = sessionUserId;
     }
     // Execute the plan
     const { executePlan } = await import('../util/planExecutor.js');
@@ -5455,14 +5484,24 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
     const allOk = failed === 0;
     // Only mark fully approved when every change succeeded; otherwise mark
     // 'partial' so the failure stays visible for the scheduler to fix.
-    await query(
-      `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now() WHERE id = $1`,
-      [plan.id, allOk ? 'approved' : 'partial']
-    );
+    // A per-approver click also stamps decided_by with the token's
+    // approver (the plan-level path never recorded it — unchanged).
+    if (trows.length) {
+      await query(
+        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now(), decided_by = $3 WHERE id = $1`,
+        [plan.id, allOk ? 'approved' : 'partial', decidedBy]
+      );
+    } else {
+      await query(
+        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now() WHERE id = $1`,
+        [plan.id, allOk ? 'approved' : 'partial']
+      );
+    }
     // Audit: same Change-report rows as in-app approvals — email-approved
-    // changes used to be invisible in the report.
+    // changes used to be invisible in the report. decidedBy is the
+    // per-approver token's user for those links, else the session user.
     try {
-      await auditPlanChanges(plan.company_id, plan, results, sessionUserId);
+      await auditPlanChanges(plan.company_id, plan, results, decidedBy);
     } catch { /* audit must never break approval */ }
     const itemHtml = results.map((r: any, i: number) => {
       const badge = r.success
@@ -5507,27 +5546,50 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
 });
 
 // GET /api/schedule/plans/reject/:token — reject via email link.
+// Reject was always login-free (the token is the auth). Per-approver
+// tokens (migration 068) additionally name the rejecter: their id is
+// stamped on decided_by. The plan-level token behaves exactly as
+// before — no identity recorded.
 router.get('/plans/reject/:token', async (req: Request, res: Response) => {
   try {
-    const { rows } = await query(
-      `SELECT id, status, plan_summary, source_from, source_cc FROM schedule_plans WHERE reject_token = $1`,
+    const { rows: trows } = await query(
+      `SELECT p.id, p.status, p.plan_summary, p.source_from, p.source_cc, pat.user_id AS rejecter_id
+       FROM plan_approver_tokens pat
+       JOIN schedule_plans p ON p.id = pat.plan_id
+       WHERE pat.reject_token = $1`,
       [req.params.token]
     );
-    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
-    if (rows[0].status !== 'pending') return res.send(`<h1>Already ${rows[0].status}</h1>`);
-    await query(`UPDATE schedule_plans SET status = 'rejected', decided_at = now() WHERE id = $1`, [rows[0].id]);
+    let plan: any = null;
+    let rejecterId: string | null = null;
+    if (trows.length) {
+      plan = trows[0];
+      rejecterId = trows[0].rejecter_id;
+    } else {
+      const { rows } = await query(
+        `SELECT id, status, plan_summary, source_from, source_cc FROM schedule_plans WHERE reject_token = $1`,
+        [req.params.token]
+      );
+      if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
+      plan = rows[0];
+    }
+    if (plan.status !== 'pending') return res.send(`<h1>Already ${plan.status}</h1>`);
+    if (rejecterId) {
+      await query(`UPDATE schedule_plans SET status = 'rejected', decided_at = now(), decided_by = $2 WHERE id = $1`, [plan.id, rejecterId]);
+    } else {
+      await query(`UPDATE schedule_plans SET status = 'rejected', decided_at = now() WHERE id = $1`, [plan.id]);
+    }
     // Notify the requester.
     try {
       const { sendMail } = await import('../util/mailer.js');
-      const reqEmail = (rows[0].source_from || '').trim();
+      const reqEmail = (plan.source_from || '').trim();
       if (reqEmail && reqEmail.includes('@')) {
-        const ccList = String(rows[0].source_cc || '').split(',').map((s) => s.trim()).filter((s) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
+        const ccList = String(plan.source_cc || '').split(',').map((s) => s.trim()).filter((s) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
         await sendMail({
           to: reqEmail,
           cc: ccList.length ? ccList : undefined,
-          subject: `Request rejected: ${(rows[0].plan_summary || '').substring(0, 60)}`,
-          text: `Hi,\n\nYour request was rejected and will not be applied.\n\nSummary: ${rows[0].plan_summary}\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>Your request was <strong>rejected</strong> and will not be applied.</p><p><strong>Summary:</strong> ${rows[0].plan_summary}</p><p>— Quick Scheduling</p>`,
+          subject: `Request rejected: ${(plan.plan_summary || '').substring(0, 60)}`,
+          text: `Hi,\n\nYour request was rejected and will not be applied.\n\nSummary: ${plan.plan_summary}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request was <strong>rejected</strong> and will not be applied.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
