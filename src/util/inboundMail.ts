@@ -12,7 +12,7 @@
 
 import crypto from 'crypto';
 import { query } from '../db.js';
-import { processScheduleEmail } from './emailPoller.js';
+import { processScheduleEmail, parseSender } from './emailPoller.js';
 import { lookupInboundAddress, senderAllowed } from './inboundAddresses.js';
 
 export interface InboundEmailInput {
@@ -21,6 +21,10 @@ export interface InboundEmailInput {
   subject?: string;
   body?: string;
   messageId?: string;
+  /** Threading headers when the mail receiver provides them (the
+   * current provider payload carries only message_id). */
+  inReplyTo?: string;
+  references?: string;
 }
 
 export type InboundResult =
@@ -29,7 +33,9 @@ export type InboundResult =
   | { status: 'duplicate'; messageRowId: string; companyId: string; departmentId: string | null }
   | { status: 'failed'; error: string; messageRowId: string; companyId: string; departmentId: string | null };
 
-/** "Name <addr@x>" -> addr@x; a bare local part passes through as-is. */
+/** Routing-key parse for the To address: "Name <addr@x>" -> addr@x;
+ * a bare local part passes through as-is. (Senders go through the
+ * shared parseSender in emailPoller.ts instead.) */
 function parseAddress(raw: string): string {
   const m = String(raw || '').match(/<([^>]+)>/);
   return (m ? m[1] : String(raw || '')).trim().toLowerCase();
@@ -43,7 +49,7 @@ function localPartOf(address: string): string {
 export async function handleInboundEmail(input: InboundEmailInput): Promise<InboundResult> {
   const toAddr = parseAddress(input.to);
   const toLocal = localPartOf(toAddr);
-  const sender = parseAddress(input.from);
+  const sender = parseSender(input.from).address;
   const subject = String(input.subject || '');
   const body = String(input.body || '');
 
@@ -113,7 +119,12 @@ export async function handleInboundEmail(input: InboundEmailInput): Promise<Inbo
   const engineResult = { checked: 1, newPlans: 0, questionsAnswered: 0, errors: [] as string[] };
   const outcome = await processScheduleEmail(
     query, companyId,
-    { from: sender, fromName: null, cc: null, subject, body, attachments: [] },
+    {
+      from: sender, fromName: null, cc: null, subject, body, attachments: [],
+      messageId: input.messageId || null,
+      inReplyTo: input.inReplyTo || null,
+      references: input.references || null,
+    },
     `inbound:${rowId}`,
     engineResult,
     { departmentId: departmentId || undefined }

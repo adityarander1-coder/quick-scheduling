@@ -30,6 +30,9 @@ export interface MailOptions {
   text: string;
   html: string;
   attachments?: { filename: string; content: Buffer }[];
+  /** Extra RFC headers (e.g. a generated Message-ID so a reply can be
+   * threaded back to this email). Passed through to Resend. */
+  headers?: Record<string, string>;
 }
 
 interface ResendError {
@@ -54,6 +57,7 @@ export async function sendMail(opts: MailOptions): Promise<void> {
       subject: opts.subject,
       text: opts.text,
       html: opts.html,
+      ...(opts.headers && Object.keys(opts.headers).length ? { headers: opts.headers } : {}),
       attachments: (opts.attachments || []).map(a => ({
         filename: a.filename,
         content: a.content.toString('base64'),

@@ -23,7 +23,9 @@ function secretsEqual(a: string, b: string): boolean {
 }
 
 // POST /api/inbound/email — one message from the mail receiver.
-// Body: { to, from, subject?, body?, message_id? }.
+// Body: { to, from, subject?, body?, message_id?, in_reply_to?, references? }.
+// (The provider sends message_id today; the threading fields are
+// passed through when present so clarification replies can match.)
 // Rejects and duplicates still return 200: the provider must not retry
 // mail that will never process. Only auth failures are 401.
 router.post('/email', async (req: Request, res: Response) => {
@@ -34,7 +36,7 @@ router.post('/email', async (req: Request, res: Response) => {
       res.status(401).json({ error: 'Unauthorized.' });
       return;
     }
-    const { to, from, subject, body, message_id } = req.body ?? {};
+    const { to, from, subject, body, message_id, in_reply_to, references } = req.body ?? {};
     if (!to || !from) {
       res.status(400).json({ error: 'to and from are required.' });
       return;
@@ -44,6 +46,8 @@ router.post('/email', async (req: Request, res: Response) => {
       subject: subject !== undefined ? String(subject) : '',
       body: body !== undefined ? String(body) : '',
       messageId: message_id !== undefined ? String(message_id) : undefined,
+      inReplyTo: in_reply_to !== undefined ? String(in_reply_to) : undefined,
+      references: references !== undefined ? String(references) : undefined,
     });
     res.json({ ok: true, ...result });
   } catch (err: any) {

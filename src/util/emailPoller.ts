@@ -9,10 +9,52 @@ import { planFromEmail } from './gemini.js';
 import type { ImapAttachment } from './gmailImap.js';
 import { extractAttachmentContent } from './emailAttachments.js';
 import { notify, planApproverIds } from './notify.js';
-import { outboundFromFor } from './inboundAddresses.js';
+import { outboundFromFor, senderAllowed } from './inboundAddresses.js';
+import {
+  savePendingClarification,
+  clearPendingClarification,
+  matchPendingClarification,
+} from './pendingClarifications.js';
 import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
+
+export interface ParsedSender {
+  /** Display name ('' when the From carried none). */
+  name: string;
+  /** Clean email address, lowercased ('' when none can be extracted). */
+  address: string;
+}
+
+/**
+ * The ONE sender parse, used at ingest for every email (batch 1,
+ * 2026-10-30). Handles `Name <addr@x>`, bare `addr@x`, `"Name" addr@x`,
+ * and a bare display name (address ''). Everything downstream uses the
+ * parsed parts — nobody regexes the raw From string anymore.
+ */
+export function parseSender(raw: string, fallbackName?: string | null): ParsedSender {
+  const s = String(raw || '').trim();
+  let name = '';
+  let address = '';
+  const angle = s.match(/<([^>]+)>/);
+  if (angle) {
+    const inner = angle[1].replace(/["']/g, '').trim();
+    if (inner.includes('@')) address = inner;
+    name = s.replace(/<[^>]*>/, '').trim();
+  } else {
+    const bare = s.match(/[^\s<>"']+@[^\s<>"']+/);
+    if (bare) {
+      address = bare[0];
+      name = s.replace(bare[0], '').trim();
+    } else {
+      name = s;
+    }
+  }
+  name = name.replace(/^["']+|["']+$/g, '').replace(/\s+/g, ' ').trim();
+  address = address.toLowerCase().trim();
+  if (!name && fallbackName) name = String(fallbackName).replace(/\s+/g, ' ').trim();
+  return { name, address };
+}
 
 /** Get department IDs affected by a plan's changes (for per-department notifications). */
 async function getPlanDeptIds(companyId: string, plan: any): Promise<string[]> {
@@ -222,12 +264,19 @@ export interface ScheduleEmailInput {
   subject: string;
   body: string;
   attachments?: ImapAttachment[];
+  /** Threading headers, as far as the ingest path provides them: the
+   * IMAP path fills all three from mailparser; the inbound webhook
+   * supplies only its provider message id today. */
+  messageId?: string | null;
+  inReplyTo?: string | null;
+  references?: string | null;
 }
 export type ScheduleEmailOutcome =
   | { kind: 'plan_created' }
   | { kind: 'question_answered' }
   | { kind: 'question_failed' }
   | { kind: 'skipped' }
+  | { kind: 'sender_not_staff' }
   | { kind: 'clarification_sent' };
 export async function processScheduleEmail(
   query: QueryFn,
@@ -238,6 +287,43 @@ export async function processScheduleEmail(
   opts?: { markRead?: () => Promise<void>; departmentId?: string }
 ): Promise<ScheduleEmailOutcome | undefined> {
   try {
+
+    // Sender, parsed ONCE (batch 1, 2026-10-30): every consumer below
+    // uses these clean parts instead of the raw From string.
+    const sender = parseSender(email.from, email.fromName);
+    const fromLine = sender.name ? `${sender.name} <${sender.address}>` : sender.address;
+
+    // Sender lock (Deepika's rule, decided 2026-10-24; batch 1 enforces
+    // it in this shared engine so BOTH ingest paths are covered — the
+    // inbound webhook pre-checks it too, but the Gmail poller had no
+    // check at all): only active staff of THIS company may email its
+    // address. Anyone else: marked read and dropped — no plan, no
+    // reply, no AI call.
+    if (!(await senderAllowed(query, companyId, sender.address))) {
+      console.log(`[email-poll] Message ${sourceId}: sender "${email.from}" is not an active staff address for this company — ignored.`);
+      if (opts?.markRead) await opts.markRead();
+      return { kind: 'sender_not_staff' };
+    }
+
+    // Clarification threading (batch 1): when this email replies to a
+    // clarification we asked this sender, plan the ORIGINAL request
+    // with the reply appended — never the reply fragment on its own.
+    // A re-clarification keeps the original request text (see below).
+    let effectiveBody = email.body;
+    let pendingOriginal: { subject: string; body: string } | null = null;
+    try {
+      const pending = await matchPendingClarification(query, companyId, sender.address, {
+        inReplyTo: email.inReplyTo, references: email.references, subject: email.subject,
+      });
+      if (pending) {
+        effectiveBody = `${pending.original_body}\n\n--- Sender's reply to the clarification question ---\n${email.body}`;
+        pendingOriginal = { subject: pending.subject, body: pending.original_body };
+        await clearPendingClarification(query, companyId, sender.address);
+        console.log(`[email-poll] Message ${sourceId}: matched a pending clarification from ${sender.address} — planning the original request with the reply appended.`);
+      }
+    } catch (threadErr: any) {
+      console.log(`[email-poll] Message ${sourceId}: clarification matching failed: ${threadErr.message}`);
+    }
 
     // Outbound From: when this message arrived on a department inbound
     // address and a sending domain is configured, replies and plan mail
@@ -282,7 +368,7 @@ export async function processScheduleEmail(
     // requests — add / change / cancel a session — can be planned)
     const sessionCtx = await buildSessionContext(query, companyId, today);
     const { getShiftTypeRules } = await import('./planExecutor.js');
-    const plan = await planFromEmail(email.body, email.subject, {
+    const plan = await planFromEmail(effectiveBody, email.subject, {
       shiftTypes,
       shiftTypeRules: await getShiftTypeRules(companyId),
       members,
@@ -300,9 +386,9 @@ export async function processScheduleEmail(
         const { answer, found } = await querySchedule(query, companyId, plan.question);
         const { sendMail } = await import('./mailer.js');
 
-        // Extract sender email address (from "Name <email>" or plain email)
-        const senderMatch = email.from.match(/<([^>]+)>/) || [null, email.from.trim()];
-        const senderEmail = (senderMatch[1] || '').trim();
+        // Clean address from the one ingest parse (batch 1) — the staff
+        // lock above guarantees it is a real staff address.
+        const senderEmail = sender.address;
 
         if (senderEmail && senderEmail.includes('@')) {
           const dateRange = plan.question.startDate
@@ -347,18 +433,37 @@ export async function processScheduleEmail(
       const detail = incomplete.length
         ? incomplete.map((x: any) => `Change ${x.i + 1} (${plan.changes[x.i].action || 'unknown'}): ${x.problems.join(', ')}`).join('; ')
         : (plan.needsClarification || 'I could not understand the requested change well enough to build it.');
+      // The clarification email carries a generated Message-ID so the
+      // sender's reply can be threaded back (match rule (a)); the
+      // sender+subject fallback covers clients that drop the header.
+      const fromDomain = ((fromAddr || process.env.RESEND_FROM || '').match(/@([^\s>]+)/) || [])[1] || 'quick-scheduling';
+      const clarMessageId = `<qs-clar-${crypto.randomUUID()}@${fromDomain}>`;
       try {
         const { sendMail } = await import('./mailer.js');
         await sendMail({
           ...(fromAddr ? { from: fromAddr } : {}),
-          to: email.from,
+          to: sender.address,
           subject: `Re: ${email.subject}`,
           text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nPlease reply with the missing detail and I'll build the change for approval.\n\n— Quick Scheduling`,
           html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p><p>Please reply with the missing detail and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
+          headers: { 'Message-ID': clarMessageId },
         });
-        console.log(`[email-poll] Clarification requested from ${email.from}: ${detail}`);
+        console.log(`[email-poll] Clarification requested from ${sender.address}: ${detail}`);
       } catch (mailErr: any) {
         console.log(`[email-poll] Clarification email failed: ${mailErr.message}`);
+      }
+      // Remember the ORIGINAL request so the reply is planned together
+      // with it. If this email was itself a clarification reply, keep
+      // the first request's text/subject — never stack pendings.
+      try {
+        await savePendingClarification(
+          query, companyId, sender.address,
+          pendingOriginal ? pendingOriginal.subject : email.subject,
+          pendingOriginal ? pendingOriginal.body : email.body,
+          detail, clarMessageId
+        );
+      } catch (saveErr: any) {
+        console.log(`[email-poll] Saving pending clarification failed: ${saveErr.message}`);
       }
       if (opts?.markRead) await opts.markRead();
       return { kind: 'clarification_sent' };
@@ -386,10 +491,10 @@ export async function processScheduleEmail(
         companyId,
         sourceId,
         email.subject,
-        email.from,
-        email.fromName || null,
+        sender.address,
+        sender.name || null,
         email.cc || null,
-        email.body,
+        effectiveBody,
         plan.summary,
         JSON.stringify(plan),
         approveToken,
@@ -405,7 +510,7 @@ export async function processScheduleEmail(
         await notify({
           companyId, userIds: approvers, category: 'approvals', type: 'plan_waiting',
           title: 'A schedule plan is waiting for approval',
-          body: plan.summary || `Plan from ${email.from}`,
+          body: plan.summary || `Plan from ${fromLine}`,
           link: 'requests', bundleKey: 'plan_waiting',
           bundleTitle: '{count} schedule plans are waiting for approval',
         });
@@ -415,7 +520,7 @@ export async function processScheduleEmail(
     // Notify requester that their request was received and is awaiting approval.
     try {
       const { sendMail: sendConfirm } = await import('./mailer.js');
-      const reqEmail = (email.from || '').trim();
+      const reqEmail = sender.address;
       if (reqEmail && reqEmail.includes('@')) {
         // Include original CC recipients so they follow the request too.
         const ccList = String(email.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
@@ -489,7 +594,8 @@ export async function processScheduleEmail(
       const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
       const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
       const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
-      const fromLine = email.fromName ? `${email.fromName} <${email.from}>` : email.from;
+      // fromLine comes from the one ingest parse (batch 1) — always
+      // `Name <address>`, never a name nested inside the brackets.
       const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
       // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
       // from plan emails for now — it rendered overlapping the Approve /

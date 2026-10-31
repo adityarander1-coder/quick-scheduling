@@ -23,6 +23,12 @@ export interface ImapMessage {
   date: string;
   body: string;
   attachments: ImapAttachment[];
+  /** Threading headers (mailparser): this message's Message-ID, the
+   * Message-ID it replies to, and the References chain. Used to stitch
+   * clarification replies back onto the original request. */
+  messageId: string;
+  inReplyTo: string;
+  references: string;
 }
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -110,6 +116,11 @@ export async function getImapMessage(uid: number, creds?: ImapCreds): Promise<Im
               date: parsed.date?.toISOString() || '',
               body: (parsed.text || '').substring(0, 10000),
               attachments,
+              messageId: String(parsed.messageId || ''),
+              inReplyTo: String(parsed.inReplyTo || ''),
+              references: Array.isArray(parsed.references)
+                ? parsed.references.join(' ')
+                : String(parsed.references || ''),
             });
           }).catch((e: any) => {
             if (!resolved) {
