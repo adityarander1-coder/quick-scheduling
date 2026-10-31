@@ -272,12 +272,12 @@ export interface ScheduleEmailInput {
   references?: string | null;
 }
 export type ScheduleEmailOutcome =
-  | { kind: 'plan_created' }
+  | { kind: 'plan_created'; answeredQuestion?: boolean }
   | { kind: 'question_answered' }
   | { kind: 'question_failed' }
   | { kind: 'skipped' }
   | { kind: 'sender_not_staff' }
-  | { kind: 'clarification_sent' };
+  | { kind: 'clarification_sent'; answeredQuestion?: boolean };
 export async function processScheduleEmail(
   query: QueryFn,
   companyId: string,
@@ -379,11 +379,23 @@ export async function processScheduleEmail(
       attachmentNotes: attachmentNotes.length ? attachmentNotes : undefined,
     });
 
-    // Handle schedule questions: query and reply directly to sender
-    if (plan.emailType === 'schedule_question' && plan.question) {
+    // Mixed mail (batch 2, 2026-10-30): handling keys on the parse
+    // OUTPUT, not the single emailType — one email can carry a schedule
+    // question AND change requests, and both halves get handled: the
+    // question is answered AND the changes go through the plan path.
+    const changes: any[] = Array.isArray(plan.changes) ? plan.changes : [];
+    const actionableTypes = ['change_request', 'settings_change', 'bulk_action'];
+    const question = plan.question || null;
+    const hasQuestion = !!question;
+    const hasChanges = changes.length > 0 && (actionableTypes.includes(plan.emailType) || hasQuestion);
+
+    // Answer the schedule question, if the email asked one: query and
+    // reply directly to the sender.
+    let answeredQuestion = false;
+    if (question) {
       try {
         const { querySchedule } = await import('./scheduleQuery.js');
-        const { answer, found } = await querySchedule(query, companyId, plan.question);
+        const { answer, found } = await querySchedule(query, companyId, question);
         const { sendMail } = await import('./mailer.js');
 
         // Clean address from the one ingest parse (batch 1) — the staff
@@ -391,10 +403,10 @@ export async function processScheduleEmail(
         const senderEmail = sender.address;
 
         if (senderEmail && senderEmail.includes('@')) {
-          const dateRange = plan.question.startDate
-            ? (plan.question.startDate === plan.question.endDate
-                ? plan.question.startDate
-                : `${plan.question.startDate} to ${plan.question.endDate}`)
+          const dateRange = question.startDate
+            ? (question.startDate === question.endDate
+                ? question.startDate
+                : `${question.startDate} to ${question.endDate}`)
             : 'the requested dates';
           await sendMail({
             ...(fromAddr ? { from: fromAddr } : {}),
@@ -405,19 +417,27 @@ export async function processScheduleEmail(
           });
           console.log(`[email-poll] Schedule answer sent to ${senderEmail}`);
         }
+        answeredQuestion = true;
       } catch (qErr: any) {
         console.log(`[email-poll] Question answering failed: ${qErr.message}`);
         result.errors.push(`Message ${sourceId}: question answering failed: ${qErr.message}`);
-        if (opts?.markRead) await opts.markRead();
-        return { kind: 'question_failed' };
+        if (!hasChanges) {
+          // Question-only mail: unchanged failure behavior.
+          if (opts?.markRead) await opts.markRead();
+          return { kind: 'question_failed' };
+        }
+        // Mixed mail: the failure is on the record above; the changes
+        // below are still processed.
       }
-      if (opts?.markRead) await opts.markRead();
-      return { kind: 'question_answered' };
+      if (!hasChanges) {
+        if (opts?.markRead) await opts.markRead();
+        return { kind: 'question_answered' };
+      }
     }
 
-    // Skip if not a change/bulk/settings request
-    const actionableTypes = ['change_request', 'settings_change', 'bulk_action'];
-    if (!actionableTypes.includes(plan.emailType) || !plan.changes || plan.changes.length === 0) {
+    // Skip if there is nothing actionable to plan (not a
+    // change/bulk/settings request, or no changes in it).
+    if (!hasChanges) {
       if (opts?.markRead) await opts.markRead();
       return { kind: 'skipped' };
     }
@@ -466,7 +486,7 @@ export async function processScheduleEmail(
         console.log(`[email-poll] Saving pending clarification failed: ${saveErr.message}`);
       }
       if (opts?.markRead) await opts.markRead();
-      return { kind: 'clarification_sent' };
+      return { kind: 'clarification_sent', answeredQuestion };
     }
 
     // Warn-and-override: flag every change that puts someone on a shift type
@@ -618,11 +638,68 @@ export async function processScheduleEmail(
     }
 
     if (opts?.markRead) await opts.markRead();
-    return { kind: 'plan_created' };
+    return { kind: 'plan_created', answeredQuestion };
   } catch (err: any) {
     result.errors.push(`Message ${sourceId}: ${err.message}`);
     return undefined;
   }
+}
+
+/**
+ * Fold one email's outcome into a poll result's tallies. Mixed mail
+ * (batch 2) counts toward BOTH: a plan_created / clarification_sent
+ * outcome that also answered a question increments questionsAnswered
+ * as well as newPlans.
+ */
+export function applyOutcomeToCounts(
+  result: { newPlans: number; questionsAnswered: number },
+  outcome: ScheduleEmailOutcome | undefined
+): void {
+  if (!outcome) return;
+  if (outcome.kind === 'plan_created') result.newPlans++;
+  if (outcome.kind === 'question_answered' || ('answeredQuestion' in outcome && outcome.answeredQuestion)) result.questionsAnswered++;
+}
+
+const EMAIL_LAST_POLL_KEY = 'email_last_poll_at';
+
+/**
+ * Stamp the company's "email last checked" time (batch 2, 2026-10-30).
+ * Stored in the per-company settings KV (company_settings) so it is
+ * durable — an in-memory stamp would blank on every server restart,
+ * exactly when someone goes looking for it. Best-effort: recording a
+ * poll must never break the poll itself.
+ */
+export async function recordEmailPoll(query: QueryFn, companyId: string): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO company_settings (company_id, key, value, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [companyId, EMAIL_LAST_POLL_KEY, new Date().toISOString()]
+    );
+  } catch { /* best-effort */ }
+}
+
+/** Read the last-checked stamp + the company's timezone (for display). */
+export async function getEmailPollStatus(
+  query: QueryFn, companyId: string
+): Promise<{ lastPollAt: string | null; timezone: string }> {
+  let lastPollAt: string | null = null;
+  let timezone = 'America/Chicago';
+  try {
+    const { rows } = await query(
+      'SELECT key, value FROM company_settings WHERE company_id = $1 AND key = ANY($2)',
+      [companyId, [EMAIL_LAST_POLL_KEY, 'timezone']]
+    );
+    for (const r of rows) {
+      if (r.key === EMAIL_LAST_POLL_KEY && r.value) lastPollAt = String(r.value);
+      if (r.key === 'timezone' && r.value) {
+        try { new Intl.DateTimeFormat('en-US', { timeZone: String(r.value) }); timezone = String(r.value); }
+        catch { /* bad stored value — keep the fallback */ }
+      }
+    }
+  } catch { /* settings unavailable — defaults */ }
+  return { lastPollAt, timezone };
 }
 
 /**
@@ -640,6 +717,7 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
   // Check if Gmail IMAP is configured (per-company creds, or the legacy env inbox)
   if (!creds && (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD)) {
     result.errors.push('Gmail not configured on server');
+    await recordEmailPoll(query, companyId);
     return result;
   }
 
@@ -665,8 +743,7 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
         const outcome = await processScheduleEmail(query, companyId, email, uidStr, result, {
           markRead: () => markImapAsRead(uid, creds),
         });
-        if (outcome?.kind === 'plan_created') result.newPlans++;
-        if (outcome?.kind === 'question_answered') result.questionsAnswered++;
+        applyOutcomeToCounts(result, outcome);
       } catch (err: any) {
         result.errors.push(`Message ${uid}: ${err.message}`);
       }
@@ -675,5 +752,8 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
     result.errors.push(`Poll failed: ${err.message}`);
   }
 
+  // The poll finished (even if it found nothing, and even if it hit
+  // errors above): stamp the last-checked time for this company.
+  await recordEmailPoll(query, companyId);
   return result;
 }

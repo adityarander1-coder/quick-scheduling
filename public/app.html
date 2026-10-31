@@ -5077,6 +5077,7 @@
         <h3 style="margin-top:0">Change plans awaiting approval</h3>
         <p style="color:var(--dim);font-size:0.9rem">Plans proposed from forwarded emails. Review and approve to apply.</p>
         <button id="check-email-btn" class="btn" style="margin-bottom:0.75rem">Check email now</button>
+        <p id="email-last-checked" style="color:var(--dim);font-size:0.85rem;margin:0 0 0.25rem"></p>
         <div id="plans-list" style="margin-top:0.75rem"></div>
       </div>
       <div id="ask-report-wrap" style="margin-top:1.5rem;text-align:center">
@@ -5388,23 +5389,54 @@
         }
         addMsg("Hi! Ask me about the schedule — who's on, who's short, anyone's shifts.", 'ai');
         // --- Change plans ---
+        // "Email last checked" line (batch 2): shows the stored poll
+        // stamp so a normal 5-minute wait doesn't look like a failure.
+        var lastCheckedEl = $('email-last-checked');
+        function setLastChecked(iso, tz) {
+          if (!lastCheckedEl) return;
+          var label = '';
+          if (iso) {
+            try {
+              var d = new Date(iso);
+              if (!isNaN(d.getTime())) {
+                if (tz) {
+                  try { label = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz }); } catch (e) { label = ''; }
+                }
+                if (!label) label = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+              }
+            } catch (e) { label = ''; }
+          }
+          lastCheckedEl.textContent = label ? 'Email last checked ' + label : '';
+        }
+        function refreshLastChecked() {
+          api('/api/schedule/email-poll-status').then(function (r) {
+            if (r.ok) setLastChecked(r.data.lastPollAt, r.data.timezone);
+          }).catch(function () { /* keep whatever is already shown */ });
+        }
         var checkBtn = $('check-email-btn');
         if (checkBtn) {
           checkBtn.onclick = function () {
             checkBtn.disabled = true;
             checkBtn.textContent = 'Checking...';
             api('/api/schedule/poll-inbox', { method: 'POST' }).then(function (r) {
-              checkBtn.disabled = false;
-              checkBtn.textContent = 'Check email now';
               if (r.ok) {
                 var msg = 'Checked ' + r.data.checked + ' email(s)';
                 if (r.data.newPlans > 0) msg += ', created ' + r.data.newPlans + ' plan(s)';
                 if (r.data.errors && r.data.errors.length) msg += '. Note: ' + r.data.errors.join('; ');
                 addMsg(msg + '.', 'ai');
                 loadPlans();
+                setLastChecked(r.data.lastPollAt, r.data.timezone);
               } else {
                 addMsg('Email check failed: ' + (r.data.error || 'unknown error'), 'ai');
               }
+            }).catch(function () {
+              // Network failure / timeout / non-JSON response: always
+              // report back instead of hanging silently (batch 2).
+              addMsg("Couldn't check email just now — please try again in a moment.", 'ai');
+            }).then(function () {
+              // Whatever happened, the button always comes back.
+              checkBtn.disabled = false;
+              checkBtn.textContent = 'Check email now';
             });
           };
         }
@@ -5448,6 +5480,7 @@
           }).catch(function () {});
         }
         loadPlans();
+        refreshLastChecked();
       })();
       </script>
     </section>

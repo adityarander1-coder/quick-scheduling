@@ -5385,11 +5385,30 @@ router.post('/plans/:id/reject', requireRole('owner', 'scheduler'), async (req: 
 router.post('/poll-inbox', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { pollInbox } = await import('../util/emailPoller.js');
+    const { pollInbox, getEmailPollStatus } = await import('../util/emailPoller.js');
     const result = await pollInbox(query, companyId);
-    res.json({ ok: true, ...result });
+    // Batch 2: the poll just stamped the last-checked time — hand it
+    // back so the dialog can refresh its "Email last checked" line
+    // without a second request.
+    const status = await getEmailPollStatus(query, companyId);
+    res.json({ ok: true, ...result, lastPollAt: status.lastPollAt, timezone: status.timezone });
   } catch (err: any) {
     console.error('[schedule] poll inbox failed:', err);
+    res.status(500).json({ error: err.message || 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/email-poll-status — when email was last checked
+// for this company (batch 2: makes the normal 5-minute wait visible
+// instead of looking like a failure) + the company timezone to show it in.
+router.get('/email-poll-status', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { getEmailPollStatus } = await import('../util/emailPoller.js');
+    const status = await getEmailPollStatus(query, companyId);
+    res.json({ ok: true, ...status });
+  } catch (err: any) {
+    console.error('[schedule] email poll status failed:', err);
     res.status(500).json({ error: err.message || 'Something went wrong. Please try again.' });
   }
 });
