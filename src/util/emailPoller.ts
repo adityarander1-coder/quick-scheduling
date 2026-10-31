@@ -13,7 +13,6 @@ import {
   MAX_EMAIL_ATTEMPTS,
   getEmailAttempt,
   recordEmailFailure,
-  markOutageForwarded,
   clearEmailAttempt,
   isParked,
   parkedEmailReport,
@@ -300,11 +299,14 @@ export async function processScheduleEmail(
   opts?: {
     markRead?: () => Promise<void>;
     departmentId?: string;
-    /** Set ONLY by the IMAP poller when this message was forwarded to
-     * the approvers during an earlier AI credit outage: the plan
-     * notification then carries a "you may already have handled this"
-     * note quoting that date. The webhook path never sets it (it has
-     * no attempt record), so its plan emails stay unchanged. */
+    /** Set ONLY by the IMAP poller from the message's attempt record
+     * when that record carries an outage-forward marker — written
+     * under the short-lived forwarding behavior of 2026-10-31 (live
+     * data may still carry one): the plan notification then carries
+     * a "you may already have handled this" note quoting that date.
+     * New billing failures no longer set the marker (outage-handling
+     * correction, 2026-10-31). The webhook path never sets it (it
+     * has no attempt record), so its plan emails stay unchanged. */
     outageForwardedAt?: string | null;
   }
 ): Promise<ScheduleEmailOutcome | undefined> {
@@ -614,9 +616,11 @@ export async function processScheduleEmail(
       // Reject buttons in Gmail. The quick-session page itself stays live;
       // the button comes back once its email layout is fixed. So no token
       // is generated for the email anymore.
-      // Outage note (forward add-on, 2026-10-31): when the poller
-      // forwarded this email to the approvers during an AI credit
-      // outage, they may have handled it by hand before this plan
+      // Outage note (forward add-on, 2026-10-31): when a message's
+      // attempt record says the poller forwarded this email to the
+      // approvers during an AI credit outage (a marker written under
+      // that day's forwarding behavior — new failures no longer set
+      // it), they may have handled it by hand before this plan
       // existed. The note sits at the top of BOTH plan-notification
       // variants (per-approver and shared — both use planMail) so the
       // approver can reject instead of double-applying. Only the
@@ -850,44 +854,43 @@ async function forwardRecipients(query: QueryFn, companyId: string, mailbox: str
 }
 
 /**
- * Send ONE forward of an unprocessable email to the approvers —
+ * Send ONE forward of a PARKED (unprocessable) email to the approvers —
  * Deepika's rule (2026-10-31): a request the AI cannot process must
  * reach a human who can act on it, with the original email attached
- * in full. Returns true when the mail was sent. Throws never: the
- * caller decides what a failed send means (park-forward: nothing —
- * the park stands; outage-forward: the one-shot marker is only set
- * after a successful send, so a later poll may retry the forward).
+ * in full. This is the park path only: the email is the customer
+ * company's own content and only their admins can act on it. An AI
+ * credit OUTAGE never forwards (outage-handling correction,
+ * 2026-10-31) — that failure is the platform's, and waiting mail is
+ * simply left waiting while the platform is alerted separately.
+ * Returns true when the mail was sent. Throws never: a failed send is
+ * only logged by the caller — the park itself stands either way.
  */
 async function sendScheduleForward(args: {
   query: QueryFn;
   companyId: string;
   mailbox: string;
   email: ImapMessage;
-  kind: 'parked' | 'outage';
   reason: string;
 }): Promise<boolean> {
-  const { query, companyId, mailbox, email, kind, reason } = args;
+  const { query, companyId, mailbox, email, reason } = args;
   let recipients: string[];
   try {
     recipients = await forwardRecipients(query, companyId, mailbox);
   } catch (e: any) {
-    console.log(`[email-poll] Forward (${kind}) for "${email.subject}": could not resolve recipients: ${e.message}`);
+    console.log(`[email-poll] Park-forward for "${email.subject}": could not resolve recipients: ${e.message}`);
     return false;
   }
   if (!recipients.length) {
     // Nobody to send to (e.g. the only approver address IS the
     // scheduling inbox, which is excluded). The bell note / poll
-    // error still stand for parked mail; for outage mail the message
-    // simply keeps waiting, exactly as before the add-on.
-    console.log(`[email-poll] Forward (${kind}) for "${email.subject}": no approver recipients — forward skipped.`);
+    // error from the park path still stand.
+    console.log(`[email-poll] Park-forward for "${email.subject}": no approver recipients — forward skipped.`);
     return false;
   }
   const sender = parseSender(email.from, email.fromName);
   const fromLine = sender.name ? `${sender.name} <${sender.address}>` : (sender.address || email.from);
   const subject = (email.subject || '').trim() || '(no subject)';
-  const header = kind === 'parked'
-    ? `The AI couldn't process this email after ${MAX_EMAIL_ATTEMPTS} tries, so it has been set aside. Please handle the request below directly.\nReason: ${String(reason || 'Processing failed.').slice(0, 300)}`
-    : `The AI service is out of prepaid credits, so this email hasn't been processed automatically and is waiting. You can handle it manually now, or it will be processed automatically once credits are topped up — if you handle it yourself, please disregard the later automatic result.`;
+  const header = `The AI couldn't process this email after ${MAX_EMAIL_ATTEMPTS} tries, so it has been set aside. Please handle the request below directly.\nReason: ${String(reason || 'Processing failed.').slice(0, 300)}`;
   const text =
     `${header}\n\n----- Original email -----\nFrom: ${fromLine}\nSubject: ${subject}\n\n${email.body || ''}`;
   const html =
@@ -896,14 +899,14 @@ async function sendScheduleForward(args: {
     await sendMail({
       to: recipients[0],
       cc: recipients.length > 1 ? recipients.slice(1) : undefined,
-      subject: `${kind === 'parked' ? "[Couldn't process]" : '[AI out of credits — waiting]'} ${subject}`,
+      subject: `[Couldn't process] ${subject}`,
       text,
       html,
     });
-    console.log(`[email-poll] Forwarded (${kind}) "${subject}" to ${recipients.join(', ')}`);
+    console.log(`[email-poll] Forwarded (parked) "${subject}" to ${recipients.join(', ')}`);
     return true;
   } catch (e: any) {
-    console.log(`[email-poll] Forward (${kind}) for "${subject}" failed to send: ${e.message}`);
+    console.log(`[email-poll] Park-forward for "${subject}" failed to send: ${e.message}`);
     return false;
   }
 }
@@ -920,7 +923,9 @@ async function sendScheduleForward(args: {
  *    the company owner gets a one-line bell notification, and the
  *    original email is FORWARDED to the approvers (sendScheduleForward
  *    kind 'parked') so a human can act on the request.
- *  - BILLING (noteBillingOutage): never counted, never parked.
+ *  - BILLING failures never reach here either: they are not counted,
+ *    not parked, and not forwarded (see the pollInbox branch) — the
+ *    message waits for the platform's service to return.
  *  - FETCH failures never reach here at all (see pollInbox).
  * Best-effort throughout — bookkeeping must never break the poll.
  */
@@ -967,40 +972,7 @@ async function notePollFailure(
   // lives inside the one-shot park path — a failed send is only
   // logged (bell note + poll error above still stand) and later polls
   // skip the parked message without ever forwarding again.
-  await sendScheduleForward({ query, companyId, mailbox, email, kind: 'parked', reason: rec.lastError });
-}
-
-/**
- * Bookkeeping for a BILLING-class processing failure (AI credit
- * outage). The email is not at fault: the attempt is NOT counted, the
- * message is NOT parked and stays unread — it processes normally once
- * credits return. Deepika's choice (2026-10-31): instead of one alert
- * per outage, EVERY waiting email is forwarded to the approvers —
- * exactly once per message per outage, gated on the attempt record's
- * outageForwarded marker. The marker is set only after a successful
- * send, so a mailer failure retries the forward on a later poll
- * rather than losing the email silently.
- */
-async function noteBillingOutage(
-  query: QueryFn,
-  companyId: string,
-  mailbox: string,
-  uid: number,
-  email: ImapMessage,
-  error: string,
-  attempt: EmailAttemptRecord | null
-): Promise<void> {
-  if (attempt?.outageForwarded) {
-    console.log(`[email-poll] Message ${uid}: still in the AI credit outage; already forwarded to the approvers on ${attempt.outageForwardedAt} — waiting for credits.`);
-    return;
-  }
-  const sent = await sendScheduleForward({ query, companyId, mailbox, email, kind: 'outage', reason: error });
-  if (!sent) return; // logged inside; a later poll retries the forward
-  try {
-    await markOutageForwarded(query, companyId, mailbox, String(uid));
-  } catch (e: any) {
-    console.log(`[email-poll] Message ${uid}: outage forward sent but the marker could not be saved: ${e.message}`);
-  }
+  await sendScheduleForward({ query, companyId, mailbox, email, reason: rec.lastError });
 }
 
 /**
@@ -1097,9 +1069,18 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
           try { await clearEmailAttempt(query, companyId, mailbox, uidStr); } catch { /* best-effort */ }
         }
       } else if (isBillingError(failure)) {
-        // AI credit outage: not counted, not parked — forwarded to
-        // the approvers once, then it waits for credits to return.
-        await noteBillingOutage(query, companyId, mailbox, uid, email, failure, attempt);
+        // AI credit outage — Deepika's ruling (outage-handling
+        // correction, 2026-10-31): the outage is the PLATFORM's
+        // failure (the AI is platform-paid; the customer company
+        // does not pay for Gemini), so the company must never get
+        // our backlog as homework. The attempt is NOT counted, the
+        // message is NOT parked, and NOTHING is forwarded or
+        // notified to the company: the message stays unread and
+        // processes automatically once credits return. The platform
+        // itself is alerted once per outage episode from the Gemini
+        // call layer (util/platformAlert.ts) — the engine's failed
+        // call above already fed that tracker.
+        console.log(`[email-poll] Message ${uid}: AI credit outage — not counted, not parked, not forwarded; the message waits for the service to return.`);
       } else {
         await notePollFailure(query, companyId, mailbox, uid, failure, result, deps, email, creds);
       }

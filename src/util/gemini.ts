@@ -1,5 +1,8 @@
 // util/gemini.ts — Google Gemini API client for schedule plan generation.
 
+import { isBillingError } from './planHelpers.js';
+import { noteGeminiBillingFailure, noteGeminiSuccess } from './platformAlert.js';
+
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 export function isGeminiConfigured(): boolean {
@@ -110,6 +113,9 @@ async function discoverModel(apiKey: string): Promise<string> {
       cachedModelAt = Date.now();
       return cachedModel;
     }
+    // No cached model to fall back on: this failure IS the call's
+    // failure, so it feeds the outage tracker like any other.
+    geminiCallFailed((err as Error).message);
     throw err;
   }
 }
@@ -128,6 +134,23 @@ function logGeminiUsage(model: string, data: any): void {
     const output = typeof u.candidatesTokenCount === 'number' ? u.candidatesTokenCount : 0;
     console.log(`[gemini] usage model=${model} input=${input} output=${output}`);
   } catch { /* logging is best-effort */ }
+}
+
+/**
+ * Platform outage hooks (2026-10-31): every generateContent outcome
+ * in this module flows through these two functions, so the platform
+ * alert tracker (platformAlert.ts) sees billing failures and
+ * recoveries across ALL AI surfaces — email plans, in-app Task/Ask,
+ * help, onboarding, document import. Fire-and-forget: alerting must
+ * never delay or break a call, and the tracker never throws.
+ * Only billing-class failures open an episode; ordinary errors
+ * (503s, bad JSON, …) are not the platform's billing problem.
+ */
+function geminiCallFailed(errorText: string): void {
+  if (isBillingError(errorText)) void noteGeminiBillingFailure(errorText);
+}
+function geminiCallSucceeded(): void {
+  void noteGeminiSuccess();
 }
 
 interface PlanChange {
@@ -365,11 +388,14 @@ Rules:
   }
   if (!res || !res.ok) {
     const errBody = res ? await res.text().catch(() => '') : '';
-    throw new Error(`Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 500)}`);
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 500)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
   }
 
   const data = await res.json();
   logGeminiUsage(model, data);
+  geminiCallSucceeded();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   // Extract JSON from response (may have markdown code fences).
   const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -458,10 +484,12 @@ Rules:
     }
     if (!res || !res.ok) {
       console.log(`[gemini] suggestFollowUps HTTP ${res?.status || 'no response'}`);
+      geminiCallFailed(`Gemini API error: ${res?.status || 'no response'}`);
       return fallbackSuggestions(action || '', task);
     }
     const data = await res.json();
     logGeminiUsage(model, data);
+    geminiCallSucceeded();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log(`[gemini] suggestFollowUps raw: ${text.slice(0, 300)}`);
     const arrMatch = text.match(/\[[\s\S]*\]/);
@@ -475,6 +503,7 @@ Rules:
     }
   } catch (e) {
     console.log('[gemini] suggestFollowUps error:', (e as any)?.message);
+    geminiCallFailed((e as any)?.message || '');
     return fallbackSuggestions(action || '', task);
   }
 }
@@ -559,9 +588,13 @@ Only list files from the catalog above. If no screenshot fits, omit the VISUAL l
       }),
     }
   );
-  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
+  if (!res.ok) {
+    geminiCallFailed(`Gemini API error: ${res.status}`);
+    throw new Error(`Gemini API error: ${res.status}`);
+  }
   const data = await res.json();
   logGeminiUsage(model, data);
+  geminiCallSucceeded();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Sorry, I could not answer that. Try rephrasing.';
   const visuals: string[] = [];
   const m = text.match(/^VISUAL:\s*(.+)$/m);
@@ -623,9 +656,13 @@ Their question: ${question}`;
       }),
     }
   );
-  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
+  if (!res.ok) {
+    geminiCallFailed(`Gemini API error: ${res.status}`);
+    throw new Error(`Gemini API error: ${res.status}`);
+  }
   const data = await res.json();
   logGeminiUsage(model, data);
+  geminiCallSucceeded();
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 }
 
@@ -682,9 +719,13 @@ or
     }
     break;
   }
-  if (!res || !res.ok) throw new Error(`Gemini API error: ${res?.status || 'no response'}`);
+  if (!res || !res.ok) {
+    geminiCallFailed(`Gemini API error: ${res?.status || 'no response'}`);
+    throw new Error(`Gemini API error: ${res?.status || 'no response'}`);
+  }
   const data = await res.json();
   logGeminiUsage(model, data);
+  geminiCallSucceeded();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini did not return valid JSON.');
@@ -760,10 +801,13 @@ Rules:
   }
   if (!res || !res.ok) {
     const errBody = res ? await res.text().catch(() => '') : '';
-    throw new Error(`Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`);
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
   }
   const data: any = await res.json();
   logGeminiUsage(model, data);
+  geminiCallSucceeded();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('The AI did not return readable assignments.');

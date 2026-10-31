@@ -84,12 +84,15 @@ export function matchName(
 }
 
 /**
- * Billing-exhaustion matcher, shared by classifyPlanError (user-facing
- * wording) and the email poller (forward add-on, 2026-10-31: a failure
- * matching this is an AI credit outage — the email is not at fault, so
- * it never counts toward the retry cap; it is forwarded to the
- * approvers once, instead). One token list, two consumers, so the
- * poller and the UI can never drift apart on what "billing" means.
+ * Billing-exhaustion matcher, shared by every consumer that needs to
+ * know "was that failure the AI running out of prepaid credit?":
+ * classifyPlanError (user-facing wording), the email poller (a
+ * billing failure is not the email's fault — it never counts toward
+ * the retry cap, and the message simply waits for service to return),
+ * and the platform outage tracker in platformAlert.ts (one alert to
+ * the platform per outage episode). One token list, so the UI, the
+ * poller, and the tracker can never drift apart on what "billing"
+ * means.
  */
 export const BILLING_ERROR_PATTERN = /402|RESOURCE_EXHAUSTED|prepayment|credit balance|credits are depleted/i;
 
@@ -108,9 +111,14 @@ export function classifyPlanError(message: string): string {
   // Billing exhaustion (2026-10-31): when the prepay balance ran out,
   // this classifier had no match and the generic fallback told the
   // user to "try rephrasing" — she rephrased three times chasing a
-  // wording problem that did not exist. Name the real cause.
+  // wording problem that did not exist. Name the real cause — but in
+  // CUSTOMER terms (outage-handling correction, 2026-10-31): the AI
+  // is platform-paid, topping it up is the platform's job (the
+  // platform is alerted separately, via platformAlert.ts), so the
+  // user is told it is being handled and what they can do meanwhile.
+  // The internal error text (and logs) keep the real billing detail.
   if (isBillingError(m)) {
-    return 'The AI service is out of prepaid credits — the account owner needs to top up the Gemini billing in AI Studio before tasks can run again.';
+    return 'The AI assistant is temporarily unavailable — our team has been alerted and is on it. Please try again shortly, or make the change directly in the app.';
   }
   if (/503|429|overloaded|rate limit|service unavailable/i.test(m)) {
     return 'The AI service is busy right now — please try again in a moment.';
