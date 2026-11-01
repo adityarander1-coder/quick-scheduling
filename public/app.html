@@ -11473,6 +11473,12 @@
           <h4 style="margin:16px 0 4px">⏰ Reminders (just for you)</h4>
           <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">Pick up to 2 times for each row — reminders are personal, nobody sets them for you. They always email right away, never in the digest.</p>
           <div id="ms-reminder-rows"></div>
+          <h4 style="margin:16px 0 4px">📱 Push notifications (this device)</h4>
+          <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">Also get the <strong>instant</strong> ones as a push on this device — the same notifications that email right away. The daily digest stays email-only.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button type="button" id="ms-push-btn" class="btn-secondary" style="padding:0.45rem 0.9rem">Turn on push</button>
+            <span id="ms-push-status" style="font-size:0.85rem"></span>
+          </div>
           <div id="ms-defaults-wrap" hidden>
             <h4 style="margin:16px 0 4px">Company defaults (owner)</h4>
             <p style="font-size:0.83rem;color:var(--dim);margin:0 0 8px">The starting setting for everyone who hasn't chosen their own above.</p>
@@ -12303,9 +12309,9 @@
 
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
-    <div class="modal" style="background:#fff;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
+    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
       <h3 style="margin-top:0">Change report</h3>
-      <p style="color:var(--dim);font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI. The date you pick is the schedule date the change is for — not the date it was made.</p>
+      <p style="color:#5b6b76;font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI. The date you pick is the schedule date the change is for — not the date it was made.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
         <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
         <label><input type="radio" name="audit-mode" value="range"> Date range</label>
@@ -14338,7 +14344,7 @@
           if (!r.ok) { pageError((r.data && r.data.error) || 'Could not run report.'); return; }
           var box = $('audit-results');
           if (!r.data.entries.length) {
-            box.innerHTML = '<p style="color:var(--dim)">No changes recorded for this period yet. Tracking started October 9, 2026 — earlier changes are not available.</p>';
+            box.innerHTML = '<p style="color:#5b6b76">No changes recorded for this period yet. Tracking started October 9, 2026 — earlier changes are not available.</p>';
             return;
           }
           var actionWords = { created: 'Added', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
@@ -14367,9 +14373,9 @@
           var usedRemoved = new Set();
           var html = '';
           if (mode === 'date') {
-            html += '<p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule on ' + esc(fmtDay(d)) + '.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule on ' + esc(fmtDay(d)) + '.</p>';
           } else {
-            html += '<p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + '.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + '.</p>';
           }
           var lastDate = '';
           var lastCat = '';
@@ -14402,8 +14408,8 @@
                 usedRemoved.add(partner);
                 line = '<strong>Swapped</strong>: ' + esc(partner.personName) + ' → ' + esc(e.personName) +
                   (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '') +
-                  ' <span style="color:var(--dim)">(manual)</span><br>' +
-                  '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
+                  ' <span style="color:#5b6b76">(manual)</span><br>' +
+                  '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
                 html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
                 return;
               }
@@ -14411,8 +14417,8 @@
             var what = e.description ? esc(e.description)
               : (e.personName ? (esc(e.personName) + (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '')) : 'Schedule');
             line = '<strong>' + (words[e.action] || e.action) + '</strong>: ' + what +
-              ' <span style="color:var(--dim)">(' + via + ')</span><br>' +
-              '<span style="color:var(--dim);font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
+              ' <span style="color:#5b6b76">(' + via + ')</span><br>' +
+              '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
             html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
           });
           box.innerHTML = html;
@@ -15521,6 +15527,7 @@
       if (appearance.header_color) $('ms-header-color').value = appearance.header_color;
       if (appearance.footer_color) $('ms-footer-color').value = appearance.footer_color;
     }).catch(function () {});
+    if (window.qsInitPushSettings) window.qsInitPushSettings();
   };
 
   $('ms-profile-save').addEventListener('click', function () {
@@ -15547,6 +15554,76 @@
       if (bad) throw new Error('save failed');
       msg('ms-notif-msg', 'Saved ✓', true);
     }).catch(function () { msg('ms-notif-msg', 'Could not save — try again.', false); });
+  });
+
+  // ---- Push notifications on this device (Phase 3, 2026-10-31) ----
+  var pushState = { enabled: false, publicKey: null, sub: null };
+  function urlB64ToUint8(b64) {
+    var pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    var raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    var arr = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return arr;
+  }
+  function qsRenderPush() {
+    var btn = $('ms-push-btn'), st = $('ms-push-status');
+    if (!btn || !st) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') {
+      btn.style.display = 'none';
+      st.textContent = (/iphone|ipad/i.test(navigator.userAgent) && !window.navigator.standalone)
+        ? 'On iPhone/iPad: first add this site to your Home Screen (Share → Add to Home Screen), open it from there, then turn push on here.'
+        : 'This browser does not support push notifications.';
+      return;
+    }
+    if (!pushState.enabled || !pushState.publicKey) {
+      btn.style.display = 'none';
+      st.textContent = 'Push is not switched on for this app yet.';
+      return;
+    }
+    btn.style.display = '';
+    if (Notification.permission === 'denied') {
+      btn.disabled = true;
+      btn.textContent = 'Push blocked';
+      st.textContent = 'Notifications are blocked for this site in your browser settings.';
+      return;
+    }
+    btn.disabled = false;
+    if (pushState.sub) { btn.textContent = 'Turn off push'; st.textContent = 'Push is ON for this device.'; }
+    else { btn.textContent = 'Turn on push'; st.textContent = 'Push is off for this device.'; }
+  }
+  window.qsInitPushSettings = function () {
+    api('/api/push/status').then(function (r) {
+      pushState.enabled = !!(r && r.data && r.data.enabled);
+      pushState.publicKey = (r && r.data && r.data.publicKey) || null;
+      if (!('serviceWorker' in navigator)) { qsRenderPush(); return null; }
+      return navigator.serviceWorker.ready;
+    }).then(function (reg) {
+      if (!reg || !reg.pushManager) { qsRenderPush(); return; }
+      reg.pushManager.getSubscription().then(function (s) { pushState.sub = s; qsRenderPush(); }, function () { qsRenderPush(); });
+    }).catch(function () { qsRenderPush(); });
+  };
+  var msPushBtn = $('ms-push-btn');
+  if (msPushBtn) msPushBtn.addEventListener('click', function () {
+    if (!pushState.enabled || !pushState.publicKey) return;
+    if (pushState.sub) {
+      var ep = pushState.sub.endpoint;
+      pushState.sub.unsubscribe().catch(function () {}).then(function () {
+        api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: ep }) }).catch(function () {});
+        pushState.sub = null;
+        qsRenderPush();
+      });
+      return;
+    }
+    Notification.requestPermission().then(function (perm) {
+      if (perm !== 'granted') { qsRenderPush(); return; }
+      navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(pushState.publicKey) });
+      }).then(function (sub) {
+        pushState.sub = sub;
+        var j = sub.toJSON();
+        return api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ endpoint: j.endpoint, keys: j.keys }) });
+      }).then(function () { qsRenderPush(); }).catch(function () { qsRenderPush(); });
+    });
   });
 
   $('ms-header-color').addEventListener('input', function () { appearance.header_color = this.value; });
@@ -15583,6 +15660,15 @@
     }).catch(function (e) { msg('ms-pw-msg', e.message || 'Could not change the password.', false); });
   });
 })();
+</script>
+<script>
+  // Service worker for web push (Phase 3, 2026-10-31) — registered for
+  // the whole app origin; the worker only handles push events/clicks.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function () {});
+    });
+  }
 </script>
 </body>
 </html>

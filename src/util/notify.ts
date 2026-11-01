@@ -11,12 +11,16 @@
  * once a day by the Phase 2 digest job in util/notifyJobs.ts; reminder
  * rows (shift_reminder / session_reminder) are never digested — they
  * email on the instant path even when the resolved speed is "digest".
+ * Phase 3 (2026-10-31): the same dispatcher also sends the web-push
+ * copy (util/push.ts) for rows it settles on the instant path —
+ * "digest" and "off" rows are never pushed.
  *
  * Notification is always best-effort: a failure here must never break
  * the schedule change that triggered it, so notify() swallows errors.
  */
 import { query } from '../db.js';
 import { sendMail } from './mailer.js';
+import { sendPushToUser, pushConfigured } from './push.js';
 import { getDepartmentAccess } from './departmentAccess.js';
 
 export type NotifCategory = 'schedule' | 'calendar' | 'approvals' | 'messages';
@@ -184,7 +188,8 @@ export async function eligibleMemberIds(companyId: string, shiftTypeId: string):
 export async function dispatchNotificationEmails(): Promise<void> {
   try {
     const { rows } = await query(
-      `SELECT n.id, n.company_id, n.user_id, n.category, n.type, n.title, n.body, u.email
+      `SELECT n.id, n.company_id, n.user_id, n.category, n.type, n.title, n.body, n.link,
+              n.push_state, n.push_attempts, u.email
        FROM notifications n JOIN users u ON u.id = n.user_id
        WHERE n.email_state = 'pending' AND n.updated_at < now() - interval '3 minutes'
        ORDER BY n.updated_at ASC LIMIT 100`
@@ -194,12 +199,17 @@ export async function dispatchNotificationEmails(): Promise<void> {
     for (const n of rows) {
       const speed = await resolveSpeed(n.company_id, n.user_id, n.category, n.type);
       if (speed === 'off') {
-        await query(`UPDATE notifications SET email_state = 'skipped' WHERE id = $1`, [n.id]);
+        await query(`UPDATE notifications SET email_state = 'skipped',
+                       push_state = CASE WHEN push_state = 'pending' THEN 'skipped' ELSE push_state END
+                     WHERE id = $1`, [n.id]);
         continue;
       }
       // Reminders are never digested (a reminder in tomorrow's digest is
       // useless) — a digest speed still emails them right away.
       if (speed === 'digest' && n.type !== 'shift_reminder' && n.type !== 'session_reminder') {
+        // Digest rows are never pushed either — the morning digest email
+        // is their only copy (Phase 3 rule, Deepika 2026-10-31).
+        await query(`UPDATE notifications SET push_state = 'skipped' WHERE id = $1 AND push_state = 'pending'`, [n.id]);
         continue; // the Phase 2 digest job (util/notifyJobs.ts) owns these.
       }
       try {
@@ -217,6 +227,30 @@ export async function dispatchNotificationEmails(): Promise<void> {
              email_state = CASE WHEN email_attempts + 1 >= 5 THEN 'failed' ELSE 'pending' END
            WHERE id = $1`, [n.id]);
         console.log(`[notify] email failed for notification ${n.id}: ${e?.message || e}`);
+      }
+      // Push copy (Phase 3): rides the same settle + speed decision as
+      // the email above, tracked independently via push_state. One
+      // attempt per dispatcher pass while the row is email-pending.
+      if (n.push_state === 'pending') {
+        if (!pushConfigured()) {
+          await query(`UPDATE notifications SET push_state = 'skipped' WHERE id = $1`, [n.id]);
+        } else {
+          const r = await sendPushToUser(n.user_id, {
+            title: n.title,
+            body: n.body || '',
+            url: n.link ? `/app.html#${n.link}` : '/app.html',
+          });
+          if (r.sent > 0) {
+            await query(`UPDATE notifications SET push_state = 'sent', push_sent_at = now() WHERE id = $1`, [n.id]);
+          } else if (r.skipped) {
+            await query(`UPDATE notifications SET push_state = 'skipped' WHERE id = $1`, [n.id]);
+          } else {
+            await query(
+              `UPDATE notifications SET push_attempts = push_attempts + 1,
+                 push_state = CASE WHEN push_attempts + 1 >= 5 THEN 'failed' ELSE 'pending' END
+               WHERE id = $1`, [n.id]);
+          }
+        }
       }
     }
   } catch (e: any) {

@@ -10,6 +10,7 @@
     "@types/node": "^22.9.0",
     "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.23.1",
+    "@types/web-push": "^3.6.4",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.2",
     "dotenv": "^16.4.5",
@@ -24,6 +25,7 @@
     "stripe": "^23.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
+    "web-push": "^3.6.7",
     "xlsx": "^0.18.5"
   },
   "description": "Quick Scheduling — multi-company scheduling SaaS (Phase 1: accounts & logins)",
