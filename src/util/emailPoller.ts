@@ -647,6 +647,25 @@ export async function createPendingPlanFromChanges(
     );
     const planId = insertedPlans[0].id;
 
+    // One plain-language rendering of the changes, shared by the
+    // requester confirmation and the approver email so an approver
+    // sees exactly what will happen (Deepika 2026-11-01: the approver
+    // email "is not clear — swap with who, when, dates are not there").
+    const changeList = (plan.changes || []).map((c: any, i: number) => {
+      const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
+        : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
+        : c.action === 'unassign' ? `Remove ${c.person} from ${c.shiftType ? `${c.shiftType} ` : ''}on ${c.date}`
+        : c.action === 'swap' ? `Swap: ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.fromDate || c.date} ↔ ${c.toPerson}'s shift on ${c.toDate || c.date}`
+        : c.action === 'move' ? `Move ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.date} to ${c.toPerson}`
+        : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
+        : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
+        : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
+        : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
+        : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
+        : `${c.action}`;
+      return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
+    }).join('\n');
+
     // Bell + instant email for the approvers: a plan is waiting
     // (Phase 1 notifications). Best-effort.
     try {
@@ -669,18 +688,6 @@ export async function createPendingPlanFromChanges(
       if (reqEmail && reqEmail.includes('@')) {
         // Include original CC recipients so they follow the request too.
         const ccList = String(input.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
-        const changeList = (plan.changes || []).map((c: any, i: number) => {
-          const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
-            : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
-            : c.action === 'unassign' ? `Remove ${c.person} on ${c.date}`
-            : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
-            : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
-            : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
-            : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
-            : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
-            : `${c.action}`;
-          return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
-        }).join('\n');
         await sendConfirm({
           ...(input.fromAddr ? { from: input.fromAddr } : {}),
           to: reqEmail,
@@ -730,8 +737,8 @@ export async function createPendingPlanFromChanges(
         : null;
       const planMail = (approveUrl: string, rejectUrl: string) => ({
         subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-        text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${input.fromLine}${ccLine}\nSubject: ${input.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-        html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${input.fromLine}${input.cc ? `<br>Cc: ${input.cc}` : ''}<br>Subject: ${input.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+        text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${input.fromLine}${ccLine}\nSubject: ${input.subject}\n\nWhat they asked:\n${input.body}\n\nChanges to apply:\n${changeList}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+        html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${input.fromLine}${input.cc ? `<br>Cc: ${input.cc}` : ''}<br>Subject: ${input.subject}</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(input.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(changeList)}</pre><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
       });
 
       // One token pair per approver (deduped by email address — two

@@ -252,13 +252,19 @@ function renderPanel() {
   p.classList.add('on');
   const L = (t) => '<label class="lbl">' + t + '</label>';
   if (action === 'swap') {
-    p.innerHTML = L('Your shift — tap a marked day') + '<div id="c-my"></div><div id="pk-my"></div>' +
+    p.innerHTML = L('Your shifts — tap every day you want to swap') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Swap with') + '<select id="f-person">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>' +
-      '<div style="margin-top:12px">' + L('Their shift') + '<div id="c-their"></div><div id="pk-their"></div></div>' + noteHtml;
-    calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); schedulePreview(); } });
+      '<div style="margin-top:12px">' + L('Their shifts — tap the same number of days (they pair up in date order)') + '<div id="c-their"></div><div id="pk-their"></div></div>' + noteHtml;
+    const swapLine = () => {
+      const a = (S.myPicks || []).length, b = (S.theirPicks || []).length;
+      pickedLine($('#pk-my'), a ? (S.myPicks.map((x) => x.label + ' ' + fmtD(x.date)).join('; ')) : '');
+      pickedLine($('#pk-their'), b ? (S.theirPicks.map((x) => x.label + ' ' + fmtD(x.date)).join('; ')) : '');
+    };
+    calendar($('#c-my'), { items: myItems(), multi: true, onPick: (sel) => { S.myPicks = sel.slice().sort((x, y) => x.date < y.date ? -1 : 1); swapLine(); schedulePreview(); } });
     $('#f-person').addEventListener('change', (ev) => {
-      S.theirUserId = ev.target.value; S.their = null;
-      calendar($('#c-their'), { items: theirItems(S.theirUserId), onPick: (sel) => { S.their = sel[0] || null; pickedLine($('#pk-their'), S.their ? S.their.label + ' — ' + fmtD(S.their.date) : ''); schedulePreview(); } });
+      S.theirUserId = ev.target.value; S.theirPicks = [];
+      calendar($('#c-their'), { items: theirItems(S.theirUserId), multi: true, onPick: (sel) => { S.theirPicks = sel.slice().sort((x, y) => x.date < y.date ? -1 : 1); swapLine(); schedulePreview(); } });
+      swapLine();
       schedulePreview();
     });
   } else if (action === 'request_off') {
@@ -341,7 +347,7 @@ function fields() {
   const note = ($('#f-note') && $('#f-note').value.trim()) || '';
   const withNote = (o) => { if (note) o.note = note; return o; };
   switch (action) {
-    case 'swap': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, theirUserId: S.theirUserId, theirDate: S.their && S.their.date, theirShiftTypeId: S.their && S.their.shiftTypeId });
+    case 'swap': return withNote({ theirUserId: S.theirUserId, myPicks: (S.myPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })), theirPicks: (S.theirPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })) });
     case 'request_off': return withNote({ dates: S.dates || [] });
     case 'pickup': return withNote({ date: S.open && S.open.date, shiftTypeId: S.open && S.open.shiftTypeId });
     case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, coverUserId: S.coverUserId });

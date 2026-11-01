@@ -333,25 +333,51 @@ export async function validateAndCompose(
 
   switch (action) {
     case 'swap': {
-      if (!isDateStr(f.myDate) || !isDateStr(f.theirDate)) return bad('Pick your shift and the shift to swap with.');
-      const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
-      if (!mine) return bad('That shift of yours could not be found — pick it again.');
-      const theirs = await shiftExists(q, companyId, String(f.theirUserId || ''), String(f.theirShiftTypeId || ''), f.theirDate);
-      if (!theirs) return bad('That shift to swap with could not be found — pick it again.');
-      // Same type on both sides: the executor's single swap change.
-      // Different types: unassign both + cross-assign (the executor's
-      // swap resolves one type per side).
-      const changes = mine.shiftTypeName === theirs.shiftTypeName
-        ? [{ action: 'swap', fromPerson: user.name, toPerson: theirs.personName, fromDate: f.myDate, toDate: f.theirDate, shiftType: mine.shiftTypeName }]
-        : [
-            { action: 'unassign', person: user.name, date: f.myDate, shiftType: mine.shiftTypeName },
-            { action: 'unassign', person: theirs.personName, date: f.theirDate, shiftType: theirs.shiftTypeName },
-            { action: 'assign', person: theirs.personName, date: f.myDate, shiftType: mine.shiftTypeName },
-            { action: 'assign', person: user.name, date: f.theirDate, shiftType: theirs.shiftTypeName },
-          ];
-      return good(S('Swap request'),
-        `Please swap my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)} with ${theirs.personName}'s ${theirs.shiftTypeName} shift on ${fmtLong(f.theirDate)}.${note}${sig(user.name, fromEmail)}`,
-        changes);
+      // Multiple pairs in one request (Deepika 2026-11-01: "when
+      // swapping only one date is able to be swapped — I should be
+      // able to do multiple"). The form sends both pick lists; pairs
+      // are matched in date order (first of mine ↔ first of theirs).
+      const cleanPicks = (v: any) => (Array.isArray(v) ? v : [])
+        .filter((p: any) => p && isDateStr(p.date) && p.shiftTypeId)
+        .map((p: any) => ({ date: p.date as string, shiftTypeId: String(p.shiftTypeId) }))
+        .sort((a: any, b: any) => (a.date < b.date ? -1 : 1));
+      const myPicks = cleanPicks(f.myPicks);
+      const theirPicks = cleanPicks(f.theirPicks);
+      if (!f.theirUserId) return bad('Choose the person to swap with.');
+      if (!myPicks.length) return bad('Pick your shift(s) on the calendar.');
+      if (!theirPicks.length) return bad("Pick their shift(s) on the calendar.");
+      if (myPicks.length !== theirPicks.length) {
+        return bad(`You picked ${myPicks.length} of your shifts and ${theirPicks.length} of theirs — pick the same number of each so they pair up.`);
+      }
+      if (myPicks.length > 14) return bad('That is a lot of swaps for one request — please keep it to 14 pairs or fewer.');
+      const changes: any[] = [];
+      const lines: string[] = [];
+      let partnerName = '';
+      for (let i = 0; i < myPicks.length; i++) {
+        const mine = await shiftExists(q, companyId, user.id, myPicks[i].shiftTypeId, myPicks[i].date);
+        if (!mine) return bad('One of your picked shifts could not be found — pick it again.');
+        const theirs = await shiftExists(q, companyId, String(f.theirUserId), theirPicks[i].shiftTypeId, theirPicks[i].date);
+        if (!theirs) return bad("One of their picked shifts could not be found — pick it again.");
+        partnerName = theirs.personName;
+        lines.push(`my ${mine.shiftTypeName} shift on ${fmtLong(myPicks[i].date)} with ${theirs.personName}'s ${theirs.shiftTypeName} shift on ${fmtLong(theirPicks[i].date)}`);
+        // Same type on both sides: the executor's single swap change.
+        // Different types: unassign both + cross-assign (the executor's
+        // swap resolves one type per side).
+        if (mine.shiftTypeName === theirs.shiftTypeName) {
+          changes.push({ action: 'swap', fromPerson: user.name, toPerson: theirs.personName, fromDate: myPicks[i].date, toDate: theirPicks[i].date, shiftType: mine.shiftTypeName });
+        } else {
+          changes.push(
+            { action: 'unassign', person: user.name, date: myPicks[i].date, shiftType: mine.shiftTypeName },
+            { action: 'unassign', person: theirs.personName, date: theirPicks[i].date, shiftType: theirs.shiftTypeName },
+            { action: 'assign', person: theirs.personName, date: myPicks[i].date, shiftType: mine.shiftTypeName },
+            { action: 'assign', person: user.name, date: theirPicks[i].date, shiftType: theirs.shiftTypeName },
+          );
+        }
+      }
+      const wording = lines.length === 1
+        ? `Please swap ${lines[0]}.`
+        : `Please swap these shifts with ${partnerName}: ${lines.join('; ')}.`;
+      return good(S('Swap request'), `${wording}${note}${sig(user.name, fromEmail)}`, changes);
     }
     case 'request_off': {
       const dates: string[] = Array.isArray(f.dates) ? [...new Set<string>((f.dates as any[]).filter(isDateStr))].sort() : [];
@@ -620,7 +646,12 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
   // Change request: build the pending plan directly from the picks.
   const { createPendingPlanFromChanges } = await import('./emailPoller.js');
   const { standingFormFooter } = await import('./formLinks.js');
-  const plan = { summary: resolved.composed.subject, changes: resolved.changes, emailType: 'change_request' };
+  // The plan summary is the request itself (first sentences of the
+  // composed wording, signature off) — approvers read it in the email
+  // subject, the Requests list and the bell, so a bare "Swap request —
+  // Name" is not enough (Deepika 2026-11-01).
+  const summary = resolved.composed.body.split('\n\n— Sent from the Quick Scheduling app')[0].replace(/^Please /, '').trim();
+  const plan = { summary: summary.charAt(0).toUpperCase() + summary.slice(1), changes: resolved.changes, emailType: 'change_request' };
   let footer: { text: string; html: string } | null = null;
   try { footer = await standingFormFooter(q, row.company_id, row.from_email); } catch { /* best-effort */ }
   try {
