@@ -471,7 +471,7 @@ export async function validateAndCompose(
         ok: true,
         composed: {
           subject: S('Cover request'),
-          body: `Hi everyone — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. It's open to everyone with my job role, so whoever can take it first, it's yours. Thank you!${note}${sig(user.name, fromEmail)}`,
+          body: `Hi everyone — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. Can someone please cover it for me? Thank you!${note}${sig(user.name, fromEmail)}`,
         },
         changes: null,
         openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: null },
