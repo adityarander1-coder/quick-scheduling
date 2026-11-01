@@ -231,7 +231,7 @@ export async function buildFormPack(
 // ---------------------------------------------------------------------------
 
 export interface Composed { subject: string; body: string }
-type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { date: string; shiftTypeId: string; shiftTypeName: string } } | { ok: false; error: string };
+type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { date: string; shiftTypeId: string; shiftTypeName: string; targetUserId?: string | null; targetName?: string } } | { ok: false; error: string };
 
 function sig(name: string, from: string): string {
   return `\n\n— Sent from the Quick Scheduling app by ${name} (${from})`;
@@ -400,14 +400,35 @@ export async function validateAndCompose(
         [{ action: 'assign', person: user.name, date: f.date, shiftType: rows[0].name }]);
     }
     case 'cover': {
-      // Cover is a BROADCAST, not a named-person ask (Deepika
-      // 2026-11-01): it goes to everyone with the requester's job
-      // role and the first to pick it up gets it. processFormRequest
-      // turns this into an open shift_requests row — no plan, no
-      // admin approval; the pickup itself is the decision.
+      // Cover offers BOTH ways (Deepika 2026-11-01, correcting the
+      // broadcast-only pass earlier the same day): ask ONE named
+      // person, or broadcast to everyone with the requester's job
+      // role (first to pick it up gets it). Either way
+      // processFormRequest turns it into a shift_requests row — no
+      // plan, no admin approval; the pickup itself is the decision.
       if (!isDateStr(f.myDate)) return bad('Pick the shift you need covered.');
       const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
       if (!mine) return bad('That shift of yours could not be found — pick it again.');
+      const targetId = f.coverUserId ? String(f.coverUserId) : '';
+      const personMode = f.coverMode === 'person' || (!f.coverMode && !!targetId);
+      if (personMode) {
+        if (!targetId) return bad('Choose the person to ask, or pick "Everyone with my job role".');
+        if (targetId === user.id) return bad("You can't ask yourself to cover your own shift.");
+        const { rows: trows } = await q(
+          'SELECT first_name, last_name FROM users WHERE company_id = $1 AND id = $2 AND is_active = true',
+          [companyId, targetId]);
+        if (!trows.length) return bad('That person could not be found — pick them again.');
+        const targetName = `${trows[0].first_name || ''} ${trows[0].last_name || ''}`.trim();
+        return {
+          ok: true,
+          composed: {
+            subject: S('Cover request'),
+            body: `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. I am asking ${targetName} to cover it.${note}${sig(user.name, fromEmail)}`,
+          },
+          changes: null,
+          openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: targetId, targetName },
+        };
+      }
       return {
         ok: true,
         composed: {
@@ -415,7 +436,7 @@ export async function validateAndCompose(
           body: `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. It is open to everyone with my job role — the first to pick it up gets it.${note}${sig(user.name, fromEmail)}`,
         },
         changes: null,
-        openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName },
+        openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: null },
       };
     }
     case 'move_shift': {
@@ -565,6 +586,7 @@ export const OUTCOME_MESSAGES: Record<string, string> = {
   plan_created: "Sent ✓ Your request is with the approvers — you'll get an email when they decide.",
   swap_with_partner: "Sent ✓ Your swap request went to your swap partner first — if they agree, it goes to the approvers for final approval.",
   cover_posted: "Posted ✓ Everyone with your job role can see it — the first to pick it up gets the shift.",
+  cover_asked: "Sent ✓ The person you picked was asked to cover — if they pick it up, the shift is theirs.",
   question_answered: 'Sent ✓ The answer is on its way to your email.',
   clarification_sent: 'Sent ✓ One more detail was needed — check your email: you can reply in words, or tap the form button there to finish it.',
   skipped: 'Received ✓',
@@ -616,10 +638,11 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
     return { status: 'failed', outcome: 'invalid', message: resolved.error };
   }
 
-  // Cover (Deepika 2026-11-01): a broadcast open request, NOT a
-  // plan. It goes to everyone with the requester's job role; the
-  // first to pick it up gets the shift (the pickup is the decision —
-  // no admin stage). Only real shift rows can carry a request
+  // Cover (Deepika 2026-11-01): a shift_requests row, NOT a plan.
+  // Broadcast mode goes to everyone with the requester's job role
+  // (first to pick it up gets the shift); one-person mode asks only
+  // the named person. Either way the pickup is the decision — no
+  // admin stage. Only real shift rows can carry a request
   // (migration 034): rotation-generated entries have no row, and a
   // scheduler arranges cover for those, like the in-app requests.
   if (row.action === 'cover' && resolved.openCover) {
@@ -642,28 +665,41 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
     const { randomUUID } = await import('crypto');
     await q(
       `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
-       VALUES ($1, $2, 'pickup', $3, $4, NULL, 'pending')`,
-      [randomUUID(), row.company_id, shiftId, user.id]);
+       VALUES ($1, $2, 'pickup', $3, $4, $5, 'pending')`,
+      [randomUUID(), row.company_id, shiftId, user.id, oc.targetUserId || null]);
     try {
       const { notify } = await import('./notify.js');
-      const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [user.id]);
-      const myRole = meRows.length ? meRows[0].job_role_id : null;
-      const { rows: peers } = myRole
-        ? await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
-        : await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
-      if (peers.length) {
+      if (oc.targetUserId) {
+        // One-person cover: only the named person is asked.
         await notify({
-          companyId: row.company_id, userIds: peers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
-          title: `${user.name} needs cover`,
-          body: `${user.name} needs cover for ${oc.shiftTypeName} on ${oc.date}. First to pick it up gets it.`,
+          companyId: row.company_id, userIds: [oc.targetUserId], category: 'schedule', type: 'request_to_you',
+          title: `${user.name} asked you to cover a shift`,
+          body: `${user.name} asked you to cover their ${oc.shiftTypeName} shift on ${oc.date}. If you pick it up, the shift is yours.`,
           link: 'requests', bundleKey: 'request_to_you',
           bundleTitle: '{count} requests are waiting for you',
           excludeUserId: user.id,
         });
+      } else {
+        const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [user.id]);
+        const myRole = meRows.length ? meRows[0].job_role_id : null;
+        const { rows: peers } = myRole
+          ? await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
+          : await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
+        if (peers.length) {
+          await notify({
+            companyId: row.company_id, userIds: peers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
+            title: `${user.name} needs cover`,
+            body: `${user.name} needs cover for ${oc.shiftTypeName} on ${oc.date}. First to pick it up gets it.`,
+            link: 'requests', bundleKey: 'request_to_you',
+            bundleTitle: '{count} requests are waiting for you',
+            excludeUserId: user.id,
+          });
+        }
       }
     } catch { /* non-fatal */ }
-    await q("UPDATE form_requests SET status = 'done', outcome = 'cover_posted', processed_at = now() WHERE id = $1", [row.id]);
-    return { status: 'done', outcome: 'cover_posted' };
+    const coverOutcome = oc.targetUserId ? 'cover_asked' : 'cover_posted';
+    await q("UPDATE form_requests SET status = 'done', outcome = $2, processed_at = now() WHERE id = $1", [row.id, coverOutcome]);
+    return { status: 'done', outcome: coverOutcome };
   }
 
   // Free-text question: the one form action that still needs the

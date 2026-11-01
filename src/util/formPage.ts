@@ -274,11 +274,21 @@ function renderPanel() {
     p.innerHTML = L('Open shifts — tap a marked day') + '<div id="c-open"></div><div id="pk-open"></div>' + noteHtml;
     calendar($('#c-open'), { items: openItems(), onPick: (sel) => { S.open = sel[0] || null; pickedLine($('#pk-open'), S.open ? S.open.label + ' — ' + fmtD(S.open.date) : ''); schedulePreview(); } });
   } else if (action === 'cover') {
-    // Cover goes to the whole team with your job role (Deepika
-    // 2026-11-01) — no person picker; first to pick it up gets it.
+    // Cover offers BOTH ways (Deepika 2026-11-01): one named person,
+    // or everyone with your job role (first to pick it up gets it).
+    S.coverMode = 'everyone'; S.coverUserId = '';
     p.innerHTML = L('The shift you need covered') + '<div id="c-my"></div><div id="pk-my"></div>' +
-      '<div class="hint" style="margin-top:12px">This goes out to everyone with your job role. The first person to pick it up gets the shift.</div>' + noteHtml;
+      '<div style="margin-top:12px">' + L('Who should we ask?') +
+      '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="everyone" checked style="width:auto"> Everyone with my job role — first to pick it up gets it</label>' +
+      '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="person" style="width:auto"> One person</label>' +
+      '<div id="cover-person-wrap" style="display:none;margin-top:8px"><select id="f-coverperson">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div></div>' + noteHtml;
     calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); schedulePreview(); } });
+    p.querySelectorAll('input[name="f-covermode"]').forEach((r) => r.addEventListener('change', (ev) => {
+      S.coverMode = ev.target.value;
+      $('#cover-person-wrap').style.display = S.coverMode === 'person' ? '' : 'none';
+      schedulePreview();
+    }));
+    $('#f-coverperson').addEventListener('change', (ev) => { S.coverUserId = ev.target.value; schedulePreview(); });
   } else if (action === 'move_shift') {
     p.innerHTML = L('Your shift') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Move it to') + '<div id="c-new"></div><div id="pk-new"></div></div>' + noteHtml;
@@ -350,7 +360,7 @@ function fields() {
     case 'swap': return withNote({ theirUserId: S.theirUserId, myPicks: (S.myPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })), theirPicks: (S.theirPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })) });
     case 'request_off': return withNote({ dates: S.dates || [] });
     case 'pickup': return withNote({ date: S.open && S.open.date, shiftTypeId: S.open && S.open.shiftTypeId });
-    case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId });
+    case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, coverMode: S.coverMode || 'everyone', coverUserId: S.coverMode === 'person' ? (S.coverUserId || undefined) : undefined });
     case 'move_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, newDate: S.newDate });
     case 'cancel_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId });
     case 'assign': return withNote({ userId: S.userId, shiftTypeId: S.shiftTypeId, dates: S.dates || [] });
