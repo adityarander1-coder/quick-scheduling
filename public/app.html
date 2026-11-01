@@ -14706,6 +14706,21 @@
       </div>
     </div>
   </div>
+  <!-- Choice screen (Deepika 2026-11-01): tapping Email Q-Scheduler
+       first offers BOTH routes plainly — the form (recommended) or
+       plain words — instead of opening the form with the free-text
+       route tucked away as a small footer link. -->
+  <div id="qs-choice-dialog" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:102">
+    <div style="background:#fff;border-radius:16px;width:min(440px,94vw);padding:20px;box-sizing:border-box;color:#17242e">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <strong style="font-size:1.05rem">✉️ Email Q-Scheduler</strong>
+        <button type="button" id="qs-choice-close" class="btn-secondary">Close</button>
+      </div>
+      <p style="color:#5a6b76;font-size:0.92rem;margin:0 0 14px">How do you want to send your request?</p>
+      <button type="button" id="qs-choice-form" class="btn" style="width:100%;text-align:left;padding:14px 16px;margin-bottom:10px">📋 Use the form — Recommended<br><span style="font-weight:normal;font-size:0.85rem;opacity:0.92">Pick from calendars. It is read exactly, first time.</span></button>
+      <button type="button" id="qs-choice-words" class="btn-secondary" style="width:100%;text-align:left;padding:14px 16px">✍️ Write in plain words<br><span style="font-weight:normal;font-size:0.85rem">Type your request in your own words — use this if you need to attach a file.</span></button>
+    </div>
+  </div>
   <!-- The Email Q-Scheduler request form (body level so it opens from
        any tab; the iframe loads the shared form page). -->
   <div id="qs-form-dialog" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:101">
@@ -14751,7 +14766,7 @@
         $('fab-email-to').textContent = 'Could not load the scheduler inbox.';
       });
     }
-    window.qsOpenRequestForm = function () {
+    function openFormDirect() {
       if (!formDlg || !formFrame) { openFreeTextDlg(); return; }
       api('/api/schedule/request-form-link').then(function (r) {
         if (r.ok && r.data && r.data.url) {
@@ -14761,7 +14776,20 @@
           openFreeTextDlg();
         }
       }).catch(function () { openFreeTextDlg(); });
+    }
+    // Entry point for every Email Q-Scheduler button: the choice
+    // screen first (both routes, form recommended).
+    var choiceDlg = $('qs-choice-dialog');
+    window.qsOpenRequestForm = function () {
+      if (!choiceDlg) { openFormDirect(); return; }
+      show(choiceDlg);
     };
+    if (choiceDlg) {
+      $('qs-choice-form').addEventListener('click', function () { hide(choiceDlg); openFormDirect(); });
+      $('qs-choice-words').addEventListener('click', function () { hide(choiceDlg); openFreeTextDlg(); });
+      $('qs-choice-close').addEventListener('click', function () { hide(choiceDlg); });
+      choiceDlg.addEventListener('click', function (e) { if (e.target === choiceDlg) hide(choiceDlg); });
+    }
     if (formDlg) {
       $('qs-form-close').addEventListener('click', function () { hide(formDlg); });
       formDlg.addEventListener('click', function (e) { if (e.target === formDlg) hide(formDlg); });
@@ -14769,7 +14797,12 @@
       if (ftLink) ftLink.addEventListener('click', function (ev) {
         ev.preventDefault();
         hide(formDlg);
-        if (window.qsOpenFreeTextEmail) window.qsOpenFreeTextEmail(); else openFreeTextDlg();
+        // ALWAYS the body-level dialog: the Ask tab's own free-text
+        // dialog lives inside the Ask section, so showing it from any
+        // other tab renders inside a hidden panel — the click looked
+        // dead (Deepika, 2026-11-01). This dialog sits at body level
+        // and opens from everywhere.
+        openFreeTextDlg();
       });
     }
     fab.addEventListener('click', function () { window.qsOpenRequestForm(); });
