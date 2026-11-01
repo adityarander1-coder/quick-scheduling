@@ -274,11 +274,11 @@ function renderPanel() {
     p.innerHTML = L('Open shifts — tap a marked day') + '<div id="c-open"></div><div id="pk-open"></div>' + noteHtml;
     calendar($('#c-open'), { items: openItems(), onPick: (sel) => { S.open = sel[0] || null; pickedLine($('#pk-open'), S.open ? S.open.label + ' — ' + fmtD(S.open.date) : ''); schedulePreview(); } });
   } else if (action === 'cover') {
+    // Cover goes to the whole team with your job role (Deepika
+    // 2026-11-01) — no person picker; first to pick it up gets it.
     p.innerHTML = L('The shift you need covered') + '<div id="c-my"></div><div id="pk-my"></div>' +
-      '<div style="margin-top:12px">' + L('Who are you asking?') + '<select id="f-person">' + teamOpts('<option value="">Choose a person…</option>') + '</select>' +
-      '<div class="hint">Asking the whole team instead? Post it from Requests in the app.</div></div>' + noteHtml;
+      '<div class="hint" style="margin-top:12px">This goes out to everyone with your job role. The first person to pick it up gets the shift.</div>' + noteHtml;
     calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); schedulePreview(); } });
-    $('#f-person').addEventListener('change', (ev) => { S.coverUserId = ev.target.value; schedulePreview(); });
   } else if (action === 'move_shift') {
     p.innerHTML = L('Your shift') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Move it to') + '<div id="c-new"></div><div id="pk-new"></div></div>' + noteHtml;
@@ -350,7 +350,7 @@ function fields() {
     case 'swap': return withNote({ theirUserId: S.theirUserId, myPicks: (S.myPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })), theirPicks: (S.theirPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })) });
     case 'request_off': return withNote({ dates: S.dates || [] });
     case 'pickup': return withNote({ date: S.open && S.open.date, shiftTypeId: S.open && S.open.shiftTypeId });
-    case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, coverUserId: S.coverUserId });
+    case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId });
     case 'move_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, newDate: S.newDate });
     case 'cancel_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId });
     case 'assign': return withNote({ userId: S.userId, shiftTypeId: S.shiftTypeId, dates: S.dates || [] });

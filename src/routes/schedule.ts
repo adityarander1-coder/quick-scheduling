@@ -5307,6 +5307,7 @@ router.get('/plans', requireRole('owner', 'scheduler'), async (req: Request, res
       `SELECT id, source_from AS "from", source_from_name AS "fromName", source_cc AS "cc",
               source_subject AS "subject",
               plan_summary AS "summary", plan, status,
+              partner_name AS "partnerName", partner_status AS "partnerStatus",
               created_at AS "createdAt", decided_at AS "decidedAt"
        FROM schedule_plans
        WHERE company_id = $1 AND ($2 = 'all' OR status = $2)
@@ -5596,6 +5597,118 @@ router.get('/plans/reject/:token', async (req: Request, res: Response) => {
     res.send('<h1>Rejected</h1><p>The plan was rejected and will not be applied.</p>');
   } catch (err) {
     res.status(500).send('<h1>Error</h1>');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Swap partner stage (migration 072, Deepika 2026-11-01): a swap plan
+// is born 'awaiting_partner'. The partner decides FIRST — via these
+// login-free token links (the token is the auth, like the reject
+// link), or in the app while logged in. Agreeing releases the plan
+// to the approvers (status 'pending' + the normal approver
+// notifications); declining closes it as 'rejected'. No approver
+// path can touch an 'awaiting_partner' plan — they all gate on
+// status = 'pending'.
+// ---------------------------------------------------------------------------
+
+const partnerPage = (title: string, body: string) =>
+  `<!doctype html><html><body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem"><h1>${title}</h1><p>${body}</p></body></html>`;
+
+router.get('/plans/partner-approve/:token', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      'SELECT id, status, plan_summary FROM schedule_plans WHERE partner_approve_token = $1',
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).send(partnerPage('Link expired or invalid', 'This swap link is no longer valid.'));
+    const plan = rows[0];
+    if (plan.status !== 'awaiting_partner') {
+      return res.send(partnerPage('Already decided', 'This swap request has already been answered. No further action needed.'));
+    }
+    const { releasePlanToApprovers } = await import('../util/emailPoller.js');
+    const released = await releasePlanToApprovers(query, plan.id);
+    if (!released) return res.send(partnerPage('Already decided', 'This swap request has already been answered. No further action needed.'));
+    res.send(partnerPage('You agreed to the swap', 'Thanks — the request is now with the schedulers for final approval. The swap only happens once they approve it too.'));
+  } catch (err) {
+    console.error('[schedule] partner approve failed:', err);
+    res.status(500).send(partnerPage('Error', 'Something went wrong. Please try again.'));
+  }
+});
+
+router.get('/plans/partner-reject/:token', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      'SELECT id, status FROM schedule_plans WHERE partner_reject_token = $1',
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).send(partnerPage('Link expired or invalid', 'This swap link is no longer valid.'));
+    const plan = rows[0];
+    if (plan.status !== 'awaiting_partner') {
+      return res.send(partnerPage('Already decided', 'This swap request has already been answered. No further action needed.'));
+    }
+    const { rejectPlanByPartner } = await import('../util/emailPoller.js');
+    const closed = await rejectPlanByPartner(query, plan.id);
+    if (!closed) return res.send(partnerPage('Already decided', 'This swap request has already been answered. No further action needed.'));
+    res.send(partnerPage('Swap declined', 'The request is closed — it did not go to the schedulers.'));
+  } catch (err) {
+    console.error('[schedule] partner reject failed:', err);
+    res.status(500).send(partnerPage('Error', 'Something went wrong. Please try again.'));
+  }
+});
+
+// GET /api/schedule/plans/awaiting-my-agreement — swap plans staged
+// at ME as the partner (any role). The Requests tab shows these so
+// the partner can decide in the app, not only by email.
+router.get('/plans/awaiting-my-agreement', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      `SELECT id, source_from_name AS "fromName", plan_summary AS "summary", plan,
+              created_at AS "createdAt"
+       FROM schedule_plans
+       WHERE company_id = $1 AND partner_user_id = $2 AND status = 'awaiting_partner'
+       ORDER BY created_at DESC LIMIT 20`,
+      [req.session.companyId!, req.session.userId!]
+    );
+    res.json({ plans: rows });
+  } catch (err) {
+    console.error('[schedule] awaiting-my-agreement failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/plans/:id/partner-decision — the logged-in
+// partner agrees or declines. Only the plan's named partner, only
+// while the plan is still staged at them.
+router.post('/plans/:id/partner-decision', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const decision = String((req.body ?? {}).decision || '');
+    if (decision !== 'approve' && decision !== 'reject') {
+      res.status(400).json({ error: 'Decision must be approve or reject.' });
+      return;
+    }
+    const { rows } = await query(
+      'SELECT id, status, partner_user_id FROM schedule_plans WHERE id = $1 AND company_id = $2',
+      [req.params.id, req.session.companyId!]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Plan not found.' }); return; }
+    const plan = rows[0];
+    if (plan.partner_user_id !== req.session.userId) {
+      res.status(403).json({ error: 'This swap is waiting on someone else.' });
+      return;
+    }
+    if (plan.status !== 'awaiting_partner') {
+      res.status(409).json({ error: 'This swap has already been decided.' });
+      return;
+    }
+    const { releasePlanToApprovers, rejectPlanByPartner } = await import('../util/emailPoller.js');
+    const done = decision === 'approve'
+      ? await releasePlanToApprovers(query, plan.id)
+      : await rejectPlanByPartner(query, plan.id);
+    if (!done) { res.status(409).json({ error: 'This swap was just decided by someone else.' }); return; }
+    res.json({ ok: true, decision });
+  } catch (err) {
+    console.error('[schedule] partner decision failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
@@ -6312,30 +6425,29 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
     }
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, their_shift_id, requester_id, target_user_id, status)
-       VALUES ($1, $2, 'swap', $3, $4, $5, $6, 'pending')`,
+      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, their_shift_id, requester_id, target_user_id, status, stage)
+       VALUES ($1, $2, 'swap', $3, $4, $5, $6, 'pending', 'partner')`,
       [id, companyId, myShiftId, theirShiftId, me, theirs.userId]
     );
     res.status(201).json({
       id, requestType: 'swap', myShiftId, theirShiftId,
-      targetUserId: theirs.userId, requesterId: me, status: 'pending',
+      targetUserId: theirs.userId, requesterId: me, status: 'pending', stage: 'partner',
       myShift: { date: mine.date, shiftTypeName: mine.shiftTypeName },
       theirShift: { date: theirs.date, shiftTypeName: theirs.shiftTypeName },
     });
-    // Notify the swap target and the approvers.
+    // Two-stage swap (Deepika 2026-11-01): the request goes to the
+    // swap partner FIRST. The approvers are notified only when the
+    // partner agrees (see the approve handler's partner stage).
     {
       const names = await shiftDisplayNames(companyId, me, mine.shiftTypeId);
       notify({
         companyId, userIds: [theirs.userId], category: 'schedule', type: 'request_to_you',
         title: `${names.personName} wants to swap shifts with you`,
-        body: `${names.personName} offers ${mine.shiftTypeName} on ${fmtDateLong(mine.date)} for your ${theirs.shiftTypeName} on ${fmtDateLong(theirs.date)}.`,
+        body: `${names.personName} offers ${mine.shiftTypeName} on ${fmtDateLong(mine.date)} for your ${theirs.shiftTypeName} on ${fmtDateLong(theirs.date)}. If you agree, it goes to the schedulers for final approval.`,
         link: 'requests', bundleKey: 'request_to_you',
         bundleTitle: '{count} requests are waiting for you',
         excludeUserId: me,
       });
-      notifyShiftRequestApprovers(companyId, { userId: mine.userId, shiftTypeId: mine.shiftTypeId }, me,
-        'A shift request is waiting for a decision',
-        `${names.personName} proposed a swap: ${mine.shiftTypeName} on ${fmtDateLong(mine.date)} ↔ ${theirs.shiftTypeName} on ${fmtDateLong(theirs.date)}.`);
     }
   } catch (err) {
     console.error('[schedule] swap request failed:', err);
@@ -6357,7 +6469,7 @@ router.get('/shift-requests', requireRole('owner', 'scheduler', 'employee'), asy
       `SELECT r.id, r.request_type AS "requestType",
               r.shift_id AS "shiftId", r.their_shift_id AS "theirShiftId",
               r.requester_id AS "requesterId", r.target_user_id AS "targetUserId",
-              r.status, r.created_at AS "createdAt", r.decided_at AS "decidedAt",
+              r.status, r.stage, r.created_at AS "createdAt", r.decided_at AS "decidedAt",
               s.date::text AS "shiftDate", st.name AS "shiftTypeName",
               ru.nickname AS "requesterNickname",
               ru.first_name AS "requesterFirstName", ru.last_name AS "requesterLastName",
@@ -6395,6 +6507,7 @@ router.get('/shift-requests', requireRole('owner', 'scheduler', 'employee'), asy
         targetName: r.targetUserId ? label(r, 'target') : null,
         openToAnyone: r.targetUserId === null,
         status: r.status,
+        stage: r.stage,
         createdAt: r.createdAt,
         decidedAt: r.decidedAt,
         shift: { date: r.shiftDate, shiftTypeName: r.shiftTypeName },
@@ -6425,7 +6538,7 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
     const { rows } = await query(
       `SELECT id, request_type AS "requestType", shift_id AS "shiftId",
               their_shift_id AS "theirShiftId", requester_id AS "requesterId",
-              target_user_id AS "targetUserId", status
+              target_user_id AS "targetUserId", status, stage
        FROM shift_requests WHERE id = $1 AND company_id = $2`,
       [id, companyId]
     );
@@ -6439,6 +6552,49 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
       return;
     }
     const isPrivileged = role === 'owner' || role === 'scheduler';
+    // Two-stage swaps (Deepika 2026-11-01): at the partner stage ONLY
+    // the swap partner can agree — and agreeing does not execute the
+    // swap, it hands the request to the schedulers (stage 'admin'),
+    // whose approval executes it, exactly like other requests.
+    if (r.requestType === 'swap' && r.stage === 'partner') {
+      if (r.targetUserId !== me) {
+        res.status(403).json({ error: 'The swap partner has to agree first — it comes to the schedulers after that.' });
+        return;
+      }
+      const { rowCount } = await query(
+        "UPDATE shift_requests SET stage = 'admin' WHERE id = $1 AND status = 'pending' AND stage = 'partner'",
+        [id]
+      );
+      if (!rowCount) {
+        res.status(409).json({ error: 'This request was just decided by someone else.' });
+        return;
+      }
+      res.json({ ok: true, status: 'pending', stage: 'admin' });
+      const myShift = await manualShift(companyId, r.shiftId);
+      const theirShift = r.theirShiftId ? await manualShift(companyId, r.theirShiftId) : null;
+      if (myShift) {
+        const reqNames = await shiftDisplayNames(companyId, r.requesterId, myShift.shiftTypeId);
+        const partNames = r.targetUserId && theirShift
+          ? await shiftDisplayNames(companyId, r.targetUserId, theirShift.shiftTypeId) : null;
+        notifyShiftRequestApprovers(companyId, { userId: r.requesterId, shiftTypeId: myShift.shiftTypeId }, me,
+          'A shift request is waiting for a decision',
+          `${reqNames.personName} proposed a swap (${myShift.shiftTypeName} on ${fmtDateLong(myShift.date)}${theirShift ? ` ↔ ${theirShift.shiftTypeName} on ${fmtDateLong(theirShift.date)}` : ''}) and ${partNames ? partNames.personName : 'the swap partner'} agreed. Final approval is yours.`);
+      }
+      notify({
+        companyId, userIds: [r.requesterId], category: 'schedule', type: 'request_decided',
+        title: 'Your swap partner agreed',
+        body: myShift
+          ? `Your swap for ${myShift.shiftTypeName} on ${fmtDateLong(myShift.date)} is now with the schedulers for final approval.`
+          : 'Your swap is now with the schedulers for final approval.',
+        link: 'requests', bundleKey: 'request_decided',
+        excludeUserId: me,
+      });
+      return;
+    }
+    if (r.requestType === 'swap' && r.stage === 'admin' && !isPrivileged) {
+      res.status(403).json({ error: 'This swap is with the schedulers now — they give the final approval.' });
+      return;
+    }
     if (!isPrivileged && r.targetUserId !== me && r.targetUserId !== null) {
       res.status(403).json({ error: 'You are not allowed to approve this request.' });
       return;

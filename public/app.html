@@ -5452,40 +5452,54 @@
           };
         }
         function loadPlans() {
-          api('/api/schedule/plans?status=pending').then(function (r) {
-            if (!r.ok) return;
+          // Pending plans the approver can decide, PLUS swap plans
+          // staged at the partner (shown for visibility, no buttons —
+          // the partner answers first; Deepika 2026-11-01).
+          Promise.all([
+            api('/api/schedule/plans?status=pending').catch(function () { return { ok: false }; }),
+            api('/api/schedule/plans?status=awaiting_partner').catch(function () { return { ok: false }; }),
+          ]).then(function (rs) {
             var box = $('plans-list');
+            if (!box) return;
+            var plans = [];
+            rs.forEach(function (r) { if (r && r.ok && r.data && r.data.plans) plans = plans.concat(r.data.plans); });
+            plans.sort(function (a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
             box.innerHTML = '';
-            if (!r.data.plans.length) {
+            if (!plans.length) {
               box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No pending plans.</p>';
               return;
             }
-            r.data.plans.forEach(function (p) {
+            plans.forEach(function (p) {
               var div = document.createElement('div');
               div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
               var when = new Date(p.createdAt).toLocaleString();
               var fromDisplay = p.fromName ? esc(p.fromName) + ' &lt;' + esc(p.from || '') + '&gt;' : esc(p.from || '—');
               var ccDisplay = p.cc ? '<br><span style="color:var(--dim);font-size:0.8rem">Cc: ' + esc(p.cc) + '</span>' : '';
+              var staged = p.status === 'awaiting_partner';
               div.innerHTML = '<strong>' + esc(p.subject || 'Email plan') + '</strong><br>' +
                 '<span style="font-size:0.9rem">' + esc(p.summary) + '</span><br>' +
                 '<span style="color:var(--dim);font-size:0.8rem">From ' + fromDisplay + ' · ' + when + '</span>' + ccDisplay +
-                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
-                '<button type="button" class="btn-sm" data-act="approve">Approve & apply</button>' +
-                '<button type="button" class="btn-secondary btn-sm" data-act="reject">Reject</button></div>';
-              div.querySelector('[data-act="approve"]').addEventListener('click', function () {
-                if (!confirm('Apply this plan to the schedule?')) return;
-                api('/api/schedule/plans/' + p.id + '/approve', { method: 'POST' }).then(function (ar) {
-                  if (ar.ok) { pageSuccess('Plan applied.'); loadPlans(); }
-                  else pageError((ar.data && ar.data.error) || 'Could not apply.');
+                (staged
+                  ? '<div style="margin-top:0.5rem"><span style="font-size:0.85rem;color:var(--dim)">⏳ Waiting for ' + esc(p.partnerName || 'the swap partner') + ' to agree — it comes to you after that.</span></div>'
+                  : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                    '<button type="button" class="btn-sm" data-act="approve">Approve & apply</button>' +
+                    '<button type="button" class="btn-secondary btn-sm" data-act="reject">Reject</button></div>');
+              if (!staged) {
+                div.querySelector('[data-act="approve"]').addEventListener('click', function () {
+                  if (!confirm('Apply this plan to the schedule?')) return;
+                  api('/api/schedule/plans/' + p.id + '/approve', { method: 'POST' }).then(function (ar) {
+                    if (ar.ok) { pageSuccess('Plan applied.'); loadPlans(); }
+                    else pageError((ar.data && ar.data.error) || 'Could not apply.');
+                  });
                 });
-              });
-              div.querySelector('[data-act="reject"]').addEventListener('click', function () {
-                if (!confirm('Reject this plan?')) return;
-                api('/api/schedule/plans/' + p.id + '/reject', { method: 'POST' }).then(function (rr) {
-                  if (rr.ok) { pageSuccess('Plan rejected.'); loadPlans(); }
-                  else pageError('Could not reject.');
+                div.querySelector('[data-act="reject"]').addEventListener('click', function () {
+                  if (!confirm('Reject this plan?')) return;
+                  api('/api/schedule/plans/' + p.id + '/reject', { method: 'POST' }).then(function (rr) {
+                    if (rr.ok) { pageSuccess('Plan rejected.'); loadPlans(); }
+                    else pageError('Could not reject.');
+                  });
                 });
-              });
+              }
               box.appendChild(div);
             });
           }).catch(function () {});
@@ -11562,6 +11576,9 @@
         // Shared shift-requests tab (2026-10-12): all roles use this one panel.
         // Badge = requests needing THIS user's attention (pending + actionable).
         var me = null, requests = [];
+        // Swap plans (from email / the form) staged at me as the
+        // partner — decided here or via the email links.
+        var partnerPlans = [];
         var reqSubTab = 'received'; // 'received' | 'sent' — Deepika's sub-tab labels
         function reqGet(r, keys) {
           for (var i = 0; i < keys.length; i++) if (r && r[keys[i]] != null) return r[keys[i]];
@@ -11574,8 +11591,19 @@
         }
         function reqPending(r) { return String(reqGet(r, ['status'])).toLowerCase() === 'pending'; }
         function reqActionable(r) {
-          if (isPrivileged()) return true;
           var kind = String(reqGet(r, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase();
+          // Two-stage swaps (Deepika 2026-11-01): at the partner
+          // stage ONLY the swap partner can act; at the admin stage
+          // only schedulers/owner give the final approval.
+          if (kind === 'swap' && reqPending(r)) {
+            var stage = String(reqGet(r, ['stage'])).toLowerCase();
+            if (stage === 'partner') {
+              var tid = reqGet(r, ['targetUserId', 'target_user_id']);
+              return !!(me && tid && String(tid) === String(me.id));
+            }
+            if (stage === 'admin') return isPrivileged();
+          }
+          if (isPrivileged()) return true;
           if (kind === 'open_pickup') return false; // schedulers/owner only
           var targetId = reqGet(r, ['targetUserId', 'target_user_id']);
           var openToAnyone = reqGet(r, ['openToAnyone', 'open_to_anyone']);
@@ -11587,7 +11615,7 @@
         function clearMsg() { var a = $('req-error'), b = $('req-success'); if (a) hide(a); if (b) hide(b); }
 
         function updateBadges() {
-          var n = requests.filter(reqNeedsMe).length;
+          var n = requests.filter(reqNeedsMe).length + partnerPlans.length;
           document.querySelectorAll('[data-req-badge]').forEach(function (el) {
             if (n > 0) { el.textContent = '(' + n + ')'; el.hidden = false; }
             else { el.textContent = ''; el.hidden = true; }
@@ -11614,16 +11642,22 @@
             ' <strong>' + esc(date) + (stName ? ' · ' + stName : '') + '</strong>' +
             (kind === 'swap' && theirDate ? ' for <strong>' + esc(theirDate) + (theirSt ? ' · ' + theirSt : '') + '</strong>' : '') +
             (target && kind !== 'swap' ? ' (for ' + esc(target) + ')' : '');
+          var stageNote = '';
+          if (kind === 'swap' && status === 'pending') {
+            var stage = String(reqGet(r, ['stage'])).toLowerCase();
+            if (stage === 'partner') stageNote = '<div style="font-size:0.82rem;color:var(--dim);margin-top:0.25rem">Step 1 of 2 — waiting for ' + (target ? esc(target) : 'the swap partner') + ' to agree. Then it goes to the schedulers.</div>';
+            else if (stage === 'admin') stageNote = '<div style="font-size:0.82rem;color:var(--dim);margin-top:0.25rem">Step 2 of 2 — ' + (target ? esc(target) : 'the swap partner') + ' agreed. Waiting for the schedulers’ final approval.</div>';
+          }
           var actions = '';
           if (status === 'pending') {
             if (mine) actions = '<button type="button" class="btn-secondary" data-req-cancel="' + id + '">Cancel request</button>';
-            else if (actionable) actions = '<button type="button" class="btn" data-req-approve="' + id + '">Approve</button>' +
+            else if (actionable) actions = '<button type="button" class="btn" data-req-approve="' + id + '">' + (kind === 'swap' && String(reqGet(r, ['stage'])).toLowerCase() === 'partner' ? 'Agree to swap' : 'Approve') + '</button>' +
               '<button type="button" class="btn-secondary" data-req-decline="' + id + '">Decline</button>';
             else actions = '<span style="font-size:0.85rem;color:var(--dim)">Waiting on someone else.</span>';
           } else {
             actions = '<span style="font-size:0.85rem;color:var(--dim)">Status: ' + esc(status) + '</span>';
           }
-          return '<div class="req-card"><div style="font-size:0.9rem"><strong>' + esc(title) + '</strong> — ' + desc + '</div>' +
+          return '<div class="req-card"><div style="font-size:0.9rem"><strong>' + esc(title) + '</strong> — ' + desc + stageNote + '</div>' +
             '<div class="req-actions">' + actions + '</div></div>';
         }
 
@@ -11653,12 +11687,23 @@
           document.querySelectorAll('[data-req-subtab]').forEach(function (b) {
             b.classList.toggle('active', b.getAttribute('data-req-subtab') === reqSubTab);
           });
-          if (!requests.length) {
+          if (!requests.length && !partnerPlans.length) {
             if (sub) sub.textContent = 'Pickup and swap requests for you to answer, your outgoing requests, and recent history.';
             box.innerHTML = '<p style="color:var(--dim)">No requests yet. Swap or cover requests will show up here.</p>';
             return;
           }
           var html = '';
+          if (reqSubTab === 'received' && partnerPlans.length) {
+            html += '<h4 style="margin:0 0 0.5rem">Swaps waiting for your agreement (' + partnerPlans.length + ')</h4>' +
+              partnerPlans.map(function (p) {
+                // The plan summary IS the request sentence (who /
+                // which shifts / which dates) — no raw change list.
+                return '<div class="req-card"><div style="font-size:0.9rem"><strong>Swap request</strong> — ' + esc(p.fromName || 'A team member') + ' asked: ' + esc(p.summary || '') +
+                  '<div style="font-size:0.82rem;color:var(--dim);margin-top:0.25rem">Step 1 of 2 — if you agree, it goes to the schedulers for final approval.</div></div>' +
+                  '<div class="req-actions"><button type="button" class="btn" data-partner-approve="' + p.id + '">Agree to swap</button>' +
+                  '<button type="button" class="btn-secondary" data-partner-decline="' + p.id + '">Decline</button></div></div>';
+              }).join('');
+          }
           if (reqSubTab === 'sent') {
             // Sent: requests this user created (swap, cover/pickup, open-slot claims).
             if (sub) sub.textContent = 'Requests you sent — swaps, cover requests, and open-shift pickups.';
@@ -11683,6 +11728,12 @@
             }
           }
           box.innerHTML = html;
+          box.querySelectorAll('[data-partner-approve]').forEach(function (b) {
+            b.addEventListener('click', function () { partnerDecision(b.getAttribute('data-partner-approve'), 'approve'); });
+          });
+          box.querySelectorAll('[data-partner-decline]').forEach(function (b) {
+            b.addEventListener('click', function () { partnerDecision(b.getAttribute('data-partner-decline'), 'reject'); });
+          });
           box.querySelectorAll('[data-req-approve]').forEach(function (b) {
             b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-approve'), 'approve'); });
           });
@@ -11692,6 +11743,16 @@
           box.querySelectorAll('[data-req-cancel]').forEach(function (b) {
             b.addEventListener('click', function () { reqAction(b.getAttribute('data-req-cancel'), 'cancel'); });
           });
+        }
+
+        function partnerDecision(id, decision) {
+          clearMsg();
+          api('/api/schedule/plans/' + id + '/partner-decision', { method: 'POST', body: JSON.stringify({ decision: decision }) }).then(function (r) {
+            if (r.ok) {
+              reqSuccess(decision === 'approve' ? 'You agreed — the swap is now with the schedulers for final approval.' : 'Swap declined — the request is closed.');
+              loadRequestsTab();
+            } else reqError((r.data && r.data.error) || 'Could not record your answer.');
+          }).catch(function () { reqError('Network error.'); });
         }
 
         function reqAction(id, what) {
@@ -11712,9 +11773,14 @@
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
-            return api('/api/schedule/shift-requests').catch(function () { return { ok: false }; });
-          }).then(function (r) {
-            requests = (r && r.ok && r.data.requests) || [];
+            return Promise.all([
+              api('/api/schedule/shift-requests').catch(function () { return { ok: false }; }),
+              api('/api/schedule/plans/awaiting-my-agreement').catch(function () { return { ok: false }; }),
+            ]);
+          }).then(function (rs) {
+            if (!rs) return;
+            requests = (rs[0] && rs[0].ok && rs[0].data.requests) || [];
+            partnerPlans = (rs[1] && rs[1].ok && rs[1].data.plans) || [];
             updateBadges();
             renderRequests();
           }).catch(function () { reqError('Could not load shift requests.'); });

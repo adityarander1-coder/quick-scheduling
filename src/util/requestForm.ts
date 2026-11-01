@@ -231,7 +231,7 @@ export async function buildFormPack(
 // ---------------------------------------------------------------------------
 
 export interface Composed { subject: string; body: string }
-type ResolveResult = { ok: true; composed: Composed; changes: any[] | null } | { ok: false; error: string };
+type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { date: string; shiftTypeId: string; shiftTypeName: string } } | { ok: false; error: string };
 
 function sig(name: string, from: string): string {
   return `\n\n— Sent from the Quick Scheduling app by ${name} (${from})`;
@@ -364,7 +364,7 @@ export async function validateAndCompose(
         // Different types: unassign both + cross-assign (the executor's
         // swap resolves one type per side).
         if (mine.shiftTypeName === theirs.shiftTypeName) {
-          changes.push({ action: 'swap', fromPerson: user.name, toPerson: theirs.personName, fromDate: myPicks[i].date, toDate: theirPicks[i].date, shiftType: mine.shiftTypeName });
+          changes.push({ action: 'swap', fromPerson: user.name, toPerson: theirs.personName, toUserId: String(f.theirUserId), fromDate: myPicks[i].date, toDate: theirPicks[i].date, shiftType: mine.shiftTypeName });
         } else {
           changes.push(
             { action: 'unassign', person: user.name, date: myPicks[i].date, shiftType: mine.shiftTypeName },
@@ -400,15 +400,23 @@ export async function validateAndCompose(
         [{ action: 'assign', person: user.name, date: f.date, shiftType: rows[0].name }]);
     }
     case 'cover': {
+      // Cover is a BROADCAST, not a named-person ask (Deepika
+      // 2026-11-01): it goes to everyone with the requester's job
+      // role and the first to pick it up gets it. processFormRequest
+      // turns this into an open shift_requests row — no plan, no
+      // admin approval; the pickup itself is the decision.
       if (!isDateStr(f.myDate)) return bad('Pick the shift you need covered.');
       const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
       if (!mine) return bad('That shift of yours could not be found — pick it again.');
-      if (!f.coverUserId) return bad("Pick the person you're asking to cover it — or post it to the whole team from Requests in the app.");
-      const coverName = await memberName(q, companyId, String(f.coverUserId));
-      if (!coverName) return bad('That person could not be found.');
-      return good(S('Cover request'),
-        `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. I am asking ${coverName} to cover it.${note}${sig(user.name, fromEmail)}`,
-        [{ action: 'move', fromPerson: user.name, toPerson: coverName, date: f.myDate, shiftType: mine.shiftTypeName }]);
+      return {
+        ok: true,
+        composed: {
+          subject: S('Cover request'),
+          body: `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. It is open to everyone with my job role — the first to pick it up gets it.${note}${sig(user.name, fromEmail)}`,
+        },
+        changes: null,
+        openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName },
+      };
     }
     case 'move_shift': {
       if (!isDateStr(f.myDate) || !isDateStr(f.newDate)) return bad('Pick your shift and the new date.');
@@ -555,6 +563,8 @@ export async function validateAndCompose(
 
 export const OUTCOME_MESSAGES: Record<string, string> = {
   plan_created: "Sent ✓ Your request is with the approvers — you'll get an email when they decide.",
+  swap_with_partner: "Sent ✓ Your swap request went to your swap partner first — if they agree, it goes to the approvers for final approval.",
+  cover_posted: "Posted ✓ Everyone with your job role can see it — the first to pick it up gets the shift.",
   question_answered: 'Sent ✓ The answer is on its way to your email.',
   clarification_sent: 'Sent ✓ One more detail was needed — check your email: you can reply in words, or tap the form button there to finish it.',
   skipped: 'Received ✓',
@@ -606,6 +616,56 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
     return { status: 'failed', outcome: 'invalid', message: resolved.error };
   }
 
+  // Cover (Deepika 2026-11-01): a broadcast open request, NOT a
+  // plan. It goes to everyone with the requester's job role; the
+  // first to pick it up gets the shift (the pickup is the decision —
+  // no admin stage). Only real shift rows can carry a request
+  // (migration 034): rotation-generated entries have no row, and a
+  // scheduler arranges cover for those, like the in-app requests.
+  if (row.action === 'cover' && resolved.openCover) {
+    const oc = resolved.openCover;
+    const { rows: srows } = await q(
+      'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND shift_type_id = $3 AND date = $4 LIMIT 1',
+      [row.company_id, user.id, oc.shiftTypeId, oc.date]);
+    if (!srows.length) {
+      await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
+      return { status: 'failed', outcome: 'invalid', message: 'That shift comes from a rotation, so it cannot be posted for cover — please ask a scheduler to arrange cover for it.' };
+    }
+    const shiftId = srows[0].id;
+    const { rows: existingReq } = await q(
+      "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",
+      [row.company_id, shiftId]);
+    if (existingReq.length) {
+      await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
+      return { status: 'failed', outcome: 'invalid', message: 'There is already an open request for that shift.' };
+    }
+    const { randomUUID } = await import('crypto');
+    await q(
+      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
+       VALUES ($1, $2, 'pickup', $3, $4, NULL, 'pending')`,
+      [randomUUID(), row.company_id, shiftId, user.id]);
+    try {
+      const { notify } = await import('./notify.js');
+      const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [user.id]);
+      const myRole = meRows.length ? meRows[0].job_role_id : null;
+      const { rows: peers } = myRole
+        ? await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
+        : await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
+      if (peers.length) {
+        await notify({
+          companyId: row.company_id, userIds: peers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
+          title: `${user.name} needs cover`,
+          body: `${user.name} needs cover for ${oc.shiftTypeName} on ${oc.date}. First to pick it up gets it.`,
+          link: 'requests', bundleKey: 'request_to_you',
+          bundleTitle: '{count} requests are waiting for you',
+          excludeUserId: user.id,
+        });
+      }
+    } catch { /* non-fatal */ }
+    await q("UPDATE form_requests SET status = 'done', outcome = 'cover_posted', processed_at = now() WHERE id = $1", [row.id]);
+    return { status: 'done', outcome: 'cover_posted' };
+  }
+
   // Free-text question: the one form action that still needs the
   // engine (rules + AI answer it like a hand-written email).
   if (row.action === 'question' || !resolved.changes) {
@@ -654,8 +714,9 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
   const plan = { summary: summary.charAt(0).toUpperCase() + summary.slice(1), changes: resolved.changes, emailType: 'change_request' };
   let footer: { text: string; html: string } | null = null;
   try { footer = await standingFormFooter(q, row.company_id, row.from_email); } catch { /* best-effort */ }
+  let createdPlanId: string | null = null;
   try {
-    await createPendingPlanFromChanges(q, row.company_id, plan, {
+    createdPlanId = await createPendingPlanFromChanges(q, row.company_id, plan, {
       sourceId,
       subject: resolved.composed.subject,
       cc: null,
@@ -665,6 +726,8 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
       fromAddr: null,
       fromLine: `${user.name} <${row.from_email}>`,
       requesterFooter: footer || undefined,
+      // Swaps stage at the partner first (Deepika 2026-11-01).
+      partnerUserId: row.action === 'swap' ? (String(fields.theirUserId || '') || null) : null,
     });
   } catch {
     const status = attempts >= 3 ? 'failed' : 'queued';
@@ -687,8 +750,17 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
     } catch { /* best-effort */ }
   }
 
-  await q("UPDATE form_requests SET status = 'done', outcome = 'plan_created', processed_at = now() WHERE id = $1", [row.id]);
-  return { status: 'done', outcome: 'plan_created' };
+  // A swap plan may have been staged at the partner — the success
+  // message must say where it actually went.
+  let finalOutcome = 'plan_created';
+  if (createdPlanId) {
+    try {
+      const { rows: pst } = await q('SELECT status FROM schedule_plans WHERE id = $1', [createdPlanId]);
+      if (pst.length && pst[0].status === 'awaiting_partner') finalOutcome = 'swap_with_partner';
+    } catch { /* keep the default message */ }
+  }
+  await q('UPDATE form_requests SET status = $1, outcome = $2, processed_at = now() WHERE id = $3', ['done', finalOutcome, row.id]);
+  return { status: 'done', outcome: finalOutcome };
 }
 
 /** Retry queued submissions (a question waiting on the AI, or a rare

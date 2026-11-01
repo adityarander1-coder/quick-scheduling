@@ -584,7 +584,293 @@ export async function processScheduleEmail(
   }
 }
 
-  /**
+  /** One plain-language rendering of a plan's changes — shared by the
+ * requester confirmation, the approver email and the swap-partner
+ * email so everyone reads exactly what will happen. */
+export function renderChangeList(plan: any): string {
+  return (plan.changes || []).map((c: any, i: number) => {
+    const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
+      : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
+      : c.action === 'unassign' ? `Remove ${c.person} from ${c.shiftType ? `${c.shiftType} ` : ''}on ${c.date}`
+      : c.action === 'swap' ? `Swap: ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.fromDate || c.date} ↔ ${c.toPerson}'s shift on ${c.toDate || c.date}`
+      : c.action === 'move' ? `Move ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.date} to ${c.toPerson}`
+      : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
+      : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
+      : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
+      : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
+      : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
+      : `${c.action}`;
+    return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
+  }).join('\n');
+}
+
+/** Resolve the ONE swap partner a plan involves (Deepika 2026-11-01:
+ * a swap goes to the partner first). The caller may hint the partner
+ * (the request form knows exactly who was picked); otherwise the
+ * swap changes' toUserId / toPerson names resolve within the company.
+ * Returns null when the plan has no swap, several partners, or the
+ * partner cannot be resolved — those plans keep the direct-to-
+ * approvers flow. The requester is never their own partner. */
+async function resolveSwapPartner(
+  query: QueryFn, companyId: string, plan: any,
+  requesterId: string | null, hintedPartnerId?: string | null,
+): Promise<{ id: string; name: string | null } | null> {
+  const hasSwap = (plan.changes || []).some((c: any) => c.action === 'swap');
+  if (!hasSwap && !hintedPartnerId) return null;
+  const nameOf = async (id: string): Promise<string | null> => {
+    const { rows } = await query(
+      `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`,
+      [id, companyId]);
+    return rows.length ? (rows[0].name || null) : null;
+  };
+  if (hintedPartnerId) {
+    if (requesterId && hintedPartnerId === requesterId) return null;
+    const name = await nameOf(hintedPartnerId);
+    return name !== null ? { id: hintedPartnerId, name } : null;
+  }
+  const partners = new Map<string, string | null>();
+  for (const c of plan.changes || []) {
+    if (c.action !== 'swap') continue;
+    if (c.toUserId) { partners.set(String(c.toUserId), c.toPerson || null); continue; }
+    if (c.toPerson) {
+      const { rows } = await query(
+        `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+           AND TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) = $2`,
+        [companyId, String(c.toPerson)]);
+      if (rows.length === 1) partners.set(rows[0].id, String(c.toPerson));
+    }
+  }
+  if (partners.size !== 1) return null;
+  const [id, name] = [...partners.entries()][0];
+  if (requesterId && id === requesterId) return null;
+  return { id, name: name || (await nameOf(id)) };
+}
+
+/** Bell + emails telling the APPROVERS a plan is waiting. Runs when a
+ * plan is born 'pending', or later when a swap partner agrees and the
+ * plan is released to them (releasePlanToApprovers). `ctx` carries
+ * everything the mails quote; the release path rebuilds it from the
+ * stored plan row. All steps best-effort. */
+export async function notifyPlanApprovers(
+  query: QueryFn, companyId: string, planId: string, plan: any,
+  ctx: {
+    fromLine: string; cc: string | null; subject: string; body: string;
+    fromAddr?: string | null; outageForwardedAt?: any; changeList: string;
+    approveToken: string; rejectToken: string;
+  },
+): Promise<void> {
+  const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+  // Bell for the approvers: a plan is waiting (Phase 1 notifications).
+  try {
+    const approvers = await planApproverIds(companyId);
+    if (approvers.length) {
+      await notify({
+        companyId, userIds: approvers, category: 'approvals', type: 'plan_waiting',
+        title: 'A schedule plan is waiting for approval',
+        body: plan.summary || `Plan from ${ctx.fromLine}`,
+        link: 'requests', bundleKey: 'plan_waiting',
+        bundleTitle: '{count} schedule plans are waiting for approval',
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  try {
+    const { sendMail } = await import('./mailer.js');
+    const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
+    const ccLine = ctx.cc ? `\nCc: ${ctx.cc}` : '';
+    const outageNote = ctx.outageForwardedAt
+      ? `Note: this email was forwarded to you on ${formatOutageForwardDate(ctx.outageForwardedAt)} during an AI credit outage. If you already handled it manually, please Reject this plan.`
+      : null;
+    const planMail = (approveUrl: string, rejectUrl: string) => ({
+      subject: `New schedule change plan: ${(plan.summary || '').substring(0, 60)}`,
+      text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${ctx.fromLine}${ccLine}\nSubject: ${ctx.subject}\n\nWhat they asked:\n${ctx.body}\n\nChanges to apply:\n${ctx.changeList}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+      html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${ctx.fromLine}${ctx.cc ? `<br>Cc: ${ctx.cc}` : ''}<br>Subject: ${ctx.subject}</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.changeList)}</pre><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+    });
+
+    // One token pair per approver (deduped by email address).
+    const approverIds = await planApproverIds(companyId);
+    const { rows: approverUsers } = approverIds.length ? await query(
+      'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
+      [approverIds, companyId]
+    ) : { rows: [] as any[] };
+    const approverMail: Array<{ email: string; approveUrl: string; rejectUrl: string }> = [];
+    const approverEmails = new Set<string>();
+    for (const u of approverUsers) {
+      const addr = String(u.email).toLowerCase();
+      if (approverEmails.has(addr)) continue;
+      approverEmails.add(addr);
+      const aTok = crypto.randomBytes(32).toString('hex');
+      const rTok = crypto.randomBytes(32).toString('hex');
+      await query(
+        `INSERT INTO plan_approver_tokens (plan_id, user_id, approve_token, reject_token) VALUES ($1, $2, $3, $4)`,
+        [planId, u.id, aTok, rTok]
+      );
+      approverMail.push({
+        email: u.email,
+        approveUrl: `${baseUrl}/api/schedule/plans/approve/${aTok}`,
+        rejectUrl: `${baseUrl}/api/schedule/plans/reject/${rTok}`,
+      });
+    }
+
+    // Per-department recipients from the Email AI notification tab.
+    const toAddrs: string[] = [];
+    const ccAddrs: string[] = [];
+    try {
+      const deptIds = await getPlanDeptIds(companyId, plan);
+      if (deptIds.length) {
+        const { rows: dsettings } = await query(
+          'SELECT department_id, primary_user_id, cc_user_ids, extra_emails FROM department_notification_settings WHERE company_id = $1 AND department_id = ANY($2)',
+          [companyId, deptIds]
+        );
+        const userIds = new Set<string>();
+        dsettings.forEach((s: any) => {
+          if (s.primary_user_id) userIds.add(s.primary_user_id);
+          (s.cc_user_ids || []).forEach((id: string) => userIds.add(id));
+        });
+        if (userIds.size) {
+          const { rows: urows } = await query(
+            'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
+            [[...userIds], companyId]
+          );
+          const emailById: any = {};
+          urows.forEach((u: any) => { emailById[u.id] = u.email; });
+          dsettings.forEach((s: any) => {
+            if (s.primary_user_id && emailById[s.primary_user_id]) toAddrs.push(emailById[s.primary_user_id]);
+            (s.cc_user_ids || []).forEach((id: string) => { if (emailById[id]) ccAddrs.push(emailById[id]); });
+            (s.extra_emails || []).forEach((e: string) => { if (e && e.includes('@')) ccAddrs.push(e); });
+          });
+        }
+      }
+    } catch { /* fall through to default */ }
+    if (!toAddrs.length) toAddrs.push(notifyEmail);
+    if (!toAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase()) && !ccAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase())) {
+      ccAddrs.push(notifyEmail);
+    }
+    const sharedAddrs = [...toAddrs, ...ccAddrs].filter((e) => !approverEmails.has(e.toLowerCase()));
+    for (const m of approverMail) {
+      try {
+        await sendMail({
+          ...(ctx.fromAddr ? { from: ctx.fromAddr } : {}),
+          to: m.email,
+          ...planMail(m.approveUrl, m.rejectUrl),
+        });
+        console.log(`[email-poll] Approver notification sent to ${m.email}`);
+      } catch (mailErr: any) {
+        console.log(`[email-poll] Approver notification to ${m.email} failed: ${mailErr.message}`);
+      }
+    }
+    if (sharedAddrs.length) {
+      const toAddr = sharedAddrs[0];
+      const ccRest = [...new Set(sharedAddrs.slice(1))].filter((e) => e.toLowerCase() !== toAddr.toLowerCase());
+      const approveUrl = `${baseUrl}/api/schedule/plans/approve/${ctx.approveToken}`;
+      const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${ctx.rejectToken}`;
+      await sendMail({
+        ...(ctx.fromAddr ? { from: ctx.fromAddr } : {}),
+        to: toAddr,
+        cc: ccRest.length ? ccRest : undefined,
+        ...planMail(approveUrl, rejectUrl),
+      });
+      console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
+    }
+  } catch (notifyErr: any) {
+    console.log(`[email-poll] Notification failed: ${notifyErr.message}`);
+    // Don't fail the plan creation if notification fails
+  }
+}
+
+/** The swap partner agreed: flip the plan to 'pending' and run the
+ * approver notifications from the stored row. Returns false when the
+ * plan was not waiting for a partner (already decided / raced). */
+export async function releasePlanToApprovers(query: QueryFn, planId: string): Promise<boolean> {
+  const { rows } = await query('SELECT * FROM schedule_plans WHERE id = $1', [planId]);
+  if (!rows.length || rows[0].status !== 'awaiting_partner') return false;
+  const row = rows[0];
+  const { rows: upd } = await query(
+    `UPDATE schedule_plans SET status = 'pending', partner_status = 'approved'
+     WHERE id = $1 AND status = 'awaiting_partner' RETURNING id`,
+    [planId]
+  );
+  if (!upd.length) return false;
+  const plan = typeof row.plan === 'string' ? JSON.parse(row.plan) : row.plan;
+  plan.summary = row.plan_summary;
+  const fromLine = row.source_from_name ? `${row.source_from_name} <${row.source_from}>` : (row.source_from || '');
+  await notifyPlanApprovers(query, row.company_id, planId, plan, {
+    fromLine, cc: row.source_cc, subject: row.source_subject, body: row.source_body,
+    changeList: renderChangeList(plan),
+    approveToken: row.approve_token, rejectToken: row.reject_token,
+  });
+  // Tell the requester the partner agreed — it's with the schedulers now.
+  try {
+    const { rows: urows } = await query(
+      `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+         AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
+      [row.company_id, row.source_from || '']);
+    if (urows.length) {
+      await notify({
+        companyId: row.company_id, userIds: [urows[0].id], category: 'schedule', type: 'swap_partner_agreed',
+        title: `${row.partner_name || 'Your swap partner'} agreed to the swap`,
+        body: 'It is now with the schedulers for final approval.',
+        link: 'requests', bundleKey: 'swap_partner_agreed',
+      });
+    }
+  } catch { /* non-fatal */ }
+  try {
+    const { sendMail } = await import('./mailer.js');
+    const reqEmail = (row.source_from || '').trim();
+    if (reqEmail && reqEmail.includes('@')) {
+      await sendMail({
+        to: reqEmail,
+        subject: `Swap agreed: ${(row.plan_summary || '').substring(0, 60)}`,
+        text: `Hi,\n\n${row.partner_name || 'Your swap partner'} agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.\n\nSummary: ${row.plan_summary}\n\nYou'll get another email with the final decision.\n\n— Quick Scheduling`,
+        html: `<p>Hi,</p><p><strong>${escHtml(row.partner_name || 'Your swap partner')}</strong> agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.</p><p><strong>Summary:</strong> ${escHtml(row.plan_summary || '')}</p><p>You'll get another email with the final decision.</p><p>— Quick Scheduling</p>`,
+      });
+    }
+  } catch { /* non-fatal */ }
+  return true;
+}
+
+/** The swap partner declined: close the plan as rejected and tell the
+ * requester. Returns false when the plan was not waiting. */
+export async function rejectPlanByPartner(query: QueryFn, planId: string): Promise<boolean> {
+  const { rows } = await query('SELECT * FROM schedule_plans WHERE id = $1', [planId]);
+  if (!rows.length || rows[0].status !== 'awaiting_partner') return false;
+  const row = rows[0];
+  const { rows: upd } = await query(
+    `UPDATE schedule_plans SET status = 'rejected', partner_status = 'rejected', decided_at = now()
+     WHERE id = $1 AND status = 'awaiting_partner' RETURNING id`,
+    [planId]
+  );
+  if (!upd.length) return false;
+  try {
+    const { rows: urows } = await query(
+      `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+         AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
+      [row.company_id, row.source_from || '']);
+    if (urows.length) {
+      await notify({
+        companyId: row.company_id, userIds: [urows[0].id], category: 'schedule', type: 'request_decided',
+        title: 'Your swap request was declined',
+        body: `${row.partner_name || 'Your swap partner'} can't do this swap, so the request is closed.`,
+        link: 'requests', bundleKey: 'request_decided',
+      });
+    }
+  } catch { /* non-fatal */ }
+  try {
+    const { sendMail } = await import('./mailer.js');
+    const reqEmail = (row.source_from || '').trim();
+    if (reqEmail && reqEmail.includes('@')) {
+      await sendMail({
+        to: reqEmail,
+        subject: `Swap declined: ${(row.plan_summary || '').substring(0, 60)}`,
+        text: `Hi,\n\n${row.partner_name || 'Your swap partner'} can't do this swap, so the request is closed. It did not go to the schedulers.\n\nSummary: ${row.plan_summary}\n\n— Quick Scheduling`,
+        html: `<p>Hi,</p><p><strong>${escHtml(row.partner_name || 'Your swap partner')}</strong> can't do this swap, so the request is closed. It did not go to the schedulers.</p><p><strong>Summary:</strong> ${escHtml(row.plan_summary || '')}</p><p>— Quick Scheduling</p>`,
+      });
+    }
+  } catch { /* non-fatal */ }
+  return true;
+}
+
+/**
  * Create a pending plan from a fully-built change list and send every
  * notification (bell, requester confirmation, per-approver emails,
  * shared plan email). Shared by the email engine (after the AI parses
@@ -593,6 +879,11 @@ export async function processScheduleEmail(
  * eligibility warn-and-override runs here so both paths behave the
  * same. Returns the new plan id. Throws on insert failure; all mail
  * steps are best-effort.
+ *
+ * Swap staging (Deepika 2026-11-01): a plan that swaps with ONE
+ * partner is born 'awaiting_partner' — only the partner is notified
+ * (bell + token email); approvers hear about it only if the partner
+ * agrees (releasePlanToApprovers).
  */
 export async function createPendingPlanFromChanges(
   query: QueryFn,
@@ -610,6 +901,10 @@ export async function createPendingPlanFromChanges(
     outageForwardedAt?: any;
     /** Extra html/text appended to the requester confirmation email. */
     requesterFooter?: { text: string; html: string };
+    /** The swap partner, when the caller knows exactly who it is
+     * (the request form). Swap staging uses it before name
+     * resolution; see resolveSwapPartner. */
+    partnerUserId?: string | null;
   }
 ): Promise<string> {
     // Warn-and-override: flag every change that puts someone on a shift type
@@ -622,14 +917,36 @@ export async function createPendingPlanFromChanges(
       plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
     }
 
-    // Create pending plan with secure approve/reject tokens
+    // Swap staging (Deepika 2026-11-01): a plan that swaps with ONE
+    // partner is born 'awaiting_partner' — the partner is asked
+    // FIRST, and the approvers are notified only if they agree.
+    let requesterId: string | null = null;
+    try {
+      const { rows: rrows } = await query(
+        `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+           AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
+        [companyId, input.senderAddress || '']);
+      if (rrows.length) requesterId = rrows[0].id;
+    } catch { /* staging just falls back to the direct flow */ }
+    let partner: { id: string; name: string | null } | null = null;
+    try {
+      partner = await resolveSwapPartner(query, companyId, plan, requesterId, input.partnerUserId || null);
+    } catch { partner = null; }
+    const partnerApproveToken = partner ? crypto.randomBytes(32).toString('hex') : null;
+    const partnerRejectToken = partner ? crypto.randomBytes(32).toString('hex') : null;
+
+    // Create the plan with secure approve/reject tokens. A staged
+    // swap plan starts in 'awaiting_partner', never 'pending', so no
+    // approver path (in-app, plan-level link — both gate on
+    // status='pending') can touch it before the partner agrees.
     const approveToken = crypto.randomBytes(32).toString('hex');
     const rejectToken = crypto.randomBytes(32).toString('hex');
     const { rows: insertedPlans } = await query(
       `INSERT INTO schedule_plans
        (company_id, source_email_id, source_subject, source_from, source_from_name, source_cc, source_body,
-        plan_summary, plan, status, approve_token, reject_token, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW())
+        plan_summary, plan, status, approve_token, reject_token, created_at,
+        partner_user_id, partner_name, partner_status, partner_approve_token, partner_reject_token)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13, $14, $15, $16, $17)
        RETURNING id`,
       [
         companyId,
@@ -641,202 +958,105 @@ export async function createPendingPlanFromChanges(
         input.body,
         plan.summary,
         JSON.stringify(plan),
+        partner ? 'awaiting_partner' : 'pending',
         approveToken,
         rejectToken,
+        partner ? partner.id : null,
+        partner ? partner.name : null,
+        partner ? 'pending' : null,
+        partnerApproveToken,
+        partnerRejectToken,
       ]
     );
     const planId = insertedPlans[0].id;
 
     // One plain-language rendering of the changes, shared by the
-    // requester confirmation and the approver email so an approver
-    // sees exactly what will happen (Deepika 2026-11-01: the approver
-    // email "is not clear — swap with who, when, dates are not there").
-    const changeList = (plan.changes || []).map((c: any, i: number) => {
-      const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
-        : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
-        : c.action === 'unassign' ? `Remove ${c.person} from ${c.shiftType ? `${c.shiftType} ` : ''}on ${c.date}`
-        : c.action === 'swap' ? `Swap: ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.fromDate || c.date} ↔ ${c.toPerson}'s shift on ${c.toDate || c.date}`
-        : c.action === 'move' ? `Move ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.date} to ${c.toPerson}`
-        : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
-        : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
-        : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
-        : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
-        : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
-        : `${c.action}`;
-      return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
-    }).join('\n');
+    // requester confirmation, the partner email and the approver
+    // email so everyone sees exactly what will happen (Deepika
+    // 2026-11-01: the approver email "is not clear — swap with who,
+    // when, dates are not there").
+    const changeList = renderChangeList(plan);
 
-    // Bell + instant email for the approvers: a plan is waiting
-    // (Phase 1 notifications). Best-effort.
-    try {
-      const approvers = await planApproverIds(companyId);
-      if (approvers.length) {
-        await notify({
-          companyId, userIds: approvers, category: 'approvals', type: 'plan_waiting',
-          title: 'A schedule plan is waiting for approval',
-          body: plan.summary || `Plan from ${input.fromLine}`,
-          link: 'requests', bundleKey: 'plan_waiting',
-          bundleTitle: '{count} schedule plans are waiting for approval',
-        });
-      }
-    } catch { /* non-fatal */ }
-
-    // Notify requester that their request was received and is awaiting approval.
+    // Notify requester that their request was received. A staged swap
+    // says plainly where it goes first.
     try {
       const { sendMail: sendConfirm } = await import('./mailer.js');
       const reqEmail = input.senderAddress;
       if (reqEmail && reqEmail.includes('@')) {
         // Include original CC recipients so they follow the request too.
         const ccList = String(input.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
+        const nextStep = partner
+          ? `First, ${partner.name || 'your swap partner'} has to agree to the swap. If they agree, it goes to the schedulers for final approval — you'll hear again at each step.`
+          : `Your request has been received and is awaiting approval.`;
         await sendConfirm({
           ...(input.fromAddr ? { from: input.fromAddr } : {}),
           to: reqEmail,
           cc: ccList.length ? ccList : undefined,
           subject: `Request received: ${plan.summary.substring(0, 60)}`,
-          text: `Hi,\n\nYour request has been received and is awaiting approval.\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.${input.requesterFooter ? `\n\n${input.requesterFooter.text}` : ''}\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>Your request has been received and is awaiting approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p>${input.requesterFooter ? input.requesterFooter.html : ''}<p>— Quick Scheduling</p>`,
+          text: `Hi,\n\n${nextStep}\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.${input.requesterFooter ? `\n\n${input.requesterFooter.text}` : ''}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>${escHtml(nextStep)}</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p>${input.requesterFooter ? input.requesterFooter.html : ''}<p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
 
-    // Notify the approvers that a plan is ready for approval.
-    // Per-approver links (Deepika 2026-10-31, migration 068): every
-    // approver (planApproverIds — owners, plus schedulers when the
-    // company notifies them) gets their OWN token pair and their own
-    // email carrying only their links. A per-approver token was sent
-    // to exactly one approver, so the handlers treat it as the auth
-    // (login-free) and record the click under that approver's name.
-    // Everyone else who hears about the plan today — department
-    // notification CCs, extra addresses, the fallback inbox — still
-    // gets the shared plan-level links, exactly as before (approve
-    // needs a logged-in approver with department access; reject free).
-    try {
-      const { sendMail } = await import('./mailer.js');
-      const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
-      const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
-      // input.fromLine comes from the one ingest parse (batch 1) — always
-      // `Name <address>`, never a name nested inside the brackets.
-      const ccLine = input.cc ? `\nCc: ${input.cc}` : '';
-      // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
-      // from plan emails for now — it rendered overlapping the Approve /
-      // Reject buttons in Gmail. The quick-session page itself stays live;
-      // the button comes back once its email layout is fixed. So no token
-      // is generated for the email anymore.
-      // Outage note (forward add-on, 2026-10-31): when a message's
-      // attempt record says the poller forwarded this email to the
-      // approvers during an AI credit outage (a marker written under
-      // that day's forwarding behavior — new failures no longer set
-      // it), they may have handled it by hand before this plan
-      // existed. The note sits at the top of BOTH plan-notification
-      // variants (per-approver and shared — both use planMail) so the
-      // approver can reject instead of double-applying. Only the
-      // poller ever sets opts.outageForwardedAt; webhook plans and
-      // ordinary plans render exactly as before.
-      const outageNote = input.outageForwardedAt
-        ? `Note: this email was forwarded to you on ${formatOutageForwardDate(input.outageForwardedAt)} during an AI credit outage. If you already handled it manually, please Reject this plan.`
-        : null;
-      const planMail = (approveUrl: string, rejectUrl: string) => ({
-        subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-        text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${input.fromLine}${ccLine}\nSubject: ${input.subject}\n\nWhat they asked:\n${input.body}\n\nChanges to apply:\n${changeList}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-        html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${input.fromLine}${input.cc ? `<br>Cc: ${input.cc}` : ''}<br>Subject: ${input.subject}</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(input.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(changeList)}</pre><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
-      });
-
-      // One token pair per approver (deduped by email address — two
-      // accounts sharing one inbox get one personal email).
-      const approverIds = await planApproverIds(companyId);
-      const { rows: approverUsers } = approverIds.length ? await query(
-        'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
-        [approverIds, companyId]
-      ) : { rows: [] as any[] };
-      const approverMail: Array<{ email: string; approveUrl: string; rejectUrl: string }> = [];
-      const approverEmails = new Set<string>();
-      for (const u of approverUsers) {
-        const addr = String(u.email).toLowerCase();
-        if (approverEmails.has(addr)) continue;
-        approverEmails.add(addr);
-        const aTok = crypto.randomBytes(32).toString('hex');
-        const rTok = crypto.randomBytes(32).toString('hex');
-        await query(
-          `INSERT INTO plan_approver_tokens (plan_id, user_id, approve_token, reject_token) VALUES ($1, $2, $3, $4)`,
-          [planId, u.id, aTok, rTok]
-        );
-        approverMail.push({
-          email: u.email,
-          approveUrl: `${baseUrl}/api/schedule/plans/approve/${aTok}`,
-          rejectUrl: `${baseUrl}/api/schedule/plans/reject/${rTok}`,
-        });
-      }
-
-      // Per-department recipients from the Email AI notification tab.
-      // Primary recipients go in To:, CCs go in Cc:, owner is always CC'd.
-      const toAddrs: string[] = [];
-      const ccAddrs: string[] = [];
+    if (partner) {
+      // Staged: the partner is asked FIRST (bell + a token email —
+      // Agree / Decline, no login needed). The approvers hear nothing
+      // yet; if the partner agrees, releasePlanToApprovers runs the
+      // full approver notifications. (Per-approver approver links:
+      // Deepika 2026-10-31, migration 068 — minted inside
+      // notifyPlanApprovers.)
       try {
-        const deptIds = await getPlanDeptIds(companyId, plan);
-        if (deptIds.length) {
-          const { rows: dsettings } = await query(
-            'SELECT department_id, primary_user_id, cc_user_ids, extra_emails FROM department_notification_settings WHERE company_id = $1 AND department_id = ANY($2)',
-            [companyId, deptIds]
-          );
-          const userIds = new Set<string>();
-          dsettings.forEach((s: any) => {
-            if (s.primary_user_id) userIds.add(s.primary_user_id);
-            (s.cc_user_ids || []).forEach((id: string) => userIds.add(id));
-          });
-          if (userIds.size) {
-            const { rows: urows } = await query(
-              'SELECT id, email FROM users WHERE id = ANY($1) AND company_id = $2 AND is_active = true AND email IS NOT NULL',
-              [[...userIds], companyId]
-            );
-            const emailById: any = {};
-            urows.forEach((u: any) => { emailById[u.id] = u.email; });
-            dsettings.forEach((s: any) => {
-              if (s.primary_user_id && emailById[s.primary_user_id]) toAddrs.push(emailById[s.primary_user_id]);
-              (s.cc_user_ids || []).forEach((id: string) => { if (emailById[id]) ccAddrs.push(emailById[id]); });
-              (s.extra_emails || []).forEach((e: string) => { if (e && e.includes('@')) ccAddrs.push(e); });
-            });
-          }
-        }
-      } catch { /* fall through to default */ }
-      // Fallback: owner if no per-department recipients configured.
-      if (!toAddrs.length) toAddrs.push(notifyEmail);
-      // Owner always CC'd for visibility (unless they're already a primary).
-      if (!toAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase()) && !ccAddrs.some(e => e.toLowerCase() === notifyEmail.toLowerCase())) {
-        ccAddrs.push(notifyEmail);
-      }
-      // Approvers come OFF the shared send — each gets the personal
-      // email below instead, so no inbox ever holds another approver's
-      // links. Everyone else keeps the shared plan-level links, with
-      // the same To/CC shape as before (first address To, rest CC).
-      const sharedAddrs = [...toAddrs, ...ccAddrs].filter((e) => !approverEmails.has(e.toLowerCase()));
-      for (const m of approverMail) {
-        try {
+        await notify({
+          companyId, userIds: [partner.id], category: 'schedule', type: 'swap_partner_waiting',
+          title: `${input.senderName || 'A team member'} wants to swap shifts with you`,
+          body: plan.summary,
+          link: 'requests', bundleKey: 'swap_partner_waiting',
+          bundleTitle: '{count} swap requests are waiting for your agreement',
+        });
+      } catch { /* non-fatal */ }
+      try {
+        const { rows: prows } = await query(
+          'SELECT email FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [partner.id, companyId]);
+        const partnerEmail = prows.length ? String(prows[0].email || '') : '';
+        if (partnerEmail && partnerEmail.includes('@')) {
+          const { sendMail } = await import('./mailer.js');
+          const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+          const agreeUrl = `${baseUrl}/api/schedule/plans/partner-approve/${partnerApproveToken}`;
+          const declineUrl = `${baseUrl}/api/schedule/plans/partner-reject/${partnerRejectToken}`;
           await sendMail({
             ...(input.fromAddr ? { from: input.fromAddr } : {}),
-            to: m.email,
-            ...planMail(m.approveUrl, m.rejectUrl),
+            to: partnerEmail,
+            subject: `Swap request: ${plan.summary.substring(0, 60)}`,
+            text: `${input.fromLine} has asked to swap shifts with you.
+
+What they asked:
+${input.body}
+
+Changes to apply:
+${changeList}
+
+If you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.
+
+Agree: ${agreeUrl}
+Decline: ${declineUrl}
+
+— Quick Scheduling`,
+            html: `<p><strong>${escHtml(input.fromLine)}</strong> has asked to swap shifts with you.</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(input.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(changeList)}</pre><p>If you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.</p><p><a href="${agreeUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Agree to the swap</a><a href="${declineUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Decline</a></p><p>— Quick Scheduling</p>`,
           });
-          console.log(`[email-poll] Approver notification sent to ${m.email}`);
-        } catch (mailErr: any) {
-          console.log(`[email-poll] Approver notification to ${m.email} failed: ${mailErr.message}`);
+          console.log(`[email-poll] Swap partner asked first: ${partnerEmail}`);
         }
+      } catch (mailErr: any) {
+        console.log(`[email-poll] Swap partner notification failed: ${mailErr.message}`);
       }
-      if (sharedAddrs.length) {
-        const toAddr = sharedAddrs[0];
-        const ccRest = [...new Set(sharedAddrs.slice(1))].filter((e) => e.toLowerCase() !== toAddr.toLowerCase());
-        const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
-        const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
-        await sendMail({
-          ...(input.fromAddr ? { from: input.fromAddr } : {}),
-          to: toAddr,
-          cc: ccRest.length ? ccRest : undefined,
-          ...planMail(approveUrl, rejectUrl),
-        });
-        console.log(`[email-poll] Notification sent to ${toAddr}${ccRest.length ? ` (cc: ${ccRest.join(', ')})` : ''}`);
-      }
-    } catch (notifyErr: any) {
-      console.log(`[email-poll] Notification failed: ${notifyErr.message}`);
-      // Don't fail the plan creation if notification fails
+    } else {
+      // No single swap partner: the plan goes straight to the
+      // approvers, as before.
+      await notifyPlanApprovers(query, companyId, planId, plan, {
+        fromLine: input.fromLine, cc: input.cc, subject: input.subject, body: input.body,
+        fromAddr: input.fromAddr, outageForwardedAt: input.outageForwardedAt,
+        changeList, approveToken, rejectToken,
+      });
     }
 
   return planId;
