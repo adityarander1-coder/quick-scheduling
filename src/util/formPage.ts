@@ -153,9 +153,10 @@ const ACTIONS = [
   let html = '', lastGrp = null;
   for (const a of ACTIONS) {
     if (!a.show()) continue;
-    if (a.grp !== lastGrp) { html += '<h3 class="grp">' + esc(a.grp) + '</h3><div class="actions" data-grp="' + esc(a.grp) + '">'; lastGrp = a.grp; }
+    if (a.grp !== lastGrp) { html += (lastGrp !== null ? '</div>' : '') + '<h3 class="grp">' + esc(a.grp) + '</h3><div class="actions" data-grp="' + esc(a.grp) + '">'; lastGrp = a.grp; }
     html += '<button type="button" class="act" data-act="' + a.id + '">' + a.label + '</button>';
   }
+  if (lastGrp !== null) html += '</div>';
   host.innerHTML = html;
   host.querySelectorAll('button.act').forEach((btn) => btn.addEventListener('click', () => selectAction(btn.getAttribute('data-act'))));
 })();
