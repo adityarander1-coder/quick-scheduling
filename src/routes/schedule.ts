@@ -21,6 +21,7 @@ import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
+import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
 
 const router = Router();
 
@@ -5158,6 +5159,14 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   if (warned > 0) {
     plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
   }
+  // Schedule-conflict flags (Deepika 2026-11-01): swaps that would
+  // double-book someone or leave them under 8 hours of rest are
+  // flagged here and skipped at execution with the reason reported.
+  const { validatePlanConflicts } = await import('../util/planExecutor.js');
+  const conflicted = await validatePlanConflicts(companyId, plan.changes || []);
+  if (conflicted > 0) {
+    plan.summary = `⛔ Schedule conflict: ${conflicted} swap${conflicted === 1 ? '' : 's'} can't happen as written (overlap or too little rest) — if approved, the conflicting swap${conflicted === 1 ? '' : 's'} will be skipped and reported with the reason. ` + (plan.summary || '');
+  }
   const { rows } = await query(
     `INSERT INTO schedule_plans
      (company_id, source_subject, source_body, plan_summary, plan, status, created_at)
@@ -6341,6 +6350,19 @@ router.post('/shifts/:id/request-pickup', requireRole('owner', 'scheduler', 'emp
         res.status(400).json({ error: 'That shift is already assigned to them.' });
         return;
       }
+      // Conflict guard (Deepika 2026-11-01): never ask someone to
+      // cover a shift they're already working, or one that would
+      // leave them under 8 hours of rest — refuse up front, plainly.
+      const tNames = await shiftDisplayNames(companyId, targetUserId, shift.shiftTypeId);
+      const conflict = await checkShiftConflict(query, companyId, {
+        userId: targetUserId,
+        personName: tNames.personName || 'That team member',
+        proposed: { date: shift.date, shiftTypeId: shift.shiftTypeId, shiftTypeName: shift.shiftTypeName },
+      });
+      if (conflict) {
+        res.status(400).json({ error: `Can't ask them to cover this shift — ${conflict}` });
+        return;
+      }
     }
     const { rows: existing } = await query(
       "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",
@@ -6422,6 +6444,30 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
     if (existing.length) {
       res.status(409).json({ error: 'There is already a pending request on one of those shifts.' });
       return;
+    }
+    // Conflict guard (Deepika 2026-11-01): simulate BOTH people's
+    // post-swap schedules now — a swap that double-books either
+    // person or leaves them under 8 hours of rest is refused here,
+    // with the reason, instead of reaching the schedulers impossible.
+    {
+      const myNames = await shiftDisplayNames(companyId, me, mine.shiftTypeId);
+      const theirNames = await shiftDisplayNames(companyId, theirs.userId, theirs.shiftTypeId);
+      const conflict = await checkSwapConflicts(query, companyId, [
+        {
+          userId: me, personName: myNames.personName || 'You',
+          gives: [{ date: mine.date, shiftTypeId: mine.shiftTypeId, shiftTypeName: mine.shiftTypeName }],
+          receives: [{ date: theirs.date, shiftTypeId: theirs.shiftTypeId, shiftTypeName: theirs.shiftTypeName }],
+        },
+        {
+          userId: theirs.userId, personName: theirNames.personName || 'Your swap partner',
+          gives: [{ date: theirs.date, shiftTypeId: theirs.shiftTypeId, shiftTypeName: theirs.shiftTypeName }],
+          receives: [{ date: mine.date, shiftTypeId: mine.shiftTypeId, shiftTypeName: mine.shiftTypeName }],
+        },
+      ]);
+      if (conflict) {
+        res.status(400).json({ error: `This swap can't be requested — ${conflict}` });
+        return;
+      }
     }
     const id = crypto.randomUUID();
     await query(
@@ -6612,6 +6658,12 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
       return;
     }
 
+    // For a pickup claim, the claimant's display name + the shift's
+    // identity are fetched now so the in-transaction conflict guard
+    // below never needs a second connection for names.
+    const claimShift = r.requestType === 'pickup' ? await manualShift(companyId, r.shiftId) : null;
+    const claimNames = claimShift ? await shiftDisplayNames(companyId, me, claimShift.shiftTypeId) : null;
+
     try {
       await withTransaction(async (tx) => {
         const { rows: locked } = await tx.query(
@@ -6646,6 +6698,20 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
           }
           if (srows[0].userId === me) {
             throw new RequestError(400, 'That shift is already yours.');
+          }
+          // Claim-time conflict guard (Deepika 2026-11-01): checked
+          // again here, against the live schedule, so someone who
+          // has since been put on a clashing shift (or would be left
+          // under 8 hours of rest) cannot pick this shift up.
+          if (claimShift) {
+            const conflict = await checkShiftConflict(tx.query, companyId, {
+              userId: me,
+              personName: claimNames?.personName || 'You',
+              proposed: { date: claimShift.date, shiftTypeId: claimShift.shiftTypeId, shiftTypeName: claimShift.shiftTypeName },
+            });
+            if (conflict) {
+              throw new RequestError(409, `You can't pick up this shift — ${conflict}`);
+            }
           }
           await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [me, lr.shiftId]);
         } else {

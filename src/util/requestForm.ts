@@ -353,12 +353,16 @@ export async function validateAndCompose(
       const changes: any[] = [];
       const lines: string[] = [];
       let partnerName = '';
+      const myTuples: Array<{ date: string; shiftTypeId: string; shiftTypeName: string }> = [];
+      const theirTuples: Array<{ date: string; shiftTypeId: string; shiftTypeName: string }> = [];
       for (let i = 0; i < myPicks.length; i++) {
         const mine = await shiftExists(q, companyId, user.id, myPicks[i].shiftTypeId, myPicks[i].date);
         if (!mine) return bad('One of your picked shifts could not be found — pick it again.');
         const theirs = await shiftExists(q, companyId, String(f.theirUserId), theirPicks[i].shiftTypeId, theirPicks[i].date);
         if (!theirs) return bad("One of their picked shifts could not be found — pick it again.");
         partnerName = theirs.personName;
+        myTuples.push({ date: myPicks[i].date, shiftTypeId: myPicks[i].shiftTypeId, shiftTypeName: mine.shiftTypeName });
+        theirTuples.push({ date: theirPicks[i].date, shiftTypeId: theirPicks[i].shiftTypeId, shiftTypeName: theirs.shiftTypeName });
         lines.push(`my ${mine.shiftTypeName} shift on ${fmtLong(myPicks[i].date)} with ${theirs.personName}'s ${theirs.shiftTypeName} shift on ${fmtLong(theirPicks[i].date)}`);
         // Same type on both sides: the executor's single swap change.
         // Different types: unassign both + cross-assign (the executor's
@@ -373,6 +377,19 @@ export async function validateAndCompose(
             { action: 'assign', person: user.name, date: theirPicks[i].date, shiftType: theirs.shiftTypeName },
           );
         }
+      }
+      // Conflict guard (Deepika 2026-11-01): simulate BOTH people's
+      // post-swap schedules across every pair — a swap that would
+      // double-book either person or leave them under 8 hours of
+      // rest is refused here, with the reason, instead of reaching
+      // the partner/approvers impossible to approve.
+      {
+        const { checkSwapConflicts } = await import('./shiftConflicts.js');
+        const conflict = await checkSwapConflicts(q, companyId, [
+          { userId: user.id, personName: user.name, gives: myTuples, receives: theirTuples },
+          { userId: String(f.theirUserId), personName: partnerName, gives: theirTuples, receives: myTuples },
+        ]);
+        if (conflict) return bad(`This swap can't be requested — ${conflict}`);
       }
       const wording = lines.length === 1
         ? `Please swap ${lines[0]}.`
@@ -419,6 +436,19 @@ export async function validateAndCompose(
           [companyId, targetId]);
         if (!trows.length) return bad('That person could not be found — pick them again.');
         const targetName = `${trows[0].first_name || ''} ${trows[0].last_name || ''}`.trim();
+        // Conflict guard (Deepika 2026-11-01): if the named person
+        // is already working a clashing shift — or this cover would
+        // leave them under 8 hours of rest — refuse now, plainly,
+        // instead of asking someone who cannot take it.
+        {
+          const { checkShiftConflict } = await import('./shiftConflicts.js');
+          const conflict = await checkShiftConflict(q, companyId, {
+            userId: targetId,
+            personName: targetName,
+            proposed: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName },
+          });
+          if (conflict) return bad(`Can't ask ${targetName} to cover this shift — ${conflict}`);
+        }
         return {
           ok: true,
           composed: {
@@ -683,11 +713,28 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
         const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [user.id]);
         const myRole = meRows.length ? meRows[0].job_role_id : null;
         const { rows: peers } = myRole
-          ? await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
-          : await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
-        if (peers.length) {
+          ? await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
+          : await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
+        // Conflict filter (Deepika 2026-11-01): the broadcast does
+        // NOT bell people who are already working a shift that
+        // overlaps this one (manual or rotation-generated), or who
+        // would be left under 8 hours of rest by taking it. They
+        // could never pick it up — the claim-time guard in the
+        // approve handler refuses them anyway — so don't ask.
+        let freePeers = peers;
+        try {
+          const { loadTimedShifts, findShiftConflict, getShiftTypeTimes, makeTimedShift } = await import('./shiftConflicts.js');
+          const typeTimes = await getShiftTypeTimes(q, row.company_id);
+          const windowShifts = await loadTimedShifts(q, row.company_id, addDays(oc.date, -2), addDays(oc.date, 2));
+          freePeers = peers.filter((p: any) => {
+            const proposed = makeTimedShift(typeTimes, p.id, { date: oc.date, shiftTypeId: oc.shiftTypeId, shiftTypeName: oc.shiftTypeName });
+            const existing = windowShifts.filter((s: any) => s.userId === p.id);
+            return !findShiftConflict(p.name || 'Team member', existing, proposed);
+          });
+        } catch { freePeers = peers; /* a filter failure must not silence the broadcast */ }
+        if (freePeers.length) {
           await notify({
-            companyId: row.company_id, userIds: peers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
+            companyId: row.company_id, userIds: freePeers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
             title: `${user.name} needs cover`,
             body: `${user.name} needs cover for ${oc.shiftTypeName} on ${oc.date}. First to pick it up gets it.`,
             link: 'requests', bundleKey: 'request_to_you',

@@ -56,6 +56,15 @@ interface PlanChange {
    * overrides it. Never blocks plan creation or execution.
    */
   warning?: string;
+  /**
+   * Schedule-conflict note attached at plan-creation time (Deepika
+   * 2026-11-01): the swap would double-book someone or leave them
+   * under 8 hours of rest. Unlike the role-rule warning this is NOT
+   * overridable — shown in every plan preview, and at execution the
+   * conflicting swap change is skipped and reported as failed with
+   * this reason.
+   */
+  conflict?: string;
 }
 
 interface ExecuteResult {
@@ -648,6 +657,78 @@ export async function validatePlanEligibility(companyId: string, changes: PlanCh
 }
 
 /**
+ * Simulate one resolved swap and return the conflict reason, or null
+ * when both people's post-swap schedules are safe (no double-booking,
+ * at least 8 hours of rest around every shift). Shared by the
+ * creation-time validation (validatePlanConflicts) and the
+ * execution-time guard in executePlan, so a swap that was fine when
+ * the plan was written but has become impossible since is still
+ * refused at approval time.
+ */
+async function swapConflictReason(
+  companyId: string,
+  fromUser: { id: string; display: string },
+  toUser: { id: string; display: string },
+  fromSide: SwapSide,
+  toSide: SwapSide | null,
+  fromDate: string,
+  toDate: string
+): Promise<string | null> {
+  const { checkSwapConflicts } = await import('./shiftConflicts.js');
+  const typeOf = (side: SwapSide) => side.kind === 'manual'
+    ? { shiftTypeId: side.row.shift_type_id, shiftTypeName: side.row.shift_type_name }
+    : { shiftTypeId: side.shiftTypeId, shiftTypeName: side.shiftTypeName };
+  const fromType = typeOf(fromSide);
+  const toType = toSide ? typeOf(toSide) : null;
+  return checkSwapConflicts(query, companyId, [
+    {
+      userId: fromUser.id, personName: fromUser.display,
+      gives: [{ date: fromDate, ...fromType }],
+      receives: toType ? [{ date: toDate, ...toType }] : [],
+    },
+    {
+      userId: toUser.id, personName: toUser.display,
+      gives: toType ? [{ date: toDate, ...toType }] : [],
+      // Mirrors the executor: with an exchange, toUser covers
+      // fromDate; a move (no shift to exchange) lands on toDate.
+      receives: [{ date: toSide ? fromDate : toDate, ...fromType }],
+    },
+  ]);
+}
+
+/**
+ * Conflict validation for a plan's swap changes (Deepika, 2026-11-01:
+ * the system must catch impossible moves, not leave them for admins
+ * to spot). Attaches a `conflict` note to every swap change whose
+ * post-swap schedules would double-book someone or leave them under
+ * 8 hours of rest, and returns how many changes were flagged.
+ * Best-effort like validatePlanEligibility: an unresolvable swap
+ * skips the note instead of blocking plan creation — but unlike the
+ * role-rule warning, a flagged swap is NOT applied at execution
+ * (executePlan re-checks and fails it with the reason).
+ */
+export async function validatePlanConflicts(companyId: string, changes: PlanChange[]): Promise<number> {
+  let flagged = 0;
+  for (const c of changes || []) {
+    try {
+      if (c.action !== 'swap' || !c.fromPerson || !c.toPerson) continue;
+      const fromUser = await findUser(companyId, c.fromPerson);
+      const toUser = await findUser(companyId, c.toPerson);
+      if (!fromUser || !toUser) continue;
+      const fromDate = c.fromDate || c.date;
+      const toDate = c.toDate || c.date;
+      if (!fromDate || !toDate) continue;
+      const fromSide = await resolveSwapSide(companyId, fromUser.id, fromDate, c.shiftType);
+      if (!fromSide) continue;
+      const toSide = await resolveSwapSide(companyId, toUser.id, toDate, c.shiftType);
+      const reason = await swapConflictReason(companyId, fromUser, toUser, fromSide, toSide, fromDate, toDate);
+      if (reason) { c.conflict = reason; flagged++; }
+    } catch { /* a validation note must never block plan creation */ }
+  }
+  return flagged;
+}
+
+/**
  * Human-readable job-role rules for the planner prompt, restricted types
  * only: e.g. ["Red Team: only PGY1, PGY2, PGY3"]. Empty when nothing is
  * restricted (everyone may take every shift type).
@@ -764,6 +845,13 @@ export async function executePlan(
         const fromRot = fromSide.kind === 'rotation' ? ' (rotation day)' : '';
         const toTypeName = toSide ? (toSide.kind === 'manual' ? toSide.row.shift_type_name : toSide.shiftTypeName) : null;
         const toRot = toSide && toSide.kind === 'rotation' ? ' (rotation day)' : '';
+        // Conflict guard (Deepika 2026-11-01): never apply a swap
+        // that double-books someone or leaves them under 8 hours of
+        // rest — skip it and report it failed with the reason, even
+        // when the plan was approved. Re-checked live here because
+        // the schedule may have changed since the plan was written.
+        const conflictReason = await swapConflictReason(companyId, fromUser, toUser, fromSide, toSide, fromDate, toDate);
+        if (conflictReason) throw new Error(`Swap not applied — ${conflictReason}`);
         const { withTransaction } = await import('../db.js');
         await withTransaction(async (tx) => {
           // Remove fromUser's shift: delete a manual row, or exclude a

@@ -600,7 +600,7 @@ export function renderChangeList(plan: any): string {
       : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : `${c.action}`;
-    return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
+    return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}${c.conflict ? `\n   ⛔ ${c.conflict}` : ''}`;
   }).join('\n');
 }
 
@@ -915,6 +915,16 @@ export async function createPendingPlanFromChanges(
     const warned = await validatePlanEligibility(companyId, plan.changes || []);
     if (warned > 0) {
       plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
+    }
+
+    // Schedule-conflict flags (Deepika 2026-11-01): a swap that would
+    // double-book someone or leave them under 8 hours of rest is
+    // flagged in the preview and SKIPPED at execution with the reason
+    // reported — approving does not override a physical impossibility.
+    const { validatePlanConflicts } = await import('./planExecutor.js');
+    const conflicted = await validatePlanConflicts(companyId, plan.changes || []);
+    if (conflicted > 0) {
+      plan.summary = `⛔ Schedule conflict: ${conflicted} swap${conflicted === 1 ? '' : 's'} can't happen as written (overlap or too little rest) — if approved, the conflicting swap${conflicted === 1 ? '' : 's'} will be skipped and reported with the reason. ` + (plan.summary || '');
     }
 
     // Swap staging (Deepika 2026-11-01): a plan that swaps with ONE
