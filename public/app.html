@@ -997,7 +997,7 @@
     #tb-ask { position: relative; display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
     #tb-ask-input { flex: 1; min-width: 0; border: none; border-radius: 999px; padding: 8px 14px; font-size: 0.9rem; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
     #tb-ask-go { flex: none; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 0.85rem; font-weight: 800; cursor: pointer; }
-    #tb-ask-panel { position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 32px rgba(16,24,40,0.20); padding: 1rem 1.1rem; max-height: 60vh; overflow-y: auto; z-index: 960; }
+    #tb-ask-panel { position: absolute; top: calc(100% + 8px); left: 0; right: 0; background: #fff; color: #17242e; border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 32px rgba(16,24,40,0.20); padding: 1rem 1.1rem; max-height: 60vh; overflow-y: auto; z-index: 960; }
     #tb-ask-panel.hidden { display: none; }
     #tb-ask-panel .tb-q { font-weight: 700; margin-bottom: 0.4rem; }
     #tb-ask-panel .tb-a { line-height: 1.55; white-space: pre-wrap; }
@@ -5088,7 +5088,7 @@
         var chat = $('ask-chat');
         function addMsg(text, who) {
           var div = document.createElement('div');
-          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;' +
+          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;color:#17242e;' +
             (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
           div.textContent = text;
           chat.appendChild(div);
@@ -5097,7 +5097,7 @@
         function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
         function addHtml(html, who) {
           var div = document.createElement('div');
-          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;' +
+          div.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;color:#17242e;' +
             (who === 'you' ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
           div.innerHTML = html;
           chat.appendChild(div);
@@ -5139,7 +5139,7 @@
           if (!q) return;
           addMsg(q, 'you');
           $('ask-input').value = '';
-          var thinking = addHtml('<i style="color:var(--dim)">Thinking…</i>', 'ai');
+          var thinking = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
           api('/api/schedule/ask-task', {
             method: 'POST',
             body: JSON.stringify({ message: q, history: thread }),
@@ -5280,7 +5280,7 @@
             var chat = document.getElementById('ask-chat'); if (!chat) return;
             function bubble(text, you) {
               var d = document.createElement('div');
-              d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;' + (you ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+              d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;color:#17242e;' + (you ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
               d.textContent = text; chat.appendChild(d);
             }
             bubble(q, true); bubble(a, false); chat.scrollTop = chat.scrollHeight;
@@ -5290,7 +5290,7 @@
           var tbThread = [];
           function submit() {
             var q = (input.value || '').trim(); if (!q) return;
-            openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:var(--dim)">Thinking…</i></div>');
+            openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:#5b6b76">Thinking…</i></div>');
             api('/api/schedule/ask-task', { method: 'POST', body: JSON.stringify({ message: q, history: tbThread }) }).then(function (res) {
               var d = res.data || {};
               if (!res.ok) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc((d && d.error) || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
