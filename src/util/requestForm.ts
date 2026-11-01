@@ -650,6 +650,34 @@ async function loadRowUser(q: QueryFn, row: any): Promise<FormUser | null> {
   };
 }
 
+// Who a broadcast cover actually asks (Deepika 2026-11-01): everyone
+// with the requester's job role (the whole active team when they have
+// none), minus people already working a shift that overlaps the one
+// needing cover or who would be left under 8 hours of rest by taking
+// it (rotations count — they could never pick it up; the claim-time
+// guard refuses them anyway). ONE source of truth: the bell at submit
+// time and the form's ⓘ recipient list both come from here.
+export async function coverBroadcastRecipients(
+  q: QueryFn, companyId: string, userId: string,
+  oc: { date: string; shiftTypeId: string; shiftTypeName: string },
+): Promise<Array<{ id: string; name: string }>> {
+  const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [userId]);
+  const myRole = meRows.length ? meRows[0].job_role_id : null;
+  const { rows: peers } = myRole
+    ? await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [companyId, myRole, userId])
+    : await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [companyId, userId]);
+  try {
+    const { loadTimedShifts, findShiftConflict, getShiftTypeTimes, makeTimedShift } = await import('./shiftConflicts.js');
+    const typeTimes = await getShiftTypeTimes(q, companyId);
+    const windowShifts = await loadTimedShifts(q, companyId, addDays(oc.date, -2), addDays(oc.date, 2));
+    return peers.filter((p: any) => {
+      const proposed = makeTimedShift(typeTimes, p.id, { date: oc.date, shiftTypeId: oc.shiftTypeId, shiftTypeName: oc.shiftTypeName });
+      const existing = windowShifts.filter((s: any) => s.userId === p.id);
+      return !findShiftConflict(p.name || 'Team member', existing, proposed);
+    });
+  } catch { return peers; /* a filter failure must not silence the broadcast */ }
+}
+
 export async function processFormRequest(q: QueryFn, row: any): Promise<{ status: string; outcome: string | null; message?: string }> {
   const sourceId = `form:${row.id}`;
   // Never plan twice: a plan already exists for this submission.
@@ -718,28 +746,11 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
           excludeUserId: user.id,
         });
       } else {
-        const { rows: meRows } = await q('SELECT job_role_id FROM users WHERE id = $1', [user.id]);
-        const myRole = meRows.length ? meRows[0].job_role_id : null;
-        const { rows: peers } = myRole
-          ? await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND job_role_id = $2 AND id <> $3', [row.company_id, myRole, user.id])
-          : await q('SELECT id, TRIM(COALESCE(first_name,\'\') || \' \' || COALESCE(last_name,\'\')) AS name FROM users WHERE company_id = $1 AND is_active = true AND id <> $2', [row.company_id, user.id]);
-        // Conflict filter (Deepika 2026-11-01): the broadcast does
-        // NOT bell people who are already working a shift that
-        // overlaps this one (manual or rotation-generated), or who
-        // would be left under 8 hours of rest by taking it. They
-        // could never pick it up — the claim-time guard in the
-        // approve handler refuses them anyway — so don't ask.
-        let freePeers = peers;
-        try {
-          const { loadTimedShifts, findShiftConflict, getShiftTypeTimes, makeTimedShift } = await import('./shiftConflicts.js');
-          const typeTimes = await getShiftTypeTimes(q, row.company_id);
-          const windowShifts = await loadTimedShifts(q, row.company_id, addDays(oc.date, -2), addDays(oc.date, 2));
-          freePeers = peers.filter((p: any) => {
-            const proposed = makeTimedShift(typeTimes, p.id, { date: oc.date, shiftTypeId: oc.shiftTypeId, shiftTypeName: oc.shiftTypeName });
-            const existing = windowShifts.filter((s: any) => s.userId === p.id);
-            return !findShiftConflict(p.name || 'Team member', existing, proposed);
-          });
-        } catch { freePeers = peers; /* a filter failure must not silence the broadcast */ }
+        // Broadcast cover: bell exactly the people
+        // coverBroadcastRecipients returns (same-role peers who are
+        // not already working a clashing shift) — the form's ⓘ list
+        // shows the requester this same list before they send.
+        const freePeers = await coverBroadcastRecipients(q, row.company_id, user.id, oc);
         if (freePeers.length) {
           await notify({
             companyId: row.company_id, userIds: freePeers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',

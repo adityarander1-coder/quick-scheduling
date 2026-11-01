@@ -17,7 +17,7 @@ import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { loadFormLink, getOrCreateStandingFormLink } from '../util/formLinks.js';
 import {
-  buildFormPack, validateAndCompose, processFormRequest, OUTCOME_MESSAGES, FormUser,
+  buildFormPack, validateAndCompose, processFormRequest, coverBroadcastRecipients, OUTCOME_MESSAGES, FormUser,
 } from '../util/requestForm.js';
 import { formPageHtml } from '../util/formPage.js';
 
@@ -115,7 +115,18 @@ router.post('/request-form/:token/preview', async (req: Request, res: Response) 
     const r = await resolveSubmit(req);
     if ((r as any).error) return res.status(400).json({ ok: false, error: (r as any).error });
     if (!r.composed!.ok) return res.json({ ok: false, error: (r.composed as any).error });
-    res.json({ ok: true, subject: (r.composed as any).composed.subject, body: (r.composed as any).composed.body });
+    const out: any = { ok: true, subject: (r.composed as any).composed.subject, body: (r.composed as any).composed.body };
+    // Broadcast cover ⓘ (Deepika 2026-11-01): the exact names the
+    // bell will go to for the picked shift, from the same helper the
+    // submit path uses — never a guess.
+    const oc = (r.composed as any).openCover;
+    if (r.action === 'cover' && oc && !oc.targetUserId) {
+      try {
+        const recips = await coverBroadcastRecipients(query, r.link!.company_id, r.user!.id, oc);
+        out.recipients = recips.map((p) => p.name);
+      } catch { /* the ⓘ list is a nicety; the preview itself must not fail */ }
+    }
+    res.json(out);
   } catch (err: any) {
     console.error('[form] preview failed:', err);
     res.status(500).json({ ok: false, error: 'Could not build the preview.' });

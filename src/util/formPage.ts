@@ -279,16 +279,25 @@ function renderPanel() {
     S.coverMode = 'everyone'; S.coverUserId = '';
     p.innerHTML = L('The shift you need covered') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Who should we ask?') +
-      '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="everyone" checked style="width:auto"> Everyone with my job role — first to pick it up gets it</label>' +
+      '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="everyone" checked style="width:auto"> Everyone with my job role — first to pick it up gets it <button type="button" id="f-cover-info" aria-label="See who this goes to" style="margin-left:auto;flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--teal);background:#fff;color:var(--teal);font-weight:700;font-size:13px;line-height:1;cursor:pointer;padding:0">i</button></label>' +
       '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="person" style="width:auto"> One person</label>' +
-      '<div id="cover-person-wrap" style="display:none;margin-top:8px"><select id="f-coverperson">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div></div>' + noteHtml;
-    calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); schedulePreview(); } });
+      '<div id="cover-person-wrap" style="display:none;margin-top:8px"><select id="f-coverperson">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>' +
+      '<div id="cover-recips" style="display:none;margin-top:8px;background:#f0faf9;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13.5px;line-height:1.5"></div></div>' + noteHtml;
+    calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; S.coverRecipients = null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); renderCoverRecips(); schedulePreview(); } });
     p.querySelectorAll('input[name="f-covermode"]').forEach((r) => r.addEventListener('change', (ev) => {
       S.coverMode = ev.target.value;
       $('#cover-person-wrap').style.display = S.coverMode === 'person' ? '' : 'none';
+      if (S.coverMode === 'person') { const rb = $('#cover-recips'); if (rb) rb.style.display = 'none'; }
       schedulePreview();
     }));
     $('#f-coverperson').addEventListener('change', (ev) => { S.coverUserId = ev.target.value; schedulePreview(); });
+    const infoBtn = $('#f-cover-info'), recipsBox = $('#cover-recips');
+    if (infoBtn && recipsBox) infoBtn.addEventListener('click', (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const open = recipsBox.style.display !== 'none';
+      recipsBox.style.display = open ? 'none' : 'block';
+      if (!open) renderCoverRecips();
+    });
   } else if (action === 'move_shift') {
     p.innerHTML = L('Your shift') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Move it to') + '<div id="c-new"></div><div id="pk-new"></div></div>' + noteHtml;
@@ -382,6 +391,22 @@ function schedulePreview() {
   clearTimeout(pvTimer);
   pvTimer = setTimeout(runPreview, 450);
 }
+// The cover ⓘ list (Deepika 2026-11-01): who the broadcast will
+// actually go to for the picked shift. Names come from the preview
+// response (server-computed with the same helper that bells them).
+function renderCoverRecips() {
+  const box = $('#cover-recips');
+  if (!box || box.style.display === 'none') return;
+  if (!S.my) { box.innerHTML = 'Pick your shift above first — then this shows exactly who will be asked for that shift.'; return; }
+  const names = S.coverRecipients;
+  if (!names) {
+    const key = S.my.date + '|' + S.my.shiftTypeId;
+    if (S.recipFor === key) { box.innerHTML = 'Could not work out the list — the preview above shows the message that will be sent.'; return; }
+    box.innerHTML = 'One moment — working out who would be asked…'; schedulePreview(); return;
+  }
+  if (!names.length) { box.innerHTML = '<strong>Nobody else can be asked for this shift.</strong> Everyone with your job role is already working a shift that clashes with it.'; return; }
+  box.innerHTML = '<strong>This will go to:</strong><br>' + names.map(esc).join('<br>') + '<br><span style="color:var(--dim)">People already working a clashing shift are not asked.</span>';
+}
 async function runPreview() {
   const seq = ++pvSeq;
   const box = $('#preview'), send = $('#send');
@@ -395,9 +420,15 @@ async function runPreview() {
     if (data.ok) {
       box.innerHTML = '<div class="subj">' + esc(data.subject) + '</div><div class="body">' + esc(data.body) + '</div>';
       send.disabled = false;
+      S.coverRecipients = Array.isArray(data.recipients) ? data.recipients : null;
+      S.recipFor = S.my ? (S.my.date + '|' + S.my.shiftTypeId) : null;
+      renderCoverRecips();
     } else {
       box.innerHTML = '<span class="perr">' + esc(data.error || 'Pick what you need above.') + '</span>';
       send.disabled = true;
+      S.coverRecipients = null;
+      S.recipFor = S.my ? (S.my.date + '|' + S.my.shiftTypeId) : null;
+      renderCoverRecips();
     }
   } catch {
     if (seq !== pvSeq) return;

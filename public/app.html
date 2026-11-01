@@ -11276,9 +11276,21 @@
           var s = shiftById(myShiftId);
           if (!s || String(s.id).indexOf('rot-') === 0) return;
           var cands = swapCandidateList(s.date, s.userId);
+          // ⓘ list (Deepika 2026-11-01): who "Anyone available" can
+          // actually reach — everyone not already working that day.
+          var workingIds = {};
+          shifts.forEach(function (sh) { if (sh.date === s.date && sh.userId) workingIds[String(sh.userId)] = true; });
+          var freeNames = members.filter(function (m) { return String(m.id) !== String(s.userId) && !workingIds[String(m.id)]; })
+            .map(function (m) { return displayName(m); });
           msDialog('Ask for cover — ' + fmtLong(s.date),
             '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Who should we ask to pick it up? (Needs scheduler approval.)</p>' +
             '<button type="button" class="sp-item" data-ms-cand=""><span class="sp-ic" style="background:#e8f5e9">📣</span><span><strong>Anyone available</strong></span></button>' +
+            '<button type="button" data-ms-cover-info style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:6px 2px;text-align:left">ⓘ Who can pick this up?</button>' +
+            '<div data-ms-cover-list style="display:none;font-size:13.5px;line-height:1.6;padding:2px 2px 8px">' +
+            (freeNames.length
+              ? '<strong>Can pick this up:</strong><br>' + freeNames.map(function (n) { return esc(n); }).join('<br>') + '<br><span style="color:var(--dim)">People already working that day can\'t take it.</span>'
+              : 'Nobody else is free that day — everyone else is already working.') +
+            '</div>' +
             cands.map(function (c) { return c.html; }).join(''),
             [{ label: 'Cancel' }]);
           $('ms-action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
@@ -11286,6 +11298,11 @@
               var tid = b.getAttribute('data-ms-cand') || null;
               sendPickupRequest(myShiftId, tid);
             });
+          });
+          var infoBtn = $('ms-action-dialog').querySelector('[data-ms-cover-info]');
+          var infoList = $('ms-action-dialog').querySelector('[data-ms-cover-list]');
+          if (infoBtn && infoList) infoBtn.addEventListener('click', function () {
+            infoList.style.display = infoList.style.display === 'none' ? 'block' : 'none';
           });
         }
 
@@ -11838,7 +11855,7 @@
           <div class="msg-channels" id="msg-channels"><div style="padding:1rem;color:var(--dim)">Loading…</div></div>
         </div>
         <div class="msg-thread">
-          <div class="msg-thread-head"><button type="button" id="msg-back" aria-label="Back to conversations">←</button><span id="msg-thread-title">Select a conversation</span></div>
+          <div class="msg-thread-head"><button type="button" id="msg-back" aria-label="Back to conversations">←</button><span id="msg-thread-title">Select a conversation</span><button type="button" id="msg-members-info" class="hidden" aria-label="See who Everyone reaches" style="margin-left:8px;flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--accent);background:transparent;color:var(--accent);font-weight:700;font-size:13px;line-height:1;cursor:pointer;padding:0">i</button></div>
           <div class="msg-list" id="msg-list"></div>
           <div class="msg-input">
             <input type="text" id="msg-text" placeholder="Type a message…" maxlength="2000" autocomplete="off">
@@ -11992,6 +12009,8 @@
         function selectChannel(key, name) {
           activeChannel = key; activeName = name; hasMore = true; oldest = null;
           $('msg-thread-title').textContent = name;
+          var mi = $('msg-members-info');
+          if (mi) mi.classList.toggle('hidden', key !== 'company');
           var wrap = $('msg-wrap');
           if (wrap) wrap.classList.add('chat-open');
           $('msg-list').innerHTML = '';
@@ -12091,6 +12110,35 @@
         $('msg-text').addEventListener('keydown', function (e) {
           if (e.key === 'Enter') send();
         });
+        // Everyone ⓘ (Deepika 2026-11-01): who an "Everyone" message
+        // actually goes to — every active member of the company.
+        function showEveryoneMembers() {
+          api('/api/schedule/messages/members').then(function (r) {
+            if (!r.ok) { pageError('Could not load the member list.'); return; }
+            var mem = (r.data && r.data.members) || [];
+            var m = $('members-modal');
+            if (!m) {
+              var wrap = document.createElement('div');
+              wrap.innerHTML =
+                '<div class="modal-back hidden" id="members-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:1rem">' +
+                '<div style="background:var(--surface);border-radius:14px;padding:1.4rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
+                '<h3 style="margin-top:0" id="members-title">Everyone</h3>' +
+                '<div id="members-list"></div>' +
+                '<div style="display:flex;margin-top:1.2rem"><button type="button" id="members-close" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px">Close</button></div></div></div>';
+              document.body.appendChild(wrap.firstChild);
+              m = $('members-modal');
+              $('members-close').addEventListener('click', function () { m.classList.add('hidden'); });
+              m.addEventListener('click', function (e) { if (e.target === m) m.classList.add('hidden'); });
+            }
+            $('members-title').textContent = 'Everyone — ' + mem.length + (mem.length === 1 ? ' person' : ' people');
+            $('members-list').innerHTML = mem.length ? mem.map(function (p) {
+              return '<div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0.2rem;font-size:0.95rem">' + chAvHtml(p.name) + '<span>' + esc(p.name) + (p.me ? ' (you)' : '') + '</span></div>';
+            }).join('') : '<div style="color:var(--dim)">No members found.</div>';
+            m.classList.remove('hidden');
+          }).catch(function () { pageError('Could not load the member list.'); });
+        }
+        var mmi = $('msg-members-info');
+        if (mmi) mmi.addEventListener('click', showEveryoneMembers);
         function openGroupModal() {
           // Lazy-build the modal once.
           var m = $('group-modal');

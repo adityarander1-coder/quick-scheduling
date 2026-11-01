@@ -3804,6 +3804,24 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
 });
 
 // GET /api/schedule/messages?channel=<key>&before=<iso> — latest 50, paginated.
+// GET /api/schedule/messages/members — everyone in the company
+// channel (Deepika 2026-11-01): the thread header's ⓘ shows exactly
+// who an "Everyone" message goes to.
+router.get('/messages/members', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { rows } = await query(
+      `SELECT id, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+       FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
+      [companyId]);
+    res.json({ members: rows.filter((r: any) => r.name).map((r: any) => ({ id: r.id, name: r.name, me: r.id === me })) });
+  } catch (err: any) {
+    console.error('[messages] members list failed:', err);
+    res.status(500).json({ error: 'Could not load the member list.' });
+  }
+});
+
 router.get('/messages', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
