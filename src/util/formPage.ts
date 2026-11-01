@@ -276,14 +276,14 @@ function renderPanel() {
   } else if (action === 'cover') {
     // Cover offers BOTH ways (Deepika 2026-11-01): one named person,
     // or everyone with your job role (first to pick it up gets it).
-    S.coverMode = 'everyone'; S.coverUserId = '';
-    p.innerHTML = L('The shift you need covered') + '<div id="c-my"></div><div id="pk-my"></div>' +
+    S.coverMode = 'everyone'; S.coverUserId = ''; S.myPicks = [];
+    p.innerHTML = L('The shifts you need covered — tap every day') + '<div id="c-my"></div><div id="pk-my"></div>' +
       '<div style="margin-top:12px">' + L('Who should we ask?') +
       '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="everyone" checked style="width:auto"> Everyone with my job role — first to pick it up gets it <button type="button" id="f-cover-info" aria-label="See who this goes to" style="margin-left:auto;flex:none;width:26px;height:26px;border-radius:50%;border:none;background:#0e7c86;color:#fff;font-weight:800;font-size:15px;line-height:1;cursor:pointer;padding:0;box-shadow:0 1px 5px rgba(14,124,134,.5)">i</button></label>' +
       '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:14.5px"><input type="radio" name="f-covermode" value="person" style="width:auto"> One person</label>' +
       '<div id="cover-person-wrap" style="display:none;margin-top:8px"><select id="f-coverperson">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>' +
       '<div id="cover-recips" style="display:none;margin-top:8px;background:#f0faf9;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13.5px;line-height:1.5"></div></div>' + noteHtml;
-    calendar($('#c-my'), { items: myItems(), onPick: (sel) => { S.my = sel[0] || null; S.coverRecipients = null; pickedLine($('#pk-my'), S.my ? 'Your ' + S.my.label + ' — ' + fmtD(S.my.date) : ''); renderCoverRecips(); schedulePreview(); } });
+    calendar($('#c-my'), { items: myItems(), multi: true, onPick: (sel) => { S.myPicks = sel.slice().sort((x, y) => x.date < y.date ? -1 : 1); S.coverRecipients = null; S.recipientsByDate = null; pickedLine($('#pk-my'), S.myPicks.length ? S.myPicks.map((p2) => p2.label + ' — ' + fmtD(p2.date)).join('; ') : ''); renderCoverRecips(); schedulePreview(); } });
     p.querySelectorAll('input[name="f-covermode"]').forEach((r) => r.addEventListener('change', (ev) => {
       S.coverMode = ev.target.value;
       $('#cover-person-wrap').style.display = S.coverMode === 'person' ? '' : 'none';
@@ -369,7 +369,7 @@ function fields() {
     case 'swap': return withNote({ theirUserId: S.theirUserId, myPicks: (S.myPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })), theirPicks: (S.theirPicks || []).map((x) => ({ date: x.date, shiftTypeId: x.shiftTypeId })) });
     case 'request_off': return withNote({ dates: S.dates || [] });
     case 'pickup': return withNote({ date: S.open && S.open.date, shiftTypeId: S.open && S.open.shiftTypeId });
-    case 'cover': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, coverMode: S.coverMode || 'everyone', coverUserId: S.coverMode === 'person' ? (S.coverUserId || undefined) : undefined });
+    case 'cover': return withNote({ myPicks: S.myPicks || [], coverMode: S.coverMode || 'everyone', coverUserId: S.coverMode === 'person' ? (S.coverUserId || undefined) : undefined });
     case 'move_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId, newDate: S.newDate });
     case 'cancel_shift': return withNote({ myDate: S.my && S.my.date, myShiftTypeId: S.my && S.my.shiftTypeId });
     case 'assign': return withNote({ userId: S.userId, shiftTypeId: S.shiftTypeId, dates: S.dates || [] });
@@ -392,20 +392,20 @@ function schedulePreview() {
   pvTimer = setTimeout(runPreview, 450);
 }
 // The cover ⓘ list (Deepika 2026-11-01): who the broadcast will
-// actually go to for the picked shift. Names come from the preview
+// actually go to for each picked shift. Names come from the preview
 // response (server-computed with the same helper that bells them).
+function coverPickKey() { return (S.myPicks || []).map((p) => p.date + '|' + p.shiftTypeId).join(','); }
 function renderCoverRecips() {
   const box = $('#cover-recips');
   if (!box || box.style.display === 'none') return;
-  if (!S.my) { box.innerHTML = 'Pick your shift above first — then this shows exactly who will be asked for that shift.'; return; }
-  const names = S.coverRecipients;
-  if (!names) {
-    const key = S.my.date + '|' + S.my.shiftTypeId;
-    if (S.recipFor === key) { box.innerHTML = 'Could not work out the list — the preview above shows the message that will be sent.'; return; }
+  if (!S.myPicks || !S.myPicks.length) { box.innerHTML = 'Pick your shifts above first — then this shows exactly who will be asked for each one.'; return; }
+  const byDate = S.recipientsByDate;
+  if (!byDate) {
+    if (S.recipFor === coverPickKey()) { box.innerHTML = 'Could not work out the list — the preview below shows the message that will be sent.'; return; }
     box.innerHTML = 'One moment — working out who would be asked…'; schedulePreview(); return;
   }
-  if (!names.length) { box.innerHTML = '<strong>Nobody else can be asked for this shift.</strong> Everyone with your job role is already working a shift that clashes with it.'; return; }
-  box.innerHTML = '<strong>This will go to:</strong><br>' + names.map(esc).join('<br>') + '<br><span style="color:var(--dim)">People already working a clashing shift are not asked.</span>';
+  const lines = byDate.map((d) => '<strong>' + esc(fmtD(d.date)) + ':</strong> ' + (d.names.length ? d.names.map(esc).join(', ') : 'nobody — everyone with your job role is already working then'));
+  box.innerHTML = '<strong>This will go to:</strong><br>' + lines.join('<br>') + '<br><span style="color:var(--dim)">People already working a clashing shift are not asked.</span>';
 }
 async function runPreview() {
   const seq = ++pvSeq;
@@ -421,13 +421,15 @@ async function runPreview() {
       box.innerHTML = '<div class="subj">' + esc(data.subject) + '</div><div class="body">' + esc(data.body) + '</div>';
       send.disabled = false;
       S.coverRecipients = Array.isArray(data.recipients) ? data.recipients : null;
-      S.recipFor = S.my ? (S.my.date + '|' + S.my.shiftTypeId) : null;
+      S.recipientsByDate = Array.isArray(data.recipientsByDate) ? data.recipientsByDate : null;
+      S.recipFor = action === 'cover' ? coverPickKey() : null;
       renderCoverRecips();
     } else {
       box.innerHTML = '<span class="perr">' + esc(data.error || 'Pick what you need above.') + '</span>';
       send.disabled = true;
       S.coverRecipients = null;
-      S.recipFor = S.my ? (S.my.date + '|' + S.my.shiftTypeId) : null;
+      S.recipientsByDate = null;
+      S.recipFor = action === 'cover' ? coverPickKey() : null;
       renderCoverRecips();
     }
   } catch {

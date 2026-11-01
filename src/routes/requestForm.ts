@@ -120,10 +120,17 @@ router.post('/request-form/:token/preview', async (req: Request, res: Response) 
     // bell will go to for the picked shift, from the same helper the
     // submit path uses — never a guess.
     const oc = (r.composed as any).openCover;
-    if (r.action === 'cover' && oc && !oc.targetUserId) {
+    if (r.action === 'cover' && oc && !oc.targetUserId && Array.isArray(oc.covers)) {
       try {
-        const recips = await coverBroadcastRecipients(query, r.link!.company_id, r.user!.id, oc);
-        out.recipients = recips.map((p) => p.name);
+        const byDate: Array<{ date: string; names: string[] }> = [];
+        const union = new Set<string>();
+        for (const c of oc.covers) {
+          const recips = await coverBroadcastRecipients(query, r.link!.company_id, r.user!.id, c);
+          byDate.push({ date: c.date, names: recips.map((p: any) => p.name) });
+          recips.forEach((p: any) => union.add(p.name));
+        }
+        out.recipients = [...union];
+        out.recipientsByDate = byDate;
       } catch { /* the ⓘ list is a nicety; the preview itself must not fail */ }
     }
     res.json(out);

@@ -231,7 +231,7 @@ export async function buildFormPack(
 // ---------------------------------------------------------------------------
 
 export interface Composed { subject: string; body: string }
-type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { date: string; shiftTypeId: string; shiftTypeName: string; targetUserId?: string | null; targetName?: string } } | { ok: false; error: string };
+type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { covers: Array<{ date: string; shiftTypeId: string; shiftTypeName: string }>; targetUserId?: string | null; targetName?: string } } | { ok: false; error: string };
 
 // Personal voice (Deepika 2026-11-01: "the message needs to be
 // personal looking"): composed requests read like the person wrote
@@ -431,9 +431,32 @@ export async function validateAndCompose(
       // role (first to pick it up gets it). Either way
       // processFormRequest turns it into a shift_requests row — no
       // plan, no admin approval; the pickup itself is the decision.
-      if (!isDateStr(f.myDate)) return bad('Pick the shift you need covered.');
-      const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
-      if (!mine) return bad('That shift of yours could not be found — pick it again.');
+      // Multiple dates (Deepika 2026-11-01 afternoon: "only one
+      // date I can ask for cover" — the picker was single-date):
+      // myPicks carries every picked shift; the legacy single
+      // myDate/myShiftTypeId from older prefilled links still works.
+      let picks: Array<{ date: string; shiftTypeId: string }> = [];
+      if (Array.isArray(f.myPicks) && f.myPicks.length) {
+        picks = f.myPicks.map((p: any) => ({ date: String((p && p.date) || ''), shiftTypeId: String((p && p.shiftTypeId) || '') }));
+      } else if (isDateStr(f.myDate)) {
+        picks = [{ date: f.myDate, shiftTypeId: String(f.myShiftTypeId || '') }];
+      }
+      if (!picks.length || picks.some((p) => !isDateStr(p.date) || !p.shiftTypeId)) return bad('Pick the shift you need covered.');
+      if (picks.length > 14) return bad('That is a lot of shifts to cover at once — please pick at most 14.');
+      {
+        const seen = new Set<string>();
+        picks = picks.filter((p) => { const k = p.date + '|' + p.shiftTypeId; if (seen.has(k)) return false; seen.add(k); return true; })
+          .sort((a, b) => (a.date < b.date ? -1 : 1));
+      }
+      const mines: Array<{ date: string; shiftTypeId: string; shiftTypeName: string }> = [];
+      for (const p of picks) {
+        const mine = await shiftExists(q, companyId, user.id, p.shiftTypeId, p.date);
+        if (!mine) return bad('That shift of yours could not be found — pick it again.');
+        mines.push({ date: p.date, shiftTypeId: p.shiftTypeId, shiftTypeName: mine.shiftTypeName });
+      }
+      const joinAnd = (parts: string[]): string => parts.length <= 1 ? (parts[0] || '') : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+      const coverPhrase = joinAnd(mines.map((m) => `my ${m.shiftTypeName} shift on ${fmtLong(m.date)}`));
+      const itThem = mines.length > 1 ? 'them' : 'it';
       const targetId = f.coverUserId ? String(f.coverUserId) : '';
       const personMode = f.coverMode === 'person' || (!f.coverMode && !!targetId);
       if (personMode) {
@@ -447,34 +470,39 @@ export async function validateAndCompose(
         // Conflict guard (Deepika 2026-11-01): if the named person
         // is already working a clashing shift — or this cover would
         // leave them under 8 hours of rest — refuse now, plainly,
-        // instead of asking someone who cannot take it.
+        // instead of asking someone who cannot take it. Every
+        // picked date is checked.
         {
           const { checkShiftConflict } = await import('./shiftConflicts.js');
-          const conflict = await checkShiftConflict(q, companyId, {
-            userId: targetId,
-            personName: targetName,
-            proposed: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName },
-          });
-          if (conflict) return bad(`Can't ask ${targetName} to cover this shift — ${conflict}`);
+          for (const m of mines) {
+            const conflict = await checkShiftConflict(q, companyId, {
+              userId: targetId,
+              personName: targetName,
+              proposed: { date: m.date, shiftTypeId: m.shiftTypeId, shiftTypeName: m.shiftTypeName },
+            });
+            if (conflict) return bad(mines.length > 1
+              ? `Can't ask ${targetName} to cover the ${fmtLong(m.date)} shift — ${conflict}`
+              : `Can't ask ${targetName} to cover this shift — ${conflict}`);
+          }
         }
         return {
           ok: true,
           composed: {
             subject: S('Cover request'),
-            body: `Hi ${firstNameOf(targetName)} — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. Could you take it for me? Thank you!${note}${sig(user.name, fromEmail)}`,
+            body: `Hi ${firstNameOf(targetName)} — I need cover for ${coverPhrase}. Could you take ${itThem} for me? Thank you!${note}${sig(user.name, fromEmail)}`,
           },
           changes: null,
-          openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: targetId, targetName },
+          openCover: { covers: mines, targetUserId: targetId, targetName },
         };
       }
       return {
         ok: true,
         composed: {
           subject: S('Cover request'),
-          body: `Hi everyone — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. Can someone please cover it for me? Thank you!${note}${sig(user.name, fromEmail)}`,
+          body: `Hi everyone — I need cover for ${coverPhrase}. Can someone please cover ${itThem} for me? Thank you!${note}${sig(user.name, fromEmail)}`,
         },
         changes: null,
-        openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: null },
+        openCover: { covers: mines, targetUserId: null },
       };
     }
     case 'move_shift': {
@@ -713,53 +741,74 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
   // scheduler arranges cover for those, like the in-app requests.
   if (row.action === 'cover' && resolved.openCover) {
     const oc = resolved.openCover;
-    const { rows: srows } = await q(
-      'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND shift_type_id = $3 AND date = $4 LIMIT 1',
-      [row.company_id, user.id, oc.shiftTypeId, oc.date]);
-    if (!srows.length) {
-      await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
-      return { status: 'failed', outcome: 'invalid', message: 'That shift comes from a rotation, so it cannot be posted for cover — please ask a scheduler to arrange cover for it.' };
-    }
-    const shiftId = srows[0].id;
-    const { rows: existingReq } = await q(
-      "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",
-      [row.company_id, shiftId]);
-    if (existingReq.length) {
-      await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
-      return { status: 'failed', outcome: 'invalid', message: 'There is already an open request for that shift.' };
-    }
+    const multi = oc.covers.length > 1;
     const { randomUUID } = await import('crypto');
-    await q(
-      `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
-       VALUES ($1, $2, 'pickup', $3, $4, $5, 'pending')`,
-      [randomUUID(), row.company_id, shiftId, user.id, oc.targetUserId || null]);
+    // Pre-check EVERY picked shift before posting any of them:
+    // each needs a real shift row (rotation-generated entries have
+    // none — a scheduler arranges cover for those) and no other
+    // open request. Nothing posts unless all of them can.
+    const shiftIds: string[] = [];
+    for (const c of oc.covers) {
+      const { rows: srows } = await q(
+        'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND shift_type_id = $3 AND date = $4 LIMIT 1',
+        [row.company_id, user.id, c.shiftTypeId, c.date]);
+      if (!srows.length) {
+        await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
+        return { status: 'failed', outcome: 'invalid', message: multi
+          ? `Your ${c.shiftTypeName} shift on ${c.date} comes from a rotation, so it cannot be posted for cover — nothing was posted. Please ask a scheduler to arrange cover for it.`
+          : 'That shift comes from a rotation, so it cannot be posted for cover — please ask a scheduler to arrange cover for it.' };
+      }
+      const { rows: existingReq } = await q(
+        "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",
+        [row.company_id, srows[0].id]);
+      if (existingReq.length) {
+        await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
+        return { status: 'failed', outcome: 'invalid', message: multi
+          ? `There is already an open request for your ${c.shiftTypeName} shift on ${c.date} — nothing was posted.`
+          : 'There is already an open request for that shift.' };
+      }
+      shiftIds.push(srows[0].id);
+    }
+    for (const sid of shiftIds) {
+      await q(
+        `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
+         VALUES ($1, $2, 'pickup', $3, $4, $5, 'pending')`,
+        [randomUUID(), row.company_id, sid, user.id, oc.targetUserId || null]);
+    }
     try {
       const { notify } = await import('./notify.js');
       if (oc.targetUserId) {
-        // One-person cover: only the named person is asked.
+        // One-person cover: only the named person is asked, once,
+        // for every picked shift.
+        const what = oc.covers.map((c) => `${c.shiftTypeName} on ${c.date}`).join(', ');
         await notify({
           companyId: row.company_id, userIds: [oc.targetUserId], category: 'schedule', type: 'request_to_you',
           title: `${user.name} asked you to cover a shift`,
-          body: `${user.name} asked you to cover their ${oc.shiftTypeName} shift on ${oc.date}. If you pick it up, the shift is yours.`,
+          body: multi
+            ? `${user.name} asked you to cover their shifts: ${what}. If you pick one up, that shift is yours.`
+            : `${user.name} asked you to cover their ${oc.covers[0].shiftTypeName} shift on ${oc.covers[0].date}. If you pick it up, the shift is yours.`,
           link: 'requests', bundleKey: 'request_to_you',
           bundleTitle: '{count} requests are waiting for you',
           excludeUserId: user.id,
         });
       } else {
-        // Broadcast cover: bell exactly the people
-        // coverBroadcastRecipients returns (same-role peers who are
-        // not already working a clashing shift) — the form's ⓘ list
-        // shows the requester this same list before they send.
-        const freePeers = await coverBroadcastRecipients(q, row.company_id, user.id, oc);
-        if (freePeers.length) {
-          await notify({
-            companyId: row.company_id, userIds: freePeers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
-            title: `${user.name} needs cover`,
-            body: `${user.name} needs cover for ${oc.shiftTypeName} on ${oc.date}. First to pick it up gets it.`,
-            link: 'requests', bundleKey: 'request_to_you',
-            bundleTitle: '{count} requests are waiting for you',
-            excludeUserId: user.id,
-          });
+        // Broadcast cover: one bell per date, each going to exactly
+        // the people coverBroadcastRecipients returns for THAT date
+        // (same-role peers not already working a clashing shift) —
+        // the form's ⓘ list shows the same per-date lists. The
+        // shared bundle key folds several dates into one bell.
+        for (const c of oc.covers) {
+          const freePeers = await coverBroadcastRecipients(q, row.company_id, user.id, c);
+          if (freePeers.length) {
+            await notify({
+              companyId: row.company_id, userIds: freePeers.map((p: any) => p.id), category: 'schedule', type: 'request_to_you',
+              title: `${user.name} needs cover`,
+              body: `${user.name} needs cover for ${c.shiftTypeName} on ${c.date}. First to pick it up gets it.`,
+              link: 'requests', bundleKey: 'request_to_you',
+              bundleTitle: '{count} requests are waiting for you',
+              excludeUserId: user.id,
+            });
+          }
         }
       }
     } catch { /* non-fatal */ }
