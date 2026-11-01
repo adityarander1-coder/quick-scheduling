@@ -2104,15 +2104,21 @@
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
           var cBtn = '';
           var editable = s.userId && shiftEditable(s);
+          // Highlight button (🎨): highlighting is personal and changes
+          // nothing for anyone else, so it is offered on every person's
+          // box — editable or view-only (Deepika, 2026-10-31).
+          var hlBtn = '';
+          if (s.userId) {
+            var hlBg = highlightColorFor(s.userId) || '#fff';
+            hlBtn = '<button type="button" class="shift-hl-btn" onclick="event.stopPropagation();window.qsHighlightShift(\'' + s.userId + '\')"' +
+              ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
+              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:11px;line-height:1">🎨</button>';
+          }
           if (editable) {
             cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
-            // Highlight button (cycles through colors)
-            var hlBg = highlightColorFor(s.userId) || '#fff';
-            cBtn += '<button type="button" class="shift-hl-btn" onclick="event.stopPropagation();window.qsHighlightShift(\'' + s.userId + '\')"' +
-              ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
-              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:11px;line-height:1">🎨</button>';
+            cBtn += hlBtn;
             // Replace and delete buttons (show on all shifts)
             cBtn += '<button type="button" class="shift-replace-btn" onclick="event.stopPropagation();window.qsReplaceShift(\'' + s.id + '\')"' +
               ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
@@ -2120,9 +2126,11 @@
             cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\')"' +
               ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
               ' style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;line-height:1;color:#bd3d4a">🗑️</button>';
-          } else if (sched.canEdit && s.userId) {
-            // Viewable but not in the active department: read-only with a hint.
-            cBtn = '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>';
+          } else if (s.userId) {
+            // Not editable in the current view (another department, or
+            // view-only access): the paint button stays available, with
+            // the lock hint when the viewer edits other departments.
+            cBtn = hlBtn + (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>' : '');
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
