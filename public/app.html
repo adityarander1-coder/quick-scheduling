@@ -11285,7 +11285,7 @@
           msDialog('Ask for cover — ' + fmtLong(s.date),
             '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Who should we ask to pick it up? (Needs scheduler approval.)</p>' +
             '<button type="button" class="sp-item" data-ms-cand=""><span class="sp-ic" style="background:#e8f5e9">📣</span><span><strong>Anyone available</strong></span></button>' +
-            '<button type="button" data-ms-cover-info style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:6px 2px;text-align:left">ⓘ Who can pick this up?</button>' +
+            '<button type="button" data-ms-cover-info style="background:#e6f4f6;border:1.5px solid var(--accent);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;padding:6px 12px;border-radius:999px;text-align:left;margin:2px 0">ⓘ Who can pick this up?</button>' +
             '<div data-ms-cover-list style="display:none;font-size:13.5px;line-height:1.6;padding:2px 2px 8px">' +
             (freeNames.length
               ? '<strong>Can pick this up:</strong><br>' + freeNames.map(function (n) { return esc(n); }).join('<br>') + '<br><span style="color:var(--dim)">People already working that day can\'t take it.</span>'
@@ -11855,7 +11855,7 @@
           <div class="msg-channels" id="msg-channels"><div style="padding:1rem;color:var(--dim)">Loading…</div></div>
         </div>
         <div class="msg-thread">
-          <div class="msg-thread-head"><button type="button" id="msg-back" aria-label="Back to conversations">←</button><span id="msg-thread-title">Select a conversation</span><button type="button" id="msg-members-info" class="hidden" aria-label="See who Everyone reaches" style="margin-left:8px;flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--accent);background:transparent;color:var(--accent);font-weight:700;font-size:13px;line-height:1;cursor:pointer;padding:0">i</button></div>
+          <div class="msg-thread-head"><button type="button" id="msg-back" aria-label="Back to conversations">←</button><span id="msg-thread-title">Select a conversation</span><button type="button" id="msg-members-info" class="hidden" aria-label="See who Everyone reaches" style="margin-left:8px;flex:none;width:26px;height:26px;border-radius:50%;border:none;background:var(--accent);color:#fff;font-weight:800;font-size:15px;line-height:1;cursor:pointer;padding:0;box-shadow:0 1px 5px rgba(14,124,134,.5)">i</button></div>
           <div class="msg-list" id="msg-list"></div>
           <div class="msg-input">
             <input type="text" id="msg-text" placeholder="Type a message…" maxlength="2000" autocomplete="off">
