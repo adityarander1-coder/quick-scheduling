@@ -233,8 +233,16 @@ export async function buildFormPack(
 export interface Composed { subject: string; body: string }
 type ResolveResult = { ok: true; composed: Composed; changes: any[] | null; openCover?: { date: string; shiftTypeId: string; shiftTypeName: string; targetUserId?: string | null; targetName?: string } } | { ok: false; error: string };
 
-function sig(name: string, from: string): string {
-  return `\n\n— Sent from the Quick Scheduling app by ${name} (${from})`;
+// Personal voice (Deepika 2026-11-01: "the message needs to be
+// personal looking"): composed requests read like the person wrote
+// them — first person, a plain greeting, and a sign-off with just
+// their first name. No "Sent from the app by … (email)" line: that
+// is what made it look machine-made.
+function firstNameOf(full: string): string {
+  return String(full || '').trim().split(/\s+/)[0] || '';
+}
+function sig(name: string, _from: string): string {
+  return `\n\n— ${firstNameOf(name)}`;
 }
 function noteLine(note: any): string {
   const n = String(note || '').trim().slice(0, 500);
@@ -363,7 +371,7 @@ export async function validateAndCompose(
         partnerName = theirs.personName;
         myTuples.push({ date: myPicks[i].date, shiftTypeId: myPicks[i].shiftTypeId, shiftTypeName: mine.shiftTypeName });
         theirTuples.push({ date: theirPicks[i].date, shiftTypeId: theirPicks[i].shiftTypeId, shiftTypeName: theirs.shiftTypeName });
-        lines.push(`my ${mine.shiftTypeName} shift on ${fmtLong(myPicks[i].date)} with ${theirs.personName}'s ${theirs.shiftTypeName} shift on ${fmtLong(theirPicks[i].date)}`);
+        lines.push(`my ${mine.shiftTypeName} shift on ${fmtLong(myPicks[i].date)} for your ${theirs.shiftTypeName} shift on ${fmtLong(theirPicks[i].date)}`);
         // Same type on both sides: the executor's single swap change.
         // Different types: unassign both + cross-assign (the executor's
         // swap resolves one type per side).
@@ -392,8 +400,8 @@ export async function validateAndCompose(
         if (conflict) return bad(`This swap can't be requested — ${conflict}`);
       }
       const wording = lines.length === 1
-        ? `Please swap ${lines[0]}.`
-        : `Please swap these shifts with ${partnerName}: ${lines.join('; ')}.`;
+        ? `Hi ${firstNameOf(partnerName)} — could we swap shifts? I'd give you ${lines[0]}. Thank you!`
+        : `Hi ${firstNameOf(partnerName)} — could we swap these shifts? I'd give you ${lines.join("; and I'd give you ")}. Thank you!`;
       return good(S('Swap request'), `${wording}${note}${sig(user.name, fromEmail)}`, changes);
     }
     case 'request_off': {
@@ -403,9 +411,9 @@ export async function validateAndCompose(
       const mine = (await getShiftsForRange(q, companyId, dates[0], dates[dates.length - 1]))
         .filter((s) => s.userId === user.id && dates.includes(s.date));
       if (!mine.length) return bad("You're not scheduled on any of those dates, so there's nothing to take off. If a schedule isn't published yet, ask again once it is.");
-      const sched = ` I am scheduled for ${mine.map((s) => `${s.shiftTypeName} on ${fmtLong(s.date)}`).join('; ')} — please take me off those shifts.`;
+      const sched = ` I'm scheduled for ${mine.map((s) => `${s.shiftTypeName} on ${fmtLong(s.date)}`).join('; ')} then.`;
       return good(S('Request off'),
-        `Please give me off on ${dates.map(fmtLong).join('; ')}.${sched}${note}${sig(user.name, fromEmail)}`,
+        `Hi — I'd like to take ${dates.map(fmtLong).join('; ')} off.${sched} Thank you!${note}${sig(user.name, fromEmail)}`,
         mine.map((s) => ({ action: 'unassign', person: user.name, date: s.date, shiftType: s.shiftTypeName })));
     }
     case 'pickup': {
@@ -413,7 +421,7 @@ export async function validateAndCompose(
       const { rows } = await q('SELECT name FROM shift_types WHERE company_id = $1 AND id = $2', [companyId, String(f.shiftTypeId)]);
       if (!rows.length) return bad('That shift type could not be found.');
       return good(S('Pick up shift'),
-        `I would like to pick up the open ${rows[0].name} shift on ${fmtLong(f.date)}.${note}${sig(user.name, fromEmail)}`,
+        `Hi — I'd like to pick up the open ${rows[0].name} shift on ${fmtLong(f.date)}. Thank you!${note}${sig(user.name, fromEmail)}`,
         [{ action: 'assign', person: user.name, date: f.date, shiftType: rows[0].name }]);
     }
     case 'cover': {
@@ -453,7 +461,7 @@ export async function validateAndCompose(
           ok: true,
           composed: {
             subject: S('Cover request'),
-            body: `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. I am asking ${targetName} to cover it.${note}${sig(user.name, fromEmail)}`,
+            body: `Hi ${firstNameOf(targetName)} — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. Could you take it for me? Thank you!${note}${sig(user.name, fromEmail)}`,
           },
           changes: null,
           openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: targetId, targetName },
@@ -463,7 +471,7 @@ export async function validateAndCompose(
         ok: true,
         composed: {
           subject: S('Cover request'),
-          body: `Please find cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. It is open to everyone with my job role — the first to pick it up gets it.${note}${sig(user.name, fromEmail)}`,
+          body: `Hi everyone — I need cover for my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. It's open to everyone with my job role, so whoever can take it first, it's yours. Thank you!${note}${sig(user.name, fromEmail)}`,
         },
         changes: null,
         openCover: { date: f.myDate, shiftTypeId: String(f.myShiftTypeId), shiftTypeName: mine.shiftTypeName, targetUserId: null },
@@ -475,7 +483,7 @@ export async function validateAndCompose(
       const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
       if (!mine) return bad('That shift of yours could not be found — pick it again.');
       return good(S('Move shift'),
-        `Please move my ${mine.shiftTypeName} shift from ${fmtLong(f.myDate)} to ${fmtLong(f.newDate)}.${note}${sig(user.name, fromEmail)}`,
+        `Hi — could I move my ${mine.shiftTypeName} shift from ${fmtLong(f.myDate)} to ${fmtLong(f.newDate)}? Thank you!${note}${sig(user.name, fromEmail)}`,
         [
           { action: 'unassign', person: user.name, date: f.myDate, shiftType: mine.shiftTypeName },
           { action: 'assign', person: user.name, date: f.newDate, shiftType: mine.shiftTypeName },
@@ -486,7 +494,7 @@ export async function validateAndCompose(
       const mine = await shiftExists(q, companyId, user.id, String(f.myShiftTypeId || ''), f.myDate);
       if (!mine) return bad('That shift of yours could not be found — pick it again.');
       return good(S('Cancel shift'),
-        `Please cancel my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}.${note}${sig(user.name, fromEmail)}`,
+        `Hi — I need to cancel my ${mine.shiftTypeName} shift on ${fmtLong(f.myDate)}. Thank you!${note}${sig(user.name, fromEmail)}`,
         [{ action: 'unassign', person: user.name, date: f.myDate, shiftType: mine.shiftTypeName }]);
     }
     case 'assign': {
@@ -499,7 +507,7 @@ export async function validateAndCompose(
       const { rows } = await q('SELECT name FROM shift_types WHERE company_id = $1 AND id = $2', [companyId, String(f.shiftTypeId || '')]);
       if (!rows.length) return bad('Pick a shift type.');
       return good(S('Assign shift'),
-        `Please assign ${who} to ${rows[0].name} on ${dates.map(fmtLong).join('; ')}.${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you assign ${who} to ${rows[0].name} on ${dates.map(fmtLong).join('; ')}? Thank you!${note}${sig(user.name, fromEmail)}`,
         dates.map((d) => ({ action: 'assign', person: who, date: d, shiftType: rows[0].name })));
     }
     case 'session_add': {
@@ -513,9 +521,9 @@ export async function validateAndCompose(
       if (f.presenterId) {
         presenterName = await memberName(q, companyId, String(f.presenterId));
         if (!presenterName) return bad('That presenter could not be found.');
-        extra += ` Presenter: ${presenterName}.`;
+        extra += ` ${presenterName} will be presenting.`;
       }
-      if (f.room) extra += ` Room: ${String(f.room).trim().slice(0, 60)}.`;
+      if (f.room) extra += ` It will be in ${String(f.room).trim().slice(0, 60)}.`;
       if (f.weekly) extra += ' It repeats weekly.';
       const times = f.startTime ? `, ${String(f.startTime).slice(0, 5)}${f.endTime ? '–' + String(f.endTime).slice(0, 5) : ''}` : '';
       const change: any = { action: 'add_session', dashboard: dash[0].name, title, date: f.date };
@@ -525,7 +533,7 @@ export async function validateAndCompose(
       if (f.room) change.location = String(f.room).trim().slice(0, 60);
       if (f.weekly) { change.recurRule = 'weekly'; change.recurInterval = 1; }
       return good(S('Add session'),
-        `Please add a session "${title}" on the ${dash[0].name} calendar on ${fmtLong(f.date)}${times}.${extra}${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you add a session "${title}" on the ${dash[0].name} calendar on ${fmtLong(f.date)}${times}?${extra} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_move': {
@@ -538,7 +546,7 @@ export async function validateAndCompose(
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
       if (f.newStartTime) change.startTime = String(f.newStartTime).slice(0, 5);
       return good(S('Move session'),
-        `Please move the ${s.title} session on the ${s.dash_name} calendar from ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} to ${fmtLong(f.newDate)}${newTime}.${scope}${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you move the ${s.title} session on the ${s.dash_name} calendar from ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} to ${fmtLong(f.newDate)}${newTime}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_cancel': {
@@ -548,7 +556,7 @@ export async function validateAndCompose(
       const change: any = { action: 'cancel_session', dashboard: s.dash_name, sessionTitle: s.title, date: s.date };
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
       return good(S('Cancel session'),
-        `Please cancel the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)}.${scope}${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you cancel the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_presenter': {
@@ -560,7 +568,7 @@ export async function validateAndCompose(
       const change: any = { action: 'update_session', dashboard: s.dash_name, sessionTitle: s.title, date: s.date, presenter: n };
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
       return good(S('Change presenter'),
-        `Please change the presenter of the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} from ${s.presenterName || '(no presenter)'} to ${n}.${scope}${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you change the presenter of the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} from ${s.presenterName || '(no presenter)'} to ${n}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_room_supervisor': {
@@ -582,7 +590,7 @@ export async function validateAndCompose(
       const scope = s.recurring ? (f.scope === 'series' ? ' Apply it to the whole series.' : ' This date only.') : '';
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
       return good(S('Change session'),
-        `Please change the ${parts.join(' and ')} for the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)}.${scope}${note}${sig(user.name, fromEmail)}`,
+        `Hi — could you change the ${parts.join(' and ')} for the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_pickup': {
@@ -590,7 +598,7 @@ export async function validateAndCompose(
       if (!s) return bad('That session could not be found — pick it again.');
       if (s.presenterId) return bad('That session already has a presenter.');
       return good(S('Pick up session'),
-        `I would like to present the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} — it needs a presenter.${note}${sig(user.name, fromEmail)}`,
+        `Hi — I'd like to present the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} — it needs a presenter. Thank you!${note}${sig(user.name, fromEmail)}`,
         [{ action: 'update_session', dashboard: s.dash_name, sessionTitle: s.title, date: s.date, scope: 'date', presenter: user.name }]);
     }
     case 'question': {
@@ -793,7 +801,7 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
   // composed wording, signature off) — approvers read it in the email
   // subject, the Requests list and the bell, so a bare "Swap request —
   // Name" is not enough (Deepika 2026-11-01).
-  const summary = resolved.composed.body.split('\n\n— Sent from the Quick Scheduling app')[0].replace(/^Please /, '').trim();
+  const summary = resolved.composed.body.split('\n\n— ')[0].trim();
   const plan = { summary: summary.charAt(0).toUpperCase() + summary.slice(1), changes: resolved.changes, emailType: 'change_request' };
   let footer: { text: string; html: string } | null = null;
   try { footer = await standingFormFooter(q, row.company_id, row.from_email); } catch { /* best-effort */ }
