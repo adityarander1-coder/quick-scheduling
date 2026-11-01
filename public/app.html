@@ -5067,12 +5067,12 @@
       </div>
       <div class="card hidden" id="ask-email-card" style="margin-top:1rem">
         <h3 style="margin-top:0">Email Q-Scheduler</h3>
-        <p style="color:var(--dim);font-size:0.9rem">Need a quick approval? The AI scheduler reads your email and sends a plan to your schedulers for approval.</p>
+        <p style="color:var(--dim);font-size:0.9rem">Make a request with the short form — swaps, time off, cover, sessions and more. It is read exactly and goes straight to your schedulers for approval.</p>
         <button type="button" id="ask-email-open" class="btn">Email Q-Scheduler</button>
       </div>
       <div id="ask-email-dialog" class="modal-backdrop hidden">
         <div class="modal" style="max-width:420px">
-          <h3>Email Q-Scheduler</h3>
+          <h3>Email Q-Scheduler — free-text email</h3>
           <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="ask-email-to"></p>
           <textarea id="ask-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
           <div class="modal-actions" style="margin-top:0.8rem">
@@ -5357,15 +5357,18 @@
         document.querySelectorAll('.ask-ex').forEach(function (b) {
           b.addEventListener('click', function () { send(b.textContent); });
         });
-        // --- Email scheduler (employees): opens their own email app via mailto,
-        // addressed to the AI scheduler inbox (it reads the email and sends a
-        // plan to the human schedulers for approval).
+        // --- Email Q-Scheduler: the ✉️ button opens the request FORM
+        // (recommended — read exactly, built straight into a plan;
+        // window.qsOpenRequestForm is defined by the body-level FAB
+        // script). The free-text mailto dialog below stays as the
+        // fallback (the only route that can carry an attachment).
         var emailOpenBtn = $('ask-email-open');
         var emailDlg = $('ask-email-dialog');
         var aiSchedulerEmail = '';
         function closeEmailDlg() { if (emailDlg) hide(emailDlg); }
         if (emailOpenBtn && emailDlg) {
-          emailOpenBtn.addEventListener('click', function () {
+          emailOpenBtn.addEventListener('click', function () { window.qsOpenRequestForm(); });
+          window.qsOpenFreeTextEmail = function () {
             $('ask-email-to').textContent = 'To: loading…';
             $('ask-email-message').value = '';
             show(emailDlg);
@@ -5382,7 +5385,7 @@
               aiSchedulerEmail = '';
               $('ask-email-to').textContent = 'Could not load the scheduler inbox.';
             });
-          });
+          };
           $('ask-email-cancel').addEventListener('click', closeEmailDlg);
           $('ask-email-go').addEventListener('click', function () {
             var message = $('ask-email-message').value.trim();
@@ -11463,6 +11466,8 @@
           <div style="display:grid;gap:10px">
             <label style="font-size:0.88rem">Name<br><input type="text" id="ms-name" disabled style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb"></label>
             <label style="font-size:0.88rem">Email<br><input type="text" id="ms-email" disabled style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb"></label>
+            <label style="font-size:0.88rem">Other email I send requests from (optional)<br><input type="email" id="ms-alt-email" maxlength="120" placeholder="e.g. your personal Gmail" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
+            <p style="font-size:0.8rem;color:var(--dim);margin:2px 0 0">Q-Scheduler accepts your requests from your account email above. If you also email it from another address, add that address here so those emails are accepted too.</p>
             <label style="font-size:0.88rem">Nickname (shown when your name matches someone else's)<br><input type="text" id="ms-nickname" maxlength="60" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
             <label style="font-size:0.88rem">Phone<br><input type="tel" id="ms-phone" maxlength="30" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
             <label style="font-size:0.88rem">Profile color<br><input type="color" id="ms-color" style="width:64px;height:36px;padding:2px;border:1px solid #d1d5db;border-radius:8px;background:#fff"></label>
@@ -12299,7 +12304,7 @@
           </div>
         </div></div>
         <p>Ask plain-language questions about the schedule, like <em>"Who's working on October 14?"</em> or <em>"Am I scheduled next weekend?"</em></p>
-        <p>The <strong>Email Q-Scheduler</strong> button (also floating at the bottom-right of every screen) opens your email app addressed to the AI scheduler — write what you need (a day off, a swap, a question) and the system builds a plan and sends it to your scheduler for approval. You can also attach a file — a PDF, an Excel sheet, a CSV or a Word document (for example a whole schedule) — and the AI reads the attachment as part of your request.</p>
+        <p>The <strong>Email Q-Scheduler</strong> button (also floating at the bottom-right of every screen) opens a short form — pick what you need (a day off, a swap, a session change, a question) from your own calendar, check the preview, and send. The form is read exactly, first time, and your request goes straight to your scheduler for approval. Prefer your own words? You can still email the scheduler in plain words instead, and from the "free-text email" option in the form you can also attach a file — a PDF, an Excel sheet, a CSV or a Word document (for example a whole schedule) — and the AI reads the attachment as part of your request.</p>
       </div>
     </section>
 
@@ -14692,7 +14697,7 @@
   </button>
   <div id="fab-email-dialog" class="hidden">
     <div class="modal">
-      <h3>Email Q-Scheduler</h3>
+      <h3>Email Q-Scheduler — free-text email</h3>
       <p style="color:var(--dim);font-size:0.9rem;margin:0 0 0.6rem" id="fab-email-to"></p>
       <textarea id="fab-email-message" rows="4" placeholder="e.g. Can I leave early Friday? Need quick approval." style="width:100%;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem;box-sizing:border-box"></textarea>
       <div class="modal-actions">
@@ -14701,16 +14706,34 @@
       </div>
     </div>
   </div>
+  <!-- The Email Q-Scheduler request form (body level so it opens from
+       any tab; the iframe loads the shared form page). -->
+  <div id="qs-form-dialog" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:101">
+    <div style="background:#fff;border-radius:16px;width:min(680px,94vw);height:88vh;display:flex;flex-direction:column;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+        <strong>✉️ Email Q-Scheduler</strong>
+        <button type="button" id="qs-form-close" class="btn-secondary">Close</button>
+      </div>
+      <iframe id="qs-form-frame" title="Email Q-Scheduler request form" style="flex:1;border:0;width:100%"></iframe>
+      <div style="padding:10px 16px;border-top:1px solid var(--border);font-size:0.88rem;color:var(--dim)">
+        The form is recommended — it is read exactly, first time. <a href="#" id="qs-form-freetext">Or write a free-text email instead</a> (use that if you need to attach a file).
+      </div>
+    </div>
+  </div>
   <script>
   (function () {
     // Floating Email Q-Scheduler: one-tap access from any tab, all roles.
-    // Opens the user's own email app via mailto, addressed to the AI scheduler inbox.
+    // Opens the request FORM (recommended — read exactly, built
+    // straight into a plan). The free-text mailto dialog stays as the
+    // fallback (the only route that can carry an attachment).
     var fab = $('fab-email-ai');
     var dlg = $('fab-email-dialog');
     if (!fab || !dlg) return;
     var aiEmail = '';
     function closeDlg() { hide(dlg); }
-    fab.addEventListener('click', function () {
+    var formDlg = $('qs-form-dialog');
+    var formFrame = $('qs-form-frame');
+    function openFreeTextDlg() {
       $('fab-email-to').textContent = 'To: loading…';
       $('fab-email-message').value = '';
       show(dlg);
@@ -14727,7 +14750,29 @@
         aiEmail = '';
         $('fab-email-to').textContent = 'Could not load the scheduler inbox.';
       });
-    });
+    }
+    window.qsOpenRequestForm = function () {
+      if (!formDlg || !formFrame) { openFreeTextDlg(); return; }
+      api('/api/schedule/request-form-link').then(function (r) {
+        if (r.ok && r.data && r.data.url) {
+          formFrame.src = r.data.url;
+          show(formDlg);
+        } else {
+          openFreeTextDlg();
+        }
+      }).catch(function () { openFreeTextDlg(); });
+    };
+    if (formDlg) {
+      $('qs-form-close').addEventListener('click', function () { hide(formDlg); });
+      formDlg.addEventListener('click', function (e) { if (e.target === formDlg) hide(formDlg); });
+      var ftLink = $('qs-form-freetext');
+      if (ftLink) ftLink.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        hide(formDlg);
+        if (window.qsOpenFreeTextEmail) window.qsOpenFreeTextEmail(); else openFreeTextDlg();
+      });
+    }
+    fab.addEventListener('click', function () { window.qsOpenRequestForm(); });
     $('fab-email-cancel').addEventListener('click', closeDlg);
     dlg.addEventListener('click', function (e) { if (e.target === dlg) closeDlg(); });
     $('fab-email-go').addEventListener('click', function () {
@@ -15497,6 +15542,7 @@
       myId = u.id;
       $('ms-name').value = u.name || '';
       $('ms-email').value = u.email || '';
+      $('ms-alt-email').value = u.altEmail || '';
       $('ms-nickname').value = u.nickname || '';
       $('ms-phone').value = u.phone || '';
       if (u.profileColor && /^#[0-9a-fA-F]{6}$/.test(u.profileColor)) $('ms-color').value = u.profileColor;
@@ -15540,7 +15586,7 @@
 
   $('ms-profile-save').addEventListener('click', function () {
     if (!myId) { msg('ms-profile-msg', 'Still loading — try again in a second.', false); return; }
-    var body = { nickname: $('ms-nickname').value.trim(), phone: $('ms-phone').value.trim(), profileColor: $('ms-color').value };
+    var body = { nickname: $('ms-nickname').value.trim(), phone: $('ms-phone').value.trim(), profileColor: $('ms-color').value, altEmail: $('ms-alt-email').value.trim() };
     api('/api/users/' + myId, { method: 'PATCH', body: JSON.stringify(body) }).then(function (r) {
       if (!r || !r.ok) throw new Error((r && r.data && r.data.error) || 'save failed');
       msg('ms-profile-msg', 'Saved ✓', true);

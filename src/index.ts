@@ -19,6 +19,7 @@ import candidatesRouter from './routes/candidates';
 
 import invitesRouter from './routes/invites';
 import scheduleRouter from './routes/schedule';
+import requestFormRouter from './routes/requestForm';
 import notificationsRouter from './routes/notifications';
 import pushRouter from './routes/push';
 import inboundRouter from './routes/inbound';
@@ -83,6 +84,10 @@ app.use('/api/departments', departmentsRouter);
 app.use('/api/job-roles', jobRolesRouter);
 app.use('/api/candidates', candidatesRouter);
 app.use('/api/invites', invitesRouter);
+// The request-form routes mount BEFORE the schedule router: their
+// paths (/request-form..., /request-form-link) must not be swallowed
+// by any schedule route pattern.
+app.use('/api/schedule', requestFormRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/push', pushRouter);

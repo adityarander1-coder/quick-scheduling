@@ -8,6 +8,10 @@ export interface ShiftEntry {
   shiftTypeName: string;
   published: boolean;
   isRotation: boolean;
+  /** Carried for callers that need the tuple identity (e.g. the
+   * request form's pickers); display callers ignore them. */
+  userId?: string;
+  shiftTypeId?: string;
 }
 
 type QueryFn = (text: string, params: any[]) => Promise<{ rows: any[] }>;
@@ -154,6 +158,8 @@ export async function getShiftsForRange(
           shiftTypeName: a.shiftTypeName,
           published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
           isRotation: true,
+          userId: a.userId,
+          shiftTypeId: a.shiftTypeId,
         });
       }
     }
@@ -174,6 +180,8 @@ export async function getShiftsForRange(
       shiftTypeName: s.shiftTypeName,
       published: s.published,
       isRotation: false,
+      userId: s.userId,
+      shiftTypeId: s.shiftTypeId,
     }));
 
   return [...visibleManual, ...rotationShifts].sort((a, b) => {

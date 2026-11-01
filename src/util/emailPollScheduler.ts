@@ -36,6 +36,14 @@ async function pollOneCompany(companyId: string, companyName: string, creds: Ima
 
 async function runPoll(): Promise<void> {
   try {
+    // 0. Queued form submissions retry on the same tick (a question
+    // waiting on the AI, or a rare hiccup) — attempt-capped inside.
+    try {
+      const { sweepQueuedFormRequests } = await import('./requestForm.js');
+      const { query: q } = await import('../db.js');
+      await sweepQueuedFormRequests(q as any);
+    } catch { /* sweep is best-effort */ }
+
     // 1. Every company with an active inbox row.
     let inboxRows: any[] = [];
     try {

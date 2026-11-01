@@ -91,14 +91,16 @@ export async function ensureInboundAddress(
   return rows[0];
 }
 
-/** Sender lock: is this email an active team member of this company? */
+/** Sender lock: is this email an active team member of this company?
+ * The member's registered alternate "send from" address (My Settings,
+ * migration 071) is accepted alongside their account email. */
 export async function senderAllowed(
   query: QueryFn, companyId: string, email: string
 ): Promise<boolean> {
   const clean = String(email || '').trim().toLowerCase();
   if (!clean || !clean.includes('@')) return false;
   const { rows } = await query(
-    'SELECT 1 FROM users WHERE company_id = $1 AND lower(email) = $2 AND is_active = true LIMIT 1',
+    'SELECT 1 FROM users WHERE company_id = $1 AND (lower(email) = $2 OR lower(alt_email) = $2) AND is_active = true LIMIT 1',
     [companyId, clean]
   );
   return rows.length > 0;

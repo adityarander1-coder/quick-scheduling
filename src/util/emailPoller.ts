@@ -276,7 +276,8 @@ export interface ScheduleEmailInput {
   subject: string;
   body: string;
   attachments?: ImapAttachment[];
-  /** Threading headers, as far as the ingest path provides them: the
+
+/** Threading headers, as far as the ingest path provides them: the
    * IMAP path fills all three from mailparser; the inbound webhook
    * supplies only its provider message id today. */
   messageId?: string | null;
@@ -389,9 +390,14 @@ export async function processScheduleEmail(
     const today = new Date().toISOString().split('T')[0];
 
     // Parse with Gemini (calendar context included so session
-    // requests — add / change / cancel a session — can be planned)
+    // requests — add / change / cancel a session — can be planned).
+    // The company's learned examples ride along (Deepika 2026-11-01):
+    // past unclear wording that was later resolved, so the same
+    // wording is understood the first time.
     const sessionCtx = await buildSessionContext(query, companyId, today);
     const { getShiftTypeRules } = await import('./planExecutor.js');
+    const { getRelevantExamples } = await import('./emailLearning.js');
+    const examples = await getRelevantExamples(query, companyId, `${email.subject}\n${effectiveBody}`);
     const plan = await planFromEmail(effectiveBody, email.subject, {
       shiftTypes,
       shiftTypeRules: await getShiftTypeRules(companyId),
@@ -401,6 +407,7 @@ export async function processScheduleEmail(
       attachmentText: attachmentText || undefined,
       pdfAttachments: pdfAttachments.length ? pdfAttachments : undefined,
       attachmentNotes: attachmentNotes.length ? attachmentNotes : undefined,
+      examples: examples.length ? examples : undefined,
     });
 
     // Mixed mail (batch 2, 2026-10-30): handling keys on the parse
@@ -432,12 +439,18 @@ export async function processScheduleEmail(
                 ? question.startDate
                 : `${question.startDate} to ${question.endDate}`)
             : 'the requested dates';
+          // The answer carries the standing "New request" footer too.
+          let ansFooter: { text: string; html: string } | null = null;
+          try {
+            const { standingFormFooter } = await import('./formLinks.js');
+            ansFooter = await standingFormFooter(query, companyId, senderEmail);
+          } catch { /* best-effort */ }
           await sendMail({
             ...(fromAddr ? { from: fromAddr } : {}),
             to: senderEmail,
             subject: `Re: ${email.subject}`,
-            text: `Hi,\n\nHere's the schedule for ${dateRange}:\n\n${answer}\n\n— Quick Scheduling`,
-            html: `<p>Hi,</p><p>Here's the schedule for <strong>${dateRange}</strong>:</p><pre style="font-family:sans-serif;white-space:pre-wrap;">${answer}</pre><p>— Quick Scheduling</p>`,
+            text: `Hi,\n\nHere's the schedule for ${dateRange}:\n\n${answer}${ansFooter ? `\n\n${ansFooter.text}` : ''}\n\n— Quick Scheduling`,
+            html: `<p>Hi,</p><p>Here's the schedule for <strong>${dateRange}</strong>:</p><pre style="font-family:sans-serif;white-space:pre-wrap;">${answer}</pre>${ansFooter ? ansFooter.html : ''}<p>— Quick Scheduling</p>`,
           });
           console.log(`[email-poll] Schedule answer sent to ${senderEmail}`);
         }
@@ -482,14 +495,31 @@ export async function processScheduleEmail(
       // sender+subject fallback covers clients that drop the header.
       const fromDomain = ((fromAddr || process.env.RESEND_FROM || '').match(/@([^\s>]+)/) || [])[1] || 'quick-scheduling';
       const clarMessageId = `<qs-clar-${crypto.randomUUID()}@${fromDomain}>`;
+      // Two ways to finish (Deepika 2026-11-01): the form is the
+      // recommended one — it opens already knowing who they are and
+      // submits straight into a plan; a plain-words reply also works.
+      let clarFormUrl: string | null = null;
+      try {
+        const { findUserByAnyEmail, createClarificationFormLink, formLinkUrl } = await import('./formLinks.js');
+        const senderUser = await findUserByAnyEmail(query, companyId, sender.address);
+        const link = await createClarificationFormLink(query, companyId, senderUser ? senderUser.id : null, sender.address, {
+          originalSubject: pendingOriginal ? pendingOriginal.subject : email.subject,
+          originalBody: pendingOriginal ? pendingOriginal.body : email.body,
+          missing: detail,
+          messageId: clarMessageId,
+        });
+        clarFormUrl = formLinkUrl(link.token);
+      } catch (linkErr: any) {
+        console.log(`[email-poll] Clarification form link failed: ${linkErr.message}`);
+      }
       try {
         const { sendMail } = await import('./mailer.js');
         await sendMail({
           ...(fromAddr ? { from: fromAddr } : {}),
           to: sender.address,
           subject: `Re: ${email.subject}`,
-          text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nPlease reply with the missing detail and I'll build the change for approval.\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p><p>Please reply with the missing detail and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
+          text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nTwo ways to finish this:\n\n1) Recommended — use the short form (it takes under a minute, and it is read exactly):${clarFormUrl ? `\n${clarFormUrl}` : ' open the ✉️ Email Q-Scheduler form in the app.'}\n\n2) Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p><p>Two ways to finish this:</p><p><strong>1) Recommended</strong> — use the short form (under a minute, and it is read exactly):</p>${clarFormUrl ? `<p><a href="${clarFormUrl}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Finish it with the form</a></p>` : '<p>Open the ✉️ Email Q-Scheduler form in the app.</p>'}<p><strong>2)</strong> Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
           headers: { 'Message-ID': clarMessageId },
         });
         console.log(`[email-poll] Clarification requested from ${sender.address}: ${detail}`);
@@ -513,6 +543,75 @@ export async function processScheduleEmail(
       return { kind: 'clarification_sent', answeredQuestion };
     }
 
+    // The requester confirmation carries the standing "New request"
+    // footer (form recommended / plain words) when we can build it.
+    let reqFooter: { text: string; html: string } | null = null;
+    try {
+      const { standingFormFooter } = await import('./formLinks.js');
+      reqFooter = await standingFormFooter(query, companyId, sender.address);
+    } catch { /* best-effort */ }
+    const planId = await createPendingPlanFromChanges(query, companyId, plan, {
+      sourceId,
+      subject: email.subject,
+      cc: email.cc || null,
+      body: effectiveBody,
+      senderAddress: sender.address,
+      senderName: sender.name || null,
+      fromAddr,
+      fromLine,
+      outageForwardedAt: opts?.outageForwardedAt,
+      requesterFooter: reqFooter || undefined,
+    });
+    void planId;
+    // Learning (Deepika 2026-11-01): this email resolved a pending
+    // clarification into a real plan — save the pair (their original
+    // unclear words -> the clean request) in the company's example
+    // book so the same wording is understood the first time.
+    if (pendingOriginal) {
+      try {
+        const { saveLearningExample } = await import('./emailLearning.js');
+        const resolvedText = `${plan.summary || ''} Changes: ${(plan.changes || []).map((c: any) =>
+          [c.action, c.person || c.fromPerson || '', c.shiftType || c.sessionTitle || c.title || '', c.date || c.fromDate || ''].filter(Boolean).join(' ')
+        ).join('; ')}`;
+        await saveLearningExample(query, companyId, pendingOriginal.body || pendingOriginal.subject, resolvedText, 'clarification-reply');
+      } catch { /* best-effort */ }
+    }
+    if (opts?.markRead) await opts.markRead();
+    return { kind: 'plan_created', answeredQuestion };
+  } catch (err: any) {
+    result.errors.push(`Message ${sourceId}: ${err.message}`);
+    return undefined;
+  }
+}
+
+  /**
+ * Create a pending plan from a fully-built change list and send every
+ * notification (bell, requester confirmation, per-approver emails,
+ * shared plan email). Shared by the email engine (after the AI parses
+ * a hand-written email) and the request form (which builds the change
+ * list directly from the form's picks — no AI in that loop). The
+ * eligibility warn-and-override runs here so both paths behave the
+ * same. Returns the new plan id. Throws on insert failure; all mail
+ * steps are best-effort.
+ */
+export async function createPendingPlanFromChanges(
+  query: QueryFn,
+  companyId: string,
+  plan: any,
+  input: {
+    sourceId: string;
+    subject: string;
+    cc: string | null;
+    body: string;
+    senderAddress: string;
+    senderName: string | null;
+    fromAddr: string | null;
+    fromLine: string;
+    outageForwardedAt?: any;
+    /** Extra html/text appended to the requester confirmation email. */
+    requesterFooter?: { text: string; html: string };
+  }
+): Promise<string> {
     // Warn-and-override: flag every change that puts someone on a shift type
     // their job role is not eligible for. The warning rides on the change
     // into the requester email and the summary flag carries it into the
@@ -534,12 +633,12 @@ export async function processScheduleEmail(
        RETURNING id`,
       [
         companyId,
-        sourceId,
-        email.subject,
-        sender.address,
-        sender.name || null,
-        email.cc || null,
-        effectiveBody,
+        input.sourceId,
+        input.subject,
+        input.senderAddress,
+        input.senderName || null,
+        input.cc || null,
+        input.body,
         plan.summary,
         JSON.stringify(plan),
         approveToken,
@@ -556,7 +655,7 @@ export async function processScheduleEmail(
         await notify({
           companyId, userIds: approvers, category: 'approvals', type: 'plan_waiting',
           title: 'A schedule plan is waiting for approval',
-          body: plan.summary || `Plan from ${fromLine}`,
+          body: plan.summary || `Plan from ${input.fromLine}`,
           link: 'requests', bundleKey: 'plan_waiting',
           bundleTitle: '{count} schedule plans are waiting for approval',
         });
@@ -566,10 +665,10 @@ export async function processScheduleEmail(
     // Notify requester that their request was received and is awaiting approval.
     try {
       const { sendMail: sendConfirm } = await import('./mailer.js');
-      const reqEmail = sender.address;
+      const reqEmail = input.senderAddress;
       if (reqEmail && reqEmail.includes('@')) {
         // Include original CC recipients so they follow the request too.
-        const ccList = String(email.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
+        const ccList = String(input.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
         const changeList = (plan.changes || []).map((c: any, i: number) => {
           const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
             : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
@@ -583,12 +682,12 @@ export async function processScheduleEmail(
           return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}`;
         }).join('\n');
         await sendConfirm({
-          ...(fromAddr ? { from: fromAddr } : {}),
+          ...(input.fromAddr ? { from: input.fromAddr } : {}),
           to: reqEmail,
           cc: ccList.length ? ccList : undefined,
           subject: `Request received: ${plan.summary.substring(0, 60)}`,
-          text: `Hi,\n\nYour request has been received and is awaiting approval.\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>Your request has been received and is awaiting approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p><p>— Quick Scheduling</p>`,
+          text: `Hi,\n\nYour request has been received and is awaiting approval.\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.${input.requesterFooter ? `\n\n${input.requesterFooter.text}` : ''}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request has been received and is awaiting approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p>${input.requesterFooter ? input.requesterFooter.html : ''}<p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
@@ -608,9 +707,9 @@ export async function processScheduleEmail(
       const { sendMail } = await import('./mailer.js');
       const notifyEmail = process.env.NOTIFICATION_EMAIL || 'adityarander1@gmail.com';
       const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
-      // fromLine comes from the one ingest parse (batch 1) — always
+      // input.fromLine comes from the one ingest parse (batch 1) — always
       // `Name <address>`, never a name nested inside the brackets.
-      const ccLine = email.cc ? `\nCc: ${email.cc}` : '';
+      const ccLine = input.cc ? `\nCc: ${input.cc}` : '';
       // NOTE (Deepika 2026-10-28): the 📅 Quick session button is REMOVED
       // from plan emails for now — it rendered overlapping the Approve /
       // Reject buttons in Gmail. The quick-session page itself stays live;
@@ -626,13 +725,13 @@ export async function processScheduleEmail(
       // approver can reject instead of double-applying. Only the
       // poller ever sets opts.outageForwardedAt; webhook plans and
       // ordinary plans render exactly as before.
-      const outageNote = opts?.outageForwardedAt
-        ? `Note: this email was forwarded to you on ${formatOutageForwardDate(opts.outageForwardedAt)} during an AI credit outage. If you already handled it manually, please Reject this plan.`
+      const outageNote = input.outageForwardedAt
+        ? `Note: this email was forwarded to you on ${formatOutageForwardDate(input.outageForwardedAt)} during an AI credit outage. If you already handled it manually, please Reject this plan.`
         : null;
       const planMail = (approveUrl: string, rejectUrl: string) => ({
         subject: `New schedule change plan: ${plan.summary.substring(0, 60)}`,
-        text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${fromLine}${ccLine}\nSubject: ${email.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-        html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${fromLine}${email.cc ? `<br>Cc: ${email.cc}` : ''}<br>Subject: ${email.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+        text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${input.fromLine}${ccLine}\nSubject: ${input.subject}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
+        html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${input.fromLine}${input.cc ? `<br>Cc: ${input.cc}` : ''}<br>Subject: ${input.subject}</p><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
       });
 
       // One token pair per approver (deduped by email address — two
@@ -706,7 +805,7 @@ export async function processScheduleEmail(
       for (const m of approverMail) {
         try {
           await sendMail({
-            ...(fromAddr ? { from: fromAddr } : {}),
+            ...(input.fromAddr ? { from: input.fromAddr } : {}),
             to: m.email,
             ...planMail(m.approveUrl, m.rejectUrl),
           });
@@ -721,7 +820,7 @@ export async function processScheduleEmail(
         const approveUrl = `${baseUrl}/api/schedule/plans/approve/${approveToken}`;
         const rejectUrl = `${baseUrl}/api/schedule/plans/reject/${rejectToken}`;
         await sendMail({
-          ...(fromAddr ? { from: fromAddr } : {}),
+          ...(input.fromAddr ? { from: input.fromAddr } : {}),
           to: toAddr,
           cc: ccRest.length ? ccRest : undefined,
           ...planMail(approveUrl, rejectUrl),
@@ -733,13 +832,9 @@ export async function processScheduleEmail(
       // Don't fail the plan creation if notification fails
     }
 
-    if (opts?.markRead) await opts.markRead();
-    return { kind: 'plan_created', answeredQuestion };
-  } catch (err: any) {
-    result.errors.push(`Message ${sourceId}: ${err.message}`);
-    return undefined;
-  }
+  return planId;
 }
+
 
 /**
  * Fold one email's outcome into a poll result's tallies. Mixed mail

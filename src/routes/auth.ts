@@ -82,6 +82,7 @@ function publicUser(u: {
     name: display,
     nickname: u.nickname ?? null,
     email: u.email,
+    altEmail: (u as any).alt_email ?? null,
     phone: u.phone ?? null,
     departmentId: u.department_id ?? null,
     jobRole: u.job_role ?? null,
@@ -127,7 +128,7 @@ export function setSession(req: Request, userId: string, companyId: string, role
 
 async function loadUserAndCompany(userId: string) {
   const { rows } = await query<DbUser & { company_name: string }>(
-    `SELECT u.id, u.company_id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
+    `SELECT u.id, u.company_id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.alt_email, u.phone, u.department_id,
             u.job_role, u.job_role_id, u.end_date, u.is_active, u.role, u.profile_color, c.name AS company_name
      FROM users u JOIN companies c ON c.id = u.company_id
      WHERE u.id = $1`,

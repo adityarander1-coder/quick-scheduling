@@ -37,7 +37,7 @@ function validateAvatar(v: any): string | null {
 }
 
 const PROFILE_SELECT = `
-  SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.phone, u.department_id,
+  SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.alt_email, u.phone, u.department_id,
          d.name AS department_name, u.job_role, u.job_role_id,
          jr.name AS job_role_name, u.role,
          u.end_date, u.is_active, u.created_at, u.special_instructions, u.profile_color, u.avatar_data,
@@ -69,6 +69,7 @@ export function publicProfile(u: any) {
     name: display,
     nickname: u.nickname ?? null,
     email: u.email,
+    altEmail: u.alt_email ?? null,
     phone: u.phone ?? null,
     departmentId: u.department_id ?? null,
     department: u.department_name ?? null,
@@ -280,10 +281,11 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const body = req.body ?? {};
     const isSelf = targetId === callerId;
 
-    // Self-service (any role): your own phone, nickname and profile color
-    // can always be updated from My Settings — no department scoping.
+    // Self-service (any role): your own phone, nickname, profile color
+    // and alternate "send from" email can always be updated from My
+    // Settings — no department scoping.
     if (isSelf) {
-      const selfAllowed = new Set(['phone', 'nickname', 'profileColor']);
+      const selfAllowed = new Set(['phone', 'nickname', 'profileColor', 'altEmail']);
       const keys = Object.keys(body);
       if (keys.length && keys.every((k) => selfAllowed.has(k))) {
         const phone = body.phone !== undefined ? String(body.phone).trim() || null : target.phone;
@@ -293,7 +295,32 @@ router.patch('/:id', async (req: Request, res: Response) => {
           res.status(400).json({ error: 'Profile color must be a hex color like #2563eb.' });
           return;
         }
-        await query(`UPDATE users SET phone = $1, nickname = $2, profile_color = $3 WHERE id = $4`, [phone, nickname, color, targetId]);
+        let altEmail: string | null = target.alt_email ?? null;
+        if (body.altEmail !== undefined) {
+          const clean = String(body.altEmail).trim().toLowerCase();
+          if (!clean) {
+            altEmail = null;
+          } else {
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+              res.status(400).json({ error: 'That does not look like an email address.' });
+              return;
+            }
+            if (clean === String(target.email).toLowerCase()) {
+              res.status(400).json({ error: 'That is already your account email — Q-Scheduler accepts it. The extra address is for a different mailbox you send from.' });
+              return;
+            }
+            const { rows: clash } = await query(
+              `SELECT 1 FROM users WHERE company_id = $1 AND id <> $2 AND (lower(email) = $3 OR lower(alt_email) = $3) LIMIT 1`,
+              [companyId, targetId, clean]
+            );
+            if (clash.length) {
+              res.status(409).json({ error: 'That email already belongs to someone else on your team.' });
+              return;
+            }
+            altEmail = clean;
+          }
+        }
+        await query(`UPDATE users SET phone = $1, nickname = $2, profile_color = $3, alt_email = $4 WHERE id = $5`, [phone, nickname, color, altEmail, targetId]);
         const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
         res.json({ user: publicProfile(rows[0]) });
         return;

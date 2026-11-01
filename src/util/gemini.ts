@@ -28,8 +28,8 @@ export interface GeminiModelInfo {
  * embeddings. Excluded whenever a stable text model exists. */
 const NON_TEXT_MODEL_RE = /preview|experimental|-exp|image|audio|tts|embedding/i;
 
-/** Cost tier of a model name, cheapest first: flash-lite < flash <
- * everything else < pro. */
+/** Capability tier of a model name: flash-lite < flash < everything
+ * else < pro. Used by the quality-first ranking below. */
 function modelTierOf(name: string): number {
   const n = name.toLowerCase();
   if (n.includes('flash-lite') || n.includes('flash_lite') || n.includes('flashlite')) return 0;
@@ -38,10 +38,11 @@ function modelTierOf(name: string): number {
   return 2;
 }
 
-/** Version key for a model name ("gemini-2.5-..." -> 205). LOWER is
- * preferred within a tier: older Flash generations are cheaper.
- * Unversioned names ("...-latest" aliases, which drift to the newest
- * release) sort after every pinned version in their tier. */
+/** Version key for a model name ("gemini-2.5-..." -> 205). HIGHER is
+ * preferred within a tier under the quality-first ranking: the newest
+ * generation of a tier is its most capable. Unversioned names
+ * ("...-latest" aliases, which drift to the newest release) sort as
+ * the newest of their tier. */
 function modelVersionOf(name: string): number {
   const n = name.toLowerCase();
   const m = n.match(/gemini-(\d+)\.(\d+)/);
@@ -54,14 +55,17 @@ function modelVersionOf(name: string): number {
 /**
  * Pick the model a call should use — pure and unit-testable.
  * The GEMINI_MODEL override wins above everything. Otherwise the
- * CHEAPEST suitable model (2026-10-31 cost controls; discovery used
- * to pick the NEWEST Flash, i.e. the priciest tier — gemini-3.8-flash
- * burned the Oct 2026 prepay balance): stable text models that
- * support generateContent, flash-lite before flash, lower version
- * before higher within a tier. When NO stable text model exists,
- * fall back to ranking the full generateContent list the same way
- * and flag it (`fallback: true`) so the caller can log a warning.
- * `model: null` when nothing supports generateContent at all.
+ * STRONGEST suitable model (Deepika, 2026-11-01: "our model should be
+ * very good" — first-pass accuracy is the product; this supersedes
+ * the 2026-10-31 cheapest-first ranking for PLANNING calls, which is
+ * every call this module makes): stable text models that support
+ * generateContent, highest capability tier first (pro before flash
+ * before flash-lite), newest version first within a tier. The cost
+ * guards are unchanged and live elsewhere: retry caps in the poller,
+ * per-call usage logging, the discovery cache. When NO stable text
+ * model exists, fall back to ranking the full generateContent list
+ * the same way and flag it (`fallback: true`) so the caller can log a
+ * warning. `model: null` when nothing supports generateContent at all.
  */
 export function pickGeminiModel(
   models: GeminiModelInfo[],
@@ -77,8 +81,8 @@ export function pickGeminiModel(
   const fallback = stable.length === 0;
   const pool = fallback ? usable : stable;
   const sorted = [...pool].sort((a, b) =>
-    modelTierOf(a.name) - modelTierOf(b.name) ||
-    modelVersionOf(a.name) - modelVersionOf(b.name) ||
+    modelTierOf(b.name) - modelTierOf(a.name) ||
+    modelVersionOf(b.name) - modelVersionOf(a.name) ||
     a.name.localeCompare(b.name));
   return { model: bare(sorted[0].name), fallback };
 }
@@ -230,6 +234,7 @@ export async function planFromEmail(
     attachmentText?: string;        // spreadsheet/doc attachments converted to text
     pdfAttachments?: { filename: string; base64: string }[]; // PDFs, sent to Gemini as documents
     attachmentNotes?: string[];     // attachments that could not be read (name + reason)
+    examples?: string[];            // this company's learned examples: past unclear wording -> what it meant
   }
 ): Promise<SchedulePlan> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -249,7 +254,10 @@ Rooms / locations: ${(context.rooms || []).join(', ') || '(none listed)'}
 Calendar sessions:
 ${(context.sessions || []).join('\n') || '(none listed)'}
 
-${(context.history || []).length ? `Earlier in this conversation:
+${(context.examples || []).length ? `Lessons from this company's own past emails (when their wording was unclear before, this is what they turned out to mean — read new emails the same way):
+${(context.examples || []).join('\n')}
+
+` : ''}${(context.history || []).length ? `Earlier in this conversation:
 ${(context.history || []).map(h => `User: ${h.q}\nQ-Scheduler: ${h.a}`).join('\n')}
 
 The messages above are context for the request below. The latest message refines the original request — carry forward every detail from earlier messages (names, patterns like "every 5th week", dates, weekends off) unless the user changed them. Do not ask again for details already given.
