@@ -2375,6 +2375,7 @@
         // the server detaches that one occurrence into a real shift, and
         // Ctrl+Z restores it (the endpoints return an undo payload).
         var qsUndoStack = [];
+        var qsRedoStack = [];
         var qsTaskUndoBusy = false;
         var qsDrag = null;      // candidate / active drag
         var qsPlace = null;     // touch place-mode: { shift }
@@ -2453,8 +2454,10 @@
             var other = target.shift;
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: shift.id, bId: other.id }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); loadAll(); return; }
-              if (r.data && r.data.undo) qsUndoStack.push({ kind: 'server', undo: r.data.undo });
-              else qsUndoStack.push({ kind: 'swap', aId: shift.id, bId: other.id });
+              var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
+              entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
+              qsUndoStack.push(entry);
+              qsRedoStack.length = 0;
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
@@ -2465,8 +2468,10 @@
             if (date === shift.date && typeId === shift.shiftTypeId) return;
             api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); loadAll(); return; }
-              if (r.data && r.data.undo) qsUndoStack.push({ kind: 'server', undo: r.data.undo });
-              else qsUndoStack.push({ kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId });
+              var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
+              entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
+              qsUndoStack.push(entry);
+              qsRedoStack.length = 0;
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Moved. Ctrl+Z undoes it.');
@@ -2515,9 +2520,52 @@
               if (r.status !== 404) loadAll();
               return;
             }
-            pageSuccess('Task undone.');
+            pageSuccess('Task undone — Ctrl+Shift+Z redoes it.');
+            qsRedoStack.length = 0;
             loadAll();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not undo that task.'); });
+        }
+
+        function qsTaskRedo() {
+          if (qsTaskUndoBusy) return;
+          qsTaskUndoBusy = true;
+          api('/api/schedule/plans/redo-latest', { method: 'POST', body: '{}' }).then(function (r) {
+            qsTaskUndoBusy = false;
+            if (!r.ok) {
+              pageError(r.status === 404 ? 'Nothing to redo.' : ((r.data && r.data.error) || 'Could not redo that task.'));
+              if (r.status !== 404) loadAll();
+              return;
+            }
+            pageSuccess('Task redone.');
+            loadAll();
+          }).catch(function () { qsTaskUndoBusy = false; pageError('Could not redo that task.'); });
+        }
+
+        function qsRedoLast() {
+          var r = qsRedoStack.pop();
+          if (!r) return;
+          if (r.kind === 'swap') {
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId }) }).then(function (res) {
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); loadAll(); return; }
+              var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
+              e.redo = r;
+              qsUndoStack.push(e);
+              qsUndoBtnSync();
+              pageSuccess('Redone.');
+              loadAll();
+            }).catch(function () { pageError('Could not redo that swap.'); });
+          } else {
+            var s = shiftById(r.shiftId);
+            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId }) }).then(function (res) {
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); loadAll(); return; }
+              var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
+              e.redo = r;
+              qsUndoStack.push(e);
+              qsUndoBtnSync();
+              pageSuccess('Redone.');
+              loadAll();
+            }).catch(function () { pageError('Could not redo that move.'); });
+          }
         }
 
         function qsUndoLast() {
@@ -2527,19 +2575,22 @@
           if (u.kind === 'server') {
             api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); loadAll(); return; }
-              pageSuccess('Undone.');
+              if (u.redo) qsRedoStack.push(u.redo);
+              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               loadAll();
             }).catch(function () { pageError('Could not undo that.'); });
           } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); loadAll(); return; }
-              pageSuccess('Undone.');
+              if (u.redo) qsRedoStack.push(u.redo);
+              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               loadAll();
             }).catch(function () { pageError('Could not undo that swap.'); });
           } else {
             api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); loadAll(); return; }
-              pageSuccess('Undone.');
+              if (u.redo) qsRedoStack.push(u.redo);
+              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               loadAll();
             }).catch(function () { pageError('Could not undo that move.'); });
           }
@@ -2672,16 +2723,24 @@
               if (qsPlace) qsExitPlace();
               return;
             }
-            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+            var redoKey = (e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z')));
+            var undoKey = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+            if (redoKey || undoKey) {
               var t = e.target;
               if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
               // Ctrl+Z undoes the last thing YOU did, on any tab: your
               // last drag if one is waiting, otherwise your last
               // approved task (the server refuses, changing nothing,
               // when the task's changes were touched again afterwards).
+              // Ctrl+Shift+Z / Ctrl+Y redoes it the same way.
               e.preventDefault();
-              if (qsUndoStack.length) { qsUndoLast(); return; }
-              qsTaskUndo();
+              if (redoKey) {
+                if (qsRedoStack.length) { qsRedoLast(); return; }
+                qsTaskRedo();
+              } else {
+                if (qsUndoStack.length) { qsUndoLast(); return; }
+                qsTaskUndo();
+              }
             }
           });
         })();

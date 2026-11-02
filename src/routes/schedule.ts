@@ -5751,9 +5751,11 @@ async function performPlanUndo(req: Request, res: Response, plan: any): Promise<
     res.status(409).json({ error: e?.message || 'This task can’t be undone cleanly. Nothing was undone.' });
     return false;
   }
+  // Remember the status the plan had, so a later redo restores it.
+  plan.undo_payload = { ...plan.undo_payload, undoneFromStatus: plan.status };
   await query(
-    `UPDATE schedule_plans SET status = 'undone', undone_at = now(), undone_by = $2 WHERE id = $1`,
-    [plan.id, userId]
+    `UPDATE schedule_plans SET status = 'undone', undone_at = now(), undone_by = $2, undo_payload = $3 WHERE id = $1`,
+    [plan.id, userId, JSON.stringify(plan.undo_payload)]
   );
   // Change report + a heads-up for everyone whose shifts moved back.
   try {
@@ -5843,6 +5845,130 @@ router.post('/plans/:id/undo', requireRole('owner', 'scheduler'), async (req: Re
     }
   } catch (err) {
     console.error('[schedule] undo plan failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// --- Redo: the opposite of undo (Deepika 2026-11-01) ------------------------
+// Re-applies an undone task's AFTER state with the same changed-since
+// protection. Only the person who undid it may redo it — the owner may
+// redo anyone's. Ctrl+Shift+Z / Ctrl+Y uses redo-latest, which refuses
+// when a newer task was approved after the undo (new work clears redo).
+async function performPlanRedo(req: Request, res: Response, plan: any): Promise<boolean> {
+  const companyId = req.session.companyId!;
+  const userId = req.session.userId!;
+  if (!plan.undo_payload || !plan.undone_at || plan.status !== 'undone') {
+    res.status(400).json({ error: 'This task can no longer be redone.' });
+    return false;
+  }
+  if (req.session.role !== 'owner' && plan.undone_by !== userId) {
+    res.status(403).json({ error: 'Only the person who undid this task can redo it — or the owner.' });
+    return false;
+  }
+  const { redoPlanChanges } = await import('../util/planUndo.js');
+  try {
+    await redoPlanChanges(companyId, plan.undo_payload);
+  } catch (e: any) {
+    res.status(409).json({ error: e?.message || 'This task can’t be redone cleanly. Nothing was changed.' });
+    return false;
+  }
+  await query(
+    `UPDATE schedule_plans SET status = $2, undone_at = NULL, undone_by = NULL WHERE id = $1`,
+    [plan.id, plan.undo_payload.undoneFromStatus || 'executed']
+  );
+  try {
+    const entries: any[] = plan.undo_payload.entries || [];
+    const shiftEntries = entries.filter((e: any) => e.table === 'shifts');
+    const affected = new Set<string>();
+    for (const e of entries) {
+      for (const row of [e.before, e.after]) {
+        if (!row) continue;
+        if (e.table === 'shifts' && row.user_id) affected.add(row.user_id);
+        if (e.table === 'academic_sessions') {
+          if (row.lecturer_user_id) affected.add(row.lecturer_user_id);
+          if (row.supervisor_user_id) affected.add(row.supervisor_user_id);
+        }
+      }
+    }
+    for (const e of shiftEntries) {
+      const row = e.after || e.before;
+      if (!row) continue;
+      const names = await shiftDisplayNames(companyId, row.user_id, row.shift_type_id);
+      await auditLog({
+        companyId, date: String(row.date).slice(0, 10),
+        action: !e.after ? 'deleted' : !e.before ? 'created' : 'updated',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'agent', changedBy: userId,
+        details: { via: 'task-redo', planId: plan.id },
+      });
+    }
+    if (!shiftEntries.length) {
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings',
+        source: 'agent', changedBy: userId,
+        description: `Redid task: ${plan.plan_summary || 'schedule task'}`,
+        details: { via: 'task-redo', planId: plan.id },
+      });
+    }
+    affected.delete(userId);
+    if (affected.size) {
+      notify({
+        companyId, userIds: [...affected], category: 'schedule', type: 'shift_changed',
+        title: 'A schedule task was redone',
+        body: `The task "${plan.plan_summary || 'schedule change'}" was applied again after being undone.`,
+        link: 'my-schedule', bundleKey: 'task_redone',
+        bundleTitle: 'A schedule task was redone',
+        excludeUserId: userId,
+      });
+    }
+  } catch { /* audit/notify must never break the redo */ }
+  return true;
+}
+
+// POST /api/schedule/plans/redo-latest — Ctrl+Shift+Z / Ctrl+Y: redo the
+// most recently undone task, unless a newer task was approved since.
+router.post('/plans/redo-latest', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const isOwner = req.session.role === 'owner';
+    const { rows } = await query(
+      `SELECT * FROM schedule_plans
+       WHERE company_id = $1 AND status = 'undone' AND undone_at IS NOT NULL
+         AND ($2 OR undone_by = $3)
+       ORDER BY undone_at DESC LIMIT 1`,
+      [companyId, isOwner, req.session.userId!]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Nothing to redo.' }); return; }
+    const { rows: newer } = await query(
+      `SELECT 1 FROM schedule_plans
+       WHERE company_id = $1 AND status IN ('executed', 'approved', 'partial')
+         AND executed_at IS NOT NULL AND executed_at > $2 LIMIT 1`,
+      [companyId, rows[0].undone_at]
+    );
+    if (newer.length) { res.status(404).json({ error: 'Nothing to redo.' }); return; }
+    if (await performPlanRedo(req, res, rows[0])) {
+      res.json({ ok: true, summary: rows[0].plan_summary });
+    }
+  } catch (err) {
+    console.error('[schedule] redo-latest failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/plans/:id/redo — redo one specific undone task.
+router.post('/plans/:id/redo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT * FROM schedule_plans WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Plan not found.' }); return; }
+    if (await performPlanRedo(req, res, rows[0])) {
+      res.json({ ok: true, summary: rows[0].plan_summary });
+    }
+  } catch (err) {
+    console.error('[schedule] redo plan failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

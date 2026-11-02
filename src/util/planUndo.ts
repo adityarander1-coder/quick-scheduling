@@ -139,26 +139,47 @@ async function fetchRow(q: QueryFn, def: TableDef, companyId: string, key: Row):
   return rows.length ? norm(rows[0]) : null;
 }
 
-const REFUSAL = 'Something this task changed was changed again afterwards, so it can’t be undone cleanly. Nothing was undone.';
-const DEPENDENT = 'Something newer depends on what this task created, so it can’t be undone cleanly. Nothing was undone.';
+type Verb = 'undone' | 'redone';
+const refusalMsg = (verb: Verb) => `Something this task changed was changed again afterwards, so it can’t be ${verb} cleanly. Nothing was changed.`;
+const dependentMsg = (verb: Verb) => `Something newer depends on what this task created, so it can’t be ${verb} cleanly. Nothing was changed.`;
 
-/** Replay a plan's undo payload. Throws Error with a plain reason on refusal. */
-export async function undoPlanChanges(companyId: string, payload: UndoPayload): Promise<{ restored: number }> {
-  const entries = payload?.entries || [];
-  if (!entries.length) throw new Error('Nothing to undo.');
+/**
+ * Restore one side of a payload: undo restores `before`, redo restores
+ * `after` (by replaying the same routine with before/after swapped —
+ * the validation, dependency guards and ordering are symmetric).
+ * Throws Error with a plain reason on refusal; on refusal NOTHING is
+ * applied (single transaction).
+ */
+async function applyEntries(companyId: string, entries: UndoEntry[], verb: Verb): Promise<{ restored: number }> {
   try {
-    return await undoInTransaction(companyId, entries);
+    return await undoInTransaction(companyId, entries, verb);
   } catch (err: any) {
     // Known refusals pass through; a unique-key collision during the
     // restore means the world moved on (same refusal); anything else
     // still rolls back, so the honest summary is the clean-failure one.
-    if (err?.message === REFUSAL || err?.message === DEPENDENT || err?.message === 'Nothing to undo.') throw err;
-    if (err?.code === '23505') throw new Error(REFUSAL);
-    throw new Error('This task can’t be undone cleanly. Nothing was undone.');
+    if (err?.message === refusalMsg(verb) || err?.message === dependentMsg(verb)) throw err;
+    if (err?.code === '23505') throw new Error(refusalMsg(verb));
+    throw new Error(`This task can’t be ${verb} cleanly. Nothing was changed.`);
   }
 }
 
-async function undoInTransaction(companyId: string, entries: UndoEntry[]): Promise<{ restored: number }> {
+/** Replay a plan's undo payload (restore the BEFORE state). */
+export async function undoPlanChanges(companyId: string, payload: UndoPayload): Promise<{ restored: number }> {
+  const entries = payload?.entries || [];
+  if (!entries.length) throw new Error('Nothing to undo.');
+  return applyEntries(companyId, entries, 'undone');
+}
+
+/** Redo a previously undone plan (restore the AFTER state). */
+export async function redoPlanChanges(companyId: string, payload: UndoPayload): Promise<{ restored: number }> {
+  const entries = (payload?.entries || []).map((e) => ({
+    table: e.table, key: e.key, before: e.after, after: e.before,
+  }));
+  if (!entries.length) throw new Error('Nothing to redo.');
+  return applyEntries(companyId, entries, 'redone');
+}
+
+async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: Verb): Promise<{ restored: number }> {
   return withTransaction(async (tx) => {
     const q: QueryFn = tx.query as QueryFn;
     // 1) Everything the task left behind must still be exactly as it was.
@@ -166,7 +187,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[]): Promi
     //    through JSONB, which does not preserve object key order.
     for (const e of entries) {
       const cur = await fetchRow(q, defOf(e.table), companyId, e.key);
-      if (JSON.stringify(norm(cur)) !== JSON.stringify(norm(e.after))) throw new Error(REFUSAL);
+      if (JSON.stringify(norm(cur)) !== JSON.stringify(norm(e.after))) throw new Error(refusalMsg(verb));
       // A row the task deleted can only come back if its natural slot
       // is still free (someone may have re-created the same shift by
       // hand — that newer row is theirs, so the undo refuses).
@@ -175,7 +196,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[]): Promi
           'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 AND id <> $5',
           [companyId, e.before.user_id, String(e.before.date).slice(0, 10), e.before.shift_type_id, e.before.id]
         );
-        if (rows.length) throw new Error(REFUSAL);
+        if (rows.length) throw new Error(refusalMsg(verb));
       }
     }
     // 2) Rows the task created: refuse if anything newer depends on them.
@@ -186,9 +207,9 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[]): Promi
       if (!id) continue;
       if (e.table === 'users') {
         const { rows } = await q('SELECT id FROM shifts WHERE user_id = $1', [id]);
-        if (rows.some((r: any) => !diffIds('shifts').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (rows.some((r: any) => !diffIds('shifts').has(String(r.id)))) throw new Error(dependentMsg(verb));
         const { rows: s } = await q('SELECT id FROM academic_sessions WHERE lecturer_user_id = $1 OR supervisor_user_id = $1', [id]);
-        if (s.some((r: any) => !diffIds('academic_sessions').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (s.some((r: any) => !diffIds('academic_sessions').has(String(r.id)))) throw new Error(dependentMsg(verb));
       } else if (e.table === 'departments') {
         const checks: Array<[string, string, string]> = [
           ['job_roles', 'department_id', 'job_roles'],
@@ -197,26 +218,26 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[]): Promi
         ];
         for (const [table, col, diffTable] of checks) {
           const { rows } = await q(`SELECT id FROM ${table} WHERE ${col} = $1`, [id]);
-          if (rows.some((r: any) => !diffIds(diffTable).has(String(r.id)))) throw new Error(DEPENDENT);
+          if (rows.some((r: any) => !diffIds(diffTable).has(String(r.id)))) throw new Error(dependentMsg(verb));
         }
       } else if (e.table === 'job_roles') {
         const { rows } = await q('SELECT id FROM users WHERE job_role_id = $1', [id]);
-        if (rows.some((r: any) => !diffIds('users').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (rows.some((r: any) => !diffIds('users').has(String(r.id)))) throw new Error(dependentMsg(verb));
         const { rows: s } = await q('SELECT id FROM shift_types WHERE $1 = ANY(eligible_job_role_ids)', [id]);
-        if (s.some((r: any) => !diffIds('shift_types').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (s.some((r: any) => !diffIds('shift_types').has(String(r.id)))) throw new Error(dependentMsg(verb));
       } else if (e.table === 'shift_types') {
         const { rows } = await q('SELECT id FROM shifts WHERE shift_type_id = $1', [id]);
-        if (rows.some((r: any) => !diffIds('shifts').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (rows.some((r: any) => !diffIds('shifts').has(String(r.id)))) throw new Error(dependentMsg(verb));
         const { rows: ra } = await q('SELECT id FROM rotation_assignments WHERE shift_type_id = $1', [id]);
-        if (ra.length) throw new Error(DEPENDENT);
+        if (ra.length) throw new Error(dependentMsg(verb));
         const { rows: tg } = await q('SELECT id FROM staffing_targets WHERE shift_type_id = $1', [id]);
-        if (tg.some((r: any) => !diffIds('staffing_targets').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (tg.some((r: any) => !diffIds('staffing_targets').has(String(r.id)))) throw new Error(dependentMsg(verb));
         const linkKeys = new Set(entries.filter((x) => x.table === 'shift_type_departments').map((x) => `${x.key.shift_type_id}|${x.key.department_id}`));
         const { rows: lk } = await q('SELECT shift_type_id, department_id FROM shift_type_departments WHERE shift_type_id = $1', [id]);
-        if (lk.some((r: any) => !linkKeys.has(`${r.shift_type_id}|${r.department_id}`))) throw new Error(DEPENDENT);
+        if (lk.some((r: any) => !linkKeys.has(`${r.shift_type_id}|${r.department_id}`))) throw new Error(dependentMsg(verb));
       } else if (e.table === 'academic_sessions') {
         const { rows } = await q('SELECT id FROM academic_session_overrides WHERE session_id = $1', [id]);
-        if (rows.some((r: any) => !diffIds('academic_session_overrides').has(String(r.id)))) throw new Error(DEPENDENT);
+        if (rows.some((r: any) => !diffIds('academic_session_overrides').has(String(r.id)))) throw new Error(dependentMsg(verb));
       }
     }
     // 3a) Restore rows that existed before the task (re-insert or update),
