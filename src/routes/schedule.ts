@@ -22,6 +22,7 @@ import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
+import { getShiftsForRange } from '../util/shiftRange.js';
 
 const router = Router();
 
@@ -1559,10 +1560,63 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
   }
 });
 
-// POST /api/schedule/shifts/:id/drag-move — drag-and-drop move of one manual
-// shift to a new date and/or shift type (Deepika, 2026-11-01). Same person,
-// same published state; eligibility + duplicate + overlap/rest guards all
-// apply, exactly like a fresh manual assign.
+// --- Drag-and-drop move / swap / undo (Deepika, 2026-11-01) ----------------
+// Works for manual shifts AND rotation-generated instances. A rotation
+// instance has no row: moving it excludes that one occurrence from the
+// rotation and creates a real shift at the destination; swapping into a
+// rotation slot does the same for the incoming person. Responses carry an
+// `undo` payload (inverse ops) whenever a rotation was involved; the client
+// replays it through /shifts/drag-undo on Ctrl+Z.
+
+interface DragRef {
+  kind: 'manual' | 'rotation';
+  id: string;
+  userId: string;
+  date: string;
+  shiftTypeId: string;
+  published: boolean;
+  rotationId?: string;
+}
+
+async function resolveDragRef(companyId: string, refId: string): Promise<DragRef | null> {
+  if (typeof refId !== 'string' || !refId) return null;
+  if (refId.startsWith('rot-')) {
+    const date = refId.slice(-10);
+    if (!isValidDate(date)) return null;
+    const all = await getShiftsForRange(query, companyId, date, date);
+    const e = all.find((x) => x.id === refId && x.isRotation);
+    if (!e || !e.userId || !e.shiftTypeId) return null;
+    return {
+      kind: 'rotation', id: refId, userId: e.userId, date: e.date,
+      shiftTypeId: e.shiftTypeId, published: e.published !== false,
+      rotationId: refId.slice(4, 40),
+    };
+  }
+  const { rows } = await query(
+    'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = $1 AND company_id = $2',
+    [refId, companyId]
+  );
+  if (!rows.length) return null;
+  return {
+    kind: 'manual', id: refId, userId: rows[0].userId, date: rows[0].date,
+    shiftTypeId: rows[0].shiftTypeId, published: rows[0].published !== false,
+  };
+}
+
+type DragQueryFn = (text: string, params?: any[]) => Promise<any>;
+async function insertRotationExclusion(q: DragQueryFn, companyId: string, ref: DragRef): Promise<void> {
+  await q(
+    `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+    [companyId, ref.rotationId, ref.userId, ref.date, ref.shiftTypeId]
+  );
+}
+
+// POST /api/schedule/shifts/:id/drag-move — drag-and-drop move of one shift
+// (manual row or rotation instance) to a new date and/or shift type. Same
+// person, same published state; eligibility + duplicate + overlap/rest
+// guards all apply, exactly like a fresh manual assign.
 router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1571,17 +1625,13 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       res.status(400).json({ error: 'A valid date and shift type are required.' });
       return;
     }
-    const { rows: existRows } = await query(
-      'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = $1 AND company_id = $2',
-      [req.params.id, companyId]
-    );
-    if (!existRows.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
-    const old = existRows[0];
-    if (old.date === date && old.shiftTypeId === shiftTypeId) { res.json({ ok: true, noop: true }); return; }
+    const src = await resolveDragRef(companyId, req.params.id);
+    if (!src) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    if (src.date === date && src.shiftTypeId === shiftTypeId) { res.json({ ok: true, noop: true }); return; }
     if (!(await requireActiveDepartment(
       req, res,
       await assignmentRelevantDepartments(
-        [{ userId: old.userId, shiftTypeId }, { userId: old.userId, shiftTypeId: old.shiftTypeId }],
+        [{ userId: src.userId, shiftTypeId }, { userId: src.userId, shiftTypeId: src.shiftTypeId }],
         companyId)
     ))) return;
     const { rows: trows } = await query(
@@ -1589,41 +1639,60 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       [shiftTypeId, companyId]
     );
     if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
-    const eligibility = await checkShiftEligibility(companyId, old.userId, trows[0].eligible_job_role_ids);
+    const eligibility = await checkShiftEligibility(companyId, src.userId, trows[0].eligible_job_role_ids);
     if (!eligibility.ok) { res.status(403).json({ error: eligibility.error }); return; }
     const { rows: dup } = await query(
       `SELECT id FROM shifts WHERE company_id = $1 AND date = $2 AND user_id = $3 AND shift_type_id = $4 AND id <> $5 LIMIT 1`,
-      [companyId, date, old.userId, shiftTypeId, req.params.id]
+      [companyId, date, src.userId, shiftTypeId, src.kind === 'manual' ? src.id : '00000000-0000-0000-0000-000000000000']
     );
     if (dup.length) {
       res.status(409).json({ error: 'This person already has this shift on that date.' });
       return;
     }
-    const names = await shiftDisplayNames(companyId, old.userId, shiftTypeId);
+    const names = await shiftDisplayNames(companyId, src.userId, shiftTypeId);
     const conflict = await checkShiftConflict(query, companyId, {
-      userId: old.userId, personName: names.personName,
+      userId: src.userId, personName: names.personName,
       proposed: { date, shiftTypeId },
-      exclude: [{ date: old.date, shiftTypeId: old.shiftTypeId }],
+      exclude: [{ date: src.date, shiftTypeId: src.shiftTypeId }],
     });
     if (conflict) { res.status(409).json({ error: conflict }); return; }
-    await query(
-      `UPDATE shifts SET shift_type_id = $1, date = $2, updated_at = now() WHERE id = $3 AND company_id = $4`,
-      [shiftTypeId, date, req.params.id, companyId]
-    );
-    res.json({ ok: true });
+    let undo: any = null;
+    if (src.kind === 'manual') {
+      await query(
+        `UPDATE shifts SET shift_type_id = $1, date = $2, updated_at = now() WHERE id = $3 AND company_id = $4`,
+        [shiftTypeId, date, src.id, companyId]
+      );
+    } else {
+      const newId = crypto.randomUUID();
+      await withTransaction(async (tx) => {
+        await insertRotationExclusion(tx.query, companyId, src);
+        await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)`,
+          [newId, companyId, src.userId, shiftTypeId, date, src.published, req.session.userId!]
+        );
+      });
+      undo = {
+        ops: [
+          { deleteShiftId: newId },
+          { deleteExclusion: { rotationId: src.rotationId, userId: src.userId, date: src.date, shiftTypeId: src.shiftTypeId } },
+        ],
+      };
+    }
+    res.json(undo ? { ok: true, undo } : { ok: true });
     auditLog({
       companyId, date, action: 'updated',
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      details: { shiftId: req.params.id, via: 'drag' },
+      details: { shiftId: src.id, via: 'drag' },
     });
-    if (old.published !== false) {
-      const oldNames = await shiftDisplayNames(companyId, old.userId, old.shiftTypeId);
+    if (src.published) {
+      const oldNames = await shiftDisplayNames(companyId, src.userId, src.shiftTypeId);
       notify({
-        companyId, userIds: [old.userId], category: 'schedule', type: 'shift_changed',
+        companyId, userIds: [src.userId], category: 'schedule', type: 'shift_changed',
         title: `Shift changed: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
-        body: `Your shift changed from ${oldNames.shiftTypeName} on ${fmtDateLong(old.date)} to ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
-        link: 'my-schedule', bundleKey: `shift_changed:${old.userId}`,
+        body: `Your shift changed from ${oldNames.shiftTypeName} on ${fmtDateLong(src.date)} to ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
+        link: 'my-schedule', bundleKey: `shift_changed:${src.userId}`,
         bundleTitle: '{count} of your shifts changed',
         excludeUserId: req.session.userId!,
       });
@@ -1639,8 +1708,9 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
 });
 
 // POST /api/schedule/shifts/drag-swap — drag-and-drop swap: the people on two
-// manual shifts trade places (dates/types stay with the slots). Eligibility
-// and overlap/rest are simulated for BOTH people before anything moves.
+// shifts (manual rows and/or rotation instances) trade places; dates/types
+// stay with the slots. Eligibility and overlap/rest are simulated for BOTH
+// people before anything moves.
 router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -1649,12 +1719,8 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       res.status(400).json({ error: 'Two different shifts are required.' });
       return;
     }
-    const { rows } = await query(
-      'SELECT id, user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = ANY($1) AND company_id = $2',
-      [[aId, bId], companyId]
-    );
-    const a = rows.find((r: any) => r.id === aId);
-    const b = rows.find((r: any) => r.id === bId);
+    const a = await resolveDragRef(companyId, aId);
+    const b = await resolveDragRef(companyId, bId);
     if (!a || !b) { res.status(404).json({ error: 'Shift not found.' }); return; }
     if (a.userId === b.userId) { res.status(400).json({ error: 'That is the same person.' }); return; }
     if (a.date === b.date && a.shiftTypeId === b.shiftTypeId) {
@@ -1694,11 +1760,40 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       },
     ]);
     if (conflict) { res.status(409).json({ error: conflict }); return; }
+    let undo: any = null;
     await withTransaction(async (tx) => {
-      await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [b.userId, a.id, companyId]);
-      await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [a.userId, b.id, companyId]);
+      const ops: any[] = [];
+      if (a.kind === 'manual') {
+        await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [b.userId, a.id, companyId]);
+        ops.push({ updateShiftUser: { shiftId: a.id, userId: a.userId } });
+      } else {
+        await insertRotationExclusion(tx.query, companyId, a);
+        ops.push({ deleteExclusion: { rotationId: a.rotationId, userId: a.userId, date: a.date, shiftTypeId: a.shiftTypeId } });
+        const newId = crypto.randomUUID();
+        await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)`,
+          [newId, companyId, b.userId, a.shiftTypeId, a.date, a.published, req.session.userId!]
+        );
+        ops.push({ deleteShiftId: newId });
+      }
+      if (b.kind === 'manual') {
+        await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [a.userId, b.id, companyId]);
+        ops.push({ updateShiftUser: { shiftId: b.id, userId: b.userId } });
+      } else {
+        await insertRotationExclusion(tx.query, companyId, b);
+        ops.push({ deleteExclusion: { rotationId: b.rotationId, userId: b.userId, date: b.date, shiftTypeId: b.shiftTypeId } });
+        const newId = crypto.randomUUID();
+        await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)`,
+          [newId, companyId, a.userId, b.shiftTypeId, b.date, b.published, req.session.userId!]
+        );
+        ops.push({ deleteShiftId: newId });
+      }
+      if (a.kind === 'rotation' || b.kind === 'rotation') undo = { ops };
     });
-    res.json({ ok: true });
+    res.json(undo ? { ok: true, undo } : { ok: true });
     auditLog({
       companyId, date: a.date, action: 'updated',
       personName: namesB.personName, shiftTypeName: namesA.shiftTypeName,
@@ -1712,7 +1807,7 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       details: { shiftId: b.id, via: 'drag-swap' },
     });
     const actor = req.session.userId!;
-    if (b.published !== false) {
+    if (b.published) {
       notify({
         companyId, userIds: [a.userId], category: 'schedule', type: 'shift_changed',
         title: `Shift changed: ${namesB.shiftTypeName} on ${fmtDateLong(b.date)}`,
@@ -1722,7 +1817,7 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
         excludeUserId: actor,
       });
     }
-    if (a.published !== false) {
+    if (a.published) {
       notify({
         companyId, userIds: [b.userId], category: 'schedule', type: 'shift_changed',
         title: `Shift changed: ${namesA.shiftTypeName} on ${fmtDateLong(a.date)}`,
@@ -1738,6 +1833,47 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       return;
     }
     console.error('[schedule] drag-swap failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shifts/drag-undo — replay the inverse ops a drag-move /
+// drag-swap returned (rotation cases only; manual cases undo by re-calling
+// those endpoints). Restores exclusions and rows exactly as they were.
+router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const ops = (req.body?.undo?.ops || []) as any[];
+    if (!Array.isArray(ops) || !ops.length || ops.length > 8) {
+      res.status(400).json({ error: 'Nothing to undo.' });
+      return;
+    }
+    for (const op of ops) {
+      const kinds = ['deleteShiftId', 'deleteExclusion', 'updateShiftUser'].filter((k) => op && op[k]);
+      if (kinds.length !== 1) { res.status(400).json({ error: 'Nothing to undo.' }); return; }
+    }
+    await withTransaction(async (tx) => {
+      for (const op of ops) {
+        if (op.deleteShiftId) {
+          await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [op.deleteShiftId, companyId]);
+        } else if (op.deleteExclusion) {
+          const e = op.deleteExclusion;
+          await tx.query(
+            `DELETE FROM rotation_shift_exclusions
+             WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
+            [companyId, e.rotationId, e.userId, e.date, e.shiftTypeId]
+          );
+        } else if (op.updateShiftUser) {
+          const u = op.updateShiftUser;
+          const { rows: urows } = await tx.query('SELECT id FROM users WHERE id = $1 AND company_id = $2', [u.userId, companyId]);
+          if (!urows.length) throw new Error('undo user not in company');
+          await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [u.userId, u.shiftId, companyId]);
+        }
+      }
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] drag-undo failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

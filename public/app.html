@@ -2371,7 +2371,9 @@
         // --- Drag-and-drop move / swap + Ctrl+Z undo (Deepika, 2026-11-01) ---
         // Mouse: press and drag a person's box. Touch: press and HOLD to lift,
         // then tap where it goes (a day = move, an open slot = move to that
-        // shift, a person = swap). Rotation boxes (rot- ids) never drag.
+        // shift, a person = swap). Rotation instances (rot- ids) drag too:
+        // the server detaches that one occurrence into a real shift, and
+        // Ctrl+Z restores it (the endpoints return an undo payload).
         var qsUndoStack = [];
         var qsDrag = null;      // candidate / active drag
         var qsPlace = null;     // touch place-mode: { shift }
@@ -2385,7 +2387,7 @@
           var el = t.closest('#tab-schedule [data-shift-id]');
           if (!el) return null;
           var sid = el.getAttribute('data-shift-id');
-          if (!sid || sid.indexOf('rot-') === 0) return null;
+          if (!sid) return null;
           var s = shiftById(sid);
           if (!s || !shiftEditable(s)) return null;
           return { el: el, shift: s };
@@ -2398,7 +2400,6 @@
           if (box) {
             var bsid = box.getAttribute('data-shift-id');
             if (bsid === dragSid) return null;
-            if (bsid.indexOf('rot-') === 0) return { kind: 'none' };
             var ts = shiftById(bsid);
             if (ts) return { kind: 'swap', el: box, shift: ts };
             return { kind: 'none' };
@@ -2451,7 +2452,8 @@
             var other = target.shift;
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: shift.id, bId: other.id }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); loadAll(); return; }
-              qsUndoStack.push({ kind: 'swap', aId: shift.id, bId: other.id });
+              if (r.data && r.data.undo) qsUndoStack.push({ kind: 'server', undo: r.data.undo });
+              else qsUndoStack.push({ kind: 'swap', aId: shift.id, bId: other.id });
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
@@ -2462,7 +2464,8 @@
             if (date === shift.date && typeId === shift.shiftTypeId) return;
             api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); loadAll(); return; }
-              qsUndoStack.push({ kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId });
+              if (r.data && r.data.undo) qsUndoStack.push({ kind: 'server', undo: r.data.undo });
+              else qsUndoStack.push({ kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId });
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Moved. Ctrl+Z undoes it.');
@@ -2505,7 +2508,13 @@
           var u = qsUndoStack.pop();
           qsUndoBtnSync();
           if (!u) return;
-          if (u.kind === 'swap') {
+          if (u.kind === 'server') {
+            api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); loadAll(); return; }
+              pageSuccess('Undone.');
+              loadAll();
+            }).catch(function () { pageError('Could not undo that.'); });
+          } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); loadAll(); return; }
               pageSuccess('Undone.');
@@ -2617,7 +2626,7 @@
               var box = t.closest('#tab-schedule [data-shift-id]');
               if (box && box.getAttribute('data-shift-id') !== qsPlace.shift.id) {
                 var bsid = box.getAttribute('data-shift-id');
-                if (bsid.indexOf('rot-') !== 0) { var ts = shiftById(bsid); if (ts) target = { kind: 'swap', shift: ts }; }
+                var ts = shiftById(bsid); if (ts) target = { kind: 'swap', shift: ts };
               }
               if (!target) {
                 var slot = t.closest('#tab-schedule .open-slot');
