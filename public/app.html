@@ -4908,10 +4908,32 @@
           }
         }
         placeSchedToday();
+        // Phone (<=700px): Today moves up beside the heading, so the band
+        // Undo/Redo pair moves with it — beside Today in the heading row
+        // (Spot A as Deepika pictured it, 2026-11-01). Wider screens keep
+        // the pair in the date-nav, before the arrows.
+        function placeBandBtns() {
+          var ub = $('qs-undo-band'), rb = $('qs-redo-band'), today = $('sched-today');
+          var nav = document.querySelector('#tab-schedule .date-nav');
+          if (!ub || !rb || !nav) return;
+          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          if (phone && today && today.parentNode && today.parentNode.classList.contains('sched-h1-row')) {
+            var row = today.parentNode;
+            if (ub.parentNode !== row) row.insertBefore(ub, today);
+            if (rb.parentNode !== row) row.insertBefore(rb, today);
+          } else {
+            var pv = $('sched-prev');
+            if (ub.parentNode !== nav) { if (pv) nav.insertBefore(ub, pv); else nav.appendChild(ub); }
+            if (rb.parentNode !== nav) { if (pv) nav.insertBefore(rb, pv); else nav.appendChild(rb); }
+          }
+        }
+        placeBandBtns();
         if (window.matchMedia) {
           var schedMql = window.matchMedia('(max-width: 700px)');
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeSchedToday);
           else if (schedMql.addListener) schedMql.addListener(placeSchedToday);
+          if (schedMql.addEventListener) schedMql.addEventListener('change', placeBandBtns);
+          else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
         }
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
