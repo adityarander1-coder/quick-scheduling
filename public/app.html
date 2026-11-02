@@ -803,6 +803,9 @@
     #qs-undo-btn { position: fixed; right: 16px; bottom: 86px; z-index: 950; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 10px 16px; font-weight: 700; box-shadow: 0 6px 18px rgba(15,40,50,.35); cursor: pointer; }
     .qs-ur-btn { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 999px; padding: 0.4rem 0.75rem; font-weight: 700; font-size: 0.85rem; cursor: pointer; line-height: 1; }
     .qs-ur-btn:hover { background: rgba(255,255,255,.28); }
+    @media (max-width: 1023px) { #qs-undo-top, #qs-redo-top { display: none !important; } }
+    .qs-ur-band { display: none; }
+    @media (max-width: 1023px) { .qs-ur-band.qs-on { display: inline-flex; align-items: center; } }
     .app-header.light-chrome .qs-ur-btn { color: #21414c; border-color: rgba(33,65,76,.45); background: rgba(33,65,76,.08); }
     .qs-pal-pop { position: absolute; z-index: 1200; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(16,24,40,.22); padding: 10px 12px; width: 232px; }
     html[data-theme="dark"] .qs-pal-pop { background: #1f2937; }
@@ -1461,6 +1464,8 @@
             </select>
           </div>
           <div class="date-nav">
+            <button type="button" id="qs-undo-band" class="qs-ur-btn qs-ur-band" title="Undo (Ctrl+Z)">↩ Undo</button>
+            <button type="button" id="qs-redo-band" class="qs-ur-btn qs-ur-band" title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
             <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
@@ -15331,6 +15336,16 @@
         if (role === 'owner' || role === 'scheduler') {
           if (ub) ub.hidden = false;
           if (rb) rb.hidden = false;
+        }
+        // Phone placement (Deepika 2026-11-01): the webpage header keeps its
+        // buttons; on phones the header stays as it was and the pair lives in
+        // the Schedule control band instead (CSS shows them only < 1024px).
+        var bb1 = $('qs-undo-band'), bb2 = $('qs-redo-band');
+        if (bb1) bb1.addEventListener('click', function () { if (window.qsUndoClick) window.qsUndoClick(); });
+        if (bb2) bb2.addEventListener('click', function () { if (window.qsRedoClick) window.qsRedoClick(); });
+        if (role === 'owner' || role === 'scheduler') {
+          if (bb1) bb1.classList.add('qs-on');
+          if (bb2) bb2.classList.add('qs-on');
         }
       })();
       window.qsCurrentUserEmail = r.data.user.email;
