@@ -2375,6 +2375,7 @@
         // the server detaches that one occurrence into a real shift, and
         // Ctrl+Z restores it (the endpoints return an undo payload).
         var qsUndoStack = [];
+        var qsTaskUndoBusy = false;
         var qsDrag = null;      // candidate / active drag
         var qsPlace = null;     // touch place-mode: { shift }
         var qsSwallowClick = false;
@@ -2502,6 +2503,21 @@
           var tab = document.getElementById('tab-schedule');
           var onTab = tab && tab.classList.contains('active');
           if (btn) btn.style.display = (qsUndoStack.length && onTab) ? '' : 'none';
+        }
+
+        function qsTaskUndo() {
+          if (qsTaskUndoBusy) return;
+          qsTaskUndoBusy = true;
+          api('/api/schedule/plans/undo-latest', { method: 'POST', body: '{}' }).then(function (r) {
+            qsTaskUndoBusy = false;
+            if (!r.ok) {
+              pageError(r.status === 404 ? 'Nothing to undo.' : ((r.data && r.data.error) || 'Could not undo that task.'));
+              if (r.status !== 404) loadAll();
+              return;
+            }
+            pageSuccess('Task undone.');
+            loadAll();
+          }).catch(function () { qsTaskUndoBusy = false; pageError('Could not undo that task.'); });
         }
 
         function qsUndoLast() {
@@ -2659,10 +2675,13 @@
             if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
               var t = e.target;
               if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-              if (!tab.classList.contains('active')) return;
-              if (!qsUndoStack.length) return;
+              // Ctrl+Z undoes the last thing YOU did, on any tab: your
+              // last drag if one is waiting, otherwise your last
+              // approved task (the server refuses, changing nothing,
+              // when the task's changes were touched again afterwards).
               e.preventDefault();
-              qsUndoLast();
+              if (qsUndoStack.length) { qsUndoLast(); return; }
+              qsTaskUndo();
             }
           });
         })();
@@ -5503,7 +5522,7 @@
                 .then(function (res2) {
                   if (res2.ok) {
                     var n = ((res2.data && res2.data.results) || []).length;
-                    thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.';
+                    thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.' + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '');
                     var firstAction = (d.changes && d.changes[0] && d.changes[0].action) || '';
                     api('/api/schedule/agent-suggest', {
                       method: 'POST',
@@ -5645,7 +5664,7 @@
                 api('/api/schedule/plans/' + d.planId + '/approve', { method: 'POST' }).then(function (res2) {
                   if (res2.ok) {
                     var n = ((res2.data && res2.data.results) || []).length;
-                    openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.</div>' + foot()); bindFoot();
+                    openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.' + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '') + '</div>' + foot()); bindFoot();
                   } else {
                     openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot()); bindFoot();
                   }

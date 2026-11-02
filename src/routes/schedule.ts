@@ -5681,14 +5681,15 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       res.status(400).json({ error: `Plan is already ${plan.status}.` });
       return;
     }
-    // Execute the changes.
-    const { executePlan } = await import('../util/planExecutor.js');
+    // Execute the changes (with the before/after snapshot that makes
+    // the task undoable with Ctrl+Z — migration 073).
+    const { executePlanWithUndo } = await import('../util/planUndo.js');
     try {
-      const results = await executePlan(companyId, plan.plan, req.session.userId!);
+      const { results, undo } = await executePlanWithUndo(companyId, plan.plan, req.session.userId!);
       await query(
         `UPDATE schedule_plans SET status = 'executed', decided_at = now(),
-         decided_by = $2, executed_at = now() WHERE id = $1`,
-        [plan.id, req.session.userId!]
+         decided_by = $2, executed_at = now(), undo_payload = $3 WHERE id = $1`,
+        [plan.id, req.session.userId!, undo ? JSON.stringify(undo) : null]
       );
       // Audit: record each applied change — shared with the email approve
       // path so no approved change is missing from the Change report.
@@ -5697,7 +5698,7 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       } catch (auditErr) {
         console.error('[schedule] plan audit log failed:', (auditErr as any)?.message);
       }
-      res.json({ ok: true, results });
+      res.json({ ok: true, results, undoable: !!undo });
     } catch (execErr: any) {
       await query(
         'UPDATE schedule_plans SET status = $2, error = $3 WHERE id = $1',
@@ -5723,6 +5724,125 @@ router.post('/plans/:id/reject', requireRole('owner', 'scheduler'), async (req: 
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] reject plan failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// --- Ctrl+Z for tasks (Deepika 2026-11-01) ---------------------------------
+// Undoing a task replays the plan's stored before/after snapshot
+// (util/planUndo.ts). Only the person who approved the task may undo
+// it — the owner may undo anyone's. The undo refuses, changing
+// nothing, when anything the task touched has changed since.
+async function performPlanUndo(req: Request, res: Response, plan: any): Promise<boolean> {
+  const companyId = req.session.companyId!;
+  const userId = req.session.userId!;
+  if (!plan.undo_payload || plan.undone_at || !['executed', 'approved', 'partial'].includes(plan.status)) {
+    res.status(400).json({ error: 'This task can no longer be undone.' });
+    return false;
+  }
+  if (req.session.role !== 'owner' && plan.decided_by !== userId) {
+    res.status(403).json({ error: 'Only the person who approved this task can undo it — or the owner.' });
+    return false;
+  }
+  const { undoPlanChanges } = await import('../util/planUndo.js');
+  try {
+    await undoPlanChanges(companyId, plan.undo_payload);
+  } catch (e: any) {
+    res.status(409).json({ error: e?.message || 'This task can’t be undone cleanly. Nothing was undone.' });
+    return false;
+  }
+  await query(
+    `UPDATE schedule_plans SET status = 'undone', undone_at = now(), undone_by = $2 WHERE id = $1`,
+    [plan.id, userId]
+  );
+  // Change report + a heads-up for everyone whose shifts moved back.
+  try {
+    const entries: any[] = plan.undo_payload.entries || [];
+    const shiftEntries = entries.filter((e: any) => e.table === 'shifts');
+    const affected = new Set<string>();
+    for (const e of entries) {
+      for (const row of [e.before, e.after]) {
+        if (!row) continue;
+        if (e.table === 'shifts' && row.user_id) affected.add(row.user_id);
+        if (e.table === 'academic_sessions') {
+          if (row.lecturer_user_id) affected.add(row.lecturer_user_id);
+          if (row.supervisor_user_id) affected.add(row.supervisor_user_id);
+        }
+      }
+    }
+    for (const e of shiftEntries) {
+      const row = e.after || e.before;
+      if (!row) continue;
+      const names = await shiftDisplayNames(companyId, row.user_id, row.shift_type_id);
+      await auditLog({
+        companyId, date: String(row.date).slice(0, 10),
+        action: !e.before ? 'deleted' : !e.after ? 'created' : 'updated',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'agent', changedBy: userId,
+        details: { via: 'task-undo', planId: plan.id },
+      });
+    }
+    if (!shiftEntries.length) {
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings',
+        source: 'agent', changedBy: userId,
+        description: `Undid task: ${plan.plan_summary || 'schedule task'}`,
+        details: { via: 'task-undo', planId: plan.id },
+      });
+    }
+    affected.delete(userId);
+    if (affected.size) {
+      notify({
+        companyId, userIds: [...affected], category: 'schedule', type: 'shift_changed',
+        title: 'A schedule task was undone',
+        body: `The task "${plan.plan_summary || 'schedule change'}" was undone — your schedule is back to how it was before it.`,
+        link: 'my-schedule', bundleKey: 'task_undone',
+        bundleTitle: 'A schedule task was undone',
+        excludeUserId: userId,
+      });
+    }
+  } catch { /* audit/notify must never break the undo */ }
+  return true;
+}
+
+// POST /api/schedule/plans/undo-latest — Ctrl+Z: undo the newest task
+// this person approved (owner: the newest task anyone approved).
+router.post('/plans/undo-latest', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const isOwner = req.session.role === 'owner';
+    const { rows } = await query(
+      `SELECT * FROM schedule_plans
+       WHERE company_id = $1 AND undo_payload IS NOT NULL AND undone_at IS NULL
+         AND status IN ('executed', 'approved', 'partial')
+         AND ($2 OR decided_by = $3)
+       ORDER BY COALESCE(executed_at, decided_at, created_at) DESC LIMIT 1`,
+      [companyId, isOwner, req.session.userId!]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Nothing to undo.' }); return; }
+    if (await performPlanUndo(req, res, rows[0])) {
+      res.json({ ok: true, summary: rows[0].plan_summary });
+    }
+  } catch (err) {
+    console.error('[schedule] undo-latest failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/plans/:id/undo — undo one specific executed task.
+router.post('/plans/:id/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      'SELECT * FROM schedule_plans WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rows.length) { res.status(404).json({ error: 'Plan not found.' }); return; }
+    if (await performPlanUndo(req, res, rows[0])) {
+      res.json({ ok: true, summary: rows[0].plan_summary });
+    }
+  } catch (err) {
+    console.error('[schedule] undo plan failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -5823,9 +5943,9 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       }
       decidedBy = sessionUserId;
     }
-    // Execute the plan
-    const { executePlan } = await import('../util/planExecutor.js');
-    const results = await executePlan(plan.company_id, plan.plan, 'email-approval');
+    // Execute the plan (with the Ctrl+Z undo snapshot, migration 073).
+    const { executePlanWithUndo } = await import('../util/planUndo.js');
+    const { results, undo } = await executePlanWithUndo(plan.company_id, plan.plan, 'email-approval');
     const succeeded = results.filter((r: any) => r.success).length;
     const failed = results.length - succeeded;
     const allOk = failed === 0;
@@ -5835,13 +5955,13 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
     // approver (the plan-level path never recorded it — unchanged).
     if (trows.length) {
       await query(
-        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now(), decided_by = $3 WHERE id = $1`,
-        [plan.id, allOk ? 'approved' : 'partial', decidedBy]
+        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now(), decided_by = $3, undo_payload = $4 WHERE id = $1`,
+        [plan.id, allOk ? 'approved' : 'partial', decidedBy, undo ? JSON.stringify(undo) : null]
       );
     } else {
       await query(
-        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now() WHERE id = $1`,
-        [plan.id, allOk ? 'approved' : 'partial']
+        `UPDATE schedule_plans SET status = $2, decided_at = now(), executed_at = now(), undo_payload = $3 WHERE id = $1`,
+        [plan.id, allOk ? 'approved' : 'partial', undo ? JSON.stringify(undo) : null]
       );
     }
     // Audit: same Change-report rows as in-app approvals — email-approved
