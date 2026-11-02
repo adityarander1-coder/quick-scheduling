@@ -1108,7 +1108,7 @@ export async function executePlan(
           await query(
             `INSERT INTO shift_types (id, company_id, name, color, department_id)
              VALUES ($1, $2, $3, $4, $5)`,
-            [stId, companyId, change.shiftType.trim(), '#3b82f6', dept.id]
+            [stId, companyId, change.shiftType.trim(), '#7fc8bc', dept.id]
           );
           await query(
             'INSERT INTO shift_type_departments (shift_type_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',

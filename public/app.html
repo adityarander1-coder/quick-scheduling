@@ -672,6 +672,8 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name"><span class="brand-mark">◈</span>Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div id="hdr-controls" style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+        <button type="button" id="qs-undo-top" class="qs-ur-btn" title="Undo (Ctrl+Z)" hidden>↩ Undo</button>
+        <button type="button" id="qs-redo-top" class="qs-ur-btn" title="Redo (Ctrl+Shift+Z)" hidden>↪ Redo</button>
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
         <span class="avatar-wrap"><span id="user-avatar" class="user-avatar" hidden role="button" tabindex="0" title="Account" style="cursor:pointer"></span><span id="avatar-menu" class="avatar-menu" hidden>
           <span class="avatar-menu-head"><strong id="avatar-menu-name"></strong><span id="avatar-menu-sub"></span></span>
@@ -799,6 +801,15 @@
     #qs-place-banner { position: fixed; left: 50%; transform: translateX(-50%); bottom: 86px; z-index: 960; background: #21414c; color: #fff; border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 22px rgba(15,40,50,.4); max-width: min(92vw, 520px); font-size: .92rem; }
     #qs-place-banner button { background: #fff; color: #21414c; border: none; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
     #qs-undo-btn { position: fixed; right: 16px; bottom: 86px; z-index: 950; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 10px 16px; font-weight: 700; box-shadow: 0 6px 18px rgba(15,40,50,.35); cursor: pointer; }
+    .qs-ur-btn { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 999px; padding: 0.4rem 0.75rem; font-weight: 700; font-size: 0.85rem; cursor: pointer; line-height: 1; }
+    .qs-ur-btn:hover { background: rgba(255,255,255,.28); }
+    .app-header.light-chrome .qs-ur-btn { color: #21414c; border-color: rgba(33,65,76,.45); background: rgba(33,65,76,.08); }
+    .qs-pal-pop { position: absolute; z-index: 1200; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(16,24,40,.22); padding: 10px 12px; width: 232px; }
+    html[data-theme="dark"] .qs-pal-pop { background: #1f2937; }
+    .qs-pal-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .qs-pal-name { width: 76px; font-size: 0.78rem; font-weight: 700; color: var(--dim); flex: none; }
+    .qs-pal-sw { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(0,0,0,.12); cursor: pointer; padding: 0; flex: none; }
+    .qs-pal-sw.sel { border-color: #21414c; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #21414c; }
     #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
     #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
     #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
@@ -2540,6 +2551,10 @@
             loadAll();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not redo that task.'); });
         }
+      // Top-bar buttons (Deepika 2026-11-01): same priority as the keys —
+      // a waiting drag first, otherwise the newest task.
+      window.qsUndoClick = function () { if (qsUndoStack.length) qsUndoLast(); else qsTaskUndo(); };
+      window.qsRedoClick = function () { if (qsRedoStack.length) qsRedoLast(); else qsTaskRedo(); };
 
         function qsRedoLast() {
           var r = qsRedoStack.pop();
@@ -8321,8 +8336,12 @@
                   <input type="text" id="shift-new-name" placeholder="e.g. Morning Cashier" autocomplete="off">
                 </div>
                 <div class="form-row">
-                  <label>Color</label>
-                  <input type="color" id="shift-new-color" value="#3b82f6" style="width:60px;height:40px;padding:0">
+                  <label>Color — pick a shade</label>
+                  <div id="shift-new-palette"></div>
+                  <div style="margin-top:6px;display:flex;align-items:center;gap:8px">
+                    <input type="color" id="shift-new-color" value="#7fc8bc" style="width:60px;height:40px;padding:0">
+                    <span style="font-size:0.8rem;color:var(--dim)">or any custom colour</span>
+                  </div>
                 </div>
                 <div class="form-row">
                   <label>Departments <span class="hint">(optional — leave empty for all departments; check multiple for cross-department shifts)</span></label>
@@ -8343,6 +8362,77 @@
             (function () {
               // Shifts sub-panel — ported from settings.html shifts section, IDs prefixed shift-.
               var shiftTypes = [];
+              // Shift colour palette (Deepika 2026-11-01, mocks 4/5/6): 12 colour
+              // families x light/mid/deep, matched in depth to the navy-teal theme,
+              // plus 6 extra mid shades from mock 4.
+              var QS_PALETTE = [
+                { name: 'Teal', shades: ['#a9ddd3', '#7fc8bc', '#57ab9d'] },
+                { name: 'Aqua', shades: ['#aadfe2', '#82cfd2', '#57b3ba'] },
+                { name: 'Blue', shades: ['#b3cbe9', '#8fb4dd', '#6593c9'] },
+                { name: 'Periwinkle', shades: ['#c0cbf1', '#a3b1e6', '#7f8fd4'] },
+                { name: 'Lavender', shades: ['#d3c3ec', '#c0aae0', '#a184cc'] },
+                { name: 'Plum', shades: ['#e2bfdb', '#d3a6cc', '#ba83b1'] },
+                { name: 'Rose', shades: ['#efc5cf', '#e5a9b8', '#d1849a'] },
+                { name: 'Coral', shades: ['#f5c2b0', '#f0a58f', '#e18467'] },
+                { name: 'Amber', shades: ['#f4dcab', '#ecc987', '#dfb254'] },
+                { name: 'Lime', shades: ['#d6e6b3', '#c3d98f', '#a5c264'] },
+                { name: 'Sage', shades: ['#c2d6b8', '#a9c69b', '#87ab74'] },
+                { name: 'Mint', shades: ['#b5e3c9', '#93d3ae', '#68bd8b'] },
+              ];
+              var QS_PALETTE_EXTRA = [
+                { name: 'Peach', color: '#f2bc94' }, { name: 'Gold', color: '#e3d189' },
+                { name: 'Steel blue', color: '#93aec4' }, { name: 'Mauve', color: '#d9a8a0' },
+                { name: 'Olive', color: '#bfc48d' }, { name: 'Sea green', color: '#a8c8c0' },
+              ];
+              var rowColorEdits = {};
+              function qsPaletteHTML(selected) {
+                var sel = String(selected || '').toLowerCase();
+                var h = '';
+                QS_PALETTE.forEach(function (fam) {
+                  h += '<div class="qs-pal-row"><span class="qs-pal-name">' + fam.name + '</span>' + fam.shades.map(function (hex, k) {
+                    return '<button type="button" class="qs-pal-sw' + (hex === sel ? ' sel' : '') + '" data-hex="' + hex + '" title="' + fam.name + ' ' + ['light', 'mid', 'deep'][k] + '" style="background:' + hex + '"></button>';
+                  }).join('') + '</div>';
+                });
+                h += '<div class="qs-pal-row"><span class="qs-pal-name">More</span>' + QS_PALETTE_EXTRA.map(function (e) {
+                  return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
+                }).join('') + '</div>';
+                return h;
+              }
+              var qsPalPop = null;
+              function qsClosePalette() {
+                if (!qsPalPop) return;
+                qsPalPop.remove(); qsPalPop = null;
+                document.removeEventListener('mousedown', qsPalOutside, true);
+              }
+              function qsPalOutside(e) { if (qsPalPop && !qsPalPop.contains(e.target)) qsClosePalette(); }
+              function qsOpenPalette(anchor, selected, onPick) {
+                qsClosePalette();
+                var pop = document.createElement('div');
+                pop.className = 'qs-pal-pop';
+                pop.innerHTML = qsPaletteHTML(selected);
+                document.body.appendChild(pop);
+                var r = anchor.getBoundingClientRect();
+                pop.style.top = (r.bottom + window.scrollY + 6) + 'px';
+                pop.style.left = Math.max(8, Math.min(r.left + window.scrollX, window.innerWidth - 248)) + 'px';
+                pop.addEventListener('click', function (e) {
+                  var sw = e.target.closest ? e.target.closest('.qs-pal-sw') : null;
+                  if (!sw) return;
+                  onPick(sw.getAttribute('data-hex'));
+                  qsClosePalette();
+                });
+                document.addEventListener('mousedown', qsPalOutside, true);
+                qsPalPop = pop;
+              }
+              function qsNextPaletteColor() {
+                var used = {};
+                shiftTypes.forEach(function (st) { if (st.color) used[String(st.color).toLowerCase()] = 1; });
+                for (var k = 1; k <= 2; k++) {
+                  for (var f = 0; f < QS_PALETTE.length; f++) {
+                    if (!used[QS_PALETTE[f].shades[k]]) return QS_PALETTE[f].shades[k];
+                  }
+                }
+                return '#7fc8bc';
+              }
               var departments = [];
               var deptRoles = {}; // deptId -> job roles (loaded per loadAll)
 
@@ -8572,7 +8662,9 @@
                   if (editable) anyEditable = true;
                   var deleted = st.isActive === false;
                   html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
-                    '<span class="color-dot" style="background:' + esc(st.color) + '"></span>' +
+                    ((editable && !deleted)
+                      ? '<button type="button" class="color-dot qs-dot-btn" data-doti="' + i + '" title="Change colour" style="background:' + esc(rowColorEdits[st.id] || st.color) + ';cursor:pointer;padding:0"></button>'
+                      : '<span class="color-dot" style="background:' + esc(rowColorEdits[st.id] || st.color) + '"></span>') +
                     (editable && !deleted
                       ? '<input type="text" id="shift-name-' + i + '" value="' + esc(st.name) + '" style="font-weight:700;font-size:1rem;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;min-width:140px;flex:1;font-family:inherit">'
                       : '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
@@ -8662,20 +8754,46 @@
                       endTime: $('shift-end-' + i).value,
                       departmentIds: checkedDeptIds('row' + i),
                       eligibleJobRoleIds: checkedRoleIds('roles-row' + i),
+                      color: rowColorEdits[st.id] || undefined,
                     }),
                   }));
                 });
                 Promise.all(updates).then(function (rs) {
                   var failed = rs.filter(function (r) { return !r.ok; });
                   if (failed.length) pageError('Some shift types could not be saved. Please try again.');
-                  else pageSuccess('Shift types saved.');
+                  else { rowColorEdits = {}; pageSuccess('Shift types saved.'); }
                   loadAll();
                 });
               });
 
+              function renderNewPalette() {
+                var host = $('shift-new-palette');
+                if (host) host.innerHTML = qsPaletteHTML($('shift-new-color').value);
+              }
+              if ($('shift-new-palette')) {
+                $('shift-new-palette').addEventListener('click', function (e) {
+                  var sw = e.target.closest ? e.target.closest('.qs-pal-sw') : null;
+                  if (!sw) return;
+                  $('shift-new-color').value = sw.getAttribute('data-hex');
+                  renderNewPalette();
+                });
+                $('shift-new-color').addEventListener('input', renderNewPalette);
+              }
+              // Existing-row colour dots: one delegated picker for the whole list.
+              $('shift-shifts-list').addEventListener('click', function (e) {
+                var b = e.target.closest ? e.target.closest('.qs-dot-btn') : null;
+                if (!b) return;
+                var st = shiftTypes[Number(b.getAttribute('data-doti'))];
+                if (!st) return;
+                qsOpenPalette(b, rowColorEdits[st.id] || st.color, function (hex) {
+                  rowColorEdits[st.id] = hex;
+                  b.style.background = hex;
+                });
+              });
               $('shift-add-btn').addEventListener('click', function () {
                 $('shift-new-name').value = '';
-                $('shift-new-color').value = '#3b82f6';
+                $('shift-new-color').value = qsNextPaletteColor();
+                renderNewPalette();
                 hide($('shift-modal-error'));
                 renderNewModalRoles();
                 show($('shift-modal'));
@@ -15128,6 +15246,15 @@
       $('user-chip').textContent = r.data.user.name + ' (' + role + ')';
       window.qsCurrentUserName = r.data.user.name;
       window.qsCurrentUserRole = role;
+      (function () {
+        var ub = $('qs-undo-top'), rb = $('qs-redo-top');
+        if (ub) ub.addEventListener('click', function () { if (window.qsUndoClick) window.qsUndoClick(); });
+        if (rb) rb.addEventListener('click', function () { if (window.qsRedoClick) window.qsRedoClick(); });
+        if (role === 'owner' || role === 'scheduler') {
+          if (ub) ub.hidden = false;
+          if (rb) rb.hidden = false;
+        }
+      })();
       window.qsCurrentUserEmail = r.data.user.email;
       (function () {
         var av = $('user-avatar');

@@ -333,7 +333,7 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
       `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, department_id, eligible_job_role_ids)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [id, companyId, String(name).trim(), String(shortName || '').trim(),
-       String(color || '#3b82f6'), String(textColor || '#ffffff'), Number(sortOrder) || 0,
+       String(color || '#7fc8bc'), String(textColor || '#ffffff'), Number(sortOrder) || 0,
        validDeptIds[0] || null, elig.ids]
     );
     for (const dd of validDeptIds) {
