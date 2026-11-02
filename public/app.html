@@ -810,6 +810,10 @@
     .qs-pal-name { width: 76px; font-size: 0.78rem; font-weight: 700; color: var(--dim); flex: none; }
     .qs-pal-sw { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(0,0,0,.12); cursor: pointer; padding: 0; flex: none; }
     .qs-pal-sw.sel { border-color: #21414c; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #21414c; }
+    .qs-pal-pop { max-height: 70vh; overflow-y: auto; }
+    .qs-pal-sec { font-size: 0.78rem; font-weight: 700; color: var(--dim); margin: 8px 0 2px; }
+    .qs-pal-row.wrap { flex-wrap: wrap; }
+    .qs-pal-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
     #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
     #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
     #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
@@ -8384,6 +8388,29 @@
                 { name: 'Steel blue', color: '#93aec4' }, { name: 'Mauve', color: '#d9a8a0' },
                 { name: 'Olive', color: '#bfc48d' }, { name: 'Sea green', color: '#a8c8c0' },
               ];
+              // Earlier discussed sets (mocks 1 + 2, Oct 26 / Nov 1): the muted
+              // theme tones — kept as options alongside the ladders.
+              var QS_PALETTE_EARLIER = [
+                { name: 'Teal mist', color: '#d9efee' }, { name: 'Deep teal mist', color: '#c2ddd9' },
+                { name: 'Slate blue', color: '#dbe7ea' }, { name: 'Dusty blue', color: '#d3e2e8' },
+                { name: 'Sage mist', color: '#dde8dd' }, { name: 'Sea grey', color: '#e2e8e6' },
+                { name: 'Navy mist', color: '#cfdbe2' }, { name: 'Moss teal', color: '#d8e4e0' },
+                { name: 'Stone', color: '#e0e7e3' }, { name: 'Aqua grey', color: '#cfe0e3' },
+                { name: 'Mist', color: '#e6ecec' }, { name: 'Steel', color: '#d5dee0' },
+                { name: 'Spruce', color: '#bcd8d2' }, { name: 'Eucalyptus', color: '#c9dcd8' },
+                { name: 'Harbour', color: '#c3d5de' }, { name: 'Fog blue', color: '#d0dde6' },
+                { name: 'Fern', color: '#d2dfd0' }, { name: 'Pale sage', color: '#e3e9e4' },
+                { name: 'Lagoon', color: '#bfd4da' }, { name: 'Seafoam grey', color: '#ccd9cf' },
+                { name: 'Pewter', color: '#d7dee2' }, { name: 'Denim mist', color: '#c8d8e2' },
+                { name: 'Glacier', color: '#dae8e2' }, { name: 'Heather', color: '#e1e6ea' },
+                { name: 'Teal deep mist', color: '#a9ccc5' }, { name: 'Slate deep', color: '#b9cfdd' },
+                { name: 'Pine mist', color: '#b7d2cb' }, { name: 'Sage deep', color: '#c2d6cf' },
+                { name: 'Harbour deep', color: '#bccfda' }, { name: 'Fern pale', color: '#d9e2da' },
+              ];
+              var QS_ALL_SET = {};
+              QS_PALETTE.forEach(function (f) { f.shades.forEach(function (hx) { QS_ALL_SET[hx] = 1; }); });
+              QS_PALETTE_EXTRA.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
+              QS_PALETTE_EARLIER.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
               var rowColorEdits = {};
               function qsPaletteHTML(selected) {
                 var sel = String(selected || '').toLowerCase();
@@ -8393,9 +8420,22 @@
                     return '<button type="button" class="qs-pal-sw' + (hex === sel ? ' sel' : '') + '" data-hex="' + hex + '" title="' + fam.name + ' ' + ['light', 'mid', 'deep'][k] + '" style="background:' + hex + '"></button>';
                   }).join('') + '</div>';
                 });
-                h += '<div class="qs-pal-row"><span class="qs-pal-name">More</span>' + QS_PALETTE_EXTRA.map(function (e) {
+                h += '<div class="qs-pal-row wrap"><span class="qs-pal-name">More</span>' + QS_PALETTE_EXTRA.map(function (e) {
                   return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
                 }).join('') + '</div>';
+                h += '<div class="qs-pal-sec">Earlier set</div><div class="qs-pal-wrap">' + QS_PALETTE_EARLIER.map(function (e) {
+                  return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
+                }).join('') + '</div>';
+                var seenNow = {}, nowList = [];
+                shiftTypes.forEach(function (st) {
+                  var c = String(st.color || '').toLowerCase();
+                  if (c && !seenNow[c] && !QS_ALL_SET[c]) { seenNow[c] = 1; nowList.push({ color: c, name: st.name }); }
+                });
+                if (nowList.length) {
+                  h += '<div class="qs-pal-sec">Your colours now</div><div class="qs-pal-wrap">' + nowList.map(function (e) {
+                    return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + esc(e.name) + ' — current colour" style="background:' + e.color + '"></button>';
+                  }).join('') + '</div>';
+                }
                 return h;
               }
               var qsPalPop = null;
