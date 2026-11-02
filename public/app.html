@@ -790,6 +790,15 @@
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
     #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
+    /* Drag-and-drop move/swap (2026-11-01) */
+    #tab-schedule .qs-drag-src { opacity: .35; }
+    #tab-schedule .qs-person { cursor: grab; border-radius: 4px; padding: 0 2px; }
+    .qs-drag-ghost { position: fixed; z-index: 9999; pointer-events: none; opacity: .94; box-shadow: 0 10px 24px rgba(15,40,50,.35); border-radius: 9px; }
+    #tab-schedule .qs-drop-hl { outline: 3px solid #0e7c86 !important; outline-offset: 1px; }
+    #tab-schedule .day-box.qs-drop-hl, #tab-schedule .month-strip-day.qs-drop-hl { outline-offset: -3px; background: #e6f4f5; }
+    #qs-place-banner { position: fixed; left: 50%; transform: translateX(-50%); bottom: 86px; z-index: 960; background: #21414c; color: #fff; border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 22px rgba(15,40,50,.4); max-width: min(92vw, 520px); font-size: .92rem; }
+    #qs-place-banner button { background: #fff; color: #21414c; border: none; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
+    #qs-undo-btn { position: fixed; right: 16px; bottom: 86px; z-index: 950; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 10px 16px; font-weight: 700; box-shadow: 0 6px 18px rgba(15,40,50,.35); cursor: pointer; }
     #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
     #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
     #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
@@ -2359,6 +2368,296 @@
           return out;
         }
 
+        // --- Drag-and-drop move / swap + Ctrl+Z undo (Deepika, 2026-11-01) ---
+        // Mouse: press and drag a person's box. Touch: press and HOLD to lift,
+        // then tap where it goes (a day = move, an open slot = move to that
+        // shift, a person = swap). Rotation boxes (rot- ids) never drag.
+        var qsUndoStack = [];
+        var qsDrag = null;      // candidate / active drag
+        var qsPlace = null;     // touch place-mode: { shift }
+        var qsSwallowClick = false;
+
+        function qsDragSource(e) {
+          if (!sched.canEdit) return null;
+          var t = e.target;
+          if (!t || !t.closest) return null;
+          if (t.closest('button')) return null; // box buttons keep their own taps
+          var el = t.closest('#tab-schedule [data-shift-id]');
+          if (!el) return null;
+          var sid = el.getAttribute('data-shift-id');
+          if (!sid || sid.indexOf('rot-') === 0) return null;
+          var s = shiftById(sid);
+          if (!s || !shiftEditable(s)) return null;
+          return { el: el, shift: s };
+        }
+
+        function qsDropTarget(x, y, dragSid) {
+          var el = document.elementFromPoint(x, y);
+          if (!el || !el.closest) return null;
+          var box = el.closest('#tab-schedule [data-shift-id]');
+          if (box) {
+            var bsid = box.getAttribute('data-shift-id');
+            if (bsid === dragSid) return null;
+            if (bsid.indexOf('rot-') === 0) return { kind: 'none' };
+            var ts = shiftById(bsid);
+            if (ts) return { kind: 'swap', el: box, shift: ts };
+            return { kind: 'none' };
+          }
+          var slot = el.closest('#tab-schedule .open-slot');
+          if (slot) return { kind: 'move', el: slot, date: slot.getAttribute('data-date'), shiftTypeId: slot.getAttribute('data-shifttype') };
+          var gchip = el.closest('#tab-schedule .month-chip[data-shifttype]');
+          if (gchip) {
+            var cell = gchip.closest('[data-date]');
+            if (cell) return { kind: 'move', el: gchip, date: cell.getAttribute('data-date'), shiftTypeId: gchip.getAttribute('data-shifttype') };
+          }
+          var day = el.closest('#tab-schedule .day-box[data-date], #tab-schedule .month-strip-day[data-date], #tab-schedule .day-row[data-date]');
+          if (day) return { kind: 'move', el: day, date: day.getAttribute('data-date'), shiftTypeId: null };
+          return null;
+        }
+
+        function qsHl(target) {
+          if (qsDrag && qsDrag.hlEl) { qsDrag.hlEl.classList.remove('qs-drop-hl'); qsDrag.hlEl = null; }
+          if (target && target.el && target.kind !== 'none') { target.el.classList.add('qs-drop-hl'); if (qsDrag) qsDrag.hlEl = target.el; }
+        }
+
+        function qsMakeGhost(srcEl, x, y) {
+          // A name inside a grouped month chip lifts the whole chip.
+          if (srcEl.classList.contains('qs-person')) {
+            var chip = srcEl.closest('.month-chip');
+            if (chip) srcEl = chip;
+          }
+          var r = srcEl.getBoundingClientRect();
+          var g = srcEl.cloneNode(true);
+          g.classList.add('qs-drag-ghost');
+          g.style.width = r.width + 'px';
+          g.style.left = (x - (qsDrag ? qsDrag.grabDX : r.width / 2)) + 'px';
+          g.style.top = (y - (qsDrag ? qsDrag.grabDY : r.height / 2)) + 'px';
+          g.style.margin = '0';
+          document.body.appendChild(g);
+          return g;
+        }
+
+        function qsEndDragVisual() {
+          if (!qsDrag) return;
+          if (qsDrag.hlEl) qsDrag.hlEl.classList.remove('qs-drop-hl');
+          if (qsDrag.ghost) qsDrag.ghost.remove();
+          if (qsDrag.el) qsDrag.el.classList.remove('qs-drag-src');
+          if (qsDrag.timer) clearTimeout(qsDrag.timer);
+        }
+
+        function qsExecuteDrop(shift, target) {
+          if (!target || target.kind === 'none') return;
+          if (target.kind === 'swap') {
+            var other = target.shift;
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: shift.id, bId: other.id }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); loadAll(); return; }
+              qsUndoStack.push({ kind: 'swap', aId: shift.id, bId: other.id });
+              if (qsUndoStack.length > 10) qsUndoStack.shift();
+              qsUndoBtnSync();
+              pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
+              loadAll();
+            }).catch(function () { pageError('Could not swap those shifts.'); });
+          } else {
+            var date = target.date, typeId = target.shiftTypeId || shift.shiftTypeId;
+            if (date === shift.date && typeId === shift.shiftTypeId) return;
+            api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); loadAll(); return; }
+              qsUndoStack.push({ kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId });
+              if (qsUndoStack.length > 10) qsUndoStack.shift();
+              qsUndoBtnSync();
+              pageSuccess('Moved. Ctrl+Z undoes it.');
+              loadAll();
+            }).catch(function () { pageError('Could not move that shift.'); });
+          }
+        }
+
+        function qsEnterPlace(shift, srcEl) {
+          qsExitPlace();
+          qsPlace = { shift: shift };
+          if (srcEl) srcEl.classList.add('qs-drag-src');
+          var st = shiftTypeById(shift.shiftTypeId);
+          var b = document.createElement('div');
+          b.id = 'qs-place-banner';
+          b.innerHTML = '<span>Moving <b>' + esc(displayName(shift)) + '</b> (' + esc(st ? st.name : 'Shift') + ', ' + esc(fmtLong(shift.date)) + ') — tap the day, open slot, or person to swap with.</span>';
+          var x = document.createElement('button');
+          x.type = 'button'; x.textContent = 'Cancel';
+          x.addEventListener('click', function (ev) { ev.stopPropagation(); qsExitPlace(); });
+          b.appendChild(x);
+          document.body.appendChild(b);
+        }
+        function qsExitPlace() {
+          if (qsPlace) {
+            document.querySelectorAll('#tab-schedule .qs-drag-src').forEach(function (n) { n.classList.remove('qs-drag-src'); });
+          }
+          qsPlace = null;
+          var b = document.getElementById('qs-place-banner');
+          if (b) b.remove();
+        }
+
+        function qsUndoBtnSync() {
+          var btn = document.getElementById('qs-undo-btn');
+          var tab = document.getElementById('tab-schedule');
+          var onTab = tab && tab.classList.contains('active');
+          if (btn) btn.style.display = (qsUndoStack.length && onTab) ? '' : 'none';
+        }
+
+        function qsUndoLast() {
+          var u = qsUndoStack.pop();
+          qsUndoBtnSync();
+          if (!u) return;
+          if (u.kind === 'swap') {
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); loadAll(); return; }
+              pageSuccess('Undone.');
+              loadAll();
+            }).catch(function () { pageError('Could not undo that swap.'); });
+          } else {
+            api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); loadAll(); return; }
+              pageSuccess('Undone.');
+              loadAll();
+            }).catch(function () { pageError('Could not undo that move.'); });
+          }
+        }
+
+        (function initQsDrag() {
+          var tab = document.getElementById('tab-schedule');
+          if (!tab) return;
+          var undoBtn = document.createElement('button');
+          undoBtn.id = 'qs-undo-btn';
+          undoBtn.type = 'button';
+          undoBtn.textContent = '↩ Undo';
+          undoBtn.style.display = 'none';
+          undoBtn.addEventListener('click', function () { qsUndoLast(); });
+          document.body.appendChild(undoBtn);
+          new MutationObserver(qsUndoBtnSync).observe(tab, { attributes: true, attributeFilter: ['class'] });
+
+          tab.addEventListener('pointerdown', function (e) {
+            if (qsPlace) return; // place-mode taps are clicks, handled below
+            if (e.button !== undefined && e.button !== 0) return;
+            var src = qsDragSource(e);
+            if (!src) return;
+            var r = src.el.getBoundingClientRect();
+            qsDrag = {
+              shift: src.shift, el: src.el, pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
+              x0: e.clientX, y0: e.clientY, grabDX: e.clientX - r.left, grabDY: e.clientY - r.top,
+              armed: false, ghost: null, hlEl: null, timer: null,
+            };
+            if (qsDrag.pointerType !== 'mouse') {
+              qsDrag.timer = setTimeout(function () {
+                if (qsDrag && !qsDrag.armed) {
+                  qsDrag.armed = true;
+                  src.el.classList.add('qs-drag-src');
+                  qsDrag.ghost = qsMakeGhost(src.el, qsDrag.x0, qsDrag.y0);
+                }
+              }, 300);
+            }
+          });
+
+          document.addEventListener('pointermove', function (e) {
+            if (!qsDrag || e.pointerId !== qsDrag.pointerId) return;
+            var dx = e.clientX - qsDrag.x0, dy = e.clientY - qsDrag.y0;
+            var dist = Math.sqrt(dx * dx + dy * dy);
+            if (!qsDrag.armed) {
+              if (qsDrag.pointerType === 'mouse') {
+                if (dist > 8) {
+                  qsDrag.armed = true;
+                  qsDrag.el.classList.add('qs-drag-src');
+                  qsDrag.ghost = qsMakeGhost(qsDrag.el, e.clientX, e.clientY);
+                }
+              } else if (dist > 12) {
+                // Finger moved before the hold armed: it is a scroll.
+                qsEndDragVisual(); qsDrag = null;
+              }
+              return;
+            }
+            if (qsDrag.ghost) {
+              qsDrag.ghost.style.left = (e.clientX - qsDrag.grabDX) + 'px';
+              qsDrag.ghost.style.top = (e.clientY - qsDrag.grabDY) + 'px';
+            }
+            qsHl(qsDropTarget(e.clientX, e.clientY, qsDrag.shift.id));
+            if (e.cancelable) e.preventDefault();
+          }, { passive: false });
+
+          document.addEventListener('pointerup', function (e) {
+            if (!qsDrag || e.pointerId !== qsDrag.pointerId) return;
+            var d = qsDrag;
+            var wasArmed = d.armed;
+            var target = wasArmed ? qsDropTarget(e.clientX, e.clientY, d.shift.id) : null;
+            // Dropping back onto the shift's own slot is not a drop — for
+            // touch it falls through to place mode instead.
+            if (target && target.kind === 'move' && target.date === d.shift.date &&
+              (target.shiftTypeId || d.shift.shiftTypeId) === d.shift.shiftTypeId) target = null;
+            qsEndDragVisual();
+            qsDrag = null;
+            if (!wasArmed) return;
+            qsSwallowClick = true;
+            setTimeout(function () { qsSwallowClick = false; }, 400);
+            if (target && target.kind !== 'none') { qsExecuteDrop(d.shift, target); return; }
+            // Touch: released with no target — stay lifted in place mode so
+            // the user can tap the destination instead.
+            if (d.pointerType !== 'mouse') qsEnterPlace(d.shift, null);
+          });
+
+          document.addEventListener('pointercancel', function (e) {
+            if (!qsDrag || e.pointerId !== qsDrag.pointerId) return;
+            qsEndDragVisual();
+            qsDrag = null;
+          });
+
+          // Swallow the click that follows a finished drag (it would
+          // otherwise open the day modal / shift popup).
+          document.addEventListener('click', function (e) {
+            if (qsSwallowClick) { qsSwallowClick = false; e.stopPropagation(); e.preventDefault(); return; }
+            if (qsPlace) {
+              var t = e.target;
+              if (!t || !t.closest || t.closest('#qs-place-banner')) return;
+              var target = null;
+              // Resolve the tap like a drop, using the tapped element chain.
+              var box = t.closest('#tab-schedule [data-shift-id]');
+              if (box && box.getAttribute('data-shift-id') !== qsPlace.shift.id) {
+                var bsid = box.getAttribute('data-shift-id');
+                if (bsid.indexOf('rot-') !== 0) { var ts = shiftById(bsid); if (ts) target = { kind: 'swap', shift: ts }; }
+              }
+              if (!target) {
+                var slot = t.closest('#tab-schedule .open-slot');
+                if (slot) target = { kind: 'move', date: slot.getAttribute('data-date'), shiftTypeId: slot.getAttribute('data-shifttype') };
+              }
+              if (!target) {
+                var gchip = t.closest('#tab-schedule .month-chip[data-shifttype]');
+                if (gchip) {
+                  var cell = gchip.closest('[data-date]');
+                  if (cell) target = { kind: 'move', date: cell.getAttribute('data-date'), shiftTypeId: gchip.getAttribute('data-shifttype') };
+                }
+              }
+              if (!target) {
+                var day = t.closest('#tab-schedule .day-box[data-date], #tab-schedule .month-strip-day[data-date], #tab-schedule .day-row[data-date]');
+                if (day) target = { kind: 'move', date: day.getAttribute('data-date'), shiftTypeId: null };
+              }
+              e.stopPropagation(); e.preventDefault();
+              var shift = qsPlace.shift;
+              qsExitPlace();
+              if (target) qsExecuteDrop(shift, target);
+            }
+          }, true);
+
+          document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+              if (qsDrag) { qsEndDragVisual(); qsDrag = null; }
+              if (qsPlace) qsExitPlace();
+              return;
+            }
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+              var t = e.target;
+              if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+              if (!tab.classList.contains('active')) return;
+              if (!qsUndoStack.length) return;
+              e.preventDefault();
+              qsUndoLast();
+            }
+          });
+        })();
+
         function renderBlockView(el) {
           var r = viewRange();
           var startD = parseDate(r.from);
@@ -2590,7 +2889,7 @@
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
-          return '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+          return '<div class="month-chip" data-shift-id="' + s.id + '" data-shifttype="' + s.shiftTypeId + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
             '" title="' + esc(nm + ' \u2014 ' + shiftName) + '">' +
             '<span class="dot" style="background:' + esc(color) + '"></span>' +
             '<span><strong>' + esc(shiftName) + '</strong> \u2014 ' + esc(nm) + '</span></div>';
@@ -2633,9 +2932,9 @@
             var published = items[0].published !== false;
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
-            var names = items.map(function (s) { return esc(displayName(s)); }).join('<br>');
+            var names = items.map(function (s) { return '<span class="qs-person" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>'; }).join('<br>');
             var title = esc(items.map(function (s) { return displayName(s); }).join(', ') + ' — ' + shiftName);
-            html += '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+            html += '<div class="month-chip" data-shifttype="' + st.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
               '" title="' + title + '">' +
               '<span class="dot" style="background:' + esc(color) + '"></span>' +
               '<span><strong>' + esc(shiftName) + '</strong><br>' + names + '</span></div>';
@@ -2647,7 +2946,7 @@
             if (renderedIds[s.id]) return;
             var st = shiftTypeById(s.shiftTypeId);
             var color = '#637a8e';
-            html += '<div class="month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+            html += '<div class="month-chip" data-shift-id="' + s.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
               '"><span class="dot" style="background:' + esc(color) + '"></span>' +
               '<span><strong>' + esc(st ? st.name : '') + '</strong><br>' + esc(displayName(s)) + '</span></div>';
           });

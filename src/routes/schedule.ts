@@ -1559,6 +1559,189 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
   }
 });
 
+// POST /api/schedule/shifts/:id/drag-move — drag-and-drop move of one manual
+// shift to a new date and/or shift type (Deepika, 2026-11-01). Same person,
+// same published state; eligibility + duplicate + overlap/rest guards all
+// apply, exactly like a fresh manual assign.
+router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { date, shiftTypeId } = req.body ?? {};
+    if (!isValidDate(date) || !shiftTypeId) {
+      res.status(400).json({ error: 'A valid date and shift type are required.' });
+      return;
+    }
+    const { rows: existRows } = await query(
+      'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!existRows.length) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    const old = existRows[0];
+    if (old.date === date && old.shiftTypeId === shiftTypeId) { res.json({ ok: true, noop: true }); return; }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments(
+        [{ userId: old.userId, shiftTypeId }, { userId: old.userId, shiftTypeId: old.shiftTypeId }],
+        companyId)
+    ))) return;
+    const { rows: trows } = await query(
+      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2',
+      [shiftTypeId, companyId]
+    );
+    if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    const eligibility = await checkShiftEligibility(companyId, old.userId, trows[0].eligible_job_role_ids);
+    if (!eligibility.ok) { res.status(403).json({ error: eligibility.error }); return; }
+    const { rows: dup } = await query(
+      `SELECT id FROM shifts WHERE company_id = $1 AND date = $2 AND user_id = $3 AND shift_type_id = $4 AND id <> $5 LIMIT 1`,
+      [companyId, date, old.userId, shiftTypeId, req.params.id]
+    );
+    if (dup.length) {
+      res.status(409).json({ error: 'This person already has this shift on that date.' });
+      return;
+    }
+    const names = await shiftDisplayNames(companyId, old.userId, shiftTypeId);
+    const conflict = await checkShiftConflict(query, companyId, {
+      userId: old.userId, personName: names.personName,
+      proposed: { date, shiftTypeId },
+      exclude: [{ date: old.date, shiftTypeId: old.shiftTypeId }],
+    });
+    if (conflict) { res.status(409).json({ error: conflict }); return; }
+    await query(
+      `UPDATE shifts SET shift_type_id = $1, date = $2, updated_at = now() WHERE id = $3 AND company_id = $4`,
+      [shiftTypeId, date, req.params.id, companyId]
+    );
+    res.json({ ok: true });
+    auditLog({
+      companyId, date, action: 'updated',
+      personName: names.personName, shiftTypeName: names.shiftTypeName,
+      source: 'manual', changedBy: req.session.userId!,
+      details: { shiftId: req.params.id, via: 'drag' },
+    });
+    if (old.published !== false) {
+      const oldNames = await shiftDisplayNames(companyId, old.userId, old.shiftTypeId);
+      notify({
+        companyId, userIds: [old.userId], category: 'schedule', type: 'shift_changed',
+        title: `Shift changed: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+        body: `Your shift changed from ${oldNames.shiftTypeName} on ${fmtDateLong(old.date)} to ${names.shiftTypeName} on ${fmtDateLong(date)}.`,
+        link: 'my-schedule', bundleKey: `shift_changed:${old.userId}`,
+        bundleTitle: '{count} of your shifts changed',
+        excludeUserId: req.session.userId!,
+      });
+    }
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      res.status(409).json({ error: 'This person already has this shift on that date.' });
+      return;
+    }
+    console.error('[schedule] drag-move failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shifts/drag-swap — drag-and-drop swap: the people on two
+// manual shifts trade places (dates/types stay with the slots). Eligibility
+// and overlap/rest are simulated for BOTH people before anything moves.
+router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { aId, bId } = req.body ?? {};
+    if (!aId || !bId || aId === bId) {
+      res.status(400).json({ error: 'Two different shifts are required.' });
+      return;
+    }
+    const { rows } = await query(
+      'SELECT id, user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date, published FROM shifts WHERE id = ANY($1) AND company_id = $2',
+      [[aId, bId], companyId]
+    );
+    const a = rows.find((r: any) => r.id === aId);
+    const b = rows.find((r: any) => r.id === bId);
+    if (!a || !b) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    if (a.userId === b.userId) { res.status(400).json({ error: 'That is the same person.' }); return; }
+    if (a.date === b.date && a.shiftTypeId === b.shiftTypeId) {
+      res.status(400).json({ error: 'Those shifts are identical — nothing to swap.' });
+      return;
+    }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments(
+        [
+          { userId: a.userId, shiftTypeId: a.shiftTypeId }, { userId: b.userId, shiftTypeId: b.shiftTypeId },
+          { userId: a.userId, shiftTypeId: b.shiftTypeId }, { userId: b.userId, shiftTypeId: a.shiftTypeId },
+        ],
+        companyId)
+    ))) return;
+    const { rows: trows } = await query(
+      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = ANY($1) AND company_id = $2',
+      [[a.shiftTypeId, b.shiftTypeId], companyId]
+    );
+    const eligFor = (tid: string) => (trows.find((t: any) => t.id === tid) || {}).eligible_job_role_ids;
+    const namesA = await shiftDisplayNames(companyId, a.userId, a.shiftTypeId);
+    const namesB = await shiftDisplayNames(companyId, b.userId, b.shiftTypeId);
+    const eligA = await checkShiftEligibility(companyId, a.userId, eligFor(b.shiftTypeId));
+    if (!eligA.ok) { res.status(403).json({ error: eligA.error }); return; }
+    const eligB = await checkShiftEligibility(companyId, b.userId, eligFor(a.shiftTypeId));
+    if (!eligB.ok) { res.status(403).json({ error: eligB.error }); return; }
+    const conflict = await checkSwapConflicts(query, companyId, [
+      {
+        userId: a.userId, personName: namesA.personName,
+        gives: [{ date: a.date, shiftTypeId: a.shiftTypeId }],
+        receives: [{ date: b.date, shiftTypeId: b.shiftTypeId }],
+      },
+      {
+        userId: b.userId, personName: namesB.personName,
+        gives: [{ date: b.date, shiftTypeId: b.shiftTypeId }],
+        receives: [{ date: a.date, shiftTypeId: a.shiftTypeId }],
+      },
+    ]);
+    if (conflict) { res.status(409).json({ error: conflict }); return; }
+    await withTransaction(async (tx) => {
+      await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [b.userId, a.id, companyId]);
+      await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [a.userId, b.id, companyId]);
+    });
+    res.json({ ok: true });
+    auditLog({
+      companyId, date: a.date, action: 'updated',
+      personName: namesB.personName, shiftTypeName: namesA.shiftTypeName,
+      source: 'manual', changedBy: req.session.userId!,
+      details: { shiftId: a.id, via: 'drag-swap' },
+    });
+    auditLog({
+      companyId, date: b.date, action: 'updated',
+      personName: namesA.personName, shiftTypeName: namesB.shiftTypeName,
+      source: 'manual', changedBy: req.session.userId!,
+      details: { shiftId: b.id, via: 'drag-swap' },
+    });
+    const actor = req.session.userId!;
+    if (b.published !== false) {
+      notify({
+        companyId, userIds: [a.userId], category: 'schedule', type: 'shift_changed',
+        title: `Shift changed: ${namesB.shiftTypeName} on ${fmtDateLong(b.date)}`,
+        body: `Your shift changed from ${namesA.shiftTypeName} on ${fmtDateLong(a.date)} to ${namesB.shiftTypeName} on ${fmtDateLong(b.date)}.`,
+        link: 'my-schedule', bundleKey: `shift_changed:${a.userId}`,
+        bundleTitle: '{count} of your shifts changed',
+        excludeUserId: actor,
+      });
+    }
+    if (a.published !== false) {
+      notify({
+        companyId, userIds: [b.userId], category: 'schedule', type: 'shift_changed',
+        title: `Shift changed: ${namesA.shiftTypeName} on ${fmtDateLong(a.date)}`,
+        body: `Your shift changed from ${namesB.shiftTypeName} on ${fmtDateLong(b.date)} to ${namesA.shiftTypeName} on ${fmtDateLong(a.date)}.`,
+        link: 'my-schedule', bundleKey: `shift_changed:${b.userId}`,
+        bundleTitle: '{count} of your shifts changed',
+        excludeUserId: actor,
+      });
+    }
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      res.status(409).json({ error: 'One of them already has that shift on that date.' });
+      return;
+    }
+    console.error('[schedule] drag-swap failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift (owner/scheduler; department-scoped).
 router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
