@@ -8407,10 +8407,42 @@
                 { name: 'Pine mist', color: '#b7d2cb' }, { name: 'Sage deep', color: '#c2d6cf' },
                 { name: 'Harbour deep', color: '#bccfda' }, { name: 'Fern pale', color: '#d9e2da' },
               ];
+              // All colours (Deepika 2026-11-01: "red blue green yellow all
+              // kinds") — a full spectrum: 14 hues x light/vivid/deep, plus
+              // neutrals and browns, so any colour family is one tap away.
+              var QS_PALETTE_ALL = [
+                { name: 'Red light', color: '#fca5a5' }, { name: 'Red', color: '#ef4444' }, { name: 'Red deep', color: '#b91c1c' },
+                { name: 'Orange light', color: '#fdba74' }, { name: 'Orange', color: '#f97316' }, { name: 'Orange deep', color: '#c2410c' },
+                { name: 'Amber light', color: '#fcd34d' }, { name: 'Amber', color: '#f59e0b' }, { name: 'Amber deep', color: '#b45309' },
+                { name: 'Yellow light', color: '#fef08a' }, { name: 'Yellow', color: '#eab308' }, { name: 'Yellow deep', color: '#a16207' },
+                { name: 'Lime light', color: '#bef264' }, { name: 'Lime', color: '#84cc16' }, { name: 'Lime deep', color: '#4d7c0f' },
+                { name: 'Green light', color: '#86efac' }, { name: 'Green', color: '#22c55e' }, { name: 'Green deep', color: '#15803d' },
+                { name: 'Emerald light', color: '#6ee7b7' }, { name: 'Emerald', color: '#10b981' }, { name: 'Emerald deep', color: '#047857' },
+                { name: 'Cyan light', color: '#67e8f9' }, { name: 'Cyan', color: '#06b6d4' }, { name: 'Cyan deep', color: '#0e7490' },
+                { name: 'Blue light', color: '#93c5fd' }, { name: 'Blue', color: '#3b82f6' }, { name: 'Blue deep', color: '#1d4ed8' },
+                { name: 'Indigo light', color: '#a5b4fc' }, { name: 'Indigo', color: '#6366f1' }, { name: 'Indigo deep', color: '#4338ca' },
+                { name: 'Purple light', color: '#d8b4fe' }, { name: 'Purple', color: '#a855f7' }, { name: 'Purple deep', color: '#7e22ce' },
+                { name: 'Pink light', color: '#f9a8d4' }, { name: 'Pink', color: '#ec4899' }, { name: 'Pink deep', color: '#be185d' },
+                { name: 'Rose light', color: '#fda4af' }, { name: 'Rose red', color: '#f43f5e' }, { name: 'Rose deep', color: '#be123c' },
+                { name: 'Brown light', color: '#d6a05a' }, { name: 'Brown', color: '#b45309' }, { name: 'Brown deep', color: '#78350f' },
+                { name: 'White', color: '#f8fafc' }, { name: 'Grey light', color: '#cbd5e1' }, { name: 'Grey', color: '#64748b' },
+                { name: 'Charcoal', color: '#1f2937' }, { name: 'Black', color: '#000000' },
+              ];
+              // Bright set (mock 3, Nov 1): the brighter shades discussed.
+              var QS_PALETTE_BRIGHT = [
+                { name: 'Bright teal', color: '#8fe3da' }, { name: 'Bright aqua', color: '#93e2f2' },
+                { name: 'Sky', color: '#a5d8ff' }, { name: 'Bright mint', color: '#9be8c3' },
+                { name: 'Lime sage', color: '#c6ec9b' }, { name: 'Seafoam bright', color: '#7fe0c3' },
+                { name: 'Sunny amber', color: '#ffe08f' }, { name: 'Bright peach', color: '#ffc9a3' },
+                { name: 'Bright rose', color: '#ffb3c2' }, { name: 'Bright lavender', color: '#d9c8ff' },
+                { name: 'Cyan mist', color: '#a8ecf0' }, { name: 'Butter', color: '#ffd98f' },
+              ];
               var QS_ALL_SET = {};
               QS_PALETTE.forEach(function (f) { f.shades.forEach(function (hx) { QS_ALL_SET[hx] = 1; }); });
               QS_PALETTE_EXTRA.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
               QS_PALETTE_EARLIER.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
+              QS_PALETTE_BRIGHT.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
+              QS_PALETTE_ALL.forEach(function (e) { QS_ALL_SET[e.color] = 1; });
               var rowColorEdits = {};
               function qsPaletteHTML(selected) {
                 var sel = String(selected || '').toLowerCase();
@@ -8421,6 +8453,12 @@
                   }).join('') + '</div>';
                 });
                 h += '<div class="qs-pal-row wrap"><span class="qs-pal-name">More</span>' + QS_PALETTE_EXTRA.map(function (e) {
+                  return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
+                }).join('') + '</div>';
+                h += '<div class="qs-pal-sec">All colours</div><div class="qs-pal-wrap">' + QS_PALETTE_ALL.map(function (e) {
+                  return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
+                }).join('') + '</div>';
+                h += '<div class="qs-pal-sec">Bright set</div><div class="qs-pal-wrap">' + QS_PALETTE_BRIGHT.map(function (e) {
                   return '<button type="button" class="qs-pal-sw' + (e.color === sel ? ' sel' : '') + '" data-hex="' + e.color + '" title="' + e.name + '" style="background:' + e.color + '"></button>';
                 }).join('') + '</div>';
                 h += '<div class="qs-pal-sec">Earlier set</div><div class="qs-pal-wrap">' + QS_PALETTE_EARLIER.map(function (e) {
