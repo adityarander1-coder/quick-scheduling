@@ -2912,7 +2912,7 @@ const PERSONAL_DEFAULTS: Record<string, string> = {
   theme: 'system',         // light | dark | system
   header_color: '',        // hex, empty = theme default
   footer_color: '',        // hex, empty = theme default
-  schedule_size: '100',    // 100 | 70 | 60 — schedule grid scale (Deepika 2026-11-02)
+  schedule_size: '100',    // 100 | 80 | 70 — schedule grid scale (Deepika 2026-11-02)
 };
 
 // GET /api/schedule/general-settings
@@ -3001,7 +3001,7 @@ router.put('/personal-settings', requireRole('owner', 'scheduler', 'employee'), 
     const body = req.body || {};
     if (body.theme && !['light', 'dark', 'system'].includes(body.theme))
       { res.status(400).json({ error: 'Invalid theme.' }); return; }
-    if (body.schedule_size && !['100', '70', '60'].includes(String(body.schedule_size)))
+    if (body.schedule_size && !['100', '80', '70'].includes(String(body.schedule_size)))
       { res.status(400).json({ error: 'Invalid schedule size.' }); return; }
     for (const ck of ['header_color', 'footer_color']) {
       if (body[ck] && !/^#[0-9a-fA-F]{6}$/.test(body[ck]))
