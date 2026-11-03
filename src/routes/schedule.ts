@@ -6791,6 +6791,9 @@ async function activeMember(companyId: string, userId: string): Promise<any | nu
 
 /** A real (manual) shift row in this company, or null. */
 async function manualShift(companyId: string, shiftId: string): Promise<any | null> {
+  // Rotation occurrence ids ("rot-…") have no row; asking Postgres to
+  // compare one against the uuid id column throws instead of missing.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(shiftId)) return null;
   const { rows } = await query(
     `SELECT s.id, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId",
             s.date::text AS date, st.name AS "shiftTypeName"
@@ -6799,6 +6802,40 @@ async function manualShift(companyId: string, shiftId: string): Promise<any | nu
     [shiftId, companyId]
   );
   return rows[0] || null;
+}
+
+/**
+ * Turn one rotation-generated occurrence ("rot-…" id, no row of its own)
+ * into a real shift row — the same exclude-and-create the drag system
+ * uses — so employee requests (swap) can reference it. Returns the real
+ * shift (manualShift shape), an existing manual row when the occurrence
+ * was already materialized, or null when the occurrence doesn't exist.
+ */
+async function materializeRotationOccurrence(companyId: string, rotId: string): Promise<any | null> {
+  const date = rotId.slice(-10);
+  if (!isValidDate(date)) return null;
+  const all = await getShiftsForRange(query, companyId, date, date);
+  const e = all.find((x) => x.id === rotId && x.isRotation);
+  if (!e || !e.userId || !e.shiftTypeId) return null;
+  const { rows: existingRows } = await query(
+    `SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
+    [companyId, e.userId, date, e.shiftTypeId]
+  );
+  if (existingRows.length) return manualShift(companyId, existingRows[0].id);
+  const rotationId = rotId.slice(4, 40);
+  await query(
+    `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+    [companyId, rotationId, e.userId, date, e.shiftTypeId]
+  );
+  const id = crypto.randomUUID();
+  await query(
+    `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, companyId, e.userId, e.shiftTypeId, date, null, e.published !== false, e.userId]
+  );
+  return manualShift(companyId, id);
 }
 
 // POST /api/schedule/open-slots/claim — claim one extra open slot as your shift.
@@ -7049,12 +7086,19 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
       res.status(400).json({ error: 'You cannot swap a shift with itself.' });
       return;
     }
-    const mine = await manualShift(companyId, String(myShiftId));
-    const theirs = await manualShift(companyId, String(theirShiftId));
+    // Rotation-generated occurrences are swappable too (Deepika
+    // 2026-11-02): materialize either side into a real row first, then
+    // run every check below on the real ids.
+    let mine = await manualShift(companyId, String(myShiftId));
+    if (!mine && String(myShiftId).startsWith('rot-')) mine = await materializeRotationOccurrence(companyId, String(myShiftId));
+    let theirs = await manualShift(companyId, String(theirShiftId));
+    if (!theirs && String(theirShiftId).startsWith('rot-')) theirs = await materializeRotationOccurrence(companyId, String(theirShiftId));
     if (!mine || !theirs) {
       res.status(404).json({ error: 'One of the shifts was not found.' });
       return;
     }
+    const myRealId = mine.id as string;
+    const theirRealId = theirs.id as string;
     if (mine.userId !== me) {
       res.status(403).json({ error: 'You can only swap your own shifts.' });
       return;
@@ -7068,7 +7112,7 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
        WHERE company_id = $1 AND status = 'pending'
          AND (shift_id = $2 OR shift_id = $3 OR their_shift_id = $2 OR their_shift_id = $3)
        LIMIT 1`,
-      [companyId, myShiftId, theirShiftId]
+      [companyId, myRealId, theirRealId]
     );
     if (existing.length) {
       res.status(409).json({ error: 'There is already a pending request on one of those shifts.' });
@@ -7102,10 +7146,10 @@ router.post('/shifts/swap-request', requireRole('owner', 'scheduler', 'employee'
     await query(
       `INSERT INTO shift_requests (id, company_id, request_type, shift_id, their_shift_id, requester_id, target_user_id, status, stage)
        VALUES ($1, $2, 'swap', $3, $4, $5, $6, 'pending', 'partner')`,
-      [id, companyId, myShiftId, theirShiftId, me, theirs.userId]
+      [id, companyId, myRealId, theirRealId, me, theirs.userId]
     );
     res.status(201).json({
-      id, requestType: 'swap', myShiftId, theirShiftId,
+      id, requestType: 'swap', myShiftId: myRealId, theirShiftId: theirRealId,
       targetUserId: theirs.userId, requesterId: me, status: 'pending', stage: 'partner',
       myShift: { date: mine.date, shiftTypeName: mine.shiftTypeName },
       theirShift: { date: theirs.date, shiftTypeName: theirs.shiftTypeName },

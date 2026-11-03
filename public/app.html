@@ -1447,6 +1447,20 @@
         .shift-popup-header #sp-name { font-weight: 700; font-size: 14px; display: block; }
         .shift-popup-header #sp-date { font-size: 11px; color: var(--dim); }
         .sp-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; background: none; border-radius: 8px; cursor: pointer; font-size: 14px; text-align: left; font-family: inherit; color: var(--text); }
+        /* Swap calendar picker (Deepika 2026-11-02) */
+        .swap-cal-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 8px; }
+        .swap-cal-nav { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; width: 34px; height: 30px; font-size: 17px; font-weight: 800; cursor: pointer; color: var(--text); }
+        .swap-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .swap-cal-dow { text-align: center; font-size: 10.5px; font-weight: 800; color: var(--dim); padding: 2px 0; }
+        .swap-cal-day { border: 1px solid transparent; background: none; border-radius: 9px; min-height: 44px; padding: 3px 2px; display: flex; flex-direction: column; align-items: center; gap: 3px; font-family: inherit; color: var(--dim); }
+        .swap-cal-day.has { background: #eef6f6; border-color: #cfe4e4; color: var(--text); cursor: pointer; }
+        .swap-cal-day.has:hover { background: #dff0f0; }
+        .swap-cal-day.mine { box-shadow: inset 0 0 0 2px var(--accent); }
+        .swap-cal-day:disabled { opacity: .45; cursor: default; }
+        .swap-cal-num { font-size: 12.5px; font-weight: 800; }
+        .swap-cal-dots { display: flex; gap: 2.5px; align-items: center; min-height: 7px; }
+        .swap-cal-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+        .swap-cal-more { font-size: 9px; font-weight: 800; color: var(--dim); }
         .sp-item:hover { background: #f0f6fa; }
         .sp-item .sp-ic { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
         .sp-item.danger { color: #bd3d4a; }
@@ -2592,7 +2606,7 @@
           if (target.kind === 'swap') {
             var other = target.shift;
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: shift.id, bId: other.id }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); loadAll(); return; }
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); refreshShifts(); return; }
               var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
               entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
               qsUndoStack.push(entry);
@@ -2600,13 +2614,13 @@
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not swap those shifts.'); });
           } else {
             var date = target.date, typeId = target.shiftTypeId || shift.shiftTypeId;
             if (date === shift.date && typeId === shift.shiftTypeId) return;
             api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); loadAll(); return; }
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); refreshShifts(); return; }
               var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
               entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
               qsUndoStack.push(entry);
@@ -2614,7 +2628,7 @@
               if (qsUndoStack.length > 10) qsUndoStack.shift();
               qsUndoBtnSync();
               pageSuccess('Moved. Ctrl+Z undoes it.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not move that shift.'); });
           }
         }
@@ -2656,12 +2670,12 @@
             qsTaskUndoBusy = false;
             if (!r.ok) {
               pageError(r.status === 404 ? 'Nothing to undo.' : ((r.data && r.data.error) || 'Could not undo that task.'));
-              if (r.status !== 404) loadAll();
+              if (r.status !== 404) refreshShifts();
               return;
             }
             pageSuccess('Task undone — Ctrl+Shift+Z redoes it.');
             qsRedoStack.length = 0;
-            loadAll();
+            refreshShifts();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not undo that task.'); });
         }
 
@@ -2672,11 +2686,11 @@
             qsTaskUndoBusy = false;
             if (!r.ok) {
               pageError(r.status === 404 ? 'Nothing to redo.' : ((r.data && r.data.error) || 'Could not redo that task.'));
-              if (r.status !== 404) loadAll();
+              if (r.status !== 404) refreshShifts();
               return;
             }
             pageSuccess('Task redone.');
-            loadAll();
+            refreshShifts();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not redo that task.'); });
         }
       // Top-bar buttons (Deepika 2026-11-01): same priority as the keys —
@@ -2689,24 +2703,24 @@
           if (!r) return;
           if (r.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId }) }).then(function (res) {
-              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); loadAll(); return; }
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
               qsUndoStack.push(e);
               qsUndoBtnSync();
               pageSuccess('Redone.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not redo that swap.'); });
           } else {
             var s = shiftById(r.shiftId);
             api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId }) }).then(function (res) {
-              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); loadAll(); return; }
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
               qsUndoStack.push(e);
               qsUndoBtnSync();
               pageSuccess('Redone.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not redo that move.'); });
           }
         }
@@ -2717,24 +2731,24 @@
           if (!u) return;
           if (u.kind === 'server') {
             api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); loadAll(); return; }
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); refreshShifts(); return; }
               if (u.redo) qsRedoStack.push(u.redo);
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not undo that.'); });
           } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); loadAll(); return; }
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
               if (u.redo) qsRedoStack.push(u.redo);
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not undo that swap.'); });
           } else {
             api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); loadAll(); return; }
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); refreshShifts(); return; }
               if (u.redo) qsRedoStack.push(u.redo);
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
-              loadAll();
+              refreshShifts();
             }).catch(function () { pageError('Could not undo that move.'); });
           }
         }
@@ -3438,7 +3452,7 @@
                         body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
                       });
                     }).then(function (r) {
-                      if (r && r.ok) { pageSuccess('Shift replaced.'); loadAll(); }
+                      if (r && r.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
                       else pageError('Could not replace shift.');
                     });
                   } else {
@@ -3611,7 +3625,7 @@
                 body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
               });
             }).then(function (r) {
-              if (r && r.ok) { loadAll(); }
+              if (r && r.ok) { refreshShifts(); }
               else { showInfo('Could not replace shift.'); }
             }).catch(function() { showInfo('Could not replace shift.'); });
           } else {
@@ -3639,7 +3653,7 @@
 
         function deleteShift(id) {
           api('/api/schedule/shifts/' + id, { method: 'DELETE' }).then(function (r) {
-            if (r.ok) { pageSuccess('Shift removed.'); loadAll(); }
+            if (r.ok) { pageSuccess('Shift removed.'); refreshShifts(); }
             else pageError((r.data && r.data.error) || 'Could not remove shift.');
           });
         }
@@ -5068,7 +5082,14 @@
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeBandBtns);
           else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
         }
-        document.addEventListener('qs-cover-claimed', function () { loadAll(); });
+        document.addEventListener('qs-cover-claimed', function () {
+          // Pickup lands in place (Deepika 2026-11-02): refresh only the
+          // shifts and keep her scroll position — no full-page reload.
+          var y = window.scrollY || 0;
+          refreshShifts().then(function () {
+            requestAnimationFrame(function () { window.scrollTo(0, y); });
+          });
+        });
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
           if (!f) { pageError('Pick a from date.'); return; }
@@ -5139,6 +5160,12 @@
           if (savedHl) sched.highlights = JSON.parse(savedHl) || {};
         } catch (e) {}
         // Lightweight refresh — only reload shifts, not everything.
+        // Several save flows call loadShifts() after a change — it was
+        // never defined, so those saves silently failed to refresh the
+        // screen and the change only appeared after a manual refresh
+        // (Deepika's "it takes time / I have to refresh", 2026-11-02).
+        // It is the shifts-only reload below.
+        function loadShifts() { return refreshShifts(); }
         function refreshShifts() {
           var r = viewRange();
           // Always include the day modal / assign date so newly assigned shifts aren't wiped
@@ -5155,6 +5182,40 @@
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
         }
+
+        // Quiet auto-refresh (Deepika 2026-11-02): while the Schedule tab
+        // is open, re-check the visible window every 30s and whenever she
+        // returns to the browser tab. If someone else changed something,
+        // update the screen and say so — no manual refresh. Never while a
+        // modal is open (the next tick catches it after it closes).
+        function qsShiftFingerprint(list) {
+          return (list || []).map(function (x) {
+            return x.id + '|' + x.userId + '|' + x.date + '|' + x.shiftTypeId + '|' + (x.published === false ? 0 : 1);
+          }).sort().join(';');
+        }
+        var qsSchedPollBusy = false;
+        function qsPollSchedule() {
+          var sec = $('tab-schedule');
+          if (!sec || !sec.classList.contains('active') || document.hidden || qsSchedPollBusy) return;
+          if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+          qsSchedPollBusy = true;
+          var r = viewRange();
+          api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
+            qsSchedPollBusy = false;
+            if (!sR.ok) return;
+            var fresh = sR.data.shifts || [];
+            if (qsShiftFingerprint(fresh) !== qsShiftFingerprint(sched.shifts)) {
+              sched.shifts = fresh;
+              sched.closedShifts = sR.data.closedShifts || [];
+              sched.extraSlots = sR.data.extraSlots || [];
+              renderView();
+              pageSuccess('Schedule updated just now.');
+            }
+          }).catch(function () { qsSchedPollBusy = false; });
+        }
+        window.qsPollSchedule = qsPollSchedule;
+        setInterval(qsPollSchedule, 30000);
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) qsPollSchedule(); });
 
         // Find member by ID for building optimistic shift objects.
         function memberById(id) {
@@ -11361,10 +11422,13 @@
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
             '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
-          if (isMine(s) && String(s.id).indexOf('rot-') !== 0) {
+          if (isMine(s)) {
+            // Swap works for rotation shifts too (server materializes the
+            // occurrence); cover stays manual-only, so its button hides on
+            // rotation shifts instead of silently doing nothing.
             html += '<div style="display:flex;gap:0.5rem;margin:-2px 0 8px;flex-wrap:wrap">' +
               '<button type="button" class="btn-secondary" data-ms-swap="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Swap</button>' +
-              '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Ask for cover</button>' +
+              (String(s.id).indexOf('rot-') !== 0 ? '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Ask for cover</button>' : '') +
               '</div>';
           }
           return html;
@@ -11933,7 +11997,7 @@
           });
         }
 
-        document.addEventListener('qs-cover-claimed', function () { loadData(); });
+        document.addEventListener('qs-cover-claimed', function () { msRefreshShifts(); });
         // Presenter pickup for dashboard sessions, from My Schedule.
         function claimSession(id, isClaim) {
           var evx = (dashEvents || []).find(function (x) { return x.id === id; });
@@ -11949,6 +12013,54 @@
             }
           });
         }
+
+        // Light in-place refresh for pickups and sends (Deepika
+        // 2026-11-02): reload only the shifts for the visible window,
+        // re-render where she is, and keep the scroll position — never
+        // a full-page reload that throws her back to the top.
+        function msRefreshShifts() {
+          var y = window.scrollY || 0;
+          var r = viewRange();
+          return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
+            if (sR.ok) {
+              shifts = sR.data.shifts || [];
+              renderView();
+              requestAnimationFrame(function () { window.scrollTo(0, y); });
+            }
+          }).catch(function () {});
+        }
+
+        // Quiet auto-refresh (Deepika 2026-11-02): while My Schedule is
+        // open, re-check the visible window every 30s and on returning to
+        // the tab; if a scheduler or a swap changed something, update the
+        // screen and say so — no manual refresh. Skips while a dialog is
+        // open (the next tick catches it).
+        function msShiftFingerprint(list) {
+          return (list || []).map(function (x) {
+            return x.id + '|' + x.userId + '|' + x.date + '|' + x.shiftTypeId + '|' + (x.published === false ? 0 : 1);
+          }).sort().join(';');
+        }
+        var msPollBusy = false;
+        function msPollSchedule() {
+          var sec = $('tab-myschedule');
+          if (!sec || !sec.classList.contains('active') || document.hidden || msPollBusy) return;
+          if (document.querySelector('#tab-myschedule .modal-backdrop:not(.hidden)')) return;
+          msPollBusy = true;
+          var r = viewRange();
+          api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
+            msPollBusy = false;
+            if (!sR.ok) return;
+            var fresh = sR.data.shifts || [];
+            if (msShiftFingerprint(fresh) !== msShiftFingerprint(shifts)) {
+              shifts = fresh;
+              renderView();
+              msSuccess('Schedule updated just now.');
+            }
+          }).catch(function () { msPollBusy = false; });
+        }
+        window.qsPollMySchedule = msPollSchedule;
+        setInterval(msPollSchedule, 30000);
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) msPollSchedule(); });
 
         function shiftById(sid) {
           for (var i = 0; i < shifts.length; i++) if (String(shifts[i].id) === String(sid)) return shifts[i];
@@ -11977,18 +12089,120 @@
           });
         }
 
+        // Swap picker — a calendar (Deepika 2026-11-02). The old list only
+        // searched the shifts already loaded on screen and skipped
+        // rotation-generated shifts, so it often showed just one option.
+        // Now: open any month, tap a day, pick any teammate's shift that
+        // day — rotation shifts included (the server turns a picked
+        // rotation occurrence into a real shift when the request sends).
+        var swapCal = null;
         function openSwapDialog(myShiftId) {
           var s = shiftById(myShiftId);
-          if (!s || String(s.id).indexOf('rot-') === 0) return;
-          var cands = swapCandidateList(s.date, s.userId);
-          if (!cands.length) { msError('No other team members to swap with.'); return; }
-          msDialog('Swap ' + fmtLong(s.date),
-            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(shiftLabel(s)) + '</strong><br>Choose whose shift you want to swap with:</p>' +
-            cands.map(function (c) { return c.html; }).join(''),
+          if (!s) return;
+          swapCal = { myShiftId: myShiftId, cursor: String(s.date).slice(0, 7) + '-01', cache: {} };
+          renderSwapCalendar();
+        }
+        function loadSwapMonth(key) {
+          if (swapCal.cache[key]) return Promise.resolve(swapCal.cache[key]);
+          var from = key + '-01';
+          var dt = parseDate(from); dt.setMonth(dt.getMonth() + 1); dt.setDate(0);
+          return api('/api/schedule/shifts?from=' + from + '&to=' + fmtDate(dt)).then(function (r) {
+            swapCal.cache[key] = (r.ok && r.data.shifts) || [];
+            return swapCal.cache[key];
+          }).catch(function () { swapCal.cache[key] = []; return []; });
+        }
+        function renderSwapCalendar() {
+          var s = shiftById(swapCal.myShiftId);
+          if (!s) return;
+          msDialog('Swap your shift',
+            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(fmtLong(s.date) + ' · ' + shiftLabel(s)) + '</strong></p><div id="ms-swap-cal"><p style="color:var(--dim);font-size:13px">Loading the calendar…</p></div>',
             [{ label: 'Cancel' }]);
-          $('ms-action-dialog').querySelectorAll('[data-ms-cand]').forEach(function (b) {
-            b.addEventListener('click', function () { openTheirShiftsDialog(myShiftId, b.getAttribute('data-ms-cand')); });
+          loadSwapMonth(swapCal.cursor.slice(0, 7)).then(function () { paintSwapCalendar(); });
+        }
+        function paintSwapCalendar() {
+          var host = $('ms-swap-cal');
+          if (!host || !swapCal) return;
+          var s = shiftById(swapCal.myShiftId);
+          var cur = parseDate(swapCal.cursor);
+          var year = cur.getFullYear(), mon = cur.getMonth();
+          var arr = swapCal.cache[swapCal.cursor.slice(0, 7)] || [];
+          var byDate = {};
+          arr.forEach(function (x) {
+            if (String(x.userId) === String(me.id)) return;
+            (byDate[x.date] = byDate[x.date] || []).push(x);
           });
+          var today = fmtDate(new Date());
+          var startOffset = weekStartOffset(new Date(year, mon, 1));
+          var daysInMonth = new Date(year, mon + 1, 0).getDate();
+          var cells = '';
+          ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) { cells += '<div class="swap-cal-dow">' + d + '</div>'; });
+          for (var i = 0; i < startOffset; i++) cells += '<div></div>';
+          for (var d = 1; d <= daysInMonth; d++) {
+            var ds = fmtDate(new Date(year, mon, d));
+            var list = byDate[ds] || [];
+            var canPick = list.length > 0 && ds >= today;
+            var dots = list.slice(0, 3).map(function (x) {
+              var st = stById(x.shiftTypeId);
+              return '<span class="swap-cal-dot" style="background:' + ((st && st.color) || '#94a3b8') + '"></span>';
+            }).join('') + (list.length > 3 ? '<span class="swap-cal-more">+' + (list.length - 3) + '</span>' : '');
+            cells += '<button type="button" class="swap-cal-day' + (canPick ? ' has' : '') + (ds === s.date ? ' mine' : '') + '" data-swap-day="' + ds + '"' + (canPick ? '' : ' disabled') + '>' +
+              '<span class="swap-cal-num">' + d + '</span>' + (list.length ? '<span class="swap-cal-dots">' + dots + '</span>' : '') + '</button>';
+          }
+          host.innerHTML =
+            '<div class="swap-cal-head"><button type="button" class="swap-cal-nav" data-swap-nav="-1" aria-label="Previous month">‹</button>' +
+            '<strong>' + esc(cur.toLocaleString('en-US', { month: 'long', year: 'numeric' })) + '</strong>' +
+            '<button type="button" class="swap-cal-nav" data-swap-nav="1" aria-label="Next month">›</button></div>' +
+            '<div class="swap-cal-grid">' + cells + '</div>' +
+            '<p style="color:var(--dim);font-size:12px;margin:8px 0 0">Coloured days have teammates working — tap one to see their shifts. Your day is outlined.</p>';
+          host.querySelectorAll('[data-swap-nav]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var dt = parseDate(swapCal.cursor);
+              dt.setMonth(dt.getMonth() + parseInt(b.getAttribute('data-swap-nav'), 10));
+              swapCal.cursor = fmtDate(dt);
+              host.innerHTML = '<p style="color:var(--dim);font-size:13px">Loading the calendar…</p>';
+              loadSwapMonth(swapCal.cursor.slice(0, 7)).then(function () { paintSwapCalendar(); });
+            });
+          });
+          host.querySelectorAll('[data-swap-day]').forEach(function (b) {
+            b.addEventListener('click', function () { openSwapDay(b.getAttribute('data-swap-day')); });
+          });
+        }
+        function openSwapDay(dateStr) {
+          var s = shiftById(swapCal.myShiftId);
+          var arr = swapCal.cache[String(dateStr).slice(0, 7)] || [];
+          var list = arr.filter(function (x) { return x.date === dateStr && String(x.userId) !== String(me.id); });
+          list.sort(function (a, b) {
+            var ta = shiftLabel(a), tb = shiftLabel(b);
+            if (ta !== tb) return ta < tb ? -1 : 1;
+            return displayName(a) < displayName(b) ? -1 : 1;
+          });
+          if (!list.length) { renderSwapCalendar(); return; }
+          msDialog('Swap — ' + fmtLong(dateStr),
+            '<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Your shift: <strong>' + esc(fmtLong(s.date) + ' · ' + shiftLabel(s)) + '</strong><br>Pick the shift you want in exchange:</p>' +
+            list.map(function (x) {
+              var st = stById(x.shiftTypeId);
+              return '<button type="button" class="sp-item" data-ms-their="' + x.id + '"><span class="sp-ic" style="background:' + ((st && st.color) || '#e3f0fa') + '">🔄</span><span><strong>' +
+                esc(displayName(x)) + '</strong> · ' + esc(shiftLabel(x)) + '</span></button>';
+            }).join(''),
+            [{ label: 'Back', onClick: function () { renderSwapCalendar(); } }, { label: 'Cancel' }]);
+          $('ms-action-dialog').querySelectorAll('[data-ms-their]').forEach(function (b) {
+            b.addEventListener('click', function () { confirmSwap(b.getAttribute('data-ms-their')); });
+          });
+        }
+        function confirmSwap(theirShiftId) {
+          var s = shiftById(swapCal.myShiftId);
+          var theirs = null;
+          Object.keys(swapCal.cache).forEach(function (k) {
+            (swapCal.cache[k] || []).forEach(function (x) { if (String(x.id) === String(theirShiftId)) theirs = x; });
+          });
+          if (!s || !theirs) return;
+          msDialog('Confirm swap',
+            '<p style="font-size:14px;margin:0 0 6px">You give: <strong>' + esc(fmtLong(s.date) + ' · ' + shiftLabel(s)) + '</strong></p>' +
+            '<p style="font-size:14px;margin:0 0 10px">You get: <strong>' + esc(fmtLong(theirs.date) + ' · ' + shiftLabel(theirs)) + '</strong> from <strong>' + esc(displayName(theirs)) + '</strong></p>' +
+            '<p style="color:var(--dim);font-size:13px;margin:0">First ' + esc(displayName(theirs)) + ' has to agree, then a scheduler approves. Nothing changes until both say yes.</p>',
+            [{ label: 'Back', onClick: function () { openSwapDay(theirs.date); } },
+             { label: 'Send swap request', onClick: function () { sendSwapRequest(swapCal.myShiftId, theirShiftId); } },
+             { label: 'Cancel' }]);
         }
 
         function openTheirShiftsDialog(myShiftId, theirId) {
@@ -12023,7 +12237,7 @@
           api('/api/schedule/shifts/swap-request', {
             method: 'POST', body: JSON.stringify({ myShiftId: myShiftId, theirShiftId: theirShiftId })
           }).then(function (r) {
-            if (r.ok) { msSuccess('Swap request sent.'); loadData(); }
+            if (r.ok) { msSuccess('Swap request sent.'); msRefreshShifts(); }
             else msError((r.data && r.data.error) || 'Could not send the swap request.');
           }).catch(function () { msError('Network error. Could not send the swap request.'); });
         }
@@ -12069,7 +12283,7 @@
           api('/api/schedule/shifts/' + myShiftId + '/request-pickup', {
             method: 'POST', body: JSON.stringify(body)
           }).then(function (r) {
-            if (r.ok) { msSuccess('Pickup request sent.'); loadData(); }
+            if (r.ok) { msSuccess('Pickup request sent.'); msRefreshShifts(); }
             else msError((r.data && r.data.error) || 'Could not send the pickup request.');
           }).catch(function () { msError('Network error. Could not send the pickup request.'); });
         }
@@ -12079,7 +12293,7 @@
           api('/api/schedule/open-slots/claim', {
             method: 'POST', body: JSON.stringify({ date: dateStr, shiftTypeId: shiftTypeId })
           }).then(function (r) {
-            if (r.ok) { msSuccess('Shift picked up.'); loadData(); }
+            if (r.ok) { msSuccess('Shift picked up.'); msRefreshShifts(); }
             else {
               msError((r.data && r.data.error) || 'Could not pick up this shift.');
               btn.disabled = false;
