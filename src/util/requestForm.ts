@@ -820,6 +820,11 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
       const { sendShiftRequestActionEmails } = await import('./requestActionEmails.js');
       for (const rid of coverRequestIds) await sendShiftRequestActionEmails(row.company_id, rid);
     } catch { /* non-fatal */ }
+    // Approver Approve/Reject emails (Deepika 2026-11-03).
+    try {
+      const { sendShiftRequestApproverEmails } = await import('./requestActionEmails.js');
+      for (const rid of coverRequestIds) await sendShiftRequestApproverEmails(row.company_id, rid);
+    } catch { /* non-fatal */ }
     const coverOutcome = oc.targetUserId ? 'cover_asked' : 'cover_posted';
     await q("UPDATE form_requests SET status = 'done', outcome = $2, processed_at = now() WHERE id = $1", [row.id, coverOutcome]);
     return { status: 'done', outcome: coverOutcome };

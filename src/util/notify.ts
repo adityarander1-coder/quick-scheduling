@@ -85,7 +85,7 @@ export async function notify(input: NotifyInput): Promise<void> {
       let merged = false;
       if (input.bundleKey) {
         const { rows: existing } = await query(
-          `SELECT id, payload FROM notifications
+          `SELECT id, payload, body FROM notifications
            WHERE user_id = $1 AND type = $2 AND bundle_key = $3 AND read_at IS NULL
              AND email_state != 'sent' AND updated_at > now() - interval '10 minutes'
            ORDER BY updated_at DESC LIMIT 1`,
@@ -97,10 +97,16 @@ export async function notify(input: NotifyInput): Promise<void> {
           const title = newCount > 1 && input.bundleTitle
             ? input.bundleTitle.replace('{count}', String(newCount))
             : input.title;
+          // Keep EVERY bundled item's body, not just the newest —
+          // Deepika 2026-11-03: a "2 requests waiting" email named
+          // only one of them. Newest first, one per line, capped.
+          const mergedBody = (input.body && prev.body && input.body !== prev.body)
+            ? `${input.body}\n${prev.body}`.slice(0, 2000)
+            : (input.body || prev.body || null);
           await query(
             `UPDATE notifications SET title = $1, body = $2, payload = $3, updated_at = now()
              WHERE id = $4`,
-            [title, input.body || null, JSON.stringify({ ...(input.payload || {}), count: newCount }), prev.id]
+            [title, mergedBody, JSON.stringify({ ...(input.payload || {}), count: newCount }), prev.id]
           );
           merged = true;
         }
@@ -217,7 +223,7 @@ export async function dispatchNotificationEmails(): Promise<void> {
           to: n.email,
           subject: n.title,
           text: `${n.title}\n\n${n.body || ''}\n\nOpen Quick Scheduling: ${baseUrl}`,
-          html: `<p><strong>${n.title}</strong></p>${n.body ? `<p>${n.body}</p>` : ''}<p><a href="${baseUrl}">Open Quick Scheduling</a></p>`,
+          html: `<p><strong>${n.title}</strong></p>${n.body ? `<p>${String(n.body).replace(/\n/g, '<br>')}</p>` : ''}<p><a href="${baseUrl}">Open Quick Scheduling</a></p>`,
         });
         await query(`UPDATE notifications SET email_state = 'sent', email_sent_at = now() WHERE id = $1`, [n.id]);
       } catch (e: any) {

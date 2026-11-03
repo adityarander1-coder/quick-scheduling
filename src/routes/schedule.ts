@@ -22,7 +22,7 @@ import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
-import { sendShiftRequestActionEmails } from '../util/requestActionEmails.js';
+import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 
 const router = Router();
@@ -3972,6 +3972,7 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
       if (!elig.ok) { failed.push({ date, shiftTypeId, error: elig.error }); continue; }
       const shiftId = crypto.randomUUID();
       let held = false;
+      let heldRequestId: string | null = null;
       try {
         await withTransaction(async (tx) => {
           const { rows: slotRows } = await tx.query(
@@ -4008,16 +4009,17 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
             `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
              VALUES ($1, $2, $3, $4, $5, false, $6)`,
             [shiftId, companyId, userId, shiftTypeId, date, userId]);
+          heldRequestId = crypto.randomUUID();
           await tx.query(
             `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
              VALUES ($1, $2, 'open_pickup', $3, $4, NULL, 'pending')`,
-            [crypto.randomUUID(), companyId, shiftId, userId]);
+            [heldRequestId, companyId, shiftId, userId]);
           held = true;
         });
       } catch (txErr) {
         console.error('[schedule] pickup request tx failed:', txErr);
       }
-      if (held) requested.push({ date, shiftTypeId });
+      if (held) requested.push({ date, shiftTypeId, requestId: heldRequestId });
       else failed.push({ date, shiftTypeId, error: 'That shift was just filled.' });
     }
     try {
@@ -4037,6 +4039,10 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
       notifyShiftRequestApprovers(companyId, { userId, shiftTypeId: requested[0].shiftTypeId }, userId,
         'A pickup request is waiting for approval',
         `${requesterName} asked to pick up ${requested.length} open shift(s) via a share link.`);
+      // Approver Approve/Reject emails, one per held request (2026-11-03).
+      for (const rq of requested) {
+        if (rq.requestId) sendShiftRequestApproverEmails(companyId, rq.requestId).catch(() => {});
+      }
     }
     res.json({ ok: true, requested, failed });
   } catch (err) {
@@ -7106,6 +7112,9 @@ router.post('/shifts/:id/request-pickup', requireRole('owner', 'scheduler', 'emp
     }
     // Action-link email to the people being asked (Deepika 2026-11-02).
     sendShiftRequestActionEmails(companyId, id).catch(() => {});
+    // Approver decision emails (Deepika 2026-11-03): owners/schedulers
+    // get their own Approve/Reject link for the same request.
+    sendShiftRequestApproverEmails(companyId, id).catch(() => {});
   } catch (err) {
     console.error('[schedule] request pickup failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -7341,6 +7350,8 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
         notifyShiftRequestApprovers(companyId, { userId: r.requesterId, shiftTypeId: myShift.shiftTypeId }, me,
           'A shift request is waiting for a decision',
           `${reqNames.personName} proposed a swap (${myShift.shiftTypeName} on ${fmtDateLong(myShift.date)}${theirShift ? ` ↔ ${theirShift.shiftTypeName} on ${fmtDateLong(theirShift.date)}` : ''}) and ${partNames ? partNames.personName : 'the swap partner'} agreed. Final approval is yours.`);
+        // Approver Approve/Reject email links for the admin stage (2026-11-03).
+        sendShiftRequestApproverEmails(companyId, id, me).catch(() => {});
       }
       notify({
         companyId, userIds: [r.requesterId], category: 'schedule', type: 'request_decided',
@@ -7593,7 +7604,7 @@ function actButton(value: string, label: string, bg: string): string {
 }
 async function loadActContext(token: string): Promise<any | null> {
   const { rows } = await query(
-    `SELECT t.user_id AS "userId", t.company_id AS "companyId",
+    `SELECT t.user_id AS "userId", t.company_id AS "companyId", t.kind AS kind,
             sr.id, sr.request_type AS "requestType", sr.status, sr.stage,
             sr.shift_id AS "shiftId", sr.their_shift_id AS "theirShiftId",
             sr.requester_id AS "requesterId", sr.target_user_id AS "targetUserId"
@@ -7619,6 +7630,51 @@ router.get('/requests/act/:token', async (req: Request, res: Response) => {
     const shift = await manualShift(ctx.companyId, ctx.shiftId);
     const reqNames = await shiftDisplayNames(ctx.companyId, ctx.requesterId, shift ? shift.shiftTypeId : '');
     const who = reqNames.personName || 'A team member';
+    // Approver links (Deepika 2026-11-03): an owner/scheduler deciding
+    // from email — pickup (approve = they take the shift, like the
+    // in-app Approve), open_pickup (approve publishes the held shift),
+    // or a swap at the admin stage (approve executes it).
+    if (ctx.kind === 'approver') {
+      const { rows: urows } = await query(
+        'SELECT role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [ctx.userId, ctx.companyId]);
+      const role = urows.length ? urows[0].role : null;
+      const applicable = ctx.requesterId !== ctx.userId
+        && (ctx.requestType === 'pickup' || ctx.requestType === 'open_pickup'
+          || (ctx.requestType === 'swap' && ctx.stage === 'admin'));
+      if ((role !== 'owner' && role !== 'scheduler') || !applicable) {
+        res.send(actPage('Nothing to decide here', '<p>This request is not waiting on you right now. You can see it in the app under Requests.</p>'));
+        return;
+      }
+      let aTitle = 'Decision needed';
+      let aBody = '';
+      let aButtons = '';
+      if (ctx.requestType === 'pickup') {
+        const tgtNames = ctx.targetUserId
+          ? await shiftDisplayNames(ctx.companyId, ctx.targetUserId, shift ? shift.shiftTypeId : '') : null;
+        const vac = shift ? await vacationOn(ctx.companyId, ctx.userId, shift.date) : null;
+        aBody = (vac ? '<p style="background:#fdf3e3;border:1px solid #ecc97e;border-radius:8px;padding:10px 12px"><strong>⚠️ You are on vacation</strong> on ' + escHtml(fmtDateLong(shift!.date)) + (vac.reason ? ' (' + escHtml(vac.reason) + ')' : '') + '. You can still pick it up if you want to work that day.</p>' : '') +
+          '<p><strong>' + escHtml(who) + '</strong> asked ' + (tgtNames ? escHtml(tgtNames.personName || 'a team member') : 'the team') +
+          ' to pick up their <strong>' + escHtml(shift ? shift.shiftTypeName : 'shift') + '</strong> shift on <strong>' + escHtml(fmtDateLong(shift ? shift.date : '')) + '</strong>.</p>' +
+          '<p>Approving means <strong>you</strong> pick up this shift. Rejecting closes the request.</p>';
+        aButtons = actButton('approve', '✋ Approve — I pick it up', '#0e7c86') + actButton('reject', 'Reject', '#bd3d4a');
+      } else if (ctx.requestType === 'open_pickup') {
+        aBody = '<p><strong>' + escHtml(who) + '</strong> asked to pick up the open <strong>' + escHtml(shift ? shift.shiftTypeName : 'shift') + '</strong> shift on <strong>' + escHtml(fmtDateLong(shift ? shift.date : '')) + '</strong> (share link).</p>' +
+          '<p>Approving publishes the shift for them. Rejecting closes the request and releases the slot.</p>';
+        aButtons = actButton('approve', 'Approve', '#0e7c86') + actButton('reject', 'Reject', '#bd3d4a');
+      } else {
+        const theirs = ctx.theirShiftId ? await manualShift(ctx.companyId, ctx.theirShiftId) : null;
+        const partNames = ctx.targetUserId && theirs
+          ? await shiftDisplayNames(ctx.companyId, ctx.targetUserId, theirs.shiftTypeId) : null;
+        aBody = '<p><strong>' + escHtml(who) + '</strong> and <strong>' + escHtml(partNames ? (partNames.personName || 'their swap partner') : 'their swap partner') + '</strong> agreed to swap: ' +
+          '<strong>' + escHtml(shift ? shift.shiftTypeName : '') + '</strong> on <strong>' + escHtml(fmtDateLong(shift ? shift.date : '')) + '</strong> for ' +
+          '<strong>' + escHtml(theirs ? theirs.shiftTypeName : '') + '</strong> on <strong>' + escHtml(fmtDateLong(theirs ? theirs.date : '')) + '</strong>.</p>' +
+          '<p>Approving executes the swap. Rejecting closes the request.</p>';
+        aButtons = actButton('approve', 'Approve the swap', '#0e7c86') + actButton('reject', 'Reject', '#bd3d4a');
+      }
+      res.send(actPage(aTitle, aBody + '<form method="POST" action="">' + aButtons + '</form><p style="color:#666;font-size:13px">You can also answer in the app under Requests.</p>'));
+      return;
+    }
     let title = '';
     let body = '';
     let buttons = '';
@@ -7667,6 +7723,228 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
     const action = String((req.body && req.body.action) || '');
     const decidedPage = () => res.send(actPage('Already decided', '<p>This request has already been decided — there is nothing left to do.</p>'));
 
+    // Approver decisions from email (Deepika 2026-11-03): kind='approver'
+    // tokens act with the same semantics as the in-app Requests buttons —
+    // pickup Approve = the approver takes the shift, open_pickup Approve
+    // publishes the held shift for the requester, swap (admin stage)
+    // Approve executes the swap; Reject closes the request.
+    if (ctx.kind === 'approver') {
+      const { rows: urows } = await query(
+        'SELECT role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [me, companyId]);
+      const aRole = urows.length ? urows[0].role : null;
+      if (aRole !== 'owner' && aRole !== 'scheduler') {
+        res.status(403).send(actPage('Not your decision', '<p>Only an owner or scheduler can decide this request.</p>'));
+        return;
+      }
+      if (ctx.requesterId === me) {
+        res.send(actPage('Nothing to decide here', '<p>You cannot decide your own request.</p>'));
+        return;
+      }
+      const applicable = ctx.requestType === 'pickup' || ctx.requestType === 'open_pickup'
+        || (ctx.requestType === 'swap' && ctx.stage === 'admin');
+      if (!applicable) {
+        res.send(actPage('Nothing to decide here', '<p>This request is not waiting on you right now. You can see it in the app under Requests.</p>'));
+        return;
+      }
+      const shift0 = await manualShift(companyId, ctx.shiftId);
+      const typeWord = ctx.requestType === 'swap' ? 'swap' : 'pickup';
+      const notifyDecided = (approved: boolean) => notify({
+        companyId, userIds: [ctx.requesterId], category: 'schedule', type: 'request_decided',
+        title: `Your ${typeWord} request was ${approved ? 'approved' : 'declined'}`,
+        body: shift0
+          ? `Your ${typeWord} request for ${shift0.shiftTypeName} on ${fmtDateLong(shift0.date)} was ${approved ? 'approved' : 'declined'}.`
+          : `Your ${typeWord} request was ${approved ? 'approved' : 'declined'}.`,
+        link: 'requests', bundleKey: 'request_decided',
+        excludeUserId: me,
+      });
+
+      if (action === 'reject') {
+        const { rowCount } = await query(
+          "UPDATE shift_requests SET status = 'declined', decided_at = now() WHERE id = $1 AND status = 'pending'",
+          [id]
+        );
+        if (!rowCount) { decidedPage(); return; }
+        if (ctx.requestType === 'open_pickup') {
+          // Release the held slot (mirrors the in-app decline).
+          await query('DELETE FROM shifts WHERE id = $1 AND published = false', [ctx.shiftId]);
+        }
+        notifyDecided(false);
+        res.send(actPage('Rejected', '<p>The request has been closed and the requester has been told.</p>'));
+        return;
+      }
+
+      if (action === 'approve' && ctx.requestType === 'pickup') {
+        try {
+          await withTransaction(async (tx) => {
+            const { rows: locked } = await tx.query(
+              `SELECT request_type AS "requestType", shift_id AS "shiftId",
+                      requester_id AS "requesterId", status
+               FROM shift_requests WHERE id = $1 FOR UPDATE`,
+              [id]
+            );
+            if (!locked.length || locked[0].status !== 'pending') {
+              throw new RequestError(409, 'This request was just decided by someone else.');
+            }
+            const lr = locked[0];
+            const { rows: srows } = await tx.query(
+              'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
+              [lr.shiftId]
+            );
+            if (!srows.length) throw new RequestError(409, 'The shift no longer exists.');
+            if (srows[0].userId !== lr.requesterId) {
+              throw new RequestError(409, 'The shift changed hands since the request was made.');
+            }
+            if (srows[0].userId === me) {
+              throw new RequestError(400, 'That shift is already yours.');
+            }
+            if (shift0) {
+              const conflict = await checkShiftConflict(tx.query, companyId, {
+                userId: me,
+                personName: 'You',
+                proposed: { date: shift0.date, shiftTypeId: shift0.shiftTypeId, shiftTypeName: shift0.shiftTypeName },
+              });
+              if (conflict) {
+                throw new RequestError(409, `You can't pick up this shift — ${conflict}`);
+              }
+            }
+            await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [me, lr.shiftId]);
+            await tx.query(
+              "UPDATE shift_requests SET status = 'approved', decided_at = now() WHERE id = $1",
+              [id]
+            );
+            await tx.query(
+              `UPDATE shift_requests SET status = 'cancelled', decided_at = now()
+               WHERE id <> $1 AND status = 'pending'
+                 AND (shift_id = $2 OR their_shift_id = $2)`,
+              [id, lr.shiftId]
+            );
+          });
+        } catch (err: any) {
+          if (err instanceof RequestError) {
+            res.send(actPage('Could not approve', '<p>' + escHtml(err.message) + '</p>'));
+            return;
+          }
+          if (err?.code === '23505') {
+            const note = shift0 ? await existingShiftNote(companyId, me, shift0.date, shift0.shiftTypeId) : '';
+            res.send(actPage('Could not approve', '<p>' + escHtml(note || 'That would give you a duplicate shift — you already have that shift type on that date.') + '</p>'));
+            return;
+          }
+          throw err;
+        }
+        notifyDecided(true);
+        res.send(actPage("Approved — it's yours", '<p>The shift is on your schedule now. The requester has been told.</p>'));
+        return;
+      }
+
+      if (action === 'approve' && ctx.requestType === 'open_pickup') {
+        try {
+          await withTransaction(async (tx) => {
+            const { rows: locked } = await tx.query(
+              `SELECT shift_id AS "shiftId", requester_id AS "requesterId", status
+               FROM shift_requests WHERE id = $1 FOR UPDATE`,
+              [id]
+            );
+            if (!locked.length || locked[0].status !== 'pending') {
+              throw new RequestError(409, 'This request was just decided by someone else.');
+            }
+            const lr = locked[0];
+            const { rows: srows } = await tx.query(
+              'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
+              [lr.shiftId]
+            );
+            if (!srows.length) throw new RequestError(409, 'The shift no longer exists.');
+            if (srows[0].userId !== lr.requesterId) {
+              throw new RequestError(409, 'The shift changed hands since the request was made.');
+            }
+            await tx.query('UPDATE shifts SET published = true WHERE id = $1', [lr.shiftId]);
+            await tx.query(
+              "UPDATE shift_requests SET status = 'approved', decided_at = now() WHERE id = $1",
+              [id]
+            );
+            await tx.query(
+              `UPDATE shift_requests SET status = 'cancelled', decided_at = now()
+               WHERE id <> $1 AND status = 'pending'
+                 AND (shift_id = $2 OR their_shift_id = $2)`,
+              [id, lr.shiftId]
+            );
+          });
+        } catch (err: any) {
+          if (err instanceof RequestError) {
+            res.send(actPage('Could not approve', '<p>' + escHtml(err.message) + '</p>'));
+            return;
+          }
+          throw err;
+        }
+        notifyDecided(true);
+        res.send(actPage('Approved', '<p>The shift is published for the requester now. They have been told.</p>'));
+        return;
+      }
+
+      if (action === 'approve' && ctx.requestType === 'swap') {
+        try {
+          await withTransaction(async (tx) => {
+            const { rows: locked } = await tx.query(
+              `SELECT shift_id AS "shiftId", their_shift_id AS "theirShiftId",
+                      requester_id AS "requesterId", target_user_id AS "targetUserId", status, stage
+               FROM shift_requests WHERE id = $1 FOR UPDATE`,
+              [id]
+            );
+            if (!locked.length || locked[0].status !== 'pending') {
+              throw new RequestError(409, 'This request was just decided by someone else.');
+            }
+            const lr = locked[0];
+            if (lr.stage !== 'admin') {
+              throw new RequestError(409, 'This swap is still waiting on the swap partner.');
+            }
+            const ids = [lr.shiftId, lr.theirShiftId].sort();
+            const found = new Map<string, any>();
+            for (const sid of ids) {
+              const { rows: srows } = await tx.query(
+                'SELECT id, user_id AS "userId" FROM shifts WHERE id = $1 FOR UPDATE',
+                [sid]
+              );
+              if (srows.length) found.set(sid, srows[0]);
+            }
+            const a = found.get(lr.shiftId);
+            const b = found.get(lr.theirShiftId);
+            if (!a || !b) throw new RequestError(409, 'One of the shifts no longer exists.');
+            if (a.userId !== lr.requesterId || b.userId !== lr.targetUserId) {
+              throw new RequestError(409, 'One of the shifts changed hands since the request was made.');
+            }
+            await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [b.userId, lr.shiftId]);
+            await tx.query('UPDATE shifts SET user_id = $1 WHERE id = $2', [a.userId, lr.theirShiftId]);
+            await tx.query(
+              "UPDATE shift_requests SET status = 'approved', decided_at = now() WHERE id = $1",
+              [id]
+            );
+            await tx.query(
+              `UPDATE shift_requests SET status = 'cancelled', decided_at = now()
+               WHERE id <> $1 AND status = 'pending'
+                 AND (shift_id = ANY($2) OR their_shift_id = ANY($2))`,
+              [id, [lr.shiftId, lr.theirShiftId]]
+            );
+          });
+        } catch (err: any) {
+          if (err instanceof RequestError) {
+            res.send(actPage('Could not approve', '<p>' + escHtml(err.message) + '</p>'));
+            return;
+          }
+          if (err?.code === '23505') {
+            res.send(actPage('Could not approve', '<p>Approving this swap would give someone a duplicate shift — it was not applied.</p>'));
+            return;
+          }
+          throw err;
+        }
+        notifyDecided(true);
+        res.send(actPage('Swap approved', '<p>The shifts have been swapped. The requester has been told.</p>'));
+        return;
+      }
+
+      res.status(400).send(actPage('Unknown action', '<p>That action is not available for this request.</p>'));
+      return;
+    }
+
     // Decline: swap partner, or the one person a cover request asked.
     if (action === 'decline' && (ctx.requestType === 'swap' || (ctx.requestType === 'pickup' && ctx.targetUserId))) {
       if (ctx.targetUserId !== me) {
@@ -7712,6 +7990,8 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
         notifyShiftRequestApprovers(companyId, { userId: ctx.requesterId, shiftTypeId: myShift.shiftTypeId }, me,
           'A shift request is waiting for a decision',
           `${reqNames.personName} proposed a swap (${myShift.shiftTypeName} on ${fmtDateLong(myShift.date)}${theirShift ? ` ↔ ${theirShift.shiftTypeName} on ${fmtDateLong(theirShift.date)}` : ''}) and ${partNames ? partNames.personName : 'the swap partner'} agreed. Final approval is yours.`);
+        // Approver Approve/Reject email links for the admin stage (2026-11-03).
+        sendShiftRequestApproverEmails(companyId, id, me).catch(() => {});
       }
       notify({
         companyId, userIds: [ctx.requesterId], category: 'schedule', type: 'request_decided',
