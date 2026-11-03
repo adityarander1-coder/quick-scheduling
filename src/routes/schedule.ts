@@ -2663,8 +2663,26 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+/** The vacation (rotation pause) covering this person on this date, or null. */
+export async function vacationOn(companyId: string, userId: string, date: string): Promise<any | null> {
+  const { rows } = await query(
+    `SELECT p.id AS "pauseId", p.rotation_id AS "rotationId",
+            p.start_date::text AS "startDate", p.end_date::text AS "endDate", p.reason,
+            r.name AS "rotationName"
+     FROM rotation_pauses p
+     JOIN rotations r ON r.id = p.rotation_id
+     JOIN rotation_assignments ra ON ra.rotation_id = r.id AND ra.user_id = $2
+     WHERE p.company_id = $1 AND p.start_date <= $3 AND p.end_date >= $3
+     LIMIT 1`,
+    [companyId, userId, date]
+  );
+  return rows[0] || null;
+}
+
 // GET /api/schedule/vacation-check?userId=xxx&date=YYYY-MM-DD — is this person on vacation that date?
-router.get('/vacation-check', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// Owners/schedulers may check anyone; anyone may check THEMSELVES (the
+// pickup flows warn the claimer about their own vacation dates).
+router.get('/vacation-check', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const userId = String(req.query.userId || '');
@@ -2673,18 +2691,13 @@ router.get('/vacation-check', requireRole('owner', 'scheduler'), async (req: Req
       res.status(400).json({ error: 'userId and date are required.' });
       return;
     }
-    const { rows } = await query(
-      `SELECT p.id AS "pauseId", p.rotation_id AS "rotationId",
-              p.start_date::text AS "startDate", p.end_date::text AS "endDate", p.reason,
-              r.name AS "rotationName"
-       FROM rotation_pauses p
-       JOIN rotations r ON r.id = p.rotation_id
-       JOIN rotation_assignments ra ON ra.rotation_id = r.id AND ra.user_id = $2
-       WHERE p.company_id = $1 AND p.start_date <= $3 AND p.end_date >= $3
-       LIMIT 1`,
-      [companyId, userId, date]
-    );
-    res.json({ onVacation: rows.length > 0, vacation: rows[0] || null });
+    const role = req.session.role!;
+    if (role !== 'owner' && role !== 'scheduler' && userId !== req.session.userId) {
+      res.status(403).json({ error: 'You can only check your own vacation dates.' });
+      return;
+    }
+    const vacation = await vacationOn(companyId, userId, date);
+    res.json({ onVacation: !!vacation, vacation });
   } catch (err) {
     console.error('[schedule] vacation check failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -7592,7 +7605,11 @@ router.get('/requests/act/:token', async (req: Request, res: Response) => {
     let buttons = '';
     if (ctx.requestType === 'pickup') {
       title = ctx.targetUserId ? 'Cover request' : 'Cover needed';
-      body = '<p><strong>' + escHtml(who) + '</strong> ' + (ctx.targetUserId ? 'asked you to cover' : 'needs cover for') +
+      // Vacation heads-up (Deepika 2026-11-03): if the person this link
+      // belongs to is on vacation that day, say so before they decide.
+      const vac = shift ? await vacationOn(ctx.companyId, ctx.userId, shift.date) : null;
+      body = (vac ? '<p style="background:#fdf3e3;border:1px solid #ecc97e;border-radius:8px;padding:10px 12px"><strong>⚠️ You are on vacation</strong> on ' + escHtml(fmtDateLong(shift!.date)) + (vac.reason ? ' (' + escHtml(vac.reason) + ')' : '') + '. You can still pick it up if you want to work that day.</p>' : '') +
+        '<p><strong>' + escHtml(who) + '</strong> ' + (ctx.targetUserId ? 'asked you to cover' : 'needs cover for') +
         ' their <strong>' + escHtml(shift ? shift.shiftTypeName : 'shift') + '</strong> shift on <strong>' + escHtml(fmtDateLong(shift ? shift.date : '')) + '</strong>.</p>' +
         (ctx.targetUserId ? '<p>If you pick it up, the shift is yours.</p>' : '<p>First to pick it up gets it — the shift stays theirs until someone does.</p>');
       buttons = actButton('pickup', '✋ Pick up this shift', '#0e7c86') + (ctx.targetUserId ? actButton('decline', 'Decline', '#bd3d4a') : '');
