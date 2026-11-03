@@ -73,7 +73,9 @@
       var wide = !window.matchMedia || window.matchMedia('(min-width: 1024px)').matches;
       ['sched-view', 'ms-view'].forEach(function (id) {
         var el = document.getElementById(id);
-        if (el) el.style.zoom = wide ? z : '';
+        if (!el) return;
+        el.style.zoom = wide ? z : '';
+        el.classList.toggle('qs-scaled', !!(wide && z));
       });
     }
     window.qsApplyScheduleSize = qsApplyScheduleSize;
@@ -834,6 +836,8 @@
     /* Stage 2 (content): day cards + joined shift pills, mock-matched */
     #tab-schedule .day-row, #tab-myschedule .day-row { border: none; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.10); }
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
+    #sched-view.qs-scaled .week-grid, #ms-view.qs-scaled .week-grid { display: flex; flex-wrap: wrap; }
+    #sched-view.qs-scaled .week-grid article.day-row, #ms-view.qs-scaled .week-grid article.day-row { flex: 1 1 250px; min-width: 0; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
     #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
