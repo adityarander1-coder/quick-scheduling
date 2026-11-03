@@ -523,23 +523,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
       }
     }
 
-    // Merge and sort
-    // Also hide manual shifts for users whose rotation is paused on that date (vacation)
-    const userPauseMap = new Map<string, Array<{ start: string; end: string }>>();
-    for (const rot of rotations) {
-      const periods = pauseMap.get(rot.id);
-      if (!periods || !rot.assignments) continue;
-      for (const a of rot.assignments as any[]) {
-        if (!userPauseMap.has(a.userId)) userPauseMap.set(a.userId, []);
-        userPauseMap.get(a.userId)!.push(...periods);
-      }
-    }
-    const isUserPaused = (userId: string, dateStr: string): boolean => {
-      const periods = userPauseMap.get(userId);
-      if (!periods) return false;
-      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
-    };
-    const visibleManual = rows.filter((s: any) => !s.userId || !isUserPaused(s.userId, s.date));
+    // Merge and sort.
+    // Manual shifts are NEVER hidden — a vacation pause suppresses only
+    // the rotation occurrences it belongs to. (An earlier rule also hid
+    // a paused user's manual shifts from every view while they still
+    // existed in the data: the person looked unscheduled, yet pickups
+    // on those dates collided with the invisible shifts. Deepika hit
+    // exactly that on her vacation dates, 2026-11-03.)
+    const visibleManual = rows;
 
     // Closed shifts (manually marked unavailable)
     const { rows: closedShifts } = await query(
