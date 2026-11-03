@@ -7151,7 +7151,7 @@
                   <div class="swatch-group-label">Light</div>
                   <div class="swatch-row"><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#eef5f4" title="Whisper" style="width:2rem;height:2rem;border-radius:50%;background:#eef5f4;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#e9f4f3" title="Pale teal" style="width:2rem;height:2rem;border-radius:50%;background:#e9f4f3;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#d9efee" title="Light band" style="width:2rem;height:2rem;border-radius:50%;background:#d9efee;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#dde8e6" title="Muted pale" style="width:2rem;height:2rem;border-radius:50%;background:#dde8e6;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#d7e1e3" title="Tint" style="width:2rem;height:2rem;border-radius:50%;background:#d7e1e3;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#bfe3e1" title="Aqua mist" style="width:2rem;height:2rem;border-radius:50%;background:#bfe3e1;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#8fc7c2" title="Soft teal" style="width:2rem;height:2rem;border-radius:50%;background:#8fc7c2;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-header-color" data-color="#5aa9a2" title="Mid teal" style="width:2rem;height:2rem;border-radius:50%;background:#5aa9a2;border:2px solid var(--border);cursor:pointer;padding:0"></button></div>
                   <div style="display:flex;gap:0.5rem;align-items:center">
-                    <input type="color" id="gs-header-color" value="#0A1628" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
+                    <input type="color" id="gs-header-color" value="#083f4d" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
                     <span style="font-size:0.82rem;color:var(--dim)">Custom</span>
                     <button type="button" class="btn-secondary btn-sm" id="gs-header-reset">Reset</button>
                   </div>
@@ -7163,7 +7163,7 @@
                   <div class="swatch-group-label">Light</div>
                   <div class="swatch-row"><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#eef5f4" title="Whisper" style="width:2rem;height:2rem;border-radius:50%;background:#eef5f4;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#e9f4f3" title="Pale teal" style="width:2rem;height:2rem;border-radius:50%;background:#e9f4f3;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#d9efee" title="Light band" style="width:2rem;height:2rem;border-radius:50%;background:#d9efee;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#dde8e6" title="Muted pale" style="width:2rem;height:2rem;border-radius:50%;background:#dde8e6;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#d7e1e3" title="Tint" style="width:2rem;height:2rem;border-radius:50%;background:#d7e1e3;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#bfe3e1" title="Aqua mist" style="width:2rem;height:2rem;border-radius:50%;background:#bfe3e1;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#8fc7c2" title="Soft teal" style="width:2rem;height:2rem;border-radius:50%;background:#8fc7c2;border:2px solid var(--border);cursor:pointer;padding:0"></button><button type="button" class="color-swatch" data-target="gs-footer-color" data-color="#5aa9a2" title="Mid teal" style="width:2rem;height:2rem;border-radius:50%;background:#5aa9a2;border:2px solid var(--border);cursor:pointer;padding:0"></button></div>
                   <div style="display:flex;gap:0.5rem;align-items:center">
-                    <input type="color" id="gs-footer-color" value="#0A1628" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
+                    <input type="color" id="gs-footer-color" value="#083f4d" style="width:3rem;height:2.2rem;padding:0;border:1px solid var(--border);border-radius:8px">
                     <span style="font-size:0.82rem;color:var(--dim)">Custom</span>
                     <button type="button" class="btn-secondary btn-sm" id="gs-footer-reset">Reset</button>
                   </div>
@@ -7577,8 +7577,13 @@
                   var p = (res.data && res.data.settings) || {};
                   document.getElementById('gs-theme').value = p.theme || 'system';
                   document.getElementById('gs-sched-size').value = p.schedule_size || '100';
-                  if (p.header_color) document.getElementById('gs-header-color').value = p.header_color;
-                  if (p.footer_color) document.getElementById('gs-footer-color').value = p.footer_color;
+                  // No saved colour = the standard default shows in the
+                  // picker (deep teal #083f4d) and the gs-cleared flag makes
+                  // Save keep it as "no personal colour" ('').
+                  var ghc = document.getElementById('gs-header-color');
+                  var gfc = document.getElementById('gs-footer-color');
+                  if (p.header_color) { ghc.value = p.header_color; delete ghc.dataset.gsCleared; } else { ghc.value = '#083f4d'; ghc.dataset.gsCleared = '1'; }
+                  if (p.footer_color) { gfc.value = p.footer_color; delete gfc.dataset.gsCleared; } else { gfc.value = '#083f4d'; gfc.dataset.gsCleared = '1'; }
                   window.qsPersonal = p;
                   applyPersonalTheme(p);
                 }).catch(function () {});
@@ -7616,20 +7621,34 @@
                 var nameEl = document.getElementById('company-name');
                 if (nameEl && name) nameEl.textContent = name;
               };
-              // Swatch taps set the matching color input.
+              // Swatch taps set the matching color input (a real colour
+              // choice — clears any reset flag).
               document.querySelectorAll('.color-swatch').forEach(function (sw) {
                 sw.addEventListener('click', function () {
                   var target = document.getElementById(sw.getAttribute('data-target'));
-                  if (target) target.value = sw.getAttribute('data-color');
+                  if (target) { target.value = sw.getAttribute('data-color'); delete target.dataset.gsCleared; }
                 });
+              });
+              // Reset = back to the standard default (deep teal #083f4d).
+              // It used to hardcode #0A1628 (midnight navy) and SAVE that
+              // as a personal colour — that's the "reset went navy" bug
+              // Deepika hit 2026-11-03. Now the picker shows the default
+              // it will get, and gs-cleared makes Save store '' (no
+              // personal colour), so the header/footer follow the
+              // standard default itself.
+              ['gs-header-color', 'gs-footer-color'].forEach(function (id) {
+                var inp = document.getElementById(id);
+                if (inp) inp.addEventListener('input', function () { delete inp.dataset.gsCleared; });
               });
               var hrReset = document.getElementById('gs-header-reset');
               if (hrReset) hrReset.addEventListener('click', function () {
-                document.getElementById('gs-header-color').value = '#0A1628';
+                var inp = document.getElementById('gs-header-color');
+                inp.value = '#083f4d'; inp.dataset.gsCleared = '1';
               });
               var frReset = document.getElementById('gs-footer-reset');
               if (frReset) frReset.addEventListener('click', function () {
-                document.getElementById('gs-footer-color').value = '#0A1628';
+                var inp = document.getElementById('gs-footer-color');
+                inp.value = '#083f4d'; inp.dataset.gsCleared = '1';
               });
               var gsForm = document.getElementById('general-form');
               if (gsForm) gsForm.addEventListener('submit', function (e) {
@@ -7647,8 +7666,8 @@
                 };
                 var personalBody = {
                   theme: document.getElementById('gs-theme').value,
-                  header_color: document.getElementById('gs-header-color').value,
-                  footer_color: document.getElementById('gs-footer-color').value,
+                  header_color: document.getElementById('gs-header-color').dataset.gsCleared ? '' : document.getElementById('gs-header-color').value,
+                  footer_color: document.getElementById('gs-footer-color').dataset.gsCleared ? '' : document.getElementById('gs-footer-color').value,
                   schedule_size: document.getElementById('gs-sched-size').value,
                 };
                 Promise.all([
