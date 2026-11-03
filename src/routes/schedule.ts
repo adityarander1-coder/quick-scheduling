@@ -6876,7 +6876,7 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       return;
     }
     const { rows: trows } = await query(
-      'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
       [shiftTypeId, companyId]
     );
     if (!trows.length) {
@@ -6891,9 +6891,24 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       return;
     }
     const shiftId = crypto.randomUUID();
+    const typeName = trows[0].name;
     let claimed = false;
+    let conflictMsg: string | null = null;
     try {
       await withTransaction(async (tx) => {
+        // Conflict guard (Deepika 2026-11-03): an open-slot claim must
+        // obey the same overlap / 8-hour-rest rules as covers and swaps.
+        // This endpoint never checked, so she claimed two overlapping
+        // shift types on one day with no warning. Same-type duplicates
+        // are excluded here — they keep their own named message via the
+        // 23505 path below.
+        const conflict = await checkShiftConflict(tx.query, companyId, {
+          userId: me,
+          personName: 'You',
+          proposed: { date, shiftTypeId, shiftTypeName: typeName },
+          exclude: [{ date, shiftTypeId }],
+        });
+        if (conflict) { conflictMsg = conflict; return; }
         // Path 1: manually-added extra open slots (atomic row-locked decrement).
         const { rows: slotRows } = await tx.query(
           `UPDATE extra_open_slots SET count = count - 1
@@ -6956,6 +6971,10 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
         return;
       }
       throw err;
+    }
+    if (conflictMsg) {
+      res.status(409).json({ error: `You can't pick up this shift — ${conflictMsg}` });
+      return;
     }
     if (!claimed) {
       res.status(409).json({ error: 'That open slot was just taken by someone else.' });

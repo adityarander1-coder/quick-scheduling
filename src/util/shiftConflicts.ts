@@ -180,13 +180,15 @@ export function findShiftConflict(
   personName: string, existing: TimedShift[], proposed: TimedShift
 ): string | null {
   const sorted = [...existing].sort((a, b) => startAbs(a) - startAbs(b));
+  // Self-checks pass 'You' — keep the grammar right ("You are…").
+  const beVerb = personName === 'You' ? 'are' : 'is';
   for (const ex of sorted) {
     if (!ex.timed || !proposed.timed) {
       // Conservative fallback: no honest rest math without times, so
       // a shared occupied date is a conflict.
       const shared = occupiedDates(ex).find((d) => occupiedDates(proposed).includes(d));
       if (shared) {
-        return `${personName} is already working ${ex.shiftTypeName} on ${fmtDay(ex.date)} — ` +
+        return `${personName} ${beVerb} already working ${ex.shiftTypeName} on ${fmtDay(ex.date)} — ` +
           `it clashes with ${proposed.shiftTypeName} on ${fmtDay(proposed.date)} ` +
           `(one of these shift types has no set start/end times, so the day can't be shared safely).`;
       }
@@ -195,7 +197,7 @@ export function findShiftConflict(
     const exStart = startAbs(ex), exEnd = endAbs(ex);
     const pStart = startAbs(proposed), pEnd = endAbs(proposed);
     if (exStart < pEnd && pStart < exEnd) {
-      return `${personName} is already working ${ex.shiftTypeName} on ${fmtDay(ex.date)}${fmtRange(ex)} — ` +
+      return `${personName} ${beVerb} already working ${ex.shiftTypeName} on ${fmtDay(ex.date)}${fmtRange(ex)} — ` +
         `it overlaps ${proposed.shiftTypeName} on ${fmtDay(proposed.date)}${fmtRange(proposed)}.`;
     }
     // Not overlapping: the gap between the two, whichever comes first.
