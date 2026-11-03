@@ -917,7 +917,10 @@
     .qs-pal-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
     #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
     #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
-    #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 9px; }
+    /* Open-slot label edges match the filled rows (Deepika, 2026-11-02): the type
+       label is flush where it meets the name cell — curve only on the outer edge
+       of the box, never a capsule curved on both ends. Colours unchanged. */
+    #tab-schedule button.open-slot .shift-cat, #tab-myschedule button.open-slot .shift-cat { border-radius: 0; }
     input[type="text"], input[type="email"], input[type="password"], input[type="tel"],
     input[type="number"], input[type="date"], input[type="time"], input[type="search"],
     select, textarea { border-radius: 8px; }
