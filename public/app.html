@@ -45,22 +45,43 @@
     function qsCoverBadge(s) {
       if (!s || !s.coverForViewer) return '';
       if (s.coverForViewer === 'pickup') {
-        return ' <button type="button" class="cover-badge pickup" data-cover-claim="' + s.coverRequestId + '" data-cover-label="' + esc(s.shiftTypeName + ' on ' + s.date) + '" title="Pick up this shift" onclick="event.stopPropagation();qsCoverClaim(this.getAttribute(\'data-cover-claim\'), this.getAttribute(\'data-cover-label\'))">✋ Pick up</button>';
+        return ' <button type="button" class="cover-badge pickup" data-cover-claim="' + s.coverRequestId + '" data-cover-label="' + esc(s.shiftTypeName + ' on ' + s.date) + '" data-cover-date="' + s.date + '" title="Pick up this shift" onclick="event.stopPropagation();qsCoverClaim(this.getAttribute(\'data-cover-claim\'), this.getAttribute(\'data-cover-label\'), this.getAttribute(\'data-cover-date\'))">✋ Pick up</button>';
       }
       return ' <span class="cover-badge open" title="Cover has been asked for this shift">✋ Cover asked</span>';
     }
-    function qsCoverClaim(requestId, label) {
-      if (!window.confirm('Pick up ' + label + '? If you pick it up, the shift is yours.')) return;
-      api('/api/schedule/shift-requests/' + requestId + '/approve', { method: 'POST', body: '{}' })
-        .then(function (r) {
-          if (r.ok) {
-            pageSuccess("It's yours — the shift is on your schedule now.");
-            document.dispatchEvent(new CustomEvent('qs-cover-claimed'));
-          } else {
-            pageError((r.data && r.data.error) || 'Could not pick up that shift.');
-          }
-        })
-        .catch(function () { pageError('Could not pick up that shift.'); });
+    // Is the signed-in user on vacation on this date? Resolves to the
+    // vacation record or null. Used to warn before a pickup lands on a
+    // vacation day (Deepika 2026-11-03).
+    var qsMePromise = null;
+    function qsSelfVacation(dateStr) {
+      if (!dateStr) return Promise.resolve(null);
+      if (!qsMePromise) qsMePromise = api('/api/auth/me');
+      return qsMePromise.then(function (mr) {
+        if (!mr.ok || !mr.data.user) return null;
+        return api('/api/schedule/vacation-check?userId=' + encodeURIComponent(mr.data.user.id) + '&date=' + encodeURIComponent(dateStr))
+          .then(function (vr) { return (vr.ok && vr.data.onVacation) ? vr.data.vacation : null; });
+      }).catch(function () { return null; });
+    }
+    function qsNiceDate(dateStr) {
+      try { return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }); } catch (e) { return dateStr; }
+    }
+    function qsCoverClaim(requestId, label, dateStr) {
+      qsSelfVacation(dateStr).then(function (vac) {
+        var msg = vac
+          ? 'You are on vacation on ' + qsNiceDate(dateStr) + '. Still pick up ' + label + '? The shift will be yours.'
+          : 'Pick up ' + label + '? If you pick it up, the shift is yours.';
+        if (!window.confirm(msg)) return;
+        api('/api/schedule/shift-requests/' + requestId + '/approve', { method: 'POST', body: '{}' })
+          .then(function (r) {
+            if (r.ok) {
+              pageSuccess("It's yours — the shift is on your schedule now.");
+              document.dispatchEvent(new CustomEvent('qs-cover-claimed'));
+            } else {
+              pageError((r.data && r.data.error) || 'Could not pick up that shift.');
+            }
+          })
+          .catch(function () { pageError('Could not pick up that shift.'); });
+      });
     }
     // (No delegated click handler: badge buttons call qsCoverClaim
     // inline, because chip handlers stop propagation before document.)
@@ -1086,9 +1107,13 @@
        her colors the header/tab bar went navy-teal but the footer fell
        back to navy, since the original trial left it out — so the
        footer now follows the same chrome (a saved footer color still
-       wins via inline style). */
-    .app-header { background: #21414c; }
-    .app-footer { background: #21414c; }
+       wins via inline style).
+       SUPERSEDED for header/footer (Deepika, 2026-11-03): the reset /
+       default header + footer colour is the standardized teal accent
+       #0e7c86, not navy — she reset her colours and expected the teal
+       standard back. Content bands keep their navy. */
+    .app-header { background: #0e7c86; }
+    .app-footer { background: #0e7c86; }
     /* Light header/footer colours: flip text dark so light colours stay readable.
        (Phone tab-bar buttons keep light text — they sit on their own navy-teal bar.) */
     .app-header.light-chrome .brand .product-name,
@@ -1168,7 +1193,7 @@
       #tab-link .flip-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 1023px) {
-      .app-header .main-tabs { background: #21414c; }
+      .app-header .main-tabs { background: #0e7c86; }
       .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
     }
     @media (min-width: 1024px) {
@@ -12290,6 +12315,22 @@
 
         function claimSlot(dateStr, shiftTypeId, btn) {
           btn.disabled = true;
+          // Vacation heads-up (Deepika 2026-11-03): picking up on your own
+          // vacation day asks first.
+          api('/api/schedule/vacation-check?userId=' + encodeURIComponent(me.id) + '&date=' + encodeURIComponent(dateStr)).then(function (vr) {
+            if (vr.ok && vr.data.onVacation) {
+              var st = stById(shiftTypeId);
+              msDialog('You are on vacation',
+                '<p>You are on vacation on <strong>' + esc(fmtLong(dateStr)) + '</strong>. Do you still want to pick up the <strong>' + esc(st ? st.name : 'shift') + '</strong> shift that day?</p>',
+                [{ label: 'Cancel', onClick: function () { hide($('ms-action-dialog')); btn.disabled = false; } },
+                 { label: 'Yes, pick it up', primary: true, onClick: function () { hide($('ms-action-dialog')); doClaimSlot(dateStr, shiftTypeId, btn); } }]);
+              return;
+            }
+            doClaimSlot(dateStr, shiftTypeId, btn);
+          }).catch(function () { doClaimSlot(dateStr, shiftTypeId, btn); });
+        }
+
+        function doClaimSlot(dateStr, shiftTypeId, btn) {
           api('/api/schedule/open-slots/claim', {
             method: 'POST', body: JSON.stringify({ date: dateStr, shiftTypeId: shiftTypeId })
           }).then(function (r) {
@@ -12750,6 +12791,29 @@
         }
 
         function reqAction(id, what) {
+          // Vacation heads-up (Deepika 2026-11-03): approving a cover /
+          // pickup request means taking that shift — if it's the
+          // approver's own vacation day, ask first.
+          if (what === 'approve' && me) {
+            var r0 = null;
+            for (var i = 0; i < requests.length; i++) { if (String(reqGet(requests[i], ['id'])) === String(id)) { r0 = requests[i]; break; } }
+            var kind = r0 ? String(reqGet(r0, ['requestType', 'request_type', 'kind', 'type'])).toLowerCase() : '';
+            var sh0 = r0 ? (reqGet(r0, ['shift']) || {}) : {};
+            var d0 = reqGet(sh0, ['date']) || (r0 ? reqGet(r0, ['date', 'shiftDate']) : '');
+            if (r0 && (kind === 'cover' || kind === 'pickup') && d0 && !reqMine(r0)) {
+              api('/api/schedule/vacation-check?userId=' + encodeURIComponent(me.id) + '&date=' + encodeURIComponent(d0)).then(function (vr) {
+                if (vr.ok && vr.data.onVacation) {
+                  if (!window.confirm('You are on vacation on ' + d0 + '. Still pick up this shift? It will be yours.')) return;
+                }
+                reqActionGo(id, what);
+              }).catch(function () { reqActionGo(id, what); });
+              return;
+            }
+          }
+          reqActionGo(id, what);
+        }
+
+        function reqActionGo(id, what) {
           clearMsg();
           api('/api/schedule/shift-requests/' + id + '/' + what, { method: 'POST' }).then(function (r) {
             if (r.ok) {
