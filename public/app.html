@@ -64,9 +64,22 @@
     }
     // (No delegated click handler: badge buttons call qsCoverClaim
     // inline, because chip handlers stop propagation before document.)
-    // Staff-count pills (Deepika 2026-11-02, mock approved): on each day,
-    // the first row of each shift type carries a dark pill with the number
-    // of staff assigned to that shift that day. Owner/scheduler only.
+    // Staff counts (Deepika 2026-11-02; header-strip design approved after
+    // mock rounds): each day card carries a summary strip under its header —
+    // one chip per shift type in the type's colour, the type's abbreviation,
+    // and the assigned count in a white circle. Month chips keep the count
+    // on the chip itself, as the same white circle. Owner/scheduler only.
+    function qsTypeAbbr(name) {
+      return String(name || '').split(/\s+/).filter(Boolean).map(function (w) {
+        return /^[A-Z]{2,}$/.test(w) ? w : w.charAt(0).toUpperCase();
+      }).join('');
+    }
+    window.qsTypeAbbr = qsTypeAbbr;
+    function qsCountChipHtml(name, bg, n) {
+      return '<span class="qs-count-chip" title="' + String(name || '').replace(/"/g, '&quot;') + '" style="background:' + bg + '">' +
+        qsTypeAbbr(name) + ' <span class="qs-count-circle">' + n + '</span></span>';
+    }
+    window.qsCountChipHtml = qsCountChipHtml;
     function qsStaffPillHtml(n) { return '<span class="qs-count-pill">' + n + '</span>'; }
     window.qsStaffPillHtml = qsStaffPillHtml;
     function qsInjectStaffCounts(root) {
@@ -74,28 +87,30 @@
         if (!root || !root.querySelectorAll) return;
         if (!(window.currentRole === 'owner' || window.currentRole === 'scheduler')) return;
         root.querySelectorAll('.month-chip').forEach(function (chip) {
-          if (chip.querySelector('.qs-count-pill')) return;
+          if (chip.querySelector('.qs-count-circle')) return;
           var n = chip.querySelectorAll('.qs-person').length;
           var strong = chip.querySelector('strong');
-          if (strong && n > 0) strong.insertAdjacentHTML('afterend', qsStaffPillHtml(n));
+          if (strong && n > 0) strong.insertAdjacentHTML('afterend', ' <span class="qs-count-circle">' + n + '</span>');
         });
         root.querySelectorAll('article.day-row').forEach(function (card) {
-          var cur = null;
-          function flush() {
-            if (cur && cur.count > 0 && cur.cat) cur.cat.insertAdjacentHTML('beforeend', qsStaffPillHtml(cur.count));
-            cur = null;
-          }
+          if (card.querySelector('.qs-count-strip')) return;
+          var groups = [], byType = {};
           card.querySelectorAll('.shift-grid').forEach(function (row) {
-            if (row.closest('button.open-slot')) return; // open slots: no count, don't break the group
+            if (row.closest('button.open-slot')) return; // open slots don't count
             var cat = row.querySelector('.shift-cat');
             if (!cat) return;
-            if (cat.querySelector('.qs-count-pill')) return;
             var type = cat.textContent.trim();
+            var g = byType[type];
+            if (!g) { g = byType[type] = { type: type, count: 0, bg: getComputedStyle(cat).backgroundColor }; groups.push(g); }
             var nm = row.querySelector('.shift-nm');
-            if (!cur || cur.type !== type) { flush(); cur = { type: type, count: 0, cat: cat }; }
-            if (nm && nm.textContent.trim()) cur.count++;
+            if (nm && nm.textContent.trim()) g.count++;
           });
-          flush();
+          var chips = groups.filter(function (g) { return g.count > 0; }).map(function (g) {
+            return qsCountChipHtml(g.type, g.bg, g.count);
+          }).join('');
+          if (!chips) return;
+          var head = card.querySelector('.day-row-head');
+          if (head) head.insertAdjacentHTML('afterend', '<div class="qs-count-strip">' + chips + '</div>');
         });
       } catch (e) {}
     }
@@ -883,6 +898,9 @@
     #sched-view.qs-f70 .day-row-head, #ms-view.qs-f70 .day-row-head { font-weight: 800; color: #05080f; }
     #sched-view.qs-f70 .shift-nm, #ms-view.qs-f70 .shift-nm { font-weight: 900; color: #05080f; }
     .qs-count-pill { display: inline-block; background: #21414c; color: #fff; border-radius: 999px; padding: 0 6px; margin-left: 6px; font-size: 10px; font-weight: 800; line-height: 16px; vertical-align: 1px; font-style: normal; white-space: nowrap; }
+    .qs-count-strip { display: flex; gap: 5px; flex-wrap: wrap; padding: 5px 8px; border-bottom: 1px solid #e6e8f2; background: #fbfbfe; }
+    .qs-count-chip { display: inline-flex; gap: 5px; align-items: center; font-size: 10.5px; font-weight: 800; padding: 2.5px 5px 2.5px 8px; border-radius: 999px; color: #10222b; white-space: nowrap; font-style: normal; }
+    .qs-count-circle { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #fff; color: #10222b; font-weight: 900; font-size: 10px; box-shadow: inset 0 0 0 1.5px rgba(16,34,43,.25); font-style: normal; vertical-align: middle; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
     #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
@@ -3718,21 +3736,27 @@
           var comments = commentsFor(ds);
           var html = '';
           if (!shifts.length) html += '<p style="color:#94a3b8">No shifts assigned.</p>';
-          var typeCounts = {}, typePilled = {};
-          shifts.forEach(function (s) { if (s.userId) typeCounts[s.shiftTypeId] = (typeCounts[s.shiftTypeId] || 0) + 1; });
+          var typeCounts = {}, typeOrder = [], typeSeen = {};
+          shifts.forEach(function (s) {
+            if (!s.userId) return;
+            typeCounts[s.shiftTypeId] = (typeCounts[s.shiftTypeId] || 0) + 1;
+            if (!typeSeen[s.shiftTypeId]) { typeSeen[s.shiftTypeId] = true; typeOrder.push(s.shiftTypeId); }
+          });
+          var countStripHtml = '';
+          if (window.qsCountChipHtml && typeOrder.length) {
+            countStripHtml = '<div class="qs-count-strip" style="border:1px solid #e6e8f2;border-radius:10px;margin-bottom:8px">' + typeOrder.map(function (tid) {
+              var stx = shiftTypeById(tid);
+              return window.qsCountChipHtml(stx ? stx.name : '', tint(stx ? stx.color : '#94a3b8', 45), typeCounts[tid]);
+            }).join('') + '</div>';
+          }
           shifts.forEach(function (s) {
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
             var isDraftShift = s.published === false;
             var editable = shiftEditable(s);
-            var countPill = '';
-            if (s.userId && typeCounts[s.shiftTypeId] && !typePilled[s.shiftTypeId]) {
-              typePilled[s.shiftTypeId] = true;
-              countPill = ' ' + window.qsStaffPillHtml(typeCounts[s.shiftTypeId]);
-            }
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
-              esc(st ? st.name : '') + countPill + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
+              esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
                 '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
@@ -3740,7 +3764,7 @@
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
           });
-          $('sched-day-shifts').innerHTML = html;
+          $('sched-day-shifts').innerHTML = countStripHtml + html;
           // Open slots for unfilled staffing targets.
           var openHtml = '';
           if (sched.canEdit) {
