@@ -1109,11 +1109,15 @@
        footer now follows the same chrome (a saved footer color still
        wins via inline style).
        SUPERSEDED for header/footer (Deepika, 2026-11-03): the reset /
-       default header + footer colour is the standardized teal accent
-       #0e7c86, not navy — she reset her colours and expected the teal
-       standard back. Content bands keep their navy. */
-    .app-header { background: #0e7c86; }
-    .app-footer { background: #0e7c86; }
+       default header + footer colour is a teal, not navy — she reset
+       her colours and expected the teal standard back. First shipped
+       as the bright accent #0e7c86; she corrected it the same night:
+       the header/footer teal is the DEEP teal #083f4d from the Oct 23
+       full-teal mock (her tap: 'B — the deep teal'). The bright
+       #0e7c86 stays the button/accent colour. Content bands keep
+       their navy. */
+    .app-header { background: #083f4d; }
+    .app-footer { background: #083f4d; }
     /* Light header/footer colours: flip text dark so light colours stay readable.
        (Phone tab-bar buttons keep light text — they sit on their own navy-teal bar.) */
     .app-header.light-chrome .brand .product-name,
@@ -1193,7 +1197,7 @@
       #tab-link .flip-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 1023px) {
-      .app-header .main-tabs { background: #0e7c86; }
+      .app-header .main-tabs { background: #083f4d; }
       .app-header .tab-btn.active { background: rgba(255,255,255,0.14); }
     }
     @media (min-width: 1024px) {
