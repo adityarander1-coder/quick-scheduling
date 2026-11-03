@@ -769,11 +769,14 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
       }
       shiftIds.push(srows[0].id);
     }
+    const coverRequestIds: string[] = [];
     for (const sid of shiftIds) {
+      const rid = randomUUID();
       await q(
         `INSERT INTO shift_requests (id, company_id, request_type, shift_id, requester_id, target_user_id, status)
          VALUES ($1, $2, 'pickup', $3, $4, $5, 'pending')`,
-        [randomUUID(), row.company_id, sid, user.id, oc.targetUserId || null]);
+        [rid, row.company_id, sid, user.id, oc.targetUserId || null]);
+      coverRequestIds.push(rid);
     }
     try {
       const { notify } = await import('./notify.js');
@@ -811,6 +814,11 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
           }
         }
       }
+    } catch { /* non-fatal */ }
+    // Action-link emails to the people being asked (Deepika 2026-11-02).
+    try {
+      const { sendShiftRequestActionEmails } = await import('./requestActionEmails.js');
+      for (const rid of coverRequestIds) await sendShiftRequestActionEmails(row.company_id, rid);
     } catch { /* non-fatal */ }
     const coverOutcome = oc.targetUserId ? 'cover_asked' : 'cover_posted';
     await q("UPDATE form_requests SET status = 'done', outcome = $2, processed_at = now() WHERE id = $1", [row.id, coverOutcome]);

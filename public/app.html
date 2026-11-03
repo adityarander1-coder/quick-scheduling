@@ -38,6 +38,32 @@
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    // Cover-available marker (Deepika 2026-11-02): a shift with an open
+    // cover request shows on the schedule — a Pick up button for the
+    // people who were asked, a plain marker for the requester/admins.
+    // The owner's name stays until someone picks it up.
+    function qsCoverBadge(s) {
+      if (!s || !s.coverForViewer) return '';
+      if (s.coverForViewer === 'pickup') {
+        return ' <button type="button" class="cover-badge pickup" data-cover-claim="' + s.coverRequestId + '" data-cover-label="' + esc(s.shiftTypeName + ' on ' + s.date) + '" title="Pick up this shift" onclick="event.stopPropagation();qsCoverClaim(this.getAttribute(\'data-cover-claim\'), this.getAttribute(\'data-cover-label\'))">✋ Pick up</button>';
+      }
+      return ' <span class="cover-badge open" title="Cover has been asked for this shift">✋ Cover asked</span>';
+    }
+    function qsCoverClaim(requestId, label) {
+      if (!window.confirm('Pick up ' + label + '? If you pick it up, the shift is yours.')) return;
+      api('/api/schedule/shift-requests/' + requestId + '/approve', { method: 'POST', body: '{}' })
+        .then(function (r) {
+          if (r.ok) {
+            pageSuccess("It's yours — the shift is on your schedule now.");
+            document.dispatchEvent(new CustomEvent('qs-cover-claimed'));
+          } else {
+            pageError((r.data && r.data.error) || 'Could not pick up that shift.');
+          }
+        })
+        .catch(function () { pageError('Could not pick up that shift.'); });
+    }
+    // (No delegated click handler: badge buttons call qsCoverClaim
+    // inline, because chip handlers stop propagation before document.)
     // --- Department-scoped permissions + active department (2026-10-12) ---
     // window.qsDeptAccess = null  -> full access (owner, or backend hasn't sent departmentAccess yet).
     // window.qsDeptAccess = { edit: [deptId...], view: [deptId...] } -> scoped scheduler.
@@ -806,6 +832,10 @@
     @media (max-width: 1023px) { #qs-undo-top, #qs-redo-top { display: none !important; } }
     .qs-ur-band { display: none; }
     @media (max-width: 1023px) { .qs-ur-band.qs-on { display: inline-flex; align-items: center; } }
+    .cover-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
+    button.cover-badge.pickup { background: #0e7c86; color: #fff; border: none; cursor: pointer; }
+    button.cover-badge.pickup:hover { background: #0a6270; }
+    span.cover-badge.open { background: #fdf3e3; color: #8a5a00; border: 1px solid #ecc987; }
     .app-header.light-chrome .qs-ur-btn { color: #21414c; border-color: rgba(33,65,76,.45); background: rgba(33,65,76,.08); }
     .qs-pal-pop { position: absolute; z-index: 1200; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(16,24,40,.22); padding: 10px 12px; width: 232px; }
     html[data-theme="dark"] .qs-pal-pop { background: #1f2937; }
@@ -2163,7 +2193,7 @@
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + cBtn + '</div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + qsCoverBadge(s) + cBtn + '</div>' +
             '</div>';
         }
 
@@ -3043,7 +3073,7 @@
             var published = items[0].published !== false;
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
-            var names = items.map(function (s) { return '<span class="qs-person" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>'; }).join('<br>');
+            var names = items.map(function (s) { return '<span class="qs-person" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>' + qsCoverBadge(s); }).join('<br>');
             var title = esc(items.map(function (s) { return displayName(s); }).join(', ') + ' — ' + shiftName);
             html += '<div class="month-chip" data-shifttype="' + st.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
               '" title="' + title + '">' +
@@ -3623,7 +3653,7 @@
             var editable = shiftEditable(s);
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
-              esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' +
+              esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
                 '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
@@ -4935,6 +4965,7 @@
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeBandBtns);
           else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
         }
+        document.addEventListener('qs-cover-claimed', function () { loadAll(); });
         $('sched-range-apply').addEventListener('click', function () {
           var f = $('sched-range-from').value, t = $('sched-range-to').value;
           if (!f) { pageError('Pick a from date.'); return; }
@@ -11213,7 +11244,7 @@
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var html = '<div class="shift-grid">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + note + '</div>' +
+            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
           if (isMine(s) && String(s.id).indexOf('rot-') !== 0) {
             html += '<div style="display:flex;gap:0.5rem;margin:-2px 0 8px;flex-wrap:wrap">' +
@@ -11583,7 +11614,7 @@
               if (!items.length) return;
               var color = st.color || '#637a8e';
               var names = items.map(function (s) {
-                return '<span class="ms-chip-who">' + esc(isMine(s) ? 'YOU · ' + displayName(s) : displayName(s)) + '</span>';
+                return '<span class="ms-chip-who">' + esc(isMine(s) ? 'YOU · ' + displayName(s) : displayName(s)) + '</span>' + qsCoverBadge(s);
               }).join('');
               var title = esc(st.name + ' — ' + items.map(function (s) { return displayName(s); }).join(', '));
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + title + '">' +
@@ -11600,7 +11631,7 @@
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc((st ? st.name : 'Shift') + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span class="ms-chip-text"><strong>' + esc(st ? st.name : 'Shift') + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
+                '<span class="ms-chip-text"><strong>' + esc(st ? st.name : 'Shift') + '</strong><span class="ms-chip-who">' + esc(who) + '</span>' + qsCoverBadge(s) + '</span></div>';
             });
             html += msEventChipsHtml(ds);
             if (showAvailable()) {
@@ -11700,7 +11731,7 @@
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
-                '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span></span></div>';
+                '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span>' + qsCoverBadge(s) + '</span></div>';
             });
             if (showAvailable()) {
               var openParts = [];
@@ -11787,6 +11818,7 @@
           });
         }
 
+        document.addEventListener('qs-cover-claimed', function () { loadData(); });
         // Presenter pickup for dashboard sessions, from My Schedule.
         function claimSession(id, isClaim) {
           var evx = (dashEvents || []).find(function (x) { return x.id === id; });
