@@ -6780,6 +6780,23 @@ class RequestError extends Error {
   }
 }
 
+/**
+ * For duplicate-pickup refusals: name the shift the person already has
+ * (type + date + draft state), so the refusal explains itself instead of
+ * sounding wrong when the shift is hard to spot (Deepika 2026-11-03).
+ */
+async function existingShiftNote(companyId: string, userId: string, date: string, shiftTypeId: string): Promise<string> {
+  const { rows } = await query(
+    `SELECT st.name AS "typeName", s.published FROM shifts s
+     JOIN shift_types st ON st.id = s.shift_type_id
+     WHERE s.company_id = $1 AND s.user_id = $2 AND s.date = $3 AND s.shift_type_id = $4 LIMIT 1`,
+    [companyId, userId, date, shiftTypeId]
+  );
+  if (!rows.length) return '';
+  const nice = new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  return `You already have ${rows[0].typeName} on ${nice}${rows[0].published === false ? ' — it is saved as a draft' : ''}. Look for your name on that day in My Schedule.`;
+}
+
 /** Active team member of this company, or null. */
 async function activeMember(companyId: string, userId: string): Promise<any | null> {
   const { rows } = await query(
@@ -6930,7 +6947,8 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       });
     } catch (err: any) {
       if (err?.code === '23505') {
-        res.status(409).json({ error: 'You already have that shift on that date.' });
+        const note = await existingShiftNote(companyId, me, date, shiftTypeId);
+        res.status(409).json({ error: note || 'You already have that shift on that date.' });
         return;
       }
       throw err;
@@ -7428,7 +7446,9 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
         return;
       }
       if (err?.code === '23505') {
-        res.status(409).json({ error: 'That would give you a duplicate shift — you already have that shift type on that date.' });
+        const target = await manualShift(companyId, r.shiftId);
+        const note = target ? await existingShiftNote(companyId, me, target.date, target.shiftTypeId) : '';
+        res.status(409).json({ error: note || 'That would give you a duplicate shift — you already have that shift type on that date.' });
         return;
       }
       throw err;
@@ -7752,7 +7772,8 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
           return;
         }
         if (err?.code === '23505') {
-          res.send(actPage('Could not pick it up', '<p>That would give you a duplicate shift — you already have that shift type on that date.</p>'));
+          const note = claimShift ? await existingShiftNote(companyId, me, claimShift.date, claimShift.shiftTypeId) : '';
+          res.send(actPage('Could not pick it up', '<p>' + escHtml(note || 'That would give you a duplicate shift — you already have that shift type on that date.') + '</p>'));
           return;
         }
         throw err;
