@@ -25,10 +25,14 @@
 // 5. Still-no-cover warning — the evening before (from 5 PM company
 //    time), a cover request that is still open warns its requester
 //    once, while they can still ask around.
+// 6. Short-cover weekly — Monday at/after 7 AM company time, owners
+//    and schedulers get the next 14 days' staffing-target gaps (the
+//    Short cover page, by email + bell), once per person per week.
 import { query } from '../db.js';
 import { sendMail, escHtml } from './mailer.js';
 import { notify, resolveSpeed, fmtDateLong } from './notify.js';
 import { getDepartmentAccess } from './departmentAccess.js';
+import { getShiftsForRange } from './shiftRange.js';
 
 // ---------------------------------------------------------------------------
 // Reminder picks — shared by the prefs API (routes/notifications.ts)
@@ -574,6 +578,99 @@ async function runCoverWarningScan(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 6. Short-cover weekly (Mondays)
+// ---------------------------------------------------------------------------
+
+export async function runShortCoverWeekly(force = false): Promise<void> {
+  try {
+    const { rows: companies } = await query(
+      `SELECT DISTINCT company_id AS id FROM staffing_targets WHERE target_count > 0`);
+    for (const c of companies) {
+      const tz = await companyTimezone(c.id);
+      const today = localDateStr(new Date(), tz);
+      if (!force) {
+        if (new Date(today + 'T12:00:00').getDay() !== 1) continue; // Mondays only
+        if (localParts(new Date(), tz).h < 7) continue; // from 7 AM company time
+      }
+      const to = addDays(today, 13);
+      const { rows: targets } = await query(
+        `SELECT st.id AS "shiftTypeId", st.name AS "shiftTypeName",
+                t.target_count AS "targetCount", t.weekdays,
+                t.start_date::text AS "startDate", t.end_date::text AS "endDate",
+                COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "departmentIds"
+         FROM shift_types st
+         JOIN staffing_targets t ON t.shift_type_id = st.id AND t.company_id = $1
+         WHERE st.company_id = $1 AND st.is_active = true AND t.target_count > 0`,
+        [c.id]);
+      if (!targets.length) continue;
+      const shifts = await getShiftsForRange(query as any, c.id, today, to);
+      const filled = new Map<string, number>();
+      for (const s of shifts) {
+        const k = s.date + '|' + s.shiftTypeId;
+        filled.set(k, (filled.get(k) || 0) + 1);
+      }
+      const { rows: closed } = await query(
+        `SELECT date::text AS date, shift_type_id AS "shiftTypeId" FROM closed_shifts
+         WHERE company_id = $1 AND date >= $2 AND date <= $3`, [c.id, today, to]);
+      const closedSet = new Set(closed.map((x: any) => x.date + '|' + x.shiftTypeId));
+      const { rows: extras } = await query(
+        `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM extra_open_slots
+         WHERE company_id = $1 AND date >= $2 AND date <= $3`, [c.id, today, to]);
+      const extraMap = new Map<string, number>();
+      for (const e of extras) {
+        const k = e.date + '|' + e.shiftTypeId;
+        extraMap.set(k, (extraMap.get(k) || 0) + (e.count || 0));
+      }
+      type Gap = { date: string; name: string; have: number; need: number; departmentIds: string[] };
+      const gaps: Gap[] = [];
+      for (let i = 0; i < 14; i++) {
+        const date = addDays(today, i);
+        const dow = new Date(date + 'T12:00:00').getDay();
+        for (const t of targets) {
+          const wds: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+          if (!wds.includes(dow)) continue;
+          if (t.startDate && date < t.startDate) continue;
+          if (t.endDate && date > t.endDate) continue;
+          if (closedSet.has(date + '|' + t.shiftTypeId)) continue;
+          const need = t.targetCount + (extraMap.get(date + '|' + t.shiftTypeId) || 0);
+          const have = filled.get(date + '|' + t.shiftTypeId) || 0;
+          if (have < need) gaps.push({ date, name: t.shiftTypeName, have, need, departmentIds: t.departmentIds || [] });
+        }
+      }
+      if (!gaps.length) continue;
+      const { rows: people } = await query(
+        `SELECT id, role FROM users WHERE company_id = $1 AND role IN ('owner', 'scheduler') AND is_active = true`,
+        [c.id]);
+      for (const person of people) {
+        let mine = gaps;
+        if (person.role === 'scheduler') {
+          const access = await getDepartmentAccess(person.id, c.id);
+          mine = gaps.filter((g) => !g.departmentIds.length || g.departmentIds.some((d) => access.edit.includes(d)));
+        }
+        if (!mine.length) continue;
+        // Once per person per week: an earlier short_cover bell carrying
+        // this week's Monday date means it already went out.
+        const { rows: prior } = await query(
+          `SELECT id FROM notifications WHERE user_id = $1 AND type = 'short_cover' AND payload->>'weekOf' = $2 LIMIT 1`,
+          [person.id, today]);
+        if (prior.length) continue;
+        const lines = mine.slice(0, 10).map((g) => `${fmtDateLong(g.date)} — ${g.name}: ${g.have} of ${g.need}`);
+        if (mine.length > 10) lines.push(`… and ${mine.length - 10} more — open Short cover in the app for the full list.`);
+        await notify({
+          companyId: c.id, userIds: [person.id], category: 'schedule', type: 'short_cover',
+          title: `Short cover: ${mine.length} gap${mine.length === 1 ? '' : 's'} in the next 14 days`,
+          body: lines.join('\n'),
+          link: 'shortcover',
+          payload: { weekOf: today },
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[notify-jobs] short cover weekly failed: ${e?.message || e}`);
+  }
+}
+
 export function startNotificationJobs(): void {
   const tick = async () => {
     await sendDailyDigests();
@@ -581,9 +678,10 @@ export function startNotificationJobs(): void {
     await runMessageBundleCheck();
     await runRequestExpirySweep();
     await runCoverWarningScan();
+    await runShortCoverWeekly();
   };
   // Run once shortly after startup (DB is ready by then), then every 15 min.
   setTimeout(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 90_000);
   setInterval(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 15 * 60_000);
-  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings started (every 15 min)');
+  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings + short cover weekly started (every 15 min)');
 }

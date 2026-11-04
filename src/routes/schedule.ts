@@ -3510,7 +3510,7 @@ router.post('/share', requireRole('owner', 'scheduler'), async (req: Request, re
     }
     let stId: string | null = null;
     if (shiftTypeId) {
-      const { rows: srows } = await query('SELECT id, name FROM shift_types WHERE id = $1 AND company_id = $2 AND active = true', [shiftTypeId, companyId]);
+      const { rows: srows } = await query('SELECT id, name FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true', [shiftTypeId, companyId]);
       if (!srows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
       stId = srows[0].id;
     }

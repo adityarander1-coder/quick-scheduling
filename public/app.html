@@ -1230,6 +1230,50 @@
 
   <div id="billing-banner" class="billing-banner hidden" role="alert"></div>
 
+  <!-- Tools rail (right side; slim ⇄ wide, hideable — state restored pre-paint by the script below) -->
+  <div id="qs-tools-rail" aria-label="Tools">
+    <div class="qtr-head">TOOLS</div>
+    <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
+    <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
+    <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
+    <div class="qtr-foot">
+      <button type="button" class="qtr-mini" id="qtr-expand" title="Expand or collapse the tools bar">↔</button>
+      <button type="button" class="qtr-mini" id="qtr-hide" title="Hide the tools bar">›</button>
+    </div>
+  </div>
+  <button type="button" id="qs-tools-handle" hidden title="Show the tools bar">‹</button>
+  <div id="qs-tools-panel" class="hidden" role="dialog" aria-label="Tool panel">
+    <div class="qtp-head"><b id="qtp-title">Tool</b><button type="button" class="qtp-x" onclick="window.qsToolsClose()" aria-label="Close panel">✕</button></div>
+    <div id="qtp-body"></div>
+  </div>
+  <script>
+    (function () {
+      try {
+        var savedToolsHidden = localStorage.getItem('qs-tools-hidden');
+        // Phones start fully hidden behind the arrow button (Deepika
+        // 2026-11-03); larger screens start with the slim bar showing.
+        // A saved choice always wins.
+        if (savedToolsHidden === '1' || (savedToolsHidden === null && window.innerWidth < 1024)) { document.body.classList.add('qs-tools-hidden'); document.getElementById('qs-tools-handle').hidden = false; }
+        if (localStorage.getItem('qs-tools-wide') === '1') document.body.classList.add('qs-tools-wide');
+      } catch (e) {}
+      document.getElementById('qtr-hide').addEventListener('click', function () {
+        document.body.classList.add('qs-tools-hidden');
+        document.getElementById('qs-tools-handle').hidden = false;
+        document.getElementById('qs-tools-panel').classList.add('hidden');
+        try { localStorage.setItem('qs-tools-hidden', '1'); } catch (e) {}
+      });
+      document.getElementById('qs-tools-handle').addEventListener('click', function () {
+        document.body.classList.remove('qs-tools-hidden');
+        document.getElementById('qs-tools-handle').hidden = true;
+        try { localStorage.setItem('qs-tools-hidden', '0'); } catch (e) {}
+      });
+      document.getElementById('qtr-expand').addEventListener('click', function () {
+        var wide = document.body.classList.toggle('qs-tools-wide');
+        try { localStorage.setItem('qs-tools-wide', wide ? '1' : '0'); } catch (e) {}
+      });
+    })();
+  </script>
+
   <main class="app-content">
     <div id="page-error" class="alert alert-error hidden" role="alert"></div>
     <div id="page-success" class="alert alert-success hidden" role="status"></div>
@@ -1538,6 +1582,67 @@
         .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { background: transparent !important; border-color: transparent !important; color: #fff !important; box-shadow: none; }
         .shift-row.is-highlighted .shift-cat, .shift-grid.is-highlighted .shift-cat { background: hsl(var(--highlight-hue) 92% 30%) !important; color: #fff !important; }
         body.has-highlights #tab-schedule .shift-grid:not(.is-highlighted), body.has-highlights #tab-myschedule .shift-grid:not(.is-highlighted), body.has-highlights #tab-schedule .shift-row:not(.is-highlighted), body.has-highlights #tab-myschedule .shift-row:not(.is-highlighted) { opacity: .35; }
+        /* Short cover page (Deepika 2026-11-03) */
+        .sc-band { background: #083f4d; color: #fff; border-radius: 12px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .sc-band h2 { margin: 0; font-size: 20px; }
+        .sc-band .sc-sub { opacity: .85; font-size: 13px; margin-top: 2px; }
+        .sc-band .sc-total { text-align: right; font-size: 12px; opacity: .95; }
+        .sc-band .sc-total b { font-size: 22px; display: block; }
+        .sc-day { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-top: 10px; }
+        .sc-day h3 { margin: 0 0 4px; font-size: 15px; color: var(--text); }
+        .sc-gap { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+        .sc-gap .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+        .sc-gap .tname { font-weight: 700; color: var(--text); }
+        .sc-gap .stat { font-size: 13px; font-weight: 700; }
+        .sc-gap .acts { margin-left: auto; display: flex; gap: 8px; }
+        .sc-ok { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; margin-top: 10px; display: flex; justify-content: space-between; gap: 10px; color: var(--dim); font-weight: 600; }
+        @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
+        /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
+        #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
+        body.qs-tools-wide #qs-tools-rail { width: 172px; }
+        body.qs-tools-hidden #qs-tools-rail { transform: translate(110%, -50%); }
+        /* The tools live in the schedule area only (Deepika 2026-11-03) */
+        body:not(.qs-on-schedule) #qs-tools-rail, body:not(.qs-on-schedule) #qs-tools-handle, body:not(.qs-on-schedule) #qs-tools-panel { display: none; }
+        #qs-tools-rail .qtr-head { color: #9fc3cb; font-size: 8.5px; font-weight: 800; text-align: center; letter-spacing: .08em; }
+        body.qs-tools-wide #qs-tools-rail .qtr-head { text-align: left; padding-left: 8px; }
+        .qtr-btn { position: relative; background: transparent; border: none; border-radius: 9px; width: 100%; padding: 7px 4px 5px; color: #d7e6ea; cursor: pointer; font-family: inherit; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+        .qtr-btn:hover { background: rgba(255, 255, 255, .08); }
+        .qtr-btn.active { background: #0e7c86; color: #fff; }
+        .qtr-btn .qtr-ic { font-size: 17px; line-height: 1.15; }
+        .qtr-btn .qtr-tx { font-size: 8.5px; font-weight: 700; }
+        body.qs-tools-wide .qtr-btn { flex-direction: row; gap: 9px; padding: 8px 10px; }
+        body.qs-tools-wide .qtr-btn .qtr-tx { font-size: 13px; }
+        .qtr-badge { position: absolute; top: 2px; right: 4px; }
+        body.qs-tools-wide .qtr-badge { position: static; margin-left: auto; }
+        .qtr-soon { border: 1.5px dashed rgba(255, 255, 255, .35); border-radius: 9px; padding: 7px 4px 5px; color: #9fc3cb; display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 8.5px; font-weight: 700; }
+        body.qs-tools-wide .qtr-soon { flex-direction: row; gap: 9px; padding: 8px 10px; font-size: 13px; }
+        .qtr-foot { display: flex; gap: 4px; margin-top: 2px; }
+        .qtr-mini { flex: 1; background: rgba(255, 255, 255, .10); color: #d7e6ea; border: none; border-radius: 7px; padding: 5px 0; cursor: pointer; font-size: 12px; font-family: inherit; }
+        .qtr-mini:hover { background: rgba(255, 255, 255, .2); }
+        #qs-tools-handle { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; background: #083f4d; color: #fff; border: none; border-radius: 10px 0 0 10px; padding: 12px 5px; cursor: pointer; font-family: inherit; font-size: 17px; font-weight: 800; line-height: 1; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); }
+        #qs-tools-panel { position: fixed; right: 66px; top: 50%; transform: translateY(-50%); z-index: 81; width: 300px; max-width: 84vw; background: var(--surface); border-radius: 14px; box-shadow: 0 12px 34px rgba(16, 24, 40, .28); overflow: hidden; }
+        body.qs-tools-wide #qs-tools-panel { right: 180px; }
+        body.qs-tools-hidden #qs-tools-panel { display: none; }
+        #qs-tools-panel .qtp-head { background: #083f4d; color: #fff; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+        #qs-tools-panel .qtp-head b { font-size: 15px; }
+        #qs-tools-panel .qtp-x { background: none; border: none; color: #fff; font-size: 15px; cursor: pointer; opacity: .8; }
+        #qtp-body { padding: 12px 16px; max-height: 52vh; overflow: auto; }
+        .hl-sec { font-size: 11px; font-weight: 800; color: var(--dim); letter-spacing: .06em; margin: 12px 0 6px; }
+        .hl-sec:first-child { margin-top: 0; }
+        .hl-person { display: flex; align-items: center; gap: 5px; padding: 6px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+        .hl-person .nm { font-weight: 700; font-size: 13.5px; color: var(--text); width: 100%; }
+        .hl-dot { width: 17px; height: 17px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; flex: none; }
+        .hl-dot.sel { border-color: #102d47; transform: scale(1.12); }
+        .hl-clear { margin-left: auto; background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px; }
+        .hl-chip { border: 1.5px solid var(--border); background: var(--surface); border-radius: 999px; padding: 5px 11px; font-size: 12.5px; font-weight: 700; color: var(--text); cursor: pointer; font-family: inherit; }
+        .hl-chip.on { border-color: var(--accent); background: #eef7f8; box-shadow: inset 0 0 0 1px var(--accent); }
+        .hl-flag { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+        .hl-flag .fd { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+        .hl-flag .fl { font-weight: 600; font-size: 13.5px; color: var(--text); }
+        .hl-toggle { margin-left: auto; width: 38px; height: 21px; border-radius: 999px; background: #e4e7ec; position: relative; flex: none; }
+        .hl-toggle::after { content: ''; position: absolute; top: 2.5px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+        .hl-toggle.on { background: var(--accent); }
+        .hl-toggle.on::after { left: 19px; }
         /* Block options group (Mock A, 2026-10-25): on desktop/tablet the
            wrapper vanishes from layout so the three controls sit inline in
            the toolbar exactly as before; on phones it becomes the section. */
@@ -3545,6 +3650,7 @@
               btn.style.background = 'hsl(' + hueVal + ' 85% 65%)';
             }
           }
+          if (window.qsApplyHighlights) window.qsApplyHighlights();
         };
         // Highlight spotlight (Deepika 2026-11-03): while any row is
         // highlighted, body.has-highlights fades every other row. One
@@ -3557,7 +3663,7 @@
           var qsHlQueued = false;
           new MutationObserver(function () {
             if (qsHlQueued) return; qsHlQueued = true;
-            requestAnimationFrame(function () { qsHlQueued = false; qsSyncHlDim(); });
+            requestAnimationFrame(function () { qsHlQueued = false; if (window.qsApplyHighlights) window.qsApplyHighlights(); qsSyncHlDim(); if (window.qsSyncToolsScope) window.qsSyncToolsScope(); });
           }).observe(document.body, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
         }
         // Global replace function (simple, reliable)
@@ -5555,6 +5661,290 @@
           if (e.target === $('sched-day-modal')) hide($('sched-day-modal'));
         });
 
+        // -------------------------------------------------------------------
+        // Tools rail + Highlight tool + Short cover (Deepika 2026-11-03).
+        // The rail hosts tools; Highlight is the first, Short cover the
+        // second. Highlight state: people (sched.highlights, as before),
+        // shift types (sched.hlTypes), attention flags (sched.hlFlags).
+        // -------------------------------------------------------------------
+        sched.hlTypes = {};
+        sched.hlFlags = { open: false, drafts: false, requests: false };
+        try {
+          var savedHlT = localStorage.getItem('qs-hl-types');
+          if (savedHlT) sched.hlTypes = JSON.parse(savedHlT) || {};
+          var savedHlF = localStorage.getItem('qs-hl-flags');
+          if (savedHlF) sched.hlFlags = Object.assign(sched.hlFlags, JSON.parse(savedHlF) || {});
+        } catch (err) {}
+        function qsHlSave() {
+          try {
+            localStorage.setItem('qs-hl-types', JSON.stringify(sched.hlTypes));
+            localStorage.setItem('qs-hl-flags', JSON.stringify(sched.hlFlags));
+          } catch (err) {}
+        }
+        function qsHexHue(hex) {
+          if (!hex || hex.charAt(0) !== '#' || hex.length < 7) return 210;
+          var r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, bl = parseInt(hex.slice(5, 7), 16) / 255;
+          var mx = Math.max(r, g, bl), mn = Math.min(r, g, bl), d = mx - mn, h = 0;
+          if (d) {
+            if (mx === r) h = ((g - bl) / d) % 6; else if (mx === g) h = (bl - r) / d + 2; else h = (r - g) / d + 4;
+            h *= 60; if (h < 0) h += 360;
+          }
+          return Math.round(h);
+        }
+        var qsHlApplying = false;
+        window.qsApplyHighlights = function () {
+          if (qsHlApplying) return;
+          qsHlApplying = true;
+          try {
+            var flags = sched.hlFlags || {};
+            document.querySelectorAll('.shift-grid, .shift-row').forEach(function (el) {
+              if (el.closest && el.closest('#tab-settings')) return; // Settings reuses .shift-row for its own lists
+              var hue = null;
+              if (el.classList.contains('open-slot')) {
+                if (flags.open) hue = 45;
+                else if (sched.hlTypes[el.getAttribute('data-shifttype')]) { var st0 = shiftTypeById(el.getAttribute('data-shifttype')); hue = st0 ? qsHexHue(st0.color) : null; }
+              } else {
+                var sid = el.getAttribute('data-shift-id');
+                var s = sid ? shiftById(sid) : null;
+                if (s) {
+                  var ph = sched.highlights[s.userId];
+                  var phHue = ph ? (typeof ph === 'object' ? ph.hue : ph) : null;
+                  if (phHue != null) hue = phHue;
+                  else if (sched.hlTypes[s.shiftTypeId]) { var st = shiftTypeById(s.shiftTypeId); hue = st ? qsHexHue(st.color) : null; }
+                  else if (flags.requests && el.querySelector('.cover-badge')) hue = 350;
+                  else if (flags.drafts && s.published === false) hue = 265;
+                }
+              }
+              var isHl = el.classList.contains('is-highlighted');
+              var cur = isHl ? el.style.getPropertyValue('--highlight-hue') : null;
+              if (hue == null) {
+                if (isHl) { el.classList.remove('is-highlighted'); el.style.removeProperty('--highlight-hue'); }
+              } else if (!isHl || cur !== String(hue)) {
+                el.classList.add('is-highlighted');
+                el.style.setProperty('--highlight-hue', hue);
+              }
+            });
+          } catch (err) {}
+          qsHlApplying = false;
+        };
+        // --- Highlight panel -------------------------------------------------
+        function qsHlPersonHue(userId) {
+          var ph = sched.highlights[userId];
+          return ph ? (typeof ph === 'object' ? ph.hue : ph) : null;
+        }
+        window.qsHlSetPerson = function (userId, hue) {
+          if (hue == null) delete sched.highlights[userId];
+          else {
+            var found = null;
+            for (var i = 0; i < HIGHLIGHT_COLORS.length; i++) if (HIGHLIGHT_COLORS[i].hue === hue) { found = HIGHLIGHT_COLORS[i]; break; }
+            sched.highlights[userId] = found || { name: 'Custom', hue: hue };
+          }
+          try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
+          window.qsApplyHighlights();
+          qsRenderHlPanel();
+        };
+        window.qsHlToggleType = function (typeId) {
+          if (sched.hlTypes[typeId]) delete sched.hlTypes[typeId]; else sched.hlTypes[typeId] = true;
+          qsHlSave();
+          window.qsApplyHighlights();
+          qsRenderHlPanel();
+        };
+        window.qsHlToggleFlag = function (flag) {
+          sched.hlFlags[flag] = !sched.hlFlags[flag];
+          qsHlSave();
+          window.qsApplyHighlights();
+          qsRenderHlPanel();
+        };
+        window.qsHlClearAll = function () {
+          sched.highlights = {};
+          sched.hlTypes = {};
+          sched.hlFlags = { open: false, drafts: false, requests: false };
+          try { localStorage.setItem('qs-highlights', '{}'); } catch (err) {}
+          qsHlSave();
+          window.qsApplyHighlights();
+          qsRenderHlPanel();
+        };
+        function qsRenderHlPanel() {
+          var body = $('qtp-body');
+          if (!body) return;
+          var h = '<div class="hl-sec">PEOPLE</div>';
+          var people = (sched.members || []).filter(function (u) { return u.isActive !== false; });
+          people.forEach(function (u) {
+            var cur = qsHlPersonHue(u.id);
+            var nm = u.name || (((u.firstName || '') + ' ' + (u.lastName || '')).trim());
+            h += '<div class="hl-person"><span class="nm">' + esc(nm) + '</span>';
+            HIGHLIGHT_COLORS.forEach(function (c) {
+              h += '<button type="button" class="hl-dot' + (cur === c.hue ? ' sel' : '') + '" title="' + c.name + '" style="background:hsl(' + c.hue + ' 85% 55%)" onclick="window.qsHlSetPerson(\'' + u.id + '\',' + c.hue + ')"></button>';
+            });
+            if (cur != null) h += '<button type="button" class="hl-clear" title="Clear" onclick="window.qsHlSetPerson(\'' + u.id + '\',null)">✕</button>';
+            h += '</div>';
+          });
+          if (!people.length) h += '<p style="color:var(--dim);font-size:13px">No team members loaded yet.</p>';
+          h += '<div class="hl-sec">SHIFT TYPES</div><div style="display:flex;gap:7px;flex-wrap:wrap">';
+          (sched.shiftTypes || []).filter(function (st) { return st.isActive !== false; }).forEach(function (st) {
+            var on = !!sched.hlTypes[st.id];
+            h += '<button type="button" class="hl-chip' + (on ? ' on' : '') + '" onclick="window.qsHlToggleType(\'' + st.id + '\')"><span style="color:' + esc(st.color || '#637a8e') + '">●</span> ' + esc(st.name) + '</button>';
+          });
+          h += '</div>';
+          h += '<div class="hl-sec">NEEDS ATTENTION</div>';
+          [['open', 'Open slots', '#f5a623'], ['drafts', 'Draft shifts', '#7c5cd6'], ['requests', 'Cover asked', '#e64980']].forEach(function (f) {
+            var on = !!sched.hlFlags[f[0]];
+            h += '<div class="hl-flag" onclick="window.qsHlToggleFlag(\'' + f[0] + '\')"><span class="fd" style="background:' + f[2] + '"></span><span class="fl">' + f[1] + '</span><span class="hl-toggle' + (on ? ' on' : '') + '"></span></div>';
+          });
+          h += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center"><button type="button" style="background:none;border:none;color:#c92a2a;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;padding:0" onclick="window.qsHlClearAll()">Clear all</button><span style="color:var(--dim);font-size:12px">Spotlight fades the rest</span></div>';
+          body.innerHTML = h;
+        }
+        // --- Tools rail ------------------------------------------------------
+        // The rail + arrow live in the schedule area only: body.qs-on-
+        // schedule is set while the Schedule or My Schedule panel is the
+        // active one (Deepika 2026-11-03).
+        function qsSyncToolsScope() {
+          var a = document.querySelector('.tab-panel.active');
+          var empNav = $('employee-tabs');
+          var isEmp = empNav && !empNav.classList.contains('hidden');
+          // Pure employees get the shared My Schedule view, whose rows
+          // the tools cannot paint - no rail there instead of dead buttons.
+          var on = !!a && !isEmp && (a.id === 'tab-schedule' || a.id === 'tab-myschedule');
+          if (document.body.classList.contains('qs-on-schedule') !== on) document.body.classList.toggle('qs-on-schedule', on);
+        }
+        window.qsSyncToolsScope = qsSyncToolsScope;
+        setTimeout(qsSyncToolsScope, 1200);
+        // Boot order varies (employee nav and the default tab settle
+        // after data loads), so keep the rail's scope + the Short-cover
+        // gate in sync on a light ticker and on tab/hash changes.
+        setInterval(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); }, 1500);
+        window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); }, 120); });
+        window.qsToolsOpen = function (tool) {
+          if (tool === 'highlight') {
+            $('qtp-title').textContent = '🎨 Highlight';
+            qsRenderHlPanel();
+          }
+          document.querySelectorAll('#qs-tools-rail .qtr-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tool') === tool); });
+          show($('qs-tools-panel'));
+        };
+        window.qsToolsClose = function () {
+          hide($('qs-tools-panel'));
+          document.querySelectorAll('#qs-tools-rail .qtr-btn').forEach(function (b) { b.classList.remove('active'); });
+        };
+        window.qsToolsShortcover = function () { location.hash = 'shortcover'; };
+        function qsGateShortcoverBtn() {
+          var btn = $('qtr-shortcover');
+          if (!btn) return;
+          var empNav = $('employee-tabs');
+          var isEmp = empNav && !empNav.classList.contains('hidden');
+          btn.style.display = isEmp ? 'none' : '';
+        }
+        document.addEventListener('click', function (e) {
+          if (e.target.closest && e.target.closest('[data-viewmode]')) setTimeout(qsGateShortcoverBtn, 350);
+        });
+        setTimeout(qsGateShortcoverBtn, 2600);
+        // --- Short cover -----------------------------------------------------
+        var qsScDept = '';
+        function scDatePlus(base, n) {
+          var d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + n);
+          return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        }
+        function scFmtDay(dateStr) {
+          return parseDate(dateStr).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        }
+        function qsScCompute(shifts, closedShifts, extraSlots) {
+          var filled = {}, closed = {}, extra = {};
+          (shifts || []).forEach(function (s) { var k = s.date + '|' + s.shiftTypeId; filled[k] = (filled[k] || 0) + 1; });
+          (closedShifts || []).forEach(function (c) { closed[c.date + '|' + c.shiftTypeId] = true; });
+          (extraSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; extra[k] = (extra[k] || 0) + (e.count || 0); });
+          var rows = [];
+          for (var i = 0; i < 14; i++) {
+            var date = scDatePlus(new Date(), i);
+            var gaps = [], anyTarget = false;
+            (sched.shiftTypes || []).forEach(function (st) {
+              if (st.isActive === false) return;
+              var ids = st.departmentIds || (st.departmentId ? [st.departmentId] : []);
+              if (qsScDept && ids.length && ids.indexOf(qsScDept) < 0) return;
+              var need0 = targetCountFor(date, st.id);
+              if (!need0) return;
+              anyTarget = true;
+              if (closed[date + '|' + st.id]) return;
+              var want = need0 + (extra[date + '|' + st.id] || 0);
+              var have = filled[date + '|' + st.id] || 0;
+              if (have < want) gaps.push({ st: st, have: have, need: want, short: want - have });
+            });
+            rows.push({ date: date, gaps: gaps, anyTarget: anyTarget });
+          }
+          return rows;
+        }
+        window.qsScDeptChange = function (v) { qsScDept = v || ''; window.qsLoadShortCover(); };
+        var qsScBadgeRetries = 0;
+        window.qsLoadShortCover = function (badgeOnly) {
+          // Boot badge refresh can fire before the schedule data lands;
+          // retry a few times until shift types exist, else the badge
+          // would wrongly stay at zero.
+          if (badgeOnly && !(sched.shiftTypes || []).length && qsScBadgeRetries < 8) {
+            qsScBadgeRetries++;
+            setTimeout(function () { window.qsLoadShortCover(true); }, 2500);
+            return Promise.resolve();
+          }
+          var from = scDatePlus(new Date(), 0), to = scDatePlus(new Date(), 13);
+          return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (r) {
+            if (!r.ok) return;
+            var rows = qsScCompute(r.data.shifts || [], r.data.closedShifts || [], r.data.extraSlots || []);
+            var gapCount = rows.reduce(function (n, x) { return n + x.gaps.length; }, 0);
+            var shortTotal = rows.reduce(function (n, x) { return n + x.gaps.reduce(function (m, g) { return m + g.short; }, 0); }, 0);
+            document.querySelectorAll('[data-sc-badge]').forEach(function (b) { b.hidden = gapCount === 0; b.textContent = gapCount; });
+            qsGateShortcoverBtn();
+            if (badgeOnly) return;
+            var sel = $('sc-dept');
+            if (sel && !sel.options.length) {
+              var opts = '<option value="">All departments</option>';
+              (sched.departments || []).forEach(function (d) { opts += '<option value="' + d.id + '"' + (qsScDept === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; });
+              sel.innerHTML = opts;
+            }
+            var deptName = 'All departments';
+            if (qsScDept) { var dd = (sched.departments || []).filter(function (d) { return d.id === qsScDept; })[0]; if (dd) deptName = dd.name; }
+            var anyTargets = rows.some(function (x) { return x.anyTarget; });
+            var h = '<div class="sc-band"><div><h2>Short cover</h2><div class="sc-sub">' + esc(deptName) + ' · next 14 days · against your staffing targets</div></div>' +
+              '<div class="sc-total"><b>' + gapCount + ' gap' + (gapCount === 1 ? '' : 's') + '</b>' + shortTotal + ' shifts to fill</div></div>';
+            if (!anyTargets) {
+              h += '<div class="sc-day"><h3>No staffing targets set</h3><p style="color:var(--dim);font-size:13.5px;margin:4px 0">This list compares the schedule against your staffing targets. Set targets in Settings → Shifts and the gaps will appear here.</p></div>';
+            } else {
+              rows.forEach(function (row) {
+                if (!row.gaps.length) {
+                  if (row.anyTarget) h += '<div class="sc-ok"><span>' + scFmtDay(row.date) + '</span><span style="color:var(--accent);font-weight:700">✓ Fully covered</span></div>';
+                  return;
+                }
+                h += '<div class="sc-day"><h3>' + scFmtDay(row.date) + '</h3>';
+                row.gaps.forEach(function (g) {
+                  var none = g.have === 0;
+                  h += '<div class="sc-gap"><span class="dot" style="background:' + esc(g.st.color || '#3b82f6') + '"></span>' +
+                    '<span class="tname">' + esc(g.st.name) + '</span>' +
+                    '<span class="stat" style="color:' + (none ? '#c92a2a' : '#b45309') + '">' + g.have + ' of ' + g.need + (none ? ' — nobody assigned' : ' — ' + g.short + ' short') + '</span>' +
+                    '<span class="acts"><button type="button" class="btn" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScShare(\'' + g.st.id + '\',\'' + row.date + '\')">Share link to fill</button>' +
+                    '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOpenDay(\'' + row.date + '\')">Open day</button></span></div>';
+                });
+                h += '</div>';
+              });
+              h += '<p style="color:var(--dim);font-size:12px;margin:14px 2px">A Monday 7 AM email with this list goes to owners and schedulers.</p>';
+            }
+            var bodyEl = $('sc-body');
+            if (bodyEl) bodyEl.innerHTML = h;
+          }).catch(function () {});
+        };
+        window.qsScShare = function (typeId, date) {
+          var st = shiftTypeById(typeId);
+          var label = (st ? st.name : 'Shift') + ' · ' + date;
+          api('/api/schedule/share', { method: 'POST', body: JSON.stringify({ departmentId: qsScDept || null, shiftTypeId: typeId, label: label }) }).then(function (r) {
+            if (!r.ok) { pageError((r.data && r.data.error) || 'Could not generate link.'); return; }
+            var link = r.data.shareLink;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(link).then(function () { pageSuccess('Link generated and copied.'); }, function () { prompt('Copy this link:', link); });
+            } else prompt('Copy this link:', link);
+          }).catch(function () { pageError('Could not generate link.'); });
+        };
+        window.qsScOpenDay = function (date) {
+          location.hash = 'schedule';
+          setTimeout(function () { try { openDayModal(date); } catch (err) {} }, 150);
+        };
+        setTimeout(function () { if (window.qsLoadShortCover) window.qsLoadShortCover(true); }, 2600);
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -5574,6 +5964,16 @@
     </section>
 
     <!-- Ask Q-Scheduler tab -->
+    <section id="tab-shortcover" class="tab-panel">
+      <div style="max-width:880px;margin:0 auto">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <select id="sc-dept" aria-label="Department" onchange="window.qsScDeptChange(this.value)" style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-weight:600;font-family:inherit;background:var(--surface);color:var(--text)"></select>
+          <button type="button" class="btn-secondary" onclick="window.qsLoadShortCover()">↻ Refresh</button>
+        </div>
+        <div id="sc-body"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+    </section>
+
     <section id="tab-dash" class="tab-panel">
       <style>
         #tab-dash .db-head { display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -15301,6 +15701,7 @@
 
     var routes = {
       'schedule': function() { activateTab('schedule'); },
+      'shortcover': function() { activateTab('shortcover'); if (window.qsLoadShortCover) window.qsLoadShortCover(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
@@ -15335,7 +15736,7 @@
       document.querySelectorAll('.tab-panel').forEach(function (panel) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
-      var titles = { schedule: 'Schedule', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Sharable Links', billing: 'Billing', help: 'Help & How-to' };
+      var titles = { schedule: 'Schedule', shortcover: 'Short cover', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Sharable Links', billing: 'Billing', help: 'Help & How-to' };
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
