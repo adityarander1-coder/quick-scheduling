@@ -1238,7 +1238,6 @@
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="availability" onclick="window.qsToolsAvailability()"><span class="qtr-ic">🗓️</span><span class="qtr-tx">Availability</span></button>
-    <button type="button" class="qtr-btn" id="qtr-presenter" data-tool="presenter" onclick="window.qsToolsPresenter()"><span class="qtr-ic">🎤</span><span class="qtr-tx">Needs people</span><span class="req-badge qtr-badge" data-np-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="print" onclick="window.qsToolsPrint()"><span class="qtr-ic">🖨️</span><span class="qtr-tx">Print</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
@@ -1660,11 +1659,11 @@
         .ps-need { color: #b45309; font-weight: 700; font-size: 12px; }
         .ps-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #475569; }
         .ps-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; }
-        #tab-presenter .np-row { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; margin-top: 8px; background: var(--surface); }
-        #tab-presenter .np-row.need { background: #fef2f2; border-color: #fecaca; }
-        #tab-presenter .np-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #fff; font-size: 11px; font-weight: 700; }
-        #tab-presenter .np-meta { color: #64748b; font-size: 12.5px; margin-top: 3px; }
-        #tab-presenter .np-who { font-weight: 800; font-size: 13px; white-space: nowrap; }
+        #tab-shortcover .np-row { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; margin-top: 8px; background: var(--surface); }
+        #tab-shortcover .np-row.need { background: #fef2f2; border-color: #fecaca; }
+        #tab-shortcover .np-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #fff; font-size: 11px; font-weight: 700; }
+        #tab-shortcover .np-meta { color: #64748b; font-size: 12.5px; margin-top: 3px; }
+        #tab-shortcover .np-who { font-weight: 800; font-size: 13px; white-space: nowrap; }
         @media print {
           body * { visibility: hidden; }
           #print-area, #print-area * { visibility: visible; }
@@ -5986,6 +5985,11 @@
           return rows;
         }
         window.qsScDeptChange = function (v) { qsScDept = v || ''; window.qsLoadShortCover(); };
+        // Short cover tabs (Deepika 2026-11-04): 'shifts' plus one tab
+        // per calendar — the old standalone Needs people tool lives
+        // here now, scoped per calendar.
+        var qsScTab = 'shifts';
+        window.qsScTabGo = function (tab) { qsScTab = tab || 'shifts'; window.qsLoadShortCover(); };
         var qsScBadgeRetries = 0;
         window.qsLoadShortCover = function (badgeOnly) {
           // Boot badge refresh can fire before the schedule data lands;
@@ -5997,12 +6001,24 @@
             return Promise.resolve();
           }
           var from = scDatePlus(new Date(), 0), to = scDatePlus(new Date(), 13);
-          return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (r) {
+          return Promise.all([
+            api('/api/schedule/shifts?from=' + from + '&to=' + to),
+            api('/api/schedule/academic-sessions?from=' + from + '&to=' + to),
+            api('/api/schedule/dashboards'),
+          ]).then(function (rs) {
+            var r = rs[0];
             if (!r.ok) return;
             var rows = qsScCompute(r.data.shifts || [], r.data.closedShifts || [], r.data.extraSlots || []);
             var gapCount = rows.reduce(function (n, x) { return n + x.gaps.length; }, 0);
             var shortTotal = rows.reduce(function (n, x) { return n + x.gaps.reduce(function (m, g) { return m + g.short; }, 0); }, 0);
-            document.querySelectorAll('[data-sc-badge]').forEach(function (b) { b.hidden = gapCount === 0; b.textContent = gapCount; });
+            var calSessions = (rs[1].ok && rs[1].data.sessions) || [];
+            var dashboards = (rs[2].ok && rs[2].data.dashboards) || [];
+            var needByDash = {}, calTotal = 0;
+            calSessions.forEach(function (s) {
+              if (!s.lecturerUserId || !s.supervisorUserId) { calTotal++; if (s.dashboardId) needByDash[s.dashboardId] = (needByDash[s.dashboardId] || 0) + 1; }
+            });
+            var badgeTotal = gapCount + calTotal;
+            document.querySelectorAll('[data-sc-badge]').forEach(function (b) { b.hidden = badgeTotal === 0; b.textContent = badgeTotal; });
             qsGateShortcoverBtn();
             if (badgeOnly) return;
             var sel = $('sc-dept');
@@ -6011,11 +6027,23 @@
               (sched.departments || []).forEach(function (d) { opts += '<option value="' + d.id + '"' + (qsScDept === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; });
               sel.innerHTML = opts;
             }
+            if (qsScTab !== 'shifts' && !dashboards.some(function (d) { return d.id === qsScTab; })) qsScTab = 'shifts';
+            function qsScPill(tab, label, n) {
+              var active = qsScTab === tab;
+              return '<button type="button" onclick="window.qsScTabGo(\'' + tab + '\')" style="padding:9px 18px;border-radius:999px;border:1.5px solid ' + (active ? '#0e7c86' : '#cbd5e1') + ';background:' + (active ? '#0e7c86' : '#fff') + ';color:' + (active ? '#fff' : '#334155') + ';font-weight:700;font-size:13.5px;cursor:pointer;font-family:inherit">' + label +
+                (n ? ' <span style="background:' + (active ? '#fff' : '#dc2626') + ';color:' + (active ? '#0e7c86' : '#fff') + ';border-radius:999px;padding:0 7px;font-size:11.5px;font-weight:800">' + n + '</span>' : '') + '</button>';
+            }
+            var shell = '<div class="sc-band"><div><h2>🩹 Short cover</h2><div class="sc-sub">Shifts and calendar sessions that still need people · next 14 days</div></div></div>' +
+              '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 2px 14px">' +
+              qsScPill('shifts', 'Shifts', gapCount) +
+              dashboards.map(function (d) { return qsScPill(d.id, '🎓 ' + esc(d.name), needByDash[d.id] || 0); }).join('') +
+              '</div>';
             var deptName = 'All departments';
             if (qsScDept) { var dd = (sched.departments || []).filter(function (d) { return d.id === qsScDept; })[0]; if (dd) deptName = dd.name; }
             var anyTargets = rows.some(function (x) { return x.anyTarget; });
-            var h = '<div class="sc-band"><div><h2>Short cover</h2><div class="sc-sub">' + esc(deptName) + ' · next 14 days · against your staffing targets</div></div>' +
-              '<div class="sc-total"><b>' + gapCount + ' gap' + (gapCount === 1 ? '' : 's') + '</b>' + shortTotal + ' shifts to fill</div></div>';
+            var h = '<div class="sc-day" style="margin-bottom:14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">' +
+              '<span style="font-size:15px"><b>' + gapCount + ' gap' + (gapCount === 1 ? '' : 's') + '</b> · ' + shortTotal + ' shifts to fill</span>' +
+              '<span style="color:var(--dim);font-size:13px">' + esc(deptName) + ' · against your staffing targets</span></div>';
             if (!anyTargets) {
               h += '<div class="sc-day"><h3>No staffing targets set</h3><p style="color:var(--dim);font-size:13.5px;margin:4px 0">This list compares the schedule against your staffing targets. Set targets in Settings → Shifts and the gaps will appear here.</p></div>';
             } else {
@@ -6040,8 +6068,13 @@
               h += '<p style="color:var(--dim);font-size:12px;margin:14px 2px">A Monday 7 AM email with this list goes to owners and schedulers.</p>';
             }
             var bodyEl = $('sc-body');
-            if (bodyEl) bodyEl.innerHTML = h;
-            qsScLoadOffers(from, to);
+            if (qsScTab !== 'shifts') {
+              if (bodyEl) bodyEl.innerHTML = shell + '<div id="sc-cal-pane"><div class="sc-day" style="color:var(--dim)">Loading…</div></div>';
+              if (window.qsScRenderCal) window.qsScRenderCal(qsScTab);
+            } else {
+              if (bodyEl) bodyEl.innerHTML = shell + h;
+              qsScLoadOffers(from, to);
+            }
           }).catch(function () {});
         };
         // --- Gap offers (Deepika 2026-11-04): offer a gap to the staff
@@ -6469,7 +6502,7 @@ window.qsCredDelete = function () {
   })).catch(function () {});
 };
 setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(true); }, 2800);
-setTimeout(function () { if (window.qsLoadPresenter) window.qsLoadPresenter(true); }, 3400);
+
 
 // ---------------------------------------------------------------------
 // AVAILABILITY tool (#availability) — link management + who's-available
@@ -6847,13 +6880,11 @@ function qsPrintRender() {
   })).catch(function () { area.innerHTML = '<p style="color:#c92a2a">Could not load the schedule.</p>'; });
 }
 
-window.qsToolsPresenter = function () { location.hash = 'presenter'; };
-var qsNpBadgeRetries = 0;
-function qsNpSetBadge(n) {
-  document.querySelectorAll('[data-np-badge]').forEach(function (b) {
-    if (n > 0) { b.textContent = String(n); b.hidden = false; } else { b.hidden = true; }
-  });
-}
+// (The old standalone "Needs people" rail tool was folded into Short
+// cover as one tab per calendar — Deepika 2026-11-04: it was confusing
+// to find people-finding and the availability link in a separate
+// tool. qsScRenderCal below renders one calendar's tab inside the
+// Short cover page; Short cover owns the fetches for counts/badges.)
 function qsNpTime(t) {
   if (!t) return '';
   var p = String(t).slice(0, 5).split(':');
@@ -6879,14 +6910,9 @@ window.qsNpOpen = function (btn) {
     setTimeout(function () { window.qsOpenDashboardAt(dash, date); }, 200);
   }
 };
-window.qsLoadPresenter = function (badgeOnly) {
-  var body = document.getElementById('presenter-body');
-  var empNav = document.querySelector('.emp-nav');
-  if (empNav) {
-    qsNpSetBadge(0);
-    if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>Owners and schedulers</b><p style="color:var(--dim);margin:6px 0 0">Needs a presenter is a schedule-builders\u2019 tool.</p></div>';
-    return;
-  }
+window.qsScRenderCal = function (dashId) {
+  var body = document.getElementById('sc-cal-pane');
+  if (!body) return;
   var todayDs = scDatePlus(new Date(), 0);
   var toDs = scDatePlus(new Date(), 13);
   Promise.all([
@@ -6898,11 +6924,10 @@ window.qsLoadPresenter = function (badgeOnly) {
     api('/api/users'),
   ]).then(function (rs) {
     if (!rs[0].ok) {
-      if (badgeOnly && qsNpBadgeRetries < 4) { qsNpBadgeRetries++; setTimeout(function () { window.qsLoadPresenter(true); }, 2500); }
-      if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
+      body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
       return;
     }
-    var sessions = rs[0].data.sessions || [];
+    var sessions = (rs[0].data.sessions || []).filter(function (s) { return s.dashboardId === dashId; });
     var kindByDash = {}, kindByKey = {};
     ((rs[1].ok && rs[1].data.kinds) || []).forEach(function (k) {
       var e = { label: k.label || k.key, color: k.color || '#475569', personLabel: k.personLabel || null };
@@ -6916,15 +6941,12 @@ window.qsLoadPresenter = function (badgeOnly) {
     function personLabelOf(s) { return kindOf(s).personLabel || 'Presenter'; }
     var dashName = {};
     ((rs[2].ok && rs[2].data.dashboards) || []).forEach(function (d) { dashName[d.id] = d.name; });
-    var npLinks = (rs[3].ok && rs[3].data.links) || [];
+    var npLinks = ((rs[3].ok && rs[3].data.links) || []).filter(function (l) { return !l.dashboardId || l.dashboardId === dashId; });
     var npOffersMap = {};
     ((rs[4].ok && rs[4].data.offers) || []).forEach(function (o) { npOffersMap[o.sessionId + '|' + o.occDate + '|' + o.role] = o; });
     var npUserNames = {};
     ((rs[5].ok && rs[5].data.users) || []).forEach(function (u) { npUserNames[u.id] = (u.firstName + ' ' + u.lastName).trim(); });
     var needAny = sessions.filter(function (s) { return !s.lecturerUserId || !s.supervisorUserId; });
-    qsNpSetBadge(needAny.length);
-    if (badgeOnly) return;
-    if (!body) return;
     var tomorrowDs = scDatePlus(new Date(), 1);
     function lc(x) { return x.charAt(0).toLowerCase() + x.slice(1); }
     function art(x) { return /^[aeiou]/i.test(x) ? 'an' : 'a'; }
@@ -6932,7 +6954,6 @@ window.qsLoadPresenter = function (badgeOnly) {
       var k = kindOf(s);
       var meta = [];
       if (s.startTime) meta.push(qsNpTime(s.startTime) + (s.endTime ? ' – ' + qsNpTime(s.endTime) : ''));
-      if (s.dashboardId && dashName[s.dashboardId]) meta.push(dashName[s.dashboardId]);
       if (s.location) meta.push(s.location);
       var main = '<div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<span class="np-chip" style="background:' + esc(k.color) + '">' + esc(k.label) + '</span><b style="font-size:14px">' + esc(s.title) + '</b></div>' +
@@ -6992,20 +7013,18 @@ window.qsLoadPresenter = function (badgeOnly) {
     var supNeed = sessions.filter(function (s) { return !s.supervisorUserId; }).length;
     var staffed = sessions.length - needAny.length;
     var linkH = '<div class="sc-day" style="margin-bottom:14px">' +
-      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">🔗 Session availability link</b>' +
-      '<span style="color:var(--dim);font-size:13px">Send it to the team — they tap the sessions they can cover. Answers show up on each gap below.</span></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">🔗 ' + esc(dashName[dashId] || 'Calendar') + ' availability link</b>' +
+      '<span style="color:var(--dim);font-size:13px">This calendar\u2019s own link — the team taps the sessions they can cover. Answers show up on each gap below.</span></div>' +
       (npLinks.length ? npLinks.map(function (l) {
         return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px;font-size:13px">' +
           '<b>' + esc(l.title || 'Sessions link') + '</b><span style="color:var(--dim)">' + esc(l.fromDate) + ' – ' + esc(l.toDate) +
-          (l.dashboardId && dashName[l.dashboardId] ? ' · ' + esc(dashName[l.dashboardId]) : ' · All calendars') +
+          (!l.dashboardId ? ' · All calendars' : '') +
           ' · ' + (l.responseCount || 0) + ' answers</span>' +
           '<button type="button" class="btn-secondary" style="padding:4px 10px;font-size:12px" onclick="window.qsNpDeleteLink(\'' + l.id + '\')">Delete</button></div>';
       }).join('') : '<div style="color:var(--dim);font-size:13px;margin-top:8px">No link yet — make one below.</div>') +
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px">' +
       '<input type="text" id="np-link-title" placeholder="Link name (optional)" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;min-width:170px">' +
-      '<select id="np-link-dash" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px"><option value="">All calendars</option>' +
-      Object.keys(dashName).map(function (id) { return '<option value="' + id + '">' + esc(dashName[id]) + '</option>'; }).join('') + '</select>' +
-      '<button type="button" class="btn" style="padding:8px 16px" onclick="window.qsNpCreateLink()">＋ New link</button></div>' +
+      '<button type="button" class="btn" style="padding:8px 16px" data-dash="' + esc(dashId) + '" onclick="window.qsNpCreateLink(this)">＋ New link</button></div>' +
       '<div id="np-link-result" style="margin-top:9px"></div></div>';
     var h = '';
     if (needAny.length) {
@@ -7015,10 +7034,10 @@ window.qsLoadPresenter = function (badgeOnly) {
       if (supNeed) bits.push('<b style="color:#b91c1c">' + supNeed + '</b> need a supervisor');
       h += '<div class="sc-day" style="margin-bottom:14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">' +
         '<span style="font-size:15px">' + bits.join(' · ') + '</span>' +
-        '<span style="color:var(--dim);font-size:13px">' + staffed + ' sessions fully staffed · across all calendars · next 14 days</span></div>';
+        '<span style="color:var(--dim);font-size:13px">' + staffed + ' sessions fully staffed · on this calendar · next 14 days</span></div>';
     } else if (sessions.length) {
       h += '<div class="sc-day" style="margin-bottom:14px"><span style="font-size:15px;color:#15803d;font-weight:700">✓ Every session in the next 14 days is fully staffed</span>' +
-        '<span style="color:var(--dim);font-size:13px;margin-left:14px">' + sessions.length + ' sessions · across all calendars</span></div>';
+        '<span style="color:var(--dim);font-size:13px;margin-left:14px">' + sessions.length + ' sessions · on this calendar</span></div>';
     }
     if (!sessions.length) {
       h += '<div class="sc-day" style="color:var(--dim)">No sessions scheduled in the next 14 days.</div>';
@@ -7031,27 +7050,27 @@ window.qsLoadPresenter = function (badgeOnly) {
     }
     body.innerHTML = linkH + h;
   }).catch(function () {
-    if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
+    body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
   });
 };
 
 var qsNpLastLink = '';
-window.qsNpCreateLink = function () {
+window.qsNpCreateLink = function (btn) {
   var title = (document.getElementById('np-link-title') || {}).value || '';
-  var dash = (document.getElementById('np-link-dash') || {}).value || '';
+  var dash = btn ? btn.getAttribute('data-dash') : '';
   var res = document.getElementById('np-link-result');
   var body = { fromDate: scDatePlus(new Date(), 0), toDate: scDatePlus(new Date(), 13), title: title };
   if (dash) body.dashboardId = dash;
   api('/api/schedule/session-avail', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
     if (!r.ok) { if (res) res.innerHTML = '<span style="color:#c92a2a;font-size:13px">' + esc((r.data && r.data.error) || 'Could not create the link.') + '</span>'; return; }
     qsNpLastLink = r.data.link;
-    qsLoadPresenter();
+    if (window.qsLoadShortCover) window.qsLoadShortCover();
     setTimeout(function () {
       var res2 = document.getElementById('np-link-result');
       if (res2) res2.innerHTML = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="text" readonly value="' + esc(qsNpLastLink) + '" style="flex:1;min-width:260px;padding:8px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:12.5px;background:#f8fafc">' +
         '<button type="button" class="btn" style="padding:8px 14px" onclick="window.qsNpCopyLink(this)">Copy link</button>' +
         '<span style="color:var(--dim);font-size:12px">Copy it now — for safety, the full link is only shown when it is made.</span></div>';
-    }, 900);
+    }, 1800);
   });
 };
 window.qsNpCopyLink = function (btn) {
@@ -7069,7 +7088,7 @@ window.qsNpCopyLink = function (btn) {
 };
 window.qsNpDeleteLink = function (id) {
   if (!confirm('Delete this link? Its answers stop counting for new offers (sessions already assigned keep their people).')) return;
-  api('/api/schedule/session-avail/' + id, { method: 'DELETE' }).then(function () { qsLoadPresenter(); });
+  api('/api/schedule/session-avail/' + id, { method: 'DELETE' }).then(function () { if (window.qsLoadShortCover) window.qsLoadShortCover(); });
 };
 window.qsNpOfferToggle = function (btn) {
   var panel = document.getElementById(btn.getAttribute('data-panel'));
@@ -7121,7 +7140,7 @@ window.qsNpOfferSend = function (btn) {
       return;
     }
     if (msg) { msg.style.color = '#15803d'; msg.style.fontWeight = '700'; msg.textContent = '✓ Offer sent to ' + r.data.added + ' people' + (r.data.skipped ? ' (' + r.data.skipped + ' already had it)' : '') + '.'; }
-    setTimeout(function () { qsLoadPresenter(); }, 1200);
+    setTimeout(function () { if (window.qsLoadShortCover) window.qsLoadShortCover(); }, 1200);
   });
 };
 
@@ -7210,11 +7229,6 @@ window.qsNpOfferSend = function (btn) {
         <div id="av-body"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
-
-    <section id="tab-presenter" class="tab-panel">
-        <div class="sc-band"><div><h2>🎤 Needs people</h2><div class="sc-sub">Calendar sessions in the next 14 days missing a presenter or a supervisor</div></div></div>
-        <div id="presenter-body"><div class="sc-day" style="color:var(--dim)">Loading…</div></div>
-      </section>
 
     <section id="tab-print" class="tab-panel">
       <div style="max-width:1020px;margin:0 auto">
@@ -16910,7 +16924,7 @@ window.qsNpOfferSend = function (btn) {
       'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
       'credentials': function() { activateTab('credentials'); if (window.qsLoadCredentials) window.qsLoadCredentials(); },
       'availability': function() { activateTab('availability'); if (window.qsLoadAvailability) window.qsLoadAvailability(); },
-      'presenter': function() { activateTab('presenter'); if (window.qsLoadPresenter) window.qsLoadPresenter(); },
+      'presenter': function() { activateTab('shortcover'); if (window.qsLoadShortCover) window.qsLoadShortCover(); },
       'print': function() { activateTab('print'); if (window.qsLoadPrint) window.qsLoadPrint(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
