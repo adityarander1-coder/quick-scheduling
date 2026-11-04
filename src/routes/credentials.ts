@@ -10,6 +10,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { query } from '../db.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { isGeminiConfigured, parseCredentialDocument } from '../util/gemini';
 
 const router = Router();
 router.use(requireAuth);
@@ -51,12 +52,39 @@ function publicCredential(r: any) {
     category: r.category,
     number: r.number || null,
     expiryDate: r.expiry_date,
+    hasDocument: !!r.document_name,
+    documentName: r.document_name || null,
   };
 }
 
 const CRED_SQL = `SELECT c.id, c.user_id, c.name, c.category, c.number, c.expiry_date::text AS expiry_date,
-                         u.first_name, u.last_name
-                  FROM credentials c JOIN users u ON u.id = c.user_id`;
+                         u.first_name, u.last_name, d.filename AS document_name
+                  FROM credentials c JOIN users u ON u.id = c.user_id
+                  LEFT JOIN LATERAL (SELECT filename FROM credential_documents
+                                     WHERE credential_id = c.id ORDER BY created_at DESC LIMIT 1) d ON true`;
+
+// Uploaded credential documents ride as JSON { filename, dataBase64 } —
+// the same pattern as the schedule import (no multipart middleware).
+// Type is sniffed from the bytes, never trusted from the client.
+const DOC_MAX_BYTES = 8 * 1024 * 1024;
+function sniffDocMime(b: Buffer): string | null {
+  if (b.length > 4 && b.subarray(0, 4).toString('latin1') === '%PDF') return 'application/pdf';
+  if (b.length > 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+  return null;
+}
+function decodeDoc(body: any): { buf: Buffer; mime: string; filename: string } | { error: string; status: number } {
+  const dataBase64 = body?.dataBase64;
+  if (!dataBase64 || typeof dataBase64 !== 'string') return { error: 'No file data was received.', status: 400 };
+  const buf = Buffer.from(dataBase64, 'base64');
+  if (!buf.length) return { error: 'That file appears to be empty.', status: 400 };
+  if (buf.length > DOC_MAX_BYTES) return { error: 'That file is too large (max 8 MB).', status: 413 };
+  const mime = sniffDocMime(buf);
+  if (!mime) return { error: "That file type can't be used — upload a PDF or a photo (PNG, JPG, or WEBP).", status: 415 };
+  const filename = String(body?.filename || 'document').replace(/["\r\n]/g, '').slice(0, 160) || 'document';
+  return { buf, mime, filename };
+}
 
 function validDate(s: any): boolean {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
@@ -87,6 +115,93 @@ router.post('/categories', requireRole('owner', 'scheduler'), async (req: Reques
     res.status(201).json({ name: canonical });
   } catch (err) {
     console.error('[credentials] create category failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/credentials/read — read an uploaded credential document with
+// the AI and return the form fields it found. NOTHING is saved here; the
+// client pre-fills the form and the user confirms. When the AI is not
+// configured or can't read the file, this returns 422 and the client
+// falls back to manual entry (the file is still attached on save).
+router.post('/read', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const doc = decodeDoc(req.body);
+    if ('error' in doc) { res.status(doc.status).json({ error: doc.error }); return; }
+    if (!isGeminiConfigured()) {
+      res.status(422).json({ error: 'The AI reader is not available right now — fill the form in by hand. The document will still be attached when you save.' });
+      return;
+    }
+    const categories = await ensureCategories(companyId);
+    const { rows: memRows } = await query(
+      'SELECT id, first_name, last_name FROM users WHERE company_id = $1 AND is_active = true', [companyId]);
+    const members = memRows.map((u: any) => ({ id: u.id, name: ((u.first_name || '') + ' ' + (u.last_name || '')).trim() }));
+    try {
+      const fields = await parseCredentialDocument({
+        base64: doc.buf.toString('base64'), mimeType: doc.mime, members, categories,
+        today: new Date().toISOString().slice(0, 10),
+      });
+      res.json({ fields });
+    } catch (err) {
+      console.error('[credentials] AI read failed:', err);
+      res.status(422).json({ error: "The AI reader couldn't read this document — fill the form in by hand. It will still be attached when you save." });
+    }
+  } catch (err) {
+    console.error('[credentials] read failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/credentials/:id/document — attach (or replace) the document.
+router.post('/:id/document', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: cred } = await query('SELECT id FROM credentials WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!cred.length) { res.status(404).json({ error: 'Credential not found.' }); return; }
+    const doc = decodeDoc(req.body);
+    if ('error' in doc) { res.status(doc.status).json({ error: doc.error }); return; }
+    await query('DELETE FROM credential_documents WHERE credential_id = $1', [req.params.id]);
+    await query(
+      'INSERT INTO credential_documents (id, company_id, credential_id, filename, mime, size_bytes, data, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [crypto.randomUUID(), companyId, req.params.id, doc.filename, doc.mime, doc.buf.length, doc.buf, req.session.userId]);
+    res.status(201).json({ ok: true, filename: doc.filename, size: doc.buf.length });
+  } catch (err) {
+    console.error('[credentials] attach document failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/credentials/:id/document — view/download the current document.
+router.get('/:id/document', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT d.filename, d.mime, d.data FROM credential_documents d
+       JOIN credentials c ON c.id = d.credential_id AND c.company_id = $2
+       WHERE d.credential_id = $1 ORDER BY d.created_at DESC LIMIT 1`,
+      [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'No document attached.' }); return; }
+    const row = rows[0];
+    res.setHeader('Content-Type', row.mime);
+    res.setHeader('Content-Disposition', `inline; filename="${String(row.filename || 'document').replace(/"/g, '')}"`);
+    res.send(Buffer.from(row.data));
+  } catch (err) {
+    console.error('[credentials] get document failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/credentials/:id/document — remove the attached document.
+router.delete('/:id/document', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: cred } = await query('SELECT id FROM credentials WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!cred.length) { res.status(404).json({ error: 'Credential not found.' }); return; }
+    await query('DELETE FROM credential_documents WHERE credential_id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[credentials] delete document failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -146,6 +261,7 @@ router.put('/:id', requireRole('owner', 'scheduler'), async (req: Request, res: 
 router.delete('/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    await query('DELETE FROM credential_documents WHERE credential_id = $1 AND company_id = $2', [req.params.id, companyId]);
     const { rows } = await query('DELETE FROM credentials WHERE id = $1 AND company_id = $2 RETURNING id', [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Credential not found.' }); return; }
     res.json({ ok: true });

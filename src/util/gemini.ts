@@ -829,3 +829,120 @@ Rules:
   }
   return out;
 }
+
+export interface CredentialRead {
+  holderName: string | null;
+  matchedUserId: string | null;
+  credentialName: string | null;
+  category: string | null;
+  number: string | null;
+  expiryDate: string | null;
+}
+
+function normName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Normalize a raw AI extraction for a credential document and match the
+ * holder to a team member. Pure and unit-testable: the holder matches
+ * when the normalized name — or the same set of name tokens (handles
+ * "Last, First") — equals a member's. Anything unparseable becomes null
+ * so the form simply leaves that field for the user.
+ */
+export function normalizeCredentialRead(parsed: any, members: { id: string; name: string }[]): CredentialRead {
+  const str = (v: any, max: number): string | null => {
+    const s = typeof v === 'string' ? v.trim().slice(0, max) : '';
+    return s || null;
+  };
+  let expiryDate = str(parsed?.expiryDate, 10);
+  if (expiryDate) {
+    const ok = /^\d{4}-\d{2}-\d{2}$/.test(expiryDate) && !isNaN(new Date(expiryDate + 'T12:00:00').getTime());
+    if (!ok) expiryDate = null;
+  }
+  const holderName = str(parsed?.holderName, 120);
+  let matchedUserId: string | null = null;
+  if (holderName) {
+    const hn = normName(holderName);
+    const hTokens = hn.split(' ').sort().join(' ');
+    for (const m of members) {
+      const mn = normName(m.name);
+      if (mn === hn || mn.split(' ').sort().join(' ') === hTokens) { matchedUserId = m.id; break; }
+    }
+  }
+  return {
+    holderName,
+    matchedUserId,
+    credentialName: str(parsed?.credentialName, 120),
+    category: str(parsed?.category, 60),
+    number: str(parsed?.number, 80),
+    expiryDate,
+  };
+}
+
+/**
+ * Read a credential document (license / certificate — PDF or photo) and
+ * extract the fields the Credential tracker form needs. The caller shows
+ * the result pre-filled in the form; nothing is saved by this call.
+ * Mirrors parseScheduleDocument's call pattern (model discovery, 503
+ * backoff, usage logging, outage hooks).
+ */
+export async function parseCredentialDocument(input: {
+  base64: string;
+  mimeType: string;
+  members: { id: string; name: string }[];
+  categories: string[];
+  today: string;
+}): Promise<CredentialRead> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('AI is not configured (GEMINI_API_KEY missing).');
+  const prompt = `You read a professional credential document (a license, registration, or certification — often a card or certificate) and extract its details. Today is ${input.today}.
+
+Return ONLY a JSON object: {"holderName": "...", "credentialName": "...", "category": "...", "number": "...", "expiryDate": "YYYY-MM-DD"}
+
+Rules:
+- holderName: the person the credential belongs to, exactly as printed.
+- credentialName: what the credential is, as printed (e.g. "Registered Nurse License", "Medical License", "BLS Certification", "DEA Registration").
+- category: prefer one of these exact categories when it fits: ${input.categories.join(', ') || '(none)'}. Otherwise give a short category of your own (one or two words).
+- number: the license / certificate / registration number only, without any label.
+- expiryDate: the EXPIRATION date (never the issue date), as YYYY-MM-DD. If the document prints only a month and year, use the last day of that month.
+- If a field is not visible anywhere in the document, use null for it. Never guess a number or a date.`;
+  const parts: any[] = [
+    { text: prompt },
+    { inlineData: { mimeType: input.mimeType, data: input.base64 } },
+  ];
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise(r => setTimeout(r, attempt * 8000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
+  }
+  const data: any = await res.json();
+  logGeminiUsage(model, data);
+  geminiCallSucceeded();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('The AI did not return readable credential details.');
+  return normalizeCredentialRead(JSON.parse(jsonMatch[0]), input.members);
+}
