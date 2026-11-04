@@ -1237,6 +1237,7 @@
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
+    <button type="button" class="qtr-btn" data-tool="availability" onclick="window.qsToolsAvailability()"><span class="qtr-ic">🗓️</span><span class="qtr-tx">Availability</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
       <button type="button" class="qtr-mini" id="qtr-expand" title="Expand or collapse the tools bar">↔</button>
@@ -1631,6 +1632,15 @@
         .cm-note.ok { background: #e7f7ee; border: 1px solid #a3d9b1; color: #14532d; }
         .cm-note.warn { background: #fff8e1; border: 1px solid #ffe08a; color: #7c5c00; }
         .cm-note.reading { background: var(--bg); border: 1px solid var(--border); color: var(--dim); }
+        .av-sect { font-weight: 800; font-size: 13px; letter-spacing: .4px; color: var(--dim); margin: 14px 2px 8px; }
+        .av-tag { border-radius: 20px; padding: 3px 11px; font-size: 12.5px; font-weight: 800; white-space: nowrap; }
+        .av-tag.ok { background: #e7f7ee; color: #14532d; }
+        .av-tag.warn { background: #fff3bf; color: #b45309; }
+        .av-tag.bad { background: #ffe3e3; color: #c92a2a; }
+        .av-tag.dim { background: var(--bg); color: var(--dim); font-weight: 700; }
+        .av-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border-radius: 20px; padding: 3px 11px; font-size: 12.5px; font-weight: 700; color: var(--text); }
+        .av-chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+        .av-inp { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-weight: 600; font-family: inherit; background: var(--surface); color: var(--text); }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
         /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
         #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
@@ -6312,6 +6322,201 @@ window.qsCredDelete = function () {
 };
 setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(true); }, 2800);
 
+// ---------------------------------------------------------------------
+// AVAILABILITY tool (#availability) — link management + who's-available
+// view in one place (Deepika 2026-11-04: the link moves here from
+// Sharable Links). Availability is DECLARED: it comes from the link
+// responses (staff tap dates green/gray on the no-login page). Nobody
+// counts as available by silence. The day view joins responses with the
+// real schedule: people already working move to their own group, and a
+// scheduled person who marked themselves unavailable gets flagged.
+window.qsToolsAvailability = function () { location.hash = 'availability'; };
+var qsAvRequests = [], qsAvUsers = null;
+function avNormName(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function avMatchUser(name) {
+  var hn = avNormName(name), ht = hn.split(' ').sort().join(' '), found = null;
+  (qsAvUsers || []).forEach(function (u) {
+    if (found) return;
+    var mn = avNormName(u.name);
+    if (mn === hn || mn.split(' ').sort().join(' ') === ht) found = u;
+  });
+  return found;
+}
+window.qsAvToggleForm = function () {
+  var f = document.getElementById('av2-form');
+  f.classList.toggle('hidden');
+  if (!f.classList.contains('hidden')) {
+    var today = scDatePlus(new Date(), 0);
+    var from = document.getElementById('av2-from'), to = document.getElementById('av2-to');
+    if (!from.value) from.value = today;
+    if (!to.value) to.value = scDatePlus(new Date(), 13);
+  }
+};
+window.qsAvCreate = function () {
+  var err = document.getElementById('av2-error');
+  function fail(m) { err.textContent = m; err.classList.remove('hidden'); }
+  err.classList.add('hidden');
+  var from = document.getElementById('av2-from').value, to = document.getElementById('av2-to').value;
+  var title = document.getElementById('av2-title').value.trim();
+  if (!from || !to || from > to) { fail('Pick a valid from/to range.'); return; }
+  (api('/api/schedule/availability', { method: 'POST', body: JSON.stringify({ fromDate: from, toDate: to, title: title }) }).then(function (r) {
+    if (!r.ok) { fail((r.data && r.data.error) || 'Could not create the link.'); return; }
+    document.getElementById('av2-form').classList.add('hidden');
+    var box = document.getElementById('av2-newlink');
+    document.getElementById('av2-newlink-url').value = r.data.link || '';
+    box.classList.remove('hidden');
+    pageSuccess('Availability link created — copy it and share it with your team.');
+    window.qsLoadAvailability();
+  })).catch(function () { fail('Could not create the link.'); });
+};
+window.qsAvCopyNew = function () {
+  var url = document.getElementById('av2-newlink-url').value;
+  if (!url) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(function () { pageSuccess('Link copied.'); }, function () { prompt('Copy this link:', url); });
+  } else prompt('Copy this link:', url);
+};
+window.qsAvDelete = function (id) {
+  if (!confirm('Delete this availability link? Responses it collected are deleted too.')) return;
+  (api('/api/schedule/availability/' + id, { method: 'DELETE' }).then(function (r) {
+    if (!r.ok) { pageError('Could not delete.'); return; }
+    pageSuccess('Link deleted.');
+    window.qsLoadAvailability();
+  })).catch(function () {});
+};
+function qsAvRenderLinkList() {
+  var box = document.getElementById('av2-list');
+  if (!box) return;
+  if (!qsAvRequests.length) {
+    box.innerHTML = '<p style="color:var(--dim);font-size:13px">No availability links yet — create one and share it with your team.</p>';
+    return;
+  }
+  box.innerHTML = qsAvRequests.map(function (q) {
+    var title = q.title || 'Availability link';
+    return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--bg);border-radius:10px;padding:8px 12px;margin-bottom:6px">' +
+      '<b style="font-size:13.5px">' + esc(title) + '</b>' +
+      '<span style="color:var(--dim);font-size:12.5px">' + esc(q.fromDate) + ' → ' + esc(q.toDate) + ' · ' + q.responseCount + ' response' + (q.responseCount == 1 ? '' : 's') + '</span>' +
+      '<button type="button" class="btn-secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;color:#c92a2a" onclick="window.qsAvDelete(\'' + q.id + '\')">Delete</button></div>';
+  }).join('');
+}
+window.qsAvDayChange = function () { qsAvRenderDay(); };
+window.qsAvAssign = function (date) {
+  location.hash = 'schedule';
+  setTimeout(function () { try { openDayModal(date); } catch (err) {} }, 150);
+};
+window.qsLoadAvailability = function () {
+  var body = document.getElementById('av-body');
+  var listBox = document.getElementById('av2-list');
+  var empNav = document.querySelector('.emp-nav');
+  if (empNav) {
+    if (body) body.innerHTML = '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>Owners and schedulers</b><p style="color:var(--dim);margin:6px 0 0">The availability tool is a schedule-builders\u2019 tool.</p></div>';
+    if (listBox) listBox.innerHTML = '';
+    return;
+  }
+  var din = document.getElementById('av-date');
+  if (din && !din.value) din.value = scDatePlus(new Date(), 0);
+  var tsel = document.getElementById('av-type');
+  if (tsel && (sched.shiftTypes || []).length && tsel.options.length <= 1) {
+    var cur = tsel.value;
+    tsel.innerHTML = '<option value="">All shift types</option>' + sched.shiftTypes.filter(function (st) { return st.isActive !== false; }).map(function (st) {
+      return '<option value="' + esc(st.name) + '">' + esc(st.name) + '</option>';
+    }).join('');
+    tsel.value = cur;
+  }
+  var usersP = qsAvUsers ? Promise.resolve() : api('/api/users').then(function (r) {
+    if (r.ok) qsAvUsers = (r.data.users || []).filter(function (u) { return u.isActive; }).map(function (u) {
+      return { id: u.id, name: u.name, role: u.jobRoleName || u.role || '' };
+    });
+  });
+  (Promise.all([usersP, api('/api/schedule/availability')]).then(function (rs) {
+    if (rs[1].ok) qsAvRequests = rs[1].data.requests || [];
+    qsAvRenderLinkList();
+    qsAvRenderDay();
+  })).catch(function () {});
+};
+function qsAvRenderDay() {
+  var body = document.getElementById('av-body');
+  if (!body || !qsAvUsers) return;
+  var din = document.getElementById('av-date');
+  var day = (din && din.value) || scDatePlus(new Date(), 0);
+  var prev = scDatePlus(new Date(day + 'T12:00:00'), -1);
+  var typeFilter = (document.getElementById('av-type') || {}).value || '';
+  var covering = qsAvRequests.filter(function (q) { return q.fromDate <= day && q.toDate >= day; });
+  var fetches = covering.map(function (q) { return api('/api/schedule/availability/' + q.id + '/responses'); });
+  fetches.push(api('/api/schedule/shifts?from=' + prev + '&to=' + day));
+  (Promise.all(fetches).then(function (rs) {
+    // said: rawName -> available (newest request wins: the list is
+    // created_at DESC, so the first response seen for a name stands)
+    var said = {};
+    rs.slice(0, covering.length).forEach(function (r) {
+      if (!r.ok) return;
+      (r.data.responses || []).forEach(function (x) {
+        if (x.date === day && !(x.name in said)) said[x.name] = !!x.available;
+      });
+    });
+    var sd = rs[rs.length - 1];
+    var shifts = (sd.ok && sd.data.shifts) || [];
+    var onDay = {}, prevNight = {};
+    shifts.forEach(function (s) {
+      if (s.date === day) (onDay[s.userId] = onDay[s.userId] || []).push(s);
+      if (s.date === prev && /night/i.test(s.shiftTypeName)) prevNight[s.userId] = s.shiftTypeName;
+    });
+    var saidByUser = {}, extrasAvail = [], extrasUnavail = [];
+    Object.keys(said).forEach(function (name) {
+      var u = avMatchUser(name);
+      if (u) saidByUser[u.id] = said[name];
+      else if (said[name]) extrasAvail.push(name);
+      else extrasUnavail.push(name);
+    });
+    var avail = [], working = [], unavail = [], noResp = [];
+    qsAvUsers.forEach(function (u) {
+      if (onDay[u.id]) working.push(u);
+      else if (saidByUser[u.id] === true) avail.push(u);
+      else if (saidByUser[u.id] === false) unavail.push(u);
+      else noResp.push(u);
+    });
+    var h = '<div class="sc-band"><div><h2>Availability</h2><div class="sc-sub">' + scFmtDay(day) + ' · from the availability link responses' + (typeFilter ? ' · ' + esc(typeFilter) : '') + '</div></div>' +
+      '<div class="sc-total"><b>' + (avail.length + extrasAvail.length) + ' available</b>of ' + qsAvUsers.length + ' team members</div></div>';
+    if (!covering.length) {
+      h += '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>No availability link covers this day</b><p style="color:var(--dim);margin:6px 0 0">Create a link above that includes ' + scFmtDay(day) + ' and share it — answers will appear here.</p></div>';
+    }
+    function sect(t) { return '<div class="av-sect">' + t + '</div>'; }
+    function row(inner) { return '<div class="sc-day" style="margin-bottom:10px"><div class="cred-row">' + inner + '</div></div>'; }
+    function who(u, sub) { return '<div class="cred-who"><div class="cred-name">' + esc(u.name) + '</div><div class="cred-meta">' + esc(sub || u.role) + '</div></div>'; }
+    h += sect('AVAILABLE — SAID THEY\u2019RE FREE · ' + (avail.length + extrasAvail.length));
+    if (!avail.length && !extrasAvail.length) h += '<p style="color:var(--dim);font-size:13px;margin:2px 2px 8px">Nobody has marked themselves available for this day.</p>';
+    avail.forEach(function (u) {
+      var tag = prevNight[u.id]
+        ? '<span class="av-tag warn">⚠ Worked last night — ' + esc(prevNight[u.id]) + '</span>'
+        : '<span class="av-tag ok">✓ Marked available</span>';
+      h += row(who(u) + '<div class="cred-right">' + tag + '<button type="button" class="btn" style="padding:6px 14px;font-size:12.5px" onclick="window.qsAvAssign(\'' + day + '\')">＋ Assign</button></div>');
+    });
+    extrasAvail.forEach(function (name) {
+      h += row(who({ name: name }, 'Answered on the link — not on the team list') + '<div class="cred-right"><span class="av-tag ok">✓ Marked available</span></div>');
+    });
+    h += sect('ALREADY WORKING · ' + working.length);
+    if (!working.length) h += '<p style="color:var(--dim);font-size:13px;margin:2px 2px 8px">Nobody is scheduled that day.</p>';
+    working.forEach(function (u) {
+      var list = typeFilter ? onDay[u.id].filter(function (s) { return s.shiftTypeName === typeFilter; }) : onDay[u.id];
+      if (!list.length) list = onDay[u.id];
+      var chips = list.map(function (s) { return '<span class="av-chip"><i style="background:' + esc(s.shiftTypeColor || '#999') + '"></i>' + esc(s.shiftTypeName) + '</span>'; }).join(' ');
+      var warn = saidByUser[u.id] === false ? ' <span class="av-tag bad">⚠ Marked unavailable on the link</span>' : '';
+      h += row(who(u) + '<div class="cred-right">' + chips + warn + '</div>');
+    });
+    if (unavail.length || extrasUnavail.length) {
+      h += sect('SAID UNAVAILABLE · ' + (unavail.length + extrasUnavail.length));
+      unavail.forEach(function (u) { h += row(who(u) + '<div class="cred-right"><span class="av-tag dim">Marked unavailable</span></div>'); });
+      extrasUnavail.forEach(function (name) { h += row(who({ name: name }, 'Answered on the link — not on the team list') + '<div class="cred-right"><span class="av-tag dim">Marked unavailable</span></div>'); });
+    }
+    if (noResp.length) {
+      h += sect('NO RESPONSE YET · ' + noResp.length);
+      noResp.forEach(function (u) { h += row(who(u, (u.role ? u.role + ' · ' : '') + 'hasn\u2019t filled the availability link') + '<div class="cred-right"><span class="av-tag dim">No response</span></div>'); });
+    }
+    h += '<p style="color:var(--dim);font-size:12px;margin:12px 2px">Availability comes from the link responses. People who haven\u2019t responded are never counted as available.</p>';
+    body.innerHTML = h;
+  })).catch(function () {});
+}
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -6363,6 +6568,38 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
           <button type="button" class="btn-secondary" onclick="window.qsLoadCredentials()">↻ Refresh</button>
         </div>
         <div id="cred-body"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="tab-availability" class="tab-panel">
+      <div style="max-width:880px;margin:0 auto">
+        <div class="sc-day" style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <b style="font-size:15px">Availability links</b>
+            <span style="color:var(--dim);font-size:12.5px">Send a link, staff tap their available dates — the answers land below.</span>
+            <button type="button" class="btn" style="margin-left:auto;padding:7px 14px" onclick="window.qsAvToggleForm()">＋ New link</button>
+          </div>
+          <div id="av2-form" class="hidden" style="margin-top:12px">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <label style="font-size:12.5px;font-weight:700;color:var(--dim)">Title (optional)<br><input id="av2-title" type="text" class="av-inp" placeholder="e.g. November availability" style="min-width:180px"></label>
+              <label style="font-size:12.5px;font-weight:700;color:var(--dim)">From<br><input id="av2-from" type="date" class="av-inp"></label>
+              <label style="font-size:12.5px;font-weight:700;color:var(--dim)">To<br><input id="av2-to" type="date" class="av-inp"></label>
+              <button type="button" class="btn" onclick="window.qsAvCreate()">Create link</button>
+            </div>
+            <p id="av2-error" class="hidden" style="color:#c92a2a;font-size:13px;margin:8px 0 0"></p>
+          </div>
+          <div id="av2-newlink" class="hidden" style="margin-top:12px;background:#e7f7ee;border:1px solid #a3d9b1;border-radius:10px;padding:10px 12px">
+            <div style="font-size:13px;color:#14532d;margin-bottom:6px"><b>Your new link</b> — copy it now; for safety, the full link is only shown when it's created.</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="av2-newlink-url" readonly class="av-inp" style="flex:1;min-width:220px"><button type="button" class="btn-secondary" onclick="window.qsAvCopyNew()">Copy</button></div>
+          </div>
+          <div id="av2-list" style="margin-top:12px"><p style="color:var(--dim)">Loading…</p></div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <input type="date" id="av-date" class="av-inp" onchange="window.qsAvDayChange()" aria-label="Day">
+          <select id="av-type" class="av-inp" onchange="window.qsAvDayChange()" aria-label="Shift type"><option value="">All shift types</option></select>
+          <button type="button" class="btn-secondary" onclick="window.qsLoadAvailability()">↻ Refresh</button>
+        </div>
+        <div id="av-body"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
 
@@ -10972,28 +11209,6 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
           </div>
         </div>
       </div>
-      <div class="flip-card" style="--fc:#2f9e44">
-        <div class="flip-inner">
-          <div class="flip-front" role="button" tabindex="0" aria-label="Show Availability link form">
-            <div class="flip-ic">✅</div>
-            <h3>Availability link</h3>
-            <p>Staff tap the dates they're available.</p>
-            <span class="flip-hint">Tap to flip ↻</span>
-          </div>
-          <div class="flip-back card">
-            <button type="button" class="flip-back-btn">↻ Flip back</button>
-            <h3 style="margin-top:0">Availability link</h3>
-        <p style="color:var(--dim)">Ask staff to tap the dates they're available. Share the link in group chats.</p>
-        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:flex-end">
-          <label>From <input type="date" id="av-from"></label>
-          <label>To <input type="date" id="av-to"></label>
-          <label>Title (optional) <input type="text" id="av-title" placeholder="e.g. November availability" style="min-width:160px"></label>
-          <button type="button" id="av-generate" class="btn">Generate link</button>
-        </div>
-        <div id="av-list" style="margin-top:0.5rem"></div>
-          </div>
-        </div>
-      </div>
       <div class="flip-card" style="--fc:#e67700">
         <div class="flip-inner">
           <div class="flip-front" role="button" tabindex="0" aria-label="Show Payroll hours form">
@@ -11042,15 +11257,7 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
         </div>
       </div>
       </div>
-      <div id="av-resp-modal" class="modal-backdrop hidden">
-        <div class="modal" style="max-width:560px">
-          <h3 id="av-resp-title" style="margin-top:0">Responses</h3>
-          <div id="av-resp-body" style="max-height:60vh;overflow-y:auto"></div>
-          <div style="display:flex;justify-content:flex-end;margin-top:1rem">
-            <button type="button" class="btn-secondary" id="av-resp-close">Close</button>
-          </div>
-        </div>
-      </div>
+
       <script>
       /* Sharable Links flip cards (Deepika, 2026-10-25): tap a card front to
          flip it 180 deg to its form; the Flip back button returns it. Card
@@ -11223,9 +11430,8 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
             navigator.clipboard.writeText(t).then(done, done);
           } else done();
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); } });
-        if (isActive()) { refresh(); loadMsgTypes(); loadAvList(); }
-        $('av-resp-close').addEventListener('click', function () { hide($('av-resp-modal')); });
+        window.addEventListener('hashchange', function () { if (isActive()) { refresh(); loadMsgTypes(); } });
+        if (isActive()) { refresh(); loadMsgTypes(); }
         // --- Payroll hours ---
         function loadPayPeople() {
           api('/api/users').then(function (r) {
@@ -11377,37 +11583,6 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
           }).catch(function () { pageError('Could not set up.'); });
         });
         // Load payroll people + schedules when tab opens.
-        // --- Availability links ---
-        function loadAvList() {
-          api('/api/schedule/availability').then(function (r) {
-            if (!r.ok) return;
-            var box = $('av-list');
-            box.innerHTML = '';
-            if (!r.data.requests.length) {
-              box.innerHTML = '<p style="color:var(--dim)">No availability links yet.</p>';
-              return;
-            }
-            r.data.requests.forEach(function (q) {
-              var div = document.createElement('div');
-              div.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
-              var title = q.title || ('Availability ' + q.fromDate + ' to ' + q.toDate);
-              div.innerHTML = '<strong>' + esc(title) + '</strong><br>' +
-                '<span style="color:var(--dim);font-size:0.85rem">' + q.fromDate + ' to ' + q.toDate + ' — ' + q.responseCount + ' response' + (q.responseCount == 1 ? '' : 's') + '</span>' +
-                '<div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap">' +
-                '<button type="button" class="btn-secondary btn-sm" data-av="view">View responses</button>' +
-                '<button type="button" class="btn-secondary btn-sm" data-av="del" style="color:var(--danger)">Delete</button></div>';
-              div.querySelector('[data-av="view"]').addEventListener('click', function () { showAvResponses(q.id, title); });
-              div.querySelector('[data-av="del"]').addEventListener('click', function () {
-                if (!confirm('Delete this availability link?')) return;
-                api('/api/schedule/availability/' + q.id, { method: 'DELETE' }).then(function (dr) {
-                  if (dr.ok) { pageSuccess('Deleted.'); loadAvList(); }
-                  else pageError('Could not delete.');
-                });
-              });
-              box.appendChild(div);
-            });
-          }).catch(function () {});
-        }
         // ---- Pickup links ----
         function loadPkTypes() {
           api('/api/schedule/shift-types').then(function (r) {
@@ -11471,50 +11646,6 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
         });
         loadPkList();
         loadPkTypes();
-        $('av-generate').addEventListener('click', function () {
-          var f = $('av-from').value, t = $('av-to').value;
-          if (!f || !t || f > t) { pageError('Pick a valid from/to range.'); return; }
-          api('/api/schedule/availability', {
-            method: 'POST',
-            body: JSON.stringify({ fromDate: f, toDate: t, title: $('av-title').value.trim() }),
-          }).then(function (r) {
-            if (r.ok) {
-              var link = r.data.link;
-              var atitle = ($('av-title').value || '').trim() || 'Availability link';
-              prependLinkUrl($('av-list'), atitle + ' — just now', link);
-              if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(link).then(function () {
-                  pageSuccess('Link generated and copied — share it in your group chat.');
-                }, function () { prompt('Copy this link:', link); });
-              } else { prompt('Copy this link:', link); }
-            } else pageError((r.data && r.data.error) || 'Could not generate link.');
-          }).catch(function () { pageError('Could not generate link.'); });
-        });
-        function showAvResponses(id, title) {
-          api('/api/schedule/availability/' + id + '/responses').then(function (r) {
-            if (!r.ok) { pageError('Could not load responses.'); return; }
-            $('av-resp-title').textContent = title + ' — responses';
-            var body = $('av-resp-body');
-            var byName = {};
-            r.data.responses.forEach(function (x) {
-              (byName[x.name] = byName[x.name] || []).push(x);
-            });
-            var names = Object.keys(byName).sort();
-            if (!names.length) { body.innerHTML = '<p style="color:var(--dim)">No responses yet.</p>'; }
-            else {
-              var html = '';
-              names.forEach(function (n) {
-                var avail = byName[n].filter(function (x) { return x.available; }).map(function (x) { return x.date.slice(5); });
-                var unav = byName[n].filter(function (x) { return !x.available; }).map(function (x) { return x.date.slice(5); });
-                html += '<div style="margin-bottom:0.75rem"><strong>' + esc(n) + '</strong><br>' +
-                  '<span style="color:#00a9a4;font-size:0.85rem">Available: ' + (avail.join(', ') || '—') + '</span><br>' +
-                  '<span style="color:#94a3b8;font-size:0.85rem">Unavailable: ' + (unav.join(', ') || '—') + '</span></div>';
-              });
-              body.innerHTML = html;
-            }
-            show($('av-resp-modal'));
-          });
-        }
       })();
       </script>
       <div style="margin-top:1.5rem;text-align:center">
@@ -16125,6 +16256,7 @@ setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(
       'shortcover': function() { activateTab('shortcover'); if (window.qsLoadShortCover) window.qsLoadShortCover(); },
       'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
       'credentials': function() { activateTab('credentials'); if (window.qsLoadCredentials) window.qsLoadCredentials(); },
+      'availability': function() { activateTab('availability'); if (window.qsLoadAvailability) window.qsLoadAvailability(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
