@@ -6987,16 +6987,6 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       return;
     }
     res.status(201).json({ id: shiftId, date, shiftTypeId, userId: me });
-    // Pickup confirmation for the claimer (Deepika 2026-11-03): until
-    // now the person who took a shift heard nothing back — the only
-    // proof was finding their name on the schedule.
-    notify({
-      companyId, userIds: [me], category: 'schedule', type: 'pickup_confirmed',
-      title: `You picked up ${typeName} on ${fmtDateLong(date)}`,
-      body: `The ${typeName} shift on ${fmtDateLong(date)} is on your schedule now.`,
-      link: 'schedule', bundleKey: 'pickup_confirmed',
-      bundleTitle: 'You picked up {count} shifts',
-    });
     // Audit: shift created.
     const names = await shiftDisplayNames(companyId, me, shiftTypeId);
     auditLog({
@@ -7528,18 +7518,6 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
         link: 'requests', bundleKey: 'request_decided',
         excludeUserId: me,
       });
-      // Pickup confirmation for the person who took the shift — for a
-      // pickup, approving means the approver personally claimed it
-      // (Deepika 2026-11-03).
-      if (r.requestType === 'pickup' && shift) {
-        notify({
-          companyId, userIds: [me], category: 'schedule', type: 'pickup_confirmed',
-          title: `You picked up ${shift.shiftTypeName} on ${fmtDateLong(shift.date)}`,
-          body: `The ${shift.shiftTypeName} shift on ${fmtDateLong(shift.date)} is on your schedule now.`,
-          link: 'schedule', bundleKey: 'pickup_confirmed',
-          bundleTitle: 'You picked up {count} shifts',
-        });
-      }
     }
   } catch (err) {
     console.error('[schedule] approve shift request failed:', err);
@@ -7855,16 +7833,6 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
           throw err;
         }
         notifyDecided(true);
-        // Pickup confirmation for the approver who took the shift.
-        if (shift0) {
-          notify({
-            companyId, userIds: [me], category: 'schedule', type: 'pickup_confirmed',
-            title: `You picked up ${shift0.shiftTypeName} on ${fmtDateLong(shift0.date)}`,
-            body: `The ${shift0.shiftTypeName} shift on ${fmtDateLong(shift0.date)} is on your schedule now.`,
-            link: 'schedule', bundleKey: 'pickup_confirmed',
-            bundleTitle: 'You picked up {count} shifts',
-          });
-        }
         res.send(actPage("Approved — it's yours", '<p>The shift is on your schedule now. The requester has been told.</p>'));
         return;
       }
@@ -8126,16 +8094,6 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
         link: 'requests', bundleKey: 'request_decided',
         excludeUserId: me,
       });
-      // Pickup confirmation for the claimer (Deepika 2026-11-03).
-      if (claimShift) {
-        notify({
-          companyId, userIds: [me], category: 'schedule', type: 'pickup_confirmed',
-          title: `You picked up ${claimShift.shiftTypeName} on ${fmtDateLong(claimShift.date)}`,
-          body: `The ${claimShift.shiftTypeName} shift on ${fmtDateLong(claimShift.date)} is on your schedule now.`,
-          link: 'schedule', bundleKey: 'pickup_confirmed',
-          bundleTitle: 'You picked up {count} shifts',
-        });
-      }
       res.send(actPage("It's yours", '<p>The shift is on your schedule now. Thank you!</p>'));
       return;
     }
