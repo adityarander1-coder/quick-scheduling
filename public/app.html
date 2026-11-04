@@ -1534,7 +1534,9 @@
         #tab-schedule .ev-claim-btn { background: #00796b; color: #fff; border: none; border-radius: 8px; padding: 4px 10px; font-size: 0.76rem; font-weight: 700; cursor: pointer; }
         #tab-schedule .ev-unclaim-btn { background: none; border: none; color: #64748b; font-size: 0.72rem; cursor: pointer; text-decoration: underline; padding: 0; }
         #tab-schedule .shift-nm:hover { filter: brightness(0.97); }
-        .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { border-color: hsl(var(--highlight-hue) 82% 42%) !important; background: hsl(var(--highlight-hue) 100% 92%) !important; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 50% / .2); }
+        .shift-row.is-highlighted, .shift-grid.is-highlighted { background: hsl(var(--highlight-hue) 95% 70%) !important; border: 1.5px solid hsl(var(--highlight-hue) 90% 38%); border-left: 7px solid hsl(var(--highlight-hue) 85% 32%); border-radius: 8px; box-shadow: 0 0 0 2px hsl(var(--highlight-hue) 90% 45% / .5); }
+        .shift-row.is-highlighted .shift-nm, .shift-grid.is-highlighted .shift-nm { background: rgba(255, 255, 255, .8) !important; border-color: transparent !important; color: hsl(var(--highlight-hue) 80% 16%) !important; box-shadow: none; }
+        body.has-highlights #tab-schedule .shift-grid:not(.is-highlighted), body.has-highlights #tab-myschedule .shift-grid:not(.is-highlighted), body.has-highlights #tab-schedule .shift-row:not(.is-highlighted), body.has-highlights #tab-myschedule .shift-row:not(.is-highlighted) { opacity: .35; }
         /* Block options group (Mock A, 2026-10-25): on desktop/tablet the
            wrapper vanishes from layout so the three controls sit inline in
            the toolbar exactly as before; on phones it becomes the section. */
@@ -3543,6 +3545,20 @@
             }
           }
         };
+        // Highlight spotlight (Deepika 2026-11-03): while any row is
+        // highlighted, body.has-highlights fades every other row. One
+        // observer covers every set/clear path and the first render.
+        function qsSyncHlDim() {
+          document.body.classList.toggle('has-highlights', !!document.querySelector('.shift-grid.is-highlighted, .shift-row.is-highlighted'));
+        }
+        if (window.MutationObserver && !window.__qsHlObs) {
+          window.__qsHlObs = true;
+          var qsHlQueued = false;
+          new MutationObserver(function () {
+            if (qsHlQueued) return; qsHlQueued = true;
+            requestAnimationFrame(function () { qsHlQueued = false; qsSyncHlDim(); });
+          }).observe(document.body, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+        }
         // Global replace function (simple, reliable)
         window.qsReplaceShift = function(sid) {
           var s = shiftById(sid);
