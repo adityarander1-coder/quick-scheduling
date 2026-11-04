@@ -28,6 +28,11 @@
 // 6. Short-cover weekly — Monday at/after 7 AM company time, owners
 //    and schedulers get the next 14 days' staffing-target gaps (the
 //    Short cover page, by email + bell), once per person per week.
+// 7. Credential reminders — at 30 days out, 7 days out, and the day
+//    after expiry (company-local dates), the credential's owner plus
+//    the company's owners/schedulers are told once per checkpoint;
+//    dedupe via the notification payload (credential + checkpoint +
+//    expiry date, so a renewal re-arms the checkpoints).
 import { query } from '../db.js';
 import { sendMail, escHtml } from './mailer.js';
 import { notify, resolveSpeed, fmtDateLong } from './notify.js';
@@ -671,6 +676,58 @@ export async function runShortCoverWeekly(force = false): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 7. Credential reminders (30 days / 7 days / expired)
+// ---------------------------------------------------------------------------
+
+export async function runCredentialReminders(): Promise<void> {
+  try {
+    const { rows: creds } = await query(
+      `SELECT c.id, c.company_id AS "companyId", c.user_id AS "userId", c.name, c.category, c.number,
+              c.expiry_date::text AS "expiryDate",
+              ((u.first_name || ' ' || u.last_name)) AS "personName"
+       FROM credentials c JOIN users u ON u.id = c.user_id AND u.is_active = true`);
+    // Owners/schedulers per company, fetched lazily and cached per run.
+    const adminsCache = new Map<string, string[]>();
+    const adminsOf = async (companyId: string): Promise<string[]> => {
+      if (!adminsCache.has(companyId)) {
+        const { rows } = await query(
+          `SELECT id FROM users WHERE company_id = $1 AND role IN ('owner', 'scheduler') AND is_active = true`, [companyId]);
+        adminsCache.set(companyId, rows.map((r: any) => r.id));
+      }
+      return adminsCache.get(companyId)!;
+    };
+    for (const c of creds) {
+      const tz = await companyTimezone(c.companyId);
+      const today = localDateStr(new Date(), tz);
+      const days = Math.round((Date.parse(c.expiryDate + 'T12:00:00') - Date.parse(today + 'T12:00:00')) / 86400000);
+      const checkpoint = days === 30 ? 'd30' : days === 7 ? 'd7' : days === -1 ? 'expired' : null;
+      if (!checkpoint) continue;
+      const person = (c.personName || 'A team member').trim();
+      const title = checkpoint === 'expired'
+        ? `Credential expired: ${person}'s ${c.name} expired yesterday (${fmtDateLong(c.expiryDate)})`
+        : `Credential expiring: ${person}'s ${c.name} expires in ${days} days (${fmtDateLong(c.expiryDate)})`;
+      const detail = [c.category ? `Category: ${c.category}` : '', c.number ? `Number: ${c.number}` : ''].filter(Boolean).join(' · ');
+      const body = (detail ? detail + '\n' : '') + "Update the expiry date in Credentials once it's renewed.";
+      const recipients = new Set<string>([c.userId, ...(await adminsOf(c.companyId))]);
+      for (const uid of recipients) {
+        const { rows: prior } = await query(
+          `SELECT id FROM notifications WHERE user_id = $1 AND type = 'credential_reminder'
+             AND payload->>'credentialId' = $2 AND payload->>'checkpoint' = $3 AND payload->>'expiry' = $4 LIMIT 1`,
+          [uid, c.id, checkpoint, c.expiryDate]);
+        if (prior.length) continue;
+        await notify({
+          companyId: c.companyId, userIds: [uid], category: 'schedule', type: 'credential_reminder',
+          title, body, link: 'credentials',
+          payload: { credentialId: c.id, checkpoint, expiry: c.expiryDate },
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[notify-jobs] credential reminders failed: ${e?.message || e}`);
+  }
+}
+
 export function startNotificationJobs(): void {
   const tick = async () => {
     await sendDailyDigests();
@@ -679,9 +736,10 @@ export function startNotificationJobs(): void {
     await runRequestExpirySweep();
     await runCoverWarningScan();
     await runShortCoverWeekly();
+    await runCredentialReminders();
   };
   // Run once shortly after startup (DB is ready by then), then every 15 min.
   setTimeout(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 90_000);
   setInterval(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 15 * 60_000);
-  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings + short cover weekly started (every 15 min)');
+  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings + short cover weekly + credential reminders started (every 15 min)');
 }

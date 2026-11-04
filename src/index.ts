@@ -22,6 +22,7 @@ import scheduleRouter from './routes/schedule';
 import requestFormRouter from './routes/requestForm';
 import notificationsRouter from './routes/notifications';
 import pushRouter from './routes/push';
+import credentialsRouter from './routes/credentials';
 import inboundRouter from './routes/inbound';
 import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
 import { billingWriteGate } from './middleware/billing';
@@ -91,6 +92,7 @@ app.use('/api/schedule', requestFormRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/push', pushRouter);
+app.use('/api/credentials', credentialsRouter);
 
 // GET / → /app.html when signed in, else the public landing page.
 app.get('/', (req: Request, res: Response) => {

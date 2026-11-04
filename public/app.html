@@ -1236,6 +1236,7 @@
     <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
+    <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
       <button type="button" class="qtr-mini" id="qtr-expand" title="Expand or collapse the tools bar">↔</button>
@@ -1608,6 +1609,23 @@
         .fr-barwrap { flex: 1; background: var(--bg); border-radius: 6px; height: 12px; overflow: hidden; }
         .fr-bar { height: 100%; border-radius: 6px; }
         .fr-nights .dl { font-size: 12.5px; font-weight: 700; width: 110px; flex: none; }
+        .cred-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .cred-who { min-width: 220px; }
+        .cred-name { font-weight: 800; font-size: 15px; color: var(--text); }
+        .cred-meta { color: var(--dim); font-size: 12.5px; }
+        .cred-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .cred-exp { font-size: 13px; color: var(--dim); }
+        .cred-pill { border-radius: 20px; padding: 3px 11px; font-size: 12.5px; font-weight: 800; white-space: nowrap; }
+        .cred-pill.exp { background: #c92a2a; color: #fff; }
+        .cred-pill.soon { background: #ffe3e3; color: #c92a2a; }
+        .cred-pill.warn { background: #fff3bf; color: #b45309; }
+        .cred-pill.ok { background: var(--bg); color: var(--dim); font-weight: 700; }
+        #cred-modal { position: fixed; inset: 0; z-index: 120; background: rgba(10, 20, 30, .45); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 14px 14px; }
+        #cred-modal .cm-card { background: var(--surface); border-radius: 14px; width: 430px; max-width: 94vw; max-height: 86vh; overflow: auto; box-shadow: 0 18px 44px rgba(16, 24, 40, .35); }
+        .cm-field { margin-bottom: 12px; }
+        .cm-field label { display: block; font-size: 12.5px; font-weight: 700; color: var(--dim); margin-bottom: 5px; }
+        .cm-field input, .cm-field select { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1.5px solid var(--border); border-radius: 9px; font-family: inherit; font-size: 14px; background: var(--surface); color: var(--text); }
+        .cm-field input:focus, .cm-field select:focus { outline: none; border-color: var(--accent); }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
         /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
         #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
@@ -6059,6 +6077,151 @@
           }).catch(function () {});
         };
 
+// ---------------------------------------------------------------------
+// CREDENTIALS page (#credentials) + rail badge — licenses & certifications
+// with expiry dates (Deepika 2026-11-04). Data lives server-side
+// (/api/credentials); this renders soonest-expiry-first exactly like the
+// approved mock: expired red, <=30d pink-red, <=90d amber, else grey.
+// Categories come from the company list; the form can create a new one
+// inline ("+ New category"). Reminders run server-side (notifyJobs).
+window.qsToolsCredentials = function () { location.hash = 'credentials'; };
+var qsCredItems = [], qsCredCats = [], qsCredFilter = '', qsCredEditId = null, qsCredBadgeRetries = 0;
+function credDaysLeft(iso) {
+  var t = new Date();
+  var today = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+  return Math.round((Date.parse(iso + 'T12:00:00') - Date.parse(today + 'T12:00:00')) / 86400000);
+}
+function credPill(days) {
+  if (days < 0) return '<span class="cred-pill exp">EXPIRED ' + Math.abs(days) + 'd ago</span>';
+  if (days === 0) return '<span class="cred-pill soon">Expires today</span>';
+  if (days <= 30) return '<span class="cred-pill soon">' + days + (days === 1 ? ' day' : ' days') + ' left</span>';
+  if (days <= 90) return '<span class="cred-pill warn">' + days + ' days left</span>';
+  return '<span class="cred-pill ok">' + days + ' days left</span>';
+}
+window.qsCredFilterChange = function (v) { qsCredFilter = v; window.qsLoadCredentials(); };
+window.qsLoadCredentials = function (badgeOnly) {
+  var empNav = document.querySelector('.emp-nav');
+  if (empNav && !badgeOnly) {
+    var b0 = document.getElementById('cred-body');
+    if (b0) b0.innerHTML = '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>Owners and schedulers</b><p style="color:var(--dim);margin:6px 0 0">The credential tracker is a schedule-builders\u2019 tool.</p></div>';
+    return;
+  }
+  return (api('/api/credentials').then(function (r) {
+    if (!r.ok) {
+      if (badgeOnly && qsCredBadgeRetries < 6) { qsCredBadgeRetries++; setTimeout(function () { window.qsLoadCredentials(true); }, 2500); }
+      return;
+    }
+    qsCredItems = r.data.credentials || [];
+    qsCredCats = r.data.categories || [];
+    var urgent = qsCredItems.filter(function (c) { return credDaysLeft(c.expiryDate) <= 30; }).length;
+    document.querySelectorAll('[data-cred-badge]').forEach(function (b) { b.hidden = urgent === 0; b.textContent = urgent; });
+    if (badgeOnly) return;
+    var body = document.getElementById('cred-body');
+    if (!body) return;
+    var fsel = document.getElementById('cred-filter');
+    if (fsel) {
+      var cur = qsCredFilter;
+      fsel.innerHTML = '<option value="">All categories</option>' + qsCredCats.map(function (c) { return '<option value="' + esc(c) + '">' + esc(c) + '</option>'; }).join('');
+      fsel.value = qsCredCats.indexOf(cur) >= 0 ? cur : '';
+      if (fsel.value !== cur) qsCredFilter = fsel.value;
+    }
+    var expired = 0, soon = 0;
+    qsCredItems.forEach(function (c) { var d = credDaysLeft(c.expiryDate); if (d < 0) expired++; else if (d <= 30) soon++; });
+    var items = qsCredFilter ? qsCredItems.filter(function (c) { return c.category === qsCredFilter; }) : qsCredItems;
+    var h = '<div class="sc-band"><div><h2>Credentials</h2><div class="sc-sub">Licenses &amp; certifications \u00B7 soonest expiry first' + (qsCredFilter ? ' \u00B7 ' + esc(qsCredFilter) : '') + '</div></div>' +
+      '<div class="sc-total"><b>' + expired + ' expired \u00B7 ' + soon + ' within 30 days</b>of ' + qsCredItems.length + ' tracked</div></div>';
+    if (!qsCredItems.length) {
+      h += '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>No credentials tracked yet</b><p style="color:var(--dim);margin:6px 0 0">Tap \uFF0B Add credential above — pick a person, name the credential, set its expiry date, and the tracker watches it from there.</p></div>';
+    } else if (!items.length) {
+      h += '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>No credentials in this category</b></div>';
+    }
+    items.forEach(function (c) {
+      var d = credDaysLeft(c.expiryDate);
+      var meta = [esc(c.name), esc(c.category || ''), c.number ? esc(c.number) : ''].filter(Boolean).join(' \u00B7 ');
+      h += '<div class="sc-day" style="margin-bottom:10px' + (d < 0 ? ';border-color:#f1aeb5' : '') + '"><div class="cred-row">' +
+        '<div class="cred-who"><div class="cred-name">' + esc(c.userName) + '</div><div class="cred-meta">' + meta + '</div></div>' +
+        '<div class="cred-right"><span class="cred-exp">Expires <b style="color:var(--text)">' + scFmtDay(c.expiryDate) + '</b></span>' + credPill(d) +
+        '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsCredEdit(\'' + c.id + '\')">' + (d <= 30 ? 'Mark renewed' : 'Update') + '</button></div></div></div>';
+    });
+    h += '<p style="color:var(--dim);font-size:12px;margin:12px 2px">Reminders go out 30 days before, 7 days before, and the day after a credential expires — to the person it belongs to and to owners and schedulers.</p>';
+    body.innerHTML = h;
+  })).catch(function () {});
+};
+function credFillForm(item) {
+  var usel = document.getElementById('cm-user');
+  usel.innerHTML = '<option value="">Pick a person…</option>' + (sched.members || []).map(function (m) {
+    return '<option value="' + m.id + '"' + (item && item.userId === m.id ? ' selected' : '') + '>' + esc(m.name) + '</option>';
+  }).join('');
+  var csel = document.getElementById('cm-cat');
+  csel.innerHTML = qsCredCats.map(function (c) { return '<option value="' + esc(c) + '"' + (item && item.category === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('') +
+    '<option value="__new">＋ New category…</option>';
+  document.getElementById('cm-cat-new-row').classList.add('hidden');
+  document.getElementById('cm-cat-new').value = '';
+  document.getElementById('cm-name').value = item ? item.name : '';
+  document.getElementById('cm-number').value = item && item.number ? item.number : '';
+  document.getElementById('cm-expiry').value = item ? item.expiryDate : '';
+  document.getElementById('cm-error').classList.add('hidden');
+  document.getElementById('cm-title').textContent = item ? 'Update credential' : 'Add credential';
+  document.getElementById('cm-delete').classList.toggle('hidden', !item);
+}
+window.qsCredAdd = function () {
+  qsCredEditId = null;
+  if (!qsCredCats.length) { window.qsLoadCredentials().then(function () { credFillForm(null); document.getElementById('cred-modal').classList.remove('hidden'); }); return; }
+  credFillForm(null);
+  document.getElementById('cred-modal').classList.remove('hidden');
+};
+window.qsCredEdit = function (id) {
+  var item = null;
+  qsCredItems.forEach(function (c) { if (c.id === id) item = c; });
+  if (!item) return;
+  qsCredEditId = id;
+  credFillForm(item);
+  document.getElementById('cred-modal').classList.remove('hidden');
+};
+window.qsCredCatChange = function (v) {
+  document.getElementById('cm-cat-new-row').classList.toggle('hidden', v !== '__new');
+  if (v === '__new') document.getElementById('cm-cat-new').focus();
+};
+window.qsCredClose = function () { document.getElementById('cred-modal').classList.add('hidden'); };
+window.qsCredSave = function () {
+  var err = document.getElementById('cm-error');
+  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); }
+  var catSel = document.getElementById('cm-cat').value;
+  var body = {
+    userId: document.getElementById('cm-user').value,
+    name: document.getElementById('cm-name').value.trim(),
+    number: document.getElementById('cm-number').value.trim(),
+    expiryDate: document.getElementById('cm-expiry').value,
+  };
+  if (catSel === '__new') {
+    body.newCategory = document.getElementById('cm-cat-new').value.trim();
+    if (!body.newCategory) { fail('Type the new category name.'); return; }
+  } else body.category = catSel || 'Other';
+  if (!body.userId) { fail('Pick a person.'); return; }
+  if (!body.name) { fail('Name the credential.'); return; }
+  if (!body.expiryDate) { fail('Set the expiry date.'); return; }
+  var call = qsCredEditId
+    ? api('/api/credentials/' + qsCredEditId, { method: 'PUT', body: JSON.stringify(body) })
+    : api('/api/credentials', { method: 'POST', body: JSON.stringify(body) });
+  (call.then(function (r) {
+    if (!r.ok) { fail((r.data && r.data.error) || 'Could not save. Please try again.'); return; }
+    window.qsCredClose();
+    window.qsLoadCredentials();
+    pageSuccess(qsCredEditId ? 'Credential updated.' : 'Credential added.');
+  })).catch(function () { fail('Could not save. Please try again.'); });
+};
+window.qsCredDelete = function () {
+  if (!qsCredEditId) return;
+  if (!confirm('Delete this credential from the tracker?')) return;
+  (api('/api/credentials/' + qsCredEditId, { method: 'DELETE' }).then(function (r) {
+    if (!r.ok) { alert('Could not delete. Please try again.'); return; }
+    window.qsCredClose();
+    window.qsLoadCredentials();
+    pageSuccess('Credential deleted.');
+  })).catch(function () {});
+};
+setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(true); }, 2800);
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -6101,6 +6264,37 @@
         <div id="fr-body"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
+
+    <section id="tab-credentials" class="tab-panel">
+      <div style="max-width:880px;margin:0 auto">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <button type="button" class="btn" onclick="window.qsCredAdd()">＋ Add credential</button>
+          <select id="cred-filter" aria-label="Category" onchange="window.qsCredFilterChange(this.value)" style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-weight:600;font-family:inherit;background:var(--surface);color:var(--text)"><option value="">All categories</option></select>
+          <button type="button" class="btn-secondary" onclick="window.qsLoadCredentials()">↻ Refresh</button>
+        </div>
+        <div id="cred-body"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+    </section>
+
+    <div id="cred-modal" class="hidden" role="dialog" aria-label="Credential form">
+      <div class="cm-card">
+        <div class="qtp-head" style="border-radius:14px 14px 0 0"><b id="cm-title">Add credential</b><button type="button" class="qtp-x" onclick="window.qsCredClose()" aria-label="Close">✕</button></div>
+        <div style="padding:14px 16px">
+          <div class="cm-field"><label for="cm-user">Person</label><select id="cm-user"></select></div>
+          <div class="cm-field"><label for="cm-name">Credential</label><input id="cm-name" type="text" placeholder="e.g. Medical License, RN License, BLS, DEA" autocomplete="off"></div>
+          <div class="cm-field"><label for="cm-cat">Category</label><select id="cm-cat" onchange="window.qsCredCatChange(this.value)"></select></div>
+          <div class="cm-field hidden" id="cm-cat-new-row"><label for="cm-cat-new">New category name</label><input id="cm-cat-new" type="text" placeholder="e.g. Vaccinations" autocomplete="off"></div>
+          <div class="cm-field"><label for="cm-number">Number (optional)</label><input id="cm-number" type="text" autocomplete="off"></div>
+          <div class="cm-field"><label for="cm-expiry">Expiry date</label><input id="cm-expiry" type="date"></div>
+          <p id="cm-error" class="hidden" style="color:#c92a2a;font-size:13px;margin:4px 0 10px"></p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="btn" onclick="window.qsCredSave()">Save</button>
+            <button type="button" class="btn-secondary" onclick="window.qsCredClose()">Cancel</button>
+            <button type="button" id="cm-delete" class="hidden" style="margin-left:auto;background:none;border:none;color:#c92a2a;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit" onclick="window.qsCredDelete()">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <section id="tab-dash" class="tab-panel">
       <style>
@@ -15831,6 +16025,7 @@
       'schedule': function() { activateTab('schedule'); },
       'shortcover': function() { activateTab('shortcover'); if (window.qsLoadShortCover) window.qsLoadShortCover(); },
       'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
+      'credentials': function() { activateTab('credentials'); if (window.qsLoadCredentials) window.qsLoadCredentials(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
