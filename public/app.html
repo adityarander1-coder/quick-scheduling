@@ -1238,6 +1238,7 @@
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="availability" onclick="window.qsToolsAvailability()"><span class="qtr-ic">🗓️</span><span class="qtr-tx">Availability</span></button>
+    <button type="button" class="qtr-btn" data-tool="print" onclick="window.qsToolsPrint()"><span class="qtr-ic">🖨️</span><span class="qtr-tx">Print</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
       <button type="button" class="qtr-mini" id="qtr-expand" title="Expand or collapse the tools bar">↔</button>
@@ -1641,6 +1642,31 @@
         .av-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border-radius: 20px; padding: 3px 11px; font-size: 12.5px; font-weight: 700; color: var(--text); }
         .av-chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
         .av-inp { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-weight: 600; font-family: inherit; background: var(--surface); color: var(--text); }
+        .print-sheet { background: #fff; color: #0f172a; border-radius: 6px; box-shadow: 0 4px 24px rgba(15,23,42,.18); padding: 26px 28px; margin-bottom: 18px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .ps-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 3px solid #083f4d; padding-bottom: 8px; margin-bottom: 4px; }
+        .ps-title { font-size: 21px; font-weight: 700; color: #083f4d; font-family: Georgia, serif; }
+        .ps-sub { font-size: 13.5px; color: #475569; font-family: Georgia, serif; }
+        .ps-meta { font-size: 12px; color: #64748b; text-align: right; }
+        .ps-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .ps-table th { padding: 8px; border-bottom: 2px solid #083f4d; color: #083f4d; text-align: center; }
+        .ps-table th:first-child { text-align: left; }
+        .ps-table td { padding: 7px 8px; border-bottom: 1px solid #e2e8f0; }
+        .ps-table td:first-child { white-space: nowrap; }
+        .ps-table td.cell { text-align: center; }
+        .ps-role { color: #64748b; font-size: 11.5px; }
+        .ps-pill { display: inline-block; border: 1.5px solid; border-radius: 6px; padding: 2px 8px; font-weight: 700; font-size: 12px; margin: 1px 0; }
+        .ps-pill.draft { border-style: dashed; opacity: .75; }
+        .ps-need { color: #b45309; font-weight: 700; font-size: 12px; }
+        .ps-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #475569; }
+        .ps-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; }
+        @media print {
+          body * { visibility: hidden; }
+          #print-area, #print-area * { visibility: visible; }
+          #print-area { position: absolute; left: 0; top: 0; width: 100%; }
+          .print-sheet { box-shadow: none; border-radius: 0; margin: 0; padding: 4mm 0; page-break-after: always; }
+          .print-sheet:last-child { page-break-after: auto; }
+          @page { size: landscape; margin: 9mm; }
+        }
         .sc-offer { border: 2px solid #0e7c86; border-radius: 12px; padding: 12px 14px; margin: 4px 0 12px; background: #f6fefe; }
         .sc-off-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid #d9ecec; cursor: pointer; }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
@@ -1649,7 +1675,7 @@
         body.qs-tools-wide #qs-tools-rail { width: 172px; }
         body.qs-tools-hidden #qs-tools-rail { transform: translate(110%, -50%); }
         /* The tools live in the schedule area only (Deepika 2026-11-03) */
-        body:not(.qs-on-schedule) #qs-tools-rail, body:not(.qs-on-schedule) #qs-tools-handle, body:not(.qs-on-schedule) #qs-tools-panel { display: none; }
+        body:not(.qs-tools-on) #qs-tools-rail, body:not(.qs-tools-on) #qs-tools-handle, body:not(.qs-tools-on) #qs-tools-panel { display: none; }
         #qs-tools-rail .qtr-head { color: #9fc3cb; font-size: 8.5px; font-weight: 800; text-align: center; letter-spacing: .08em; }
         body.qs-tools-wide #qs-tools-rail .qtr-head { text-align: left; padding-left: 8px; }
         .qtr-btn { position: relative; background: transparent; border: none; border-radius: 9px; width: 100%; padding: 7px 4px 5px; color: #d7e6ea; cursor: pointer; font-family: inherit; display: flex; flex-direction: column; align-items: center; gap: 1px; }
@@ -5866,17 +5892,18 @@
           if (searchHadFocus) { var inp = $('qtp-search'); if (inp) { inp.focus(); try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} } }
         }
         // --- Tools rail ------------------------------------------------------
-        // The rail + arrow live in the schedule area only: body.qs-on-
-        // schedule is set while the Schedule or My Schedule panel is the
-        // active one (Deepika 2026-11-03).
+        // The rail + arrow are available on EVERY page of the admin
+        // shell (Deepika 2026-11-04: "keep the tool bar available in
+        // any page"): body.qs-tools-on is set whenever any admin panel
+        // is active. Pure employees get the shared My Schedule view,
+        // whose rows the tools cannot paint — no rail there instead of
+        // dead buttons.
         function qsSyncToolsScope() {
           var a = document.querySelector('.tab-panel.active');
           var empNav = $('employee-tabs');
           var isEmp = empNav && !empNav.classList.contains('hidden');
-          // Pure employees get the shared My Schedule view, whose rows
-          // the tools cannot paint - no rail there instead of dead buttons.
-          var on = !!a && !isEmp && (a.id === 'tab-schedule' || a.id === 'tab-myschedule');
-          if (document.body.classList.contains('qs-on-schedule') !== on) document.body.classList.toggle('qs-on-schedule', on);
+          var on = !!a && !isEmp;
+          if (document.body.classList.contains('qs-tools-on') !== on) document.body.classList.toggle('qs-tools-on', on);
         }
         window.qsSyncToolsScope = qsSyncToolsScope;
         setTimeout(qsSyncToolsScope, 1200);
@@ -5887,6 +5914,15 @@
         window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); }, 120); });
         window.qsToolsOpen = function (tool) {
           if (tool === 'highlight') {
+            // Highlight paints the schedule — from any other page, go
+            // to the schedule first, then open the panel there.
+            var a = document.querySelector('.tab-panel.active');
+            var onSched = !!a && (a.id === 'tab-schedule' || a.id === 'tab-myschedule');
+            if (!onSched) {
+              location.hash = 'schedule';
+              setTimeout(function () { window.qsToolsOpen('highlight'); }, 250);
+              return;
+            }
             $('qtp-title').textContent = '🎨 Highlight';
             qsRenderHlPanel();
           }
@@ -6623,6 +6659,187 @@ function qsAvRenderDay() {
   })).catch(function () {});
 }
 
+// ---------------------------------------------------------------------
+// PRINT tool (#print) — a clean schedule sheet for the wall, the
+// binder, or a PDF (Deepika 2026-11-04). People × days grid from the
+// live schedule, coloured shift pills, a Still needed row from the
+// staffing targets, and a print stylesheet that prints ONLY the
+// sheets (one week per page, landscape).
+window.qsToolsPrint = function () { location.hash = 'print'; };
+var qsPrintUsers = null, qsPrintTypes = null, qsPrintTargets = null;
+function qsPrintMonday(ds) {
+  var d = new Date(ds + 'T12:00:00');
+  var back = (d.getDay() + 6) % 7; // days since Monday
+  return scDatePlus(d, -back);
+}
+function qsPrintRangeBounds() {
+  var mode = (document.getElementById('print-range') || {}).value || 'week';
+  var today = scDatePlus(new Date(), 0);
+  if (mode === 'week') { var m = qsPrintMonday(today); return { from: m, to: scDatePlus(new Date(m + 'T12:00:00'), 6) }; }
+  if (mode === 'next') { var m2 = scDatePlus(new Date(qsPrintMonday(today) + 'T12:00:00'), 7); return { from: m2, to: scDatePlus(new Date(m2 + 'T12:00:00'), 6) }; }
+  if (mode === 'month') {
+    var d = new Date(today + 'T12:00:00');
+    var first = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01';
+    var lastD = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    var last = lastD.getFullYear() + '-' + String(lastD.getMonth() + 1).padStart(2, '0') + '-' + String(lastD.getDate()).padStart(2, '0');
+    return { from: first, to: last };
+  }
+  var f = (document.getElementById('print-from') || {}).value, t = (document.getElementById('print-to') || {}).value;
+  if (f && t && f <= t) return { from: f, to: t };
+  var m3 = qsPrintMonday(today);
+  return { from: m3, to: scDatePlus(new Date(m3 + 'T12:00:00'), 6) };
+}
+window.qsPrintControlsChanged = function () {
+  var mode = (document.getElementById('print-range') || {}).value;
+  var c = document.getElementById('print-custom');
+  if (c) { c.classList.toggle('hidden', mode !== 'custom'); c.style.display = mode === 'custom' ? 'inline-flex' : 'none'; }
+  if (mode === 'custom') {
+    var b = qsPrintRangeBounds();
+    var f = document.getElementById('print-from'), t = document.getElementById('print-to');
+    if (f && !f.value) f.value = b.from;
+    if (t && !t.value) t.value = b.to;
+    if (!f.value || !t.value) return; // wait for both dates
+  }
+  qsPrintRender();
+};
+window.qsPrintNow = function () { window.print(); };
+window.qsLoadPrint = function () {
+  var area = document.getElementById('print-area');
+  var empNav = document.querySelector('.emp-nav');
+  if (empNav) {
+    if (area) area.innerHTML = '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>Owners and schedulers</b><p style="color:var(--dim);margin:6px 0 0">The print tool is a schedule-builders\u2019 tool.</p></div>';
+    return;
+  }
+  var sel = document.getElementById('print-dept');
+  if (sel && sel.options.length <= 1 && (sched.departments || []).length) {
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">All departments</option>' + sched.departments.map(function (d) {
+      return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
+    }).join('');
+    sel.value = cur;
+  }
+  qsPrintRender();
+};
+function qsPrintRender() {
+  var area = document.getElementById('print-area');
+  if (!area) return;
+  var bounds = qsPrintRangeBounds();
+  var deptId = (document.getElementById('print-dept') || {}).value || '';
+  var includeDrafts = !!((document.getElementById('print-drafts') || {}).checked);
+  var usersP = qsPrintUsers ? Promise.resolve() : api('/api/users').then(function (r) {
+    if (r.ok) qsPrintUsers = (r.data.users || []).filter(function (u) { return u.isActive; });
+  });
+  var typesP = qsPrintTypes ? Promise.resolve() : api('/api/schedule/shift-types').then(function (r) {
+    if (r.ok) qsPrintTypes = (r.data.shiftTypes || []).filter(function (t) { return t.isActive !== false; });
+  });
+  var targetsP = qsPrintTargets ? Promise.resolve() : api('/api/schedule/staffing-targets').then(function (r) {
+    if (r.ok) qsPrintTargets = r.data.targets || [];
+  });
+  (Promise.all([usersP, typesP, targetsP, api('/api/schedule/shifts?from=' + bounds.from + '&to=' + bounds.to)]).then(function (rs) {
+    var sd = rs[3];
+    if (!sd.ok) { area.innerHTML = '<p style="color:#c92a2a">Could not load the schedule.</p>'; return; }
+    var allShifts = sd.data.shifts || [];
+    var closedSet = {};
+    (sd.data.closedShifts || []).forEach(function (c) { closedSet[c.date + '|' + c.shiftTypeId] = true; });
+    var extraMap = {};
+    (sd.data.extraSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; extraMap[k] = (extraMap[k] || 0) + (e.count || 0); });
+    var typeById = {};
+    (qsPrintTypes || []).forEach(function (t) { typeById[t.id] = t; });
+    var inDept = function (t) { return !deptId || ((t.departmentIds || []).indexOf(deptId) >= 0) || t.departmentId === deptId; };
+    var shifts = allShifts.filter(function (s) {
+      if (!includeDrafts && s.published === false) return false;
+      if (deptId && typeById[s.shiftTypeId] && !inDept(typeById[s.shiftTypeId])) return false;
+      return true;
+    });
+    var members = (qsPrintUsers || []).filter(function (u) { return !deptId || u.departmentId === deptId; });
+    var companyEl = document.getElementById('company-name');
+    var company = (companyEl && companyEl.textContent.trim()) || 'Quick Scheduling';
+    var deptName = 'All departments';
+    if (deptId) { var dd = (sched.departments || []).filter(function (d) { return d.id === deptId; })[0]; if (dd) deptName = dd.name; }
+    var printed = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    var targetByType = {};
+    (qsPrintTargets || []).forEach(function (t) { targetByType[t.shiftTypeId] = t; });
+    var targetFor = function (date, typeId) {
+      var t = targetByType[typeId];
+      if (!t) return 0;
+      var dow = new Date(date + 'T12:00:00').getDay();
+      var wds = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      if (!wds.includes(dow)) return 0;
+      if (t.startDate && date < t.startDate) return 0;
+      if (t.endDate && date > t.endDate) return 0;
+      return Number(t.targetCount) || 0;
+    };
+    var haveCount = {};
+    shifts.forEach(function (s) { var k = s.date + '|' + s.shiftTypeId; haveCount[k] = (haveCount[k] || 0) + 1; });
+    var cellMap = {};
+    shifts.forEach(function (s) { (cellMap[s.userId + '|' + s.date] = cellMap[s.userId + '|' + s.date] || []).push(s); });
+    var usedTypes = {};
+    shifts.forEach(function (s) { if (typeById[s.shiftTypeId]) usedTypes[s.shiftTypeId] = typeById[s.shiftTypeId]; });
+    var DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    var longDay = function (ds) { return new Date(ds + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }); };
+    // Chunk the range into blocks of up to 7 days — one sheet each.
+    var blocks = [];
+    var cur = bounds.from;
+    while (cur <= bounds.to) {
+      var block = [];
+      for (var i = 0; i < 7 && cur <= bounds.to; i++) { block.push(cur); cur = scDatePlus(new Date(cur + 'T12:00:00'), 1); }
+      blocks.push(block);
+    }
+    var html = blocks.map(function (days) {
+      var isWeek = days.length === 7 && new Date(days[0] + 'T12:00:00').getDay() === 1;
+      var rangeLabel = isWeek
+        ? 'Week of ' + longDay(days[0]).replace(/^\w+, /, 'Monday, ') + ' – ' + longDay(days[6])
+        : longDay(days[0]) + ' – ' + longDay(days[days.length - 1]);
+      var h = '<div class="print-sheet">';
+      h += '<div class="ps-head"><div><div class="ps-title">' + esc(company) + ' — ' + esc(deptName) + '</div>' +
+        '<div class="ps-sub">' + esc(rangeLabel) + '</div></div>' +
+        '<div class="ps-meta">Quick Scheduling<br>Printed ' + esc(printed) + '</div></div>';
+      h += '<table class="ps-table"><tr><th>Team member</th>' + days.map(function (ds) {
+        var d = new Date(ds + 'T12:00:00');
+        return '<th>' + DOWS[d.getDay()] + '<br><span style="font-size:16px">' + d.getDate() + '</span></th>';
+      }).join('') + '</tr>';
+      members.forEach(function (u, idx) {
+        h += '<tr' + (idx % 2 ? ' style="background:#f8fafc"' : '') + '><td><b>' + esc(u.name) + '</b><br><span class="ps-role">' + esc(u.jobRoleName || u.role || '') + '</span></td>';
+        days.forEach(function (ds) {
+          var list = cellMap[u.id + '|' + ds] || [];
+          h += '<td class="cell">' + list.map(function (s) {
+            var t = typeById[s.shiftTypeId] || {};
+            var label = s.shiftTypeShort || t.shortName || (s.shiftTypeName || '').split(' ')[0];
+            return '<span class="ps-pill' + (s.published === false ? ' draft' : '') + '" style="background:' + esc(s.shiftTypeColor || t.color || '#999') + '22;border-color:' + esc(s.shiftTypeColor || t.color || '#999') + '">' + esc(label) + '</span>';
+          }).join(' ') + '</td>';
+        });
+        h += '</tr>';
+      });
+      var anyNeed = false;
+      var needCells = days.map(function (ds) {
+        var bits = [];
+        (qsPrintTypes || []).forEach(function (t) {
+          if (!inDept(t)) return;
+          if (closedSet[ds + '|' + t.id]) return;
+          var need = targetFor(ds, t.id) + (extraMap[ds + '|' + t.id] || 0);
+          var have = haveCount[ds + '|' + t.id] || 0;
+          if (need > have) { bits.push((need - have) + ' ' + esc(t.shortName || t.name.split(' ')[0])); anyNeed = true; }
+        });
+        return '<td class="cell ps-need">' + (bits.length ? bits.join('<br>') : '<span style="color:#94a3b8;font-weight:400">—</span>') + '</td>';
+      });
+      if (anyNeed) {
+        h += '<tr><td style="color:#b45309;font-weight:700">Still needed</td>' + needCells.join('') + '</tr>';
+      }
+      h += '</table>';
+      var legendTypes = Object.keys(usedTypes).map(function (k) { return usedTypes[k]; });
+      if (!legendTypes.length) legendTypes = (qsPrintTypes || []).filter(inDept);
+      h += '<div class="ps-legend">' + legendTypes.map(function (t) {
+        var times = (t.startTime && t.endTime) ? ' · ' + esc(String(t.startTime).slice(0, 5)) + '–' + esc(String(t.endTime).slice(0, 5)) : '';
+        return '<span><i style="background:' + esc(t.color || '#999') + '"></i>' + esc(t.name) + times + '</span>';
+      }).join('') +
+        '<span style="margin-left:auto">' + (includeDrafts ? 'Draft shifts shown with a dashed border.' : 'Drafts are not shown.') + '</span></div>';
+      h += '</div>';
+      return h;
+    }).join('');
+    area.innerHTML = html || '<p style="color:var(--dim)">Nothing to show for that range.</p>';
+  })).catch(function () { area.innerHTML = '<p style="color:#c92a2a">Could not load the schedule.</p>'; });
+}
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -6706,6 +6923,31 @@ function qsAvRenderDay() {
           <button type="button" class="btn-secondary" onclick="window.qsLoadAvailability()">↻ Refresh</button>
         </div>
         <div id="av-body"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="tab-print" class="tab-panel">
+      <div style="max-width:1020px;margin:0 auto">
+        <div class="sc-band"><div><h2>Print schedule</h2><div class="sc-sub">A clean sheet for the wall, the binder, or a PDF</div></div></div>
+        <div class="sc-day" style="margin-bottom:14px">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <select id="print-range" class="av-inp" onchange="window.qsPrintControlsChanged()">
+              <option value="week">This week</option>
+              <option value="next">Next week</option>
+              <option value="month">This month</option>
+              <option value="custom">Custom range…</option>
+            </select>
+            <span id="print-custom" class="hidden" style="gap:8px;align-items:center">
+              <input type="date" id="print-from" class="av-inp" onchange="window.qsPrintControlsChanged()"> →
+              <input type="date" id="print-to" class="av-inp" onchange="window.qsPrintControlsChanged()">
+            </span>
+            <select id="print-dept" class="av-inp" onchange="window.qsPrintControlsChanged()"><option value="">All departments</option></select>
+            <label style="display:flex;gap:6px;align-items:center;font-size:13.5px;font-weight:600"><input type="checkbox" id="print-drafts" style="width:16px;height:16px" onchange="window.qsPrintControlsChanged()"> Include drafts</label>
+            <button type="button" class="btn" style="margin-left:auto;padding:8px 18px" onclick="window.qsPrintNow()">🖨️ Print / Save as PDF</button>
+          </div>
+          <p style="color:var(--dim);font-size:12.5px;margin:8px 0 0">Only the sheet below prints — none of the app around it. A month prints one week per page.</p>
+        </div>
+        <div id="print-area"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
 
@@ -16363,6 +16605,7 @@ function qsAvRenderDay() {
       'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
       'credentials': function() { activateTab('credentials'); if (window.qsLoadCredentials) window.qsLoadCredentials(); },
       'availability': function() { activateTab('availability'); if (window.qsLoadAvailability) window.qsLoadAvailability(); },
+      'print': function() { activateTab('print'); if (window.qsLoadPrint) window.qsLoadPrint(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
