@@ -1627,6 +1627,9 @@
         #qs-tools-panel .qtp-head b { font-size: 15px; }
         #qs-tools-panel .qtp-x { background: none; border: none; color: #fff; font-size: 15px; cursor: pointer; opacity: .8; }
         #qtp-body { padding: 12px 16px; max-height: 52vh; overflow: auto; }
+        .hl-search { position: sticky; top: -12px; z-index: 2; background: var(--surface); padding: 2px 0 9px; }
+        .hl-search input { width: 100%; box-sizing: border-box; padding: 8px 11px; border: 1.5px solid var(--border); border-radius: 9px; font-family: inherit; font-size: 13.5px; background: var(--bg); color: var(--text); }
+        .hl-search input:focus { outline: none; border-color: var(--accent); }
         .hl-sec { font-size: 11px; font-weight: 800; color: var(--dim); letter-spacing: .06em; margin: 12px 0 6px; }
         .hl-sec:first-child { margin-top: 0; }
         .hl-person { display: flex; align-items: center; gap: 5px; padding: 6px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -5764,15 +5767,33 @@
           window.qsApplyHighlights();
           qsRenderHlPanel();
         };
+        // Panel search (Deepika 2026-11-04): filters people + shift types
+        // as you type; the query survives the panel's re-renders so picking
+        // a colour while filtered keeps the filter.
+        var qsHlQuery = '';
+        window.qsHlSearch = function (v) { qsHlQuery = v || ''; qsHlApplyFilter(); };
+        function qsHlApplyFilter() {
+          var body = $('qtp-body');
+          if (!body) return;
+          var q = qsHlQuery.trim().toLowerCase();
+          var anyP = false, anyT = false;
+          body.querySelectorAll('.hl-person').forEach(function (el) { var show = !q || (el.getAttribute('data-search') || '').indexOf(q) !== -1; el.style.display = show ? '' : 'none'; if (show) anyP = true; });
+          body.querySelectorAll('.hl-chip').forEach(function (el) { var show = !q || (el.getAttribute('data-search') || '').indexOf(q) !== -1; el.style.display = show ? '' : 'none'; if (show) anyT = true; });
+          var secP = body.querySelector('[data-hl-sec="people"]'); if (secP) secP.style.display = (q && !anyP) ? 'none' : '';
+          var secT = body.querySelector('[data-hl-sec="types"]'); if (secT) secT.style.display = (q && !anyT) ? 'none' : '';
+          var nomatch = $('qtp-nomatch'); if (nomatch) nomatch.style.display = (q && !anyP && !anyT) ? '' : 'none';
+        }
         function qsRenderHlPanel() {
           var body = $('qtp-body');
           if (!body) return;
-          var h = '<div class="hl-sec">PEOPLE</div>';
+          var searchHadFocus = document.activeElement && document.activeElement.id === 'qtp-search';
+          var h = '<div class="hl-search"><input id="qtp-search" type="text" placeholder="Search people or shifts…" value="' + esc(qsHlQuery) + '" oninput="window.qsHlSearch(this.value)" autocomplete="off"></div>';
+          h += '<div class="hl-sec" data-hl-sec="people">PEOPLE</div>';
           var people = (sched.members || []).filter(function (u) { return u.isActive !== false; });
           people.forEach(function (u) {
             var cur = qsHlPersonHue(u.id);
             var nm = u.name || (((u.firstName || '') + ' ' + (u.lastName || '')).trim());
-            h += '<div class="hl-person"><span class="nm">' + esc(nm) + '</span>';
+            h += '<div class="hl-person" data-search="' + esc(nm.toLowerCase()) + '"><span class="nm">' + esc(nm) + '</span>';
             HIGHLIGHT_COLORS.forEach(function (c) {
               h += '<button type="button" class="hl-dot' + (cur === c.hue ? ' sel' : '') + '" title="' + c.name + '" style="background:hsl(' + c.hue + ' 85% 55%)" onclick="window.qsHlSetPerson(\'' + u.id + '\',' + c.hue + ')"></button>';
             });
@@ -5780,12 +5801,13 @@
             h += '</div>';
           });
           if (!people.length) h += '<p style="color:var(--dim);font-size:13px">No team members loaded yet.</p>';
-          h += '<div class="hl-sec">SHIFT TYPES</div><div style="display:flex;gap:7px;flex-wrap:wrap">';
+          h += '<div class="hl-sec" data-hl-sec="types">SHIFT TYPES</div><div style="display:flex;gap:7px;flex-wrap:wrap">';
           (sched.shiftTypes || []).filter(function (st) { return st.isActive !== false; }).forEach(function (st) {
             var on = !!sched.hlTypes[st.id];
-            h += '<button type="button" class="hl-chip' + (on ? ' on' : '') + '" onclick="window.qsHlToggleType(\'' + st.id + '\')"><span style="color:' + esc(st.color || '#637a8e') + '">●</span> ' + esc(st.name) + '</button>';
+            h += '<button type="button" class="hl-chip' + (on ? ' on' : '') + '" data-search="' + esc(st.name.toLowerCase()) + '" onclick="window.qsHlToggleType(\'' + st.id + '\')"><span style="color:' + esc(st.color || '#637a8e') + '">●</span> ' + esc(st.name) + '</button>';
           });
           h += '</div>';
+          h += '<div id="qtp-nomatch" style="display:none;color:var(--dim);font-size:13px;padding:6px 0 2px">No people or shift types match.</div>';
           h += '<div class="hl-sec">NEEDS ATTENTION</div>';
           [['open', 'Open slots', '#f5a623'], ['drafts', 'Draft shifts', '#7c5cd6'], ['requests', 'Cover asked', '#e64980']].forEach(function (f) {
             var on = !!sched.hlFlags[f[0]];
@@ -5793,6 +5815,8 @@
           });
           h += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center"><button type="button" style="background:none;border:none;color:#c92a2a;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;padding:0" onclick="window.qsHlClearAll()">Clear all</button><span style="color:var(--dim);font-size:12px">Spotlight fades the rest</span></div>';
           body.innerHTML = h;
+          qsHlApplyFilter();
+          if (searchHadFocus) { var inp = $('qtp-search'); if (inp) { inp.focus(); try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} } }
         }
         // --- Tools rail ------------------------------------------------------
         // The rail + arrow live in the schedule area only: body.qs-on-
