@@ -6045,8 +6045,9 @@
                 h += '<div style="background:var(--bg);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><b>Offer sent</b> — ' +
                   d.offer.recipients.map(function (x) { return esc(x.name) + (x.claimed ? ' ✓ picked up' : ' · waiting'); }).join(' · ') + '</div>';
               }
-              if (!d.candidates.length) {
-                h += '<p style="color:var(--dim);font-size:13px;margin:4px 0">' + (d.offer ? 'Nobody else to offer to — everyone else who\u2019s available is already on the offer.' : 'Nobody has marked themselves available for this day yet. Share the availability link (Availability tool) and answers will appear here.') + '</p>';
+              var roleCands = d.roleCandidates || [];
+              if (!d.candidates.length && !roleCands.length) {
+                h += '<p style="color:var(--dim);font-size:13px;margin:4px 0">' + (d.offer ? 'Nobody else to offer to — everyone who fits is already on the offer.' : 'Nobody has marked themselves available for this day yet. Share the availability link (Availability tool) and answers will appear here.') + '</p>';
               } else {
                 d.candidates.forEach(function (c) {
                   var tags = c.workedLastNight
@@ -6058,6 +6059,26 @@
                     '<b style="font-size:14px">' + esc(c.name) + '</b>' +
                     '<span style="color:var(--dim);font-size:12.5px">' + esc(c.jobRoleName) + '</span>' + tags + '</label>';
                 });
+                if (!d.candidates.length) {
+                  h += '<p style="color:var(--dim);font-size:13px;margin:4px 0">Nobody marked themselves available for this day — you can still offer it to everyone with the same job role:</p>';
+                }
+                if (roleCands.length) {
+                  h += '<div style="border-top:2px solid #d9ecec;margin-top:12px;padding-top:10px">' +
+                    '<label style="display:flex;gap:8px;align-items:center;font-weight:800;font-size:13.5px;cursor:pointer"><input type="checkbox" style="width:17px;height:17px" onchange="window.qsScOfferToggleAll(this)"> Everyone with the same job role</label>' +
+                    '<div style="color:var(--dim);font-size:12.5px;margin:2px 0 4px">They didn\u2019t mark themselves available on the link — the offer goes out the same way, and first pickup still wins.</div>';
+                  roleCands.forEach(function (c) {
+                    var tags = c.saidUnavailable
+                      ? '<span class="av-tag bad">⚠ Marked unavailable on the link</span>'
+                      : '<span class="av-tag dim">No response on the link</span>';
+                    if (c.workedLastNight) tags += ' <span class="av-tag warn">⚠ Worked last night</span>';
+                    if (c.conflict) tags += ' <span class="av-tag bad">⚠ ' + esc(c.conflict) + '</span>';
+                    h += '<label class="sc-off-row">' +
+                      '<input type="checkbox" class="sc-off-cb sc-off-role-cb" value="' + c.userId + '"' + (c.conflict ? ' disabled' : '') + ' style="width:17px;height:17px">' +
+                      '<b style="font-size:14px">' + esc(c.name) + '</b>' +
+                      '<span style="color:var(--dim);font-size:12.5px">' + esc(c.jobRoleName) + '</span>' + tags + '</label>';
+                  });
+                  h += '</div>';
+                }
                 h += '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">' +
                   '<button type="button" class="btn" style="padding:7px 16px" onclick="window.qsScOfferSend(\'' + typeId + '\',\'' + date + '\')">' + (d.offer ? 'Send to more people' : 'Send offer') + '</button>' +
                   '<span style="color:var(--dim);font-size:12.5px">Bell + email, each with their own Pick up button.</span></div>';
@@ -6066,6 +6087,11 @@
             panel.innerHTML = h;
           })).catch(function () { panel.innerHTML = '<p style="color:#c92a2a;font-size:13px;margin:2px 0">Could not load.</p>'; });
         }
+        window.qsScOfferToggleAll = function (master) {
+          var panel = master.closest('.sc-offer');
+          if (!panel) return;
+          panel.querySelectorAll('.sc-off-role-cb').forEach(function (cb) { if (!cb.disabled) cb.checked = master.checked; });
+        };
         window.qsScOfferSend = function (typeId, date) {
           var panel = document.getElementById('sc-offer-' + date + '-' + typeId);
           var ids = [];

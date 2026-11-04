@@ -27,7 +27,7 @@ export async function sendGapOfferNotifications(
       category: 'schedule',
       type: 'gap_offer',
       title: `Short cover needed: ${offer.shiftTypeName} on ${dateLong}`,
-      body: 'You marked yourself available for this day. First to pick it up gets the shift — use the link in your email, or open the app.',
+      body: 'First to pick it up gets the shift — use the link in your email, or open the app.',
       link: 'myschedule',
       payload: { offerId: offer.id },
     });
@@ -43,7 +43,7 @@ export async function sendGapOfferNotifications(
       if (!u || !u.email) continue;
       const url = `${baseUrl}/api/schedule/gap-offers/act/${r.token}`;
       const first = (u.firstName || 'there').split(' ')[0];
-      const intro = `A ${offer.shiftTypeName} shift on ${dateLong} is short of cover, and you marked yourself available for that day. If you pick it up, the shift is yours — first to pick it up gets it.`;
+      const intro = `A ${offer.shiftTypeName} shift on ${dateLong} is short of cover. If you pick it up, the shift is yours — first to pick it up gets it.`;
       try {
         await sendMail({
           to: u.email,

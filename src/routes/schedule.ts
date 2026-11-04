@@ -4647,10 +4647,15 @@ function gapPrevDate(date: string): string {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
-// Who can be offered this gap: said available (latest answer per name),
-// not already working that day, role-eligible. Conflicted people stay
-// listed with the reason so the scheduler sees the whole picture.
-async function gapCandidates(companyId: string, date: string, shiftTypeId: string, type: any) {
+// Who can be offered this gap, in two audiences (Deepika 2026-11-04):
+// (1) AVAILABLE — said available on the link (latest answer per name);
+// (2) ROLE — everyone else with the same job role (they fit the shift
+// type's eligible roles but didn't mark themselves available: no
+// answer, or said unavailable — flagged, never pre-ticked). Both
+// audiences exclude people already working that day and people whose
+// role doesn't fit. Conflicted people stay listed with the reason so
+// the scheduler sees the whole picture.
+async function gapAudiences(companyId: string, date: string, shiftTypeId: string, type: any) {
   const { rows: resp } = await query(
     `SELECT r.name, r.available FROM availability_responses r
      JOIN availability_requests ar ON ar.id = r.request_id
@@ -4674,11 +4679,11 @@ async function gapCandidates(companyId: string, date: string, shiftTypeId: strin
   shifts.filter((s: any) => s.date === gapPrevDate(date)).forEach((s: any) => {
     if (/night/i.test(s.shiftTypeName)) prevNight.set(s.userId, s.shiftTypeName);
   });
-  const people: any[] = [];
+  const available: any[] = [];
+  const role: any[] = [];
   for (const u of users) {
     if (working.has(u.id)) continue;
     const ans = gapNameKeys(u).map((k) => said.get(k)).find((v) => v !== undefined);
-    if (ans !== true) continue;
     const elig = await checkShiftEligibility(companyId, u.id, type.eligible_job_role_ids);
     if (!elig.ok) continue;
     const conflict = await checkShiftConflict(query as any, companyId, {
@@ -4686,15 +4691,18 @@ async function gapCandidates(companyId: string, date: string, shiftTypeId: strin
       proposed: { date, shiftTypeId, shiftTypeName: type.name },
       exclude: [{ date, shiftTypeId }],
     });
-    people.push({
+    const entry = {
       userId: u.id,
       name: u.nickname || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
       jobRoleName: u.jobRoleName || '',
       workedLastNight: prevNight.get(u.id) || null,
       conflict: conflict || null,
-    });
+      saidUnavailable: ans === false,
+    };
+    if (ans === true) available.push(entry);
+    else role.push(entry);
   }
-  return people;
+  return { available, role };
 }
 
 // GET /api/schedule/gap-offers/candidates?date=&shiftTypeId=
@@ -4716,13 +4724,13 @@ router.get('/gap-offers/candidates', requireRole('owner', 'scheduler'), async (r
     const offer = await openOfferFor(query as any, companyId, date, shiftTypeId);
     const offered = offer ? await offerRecipients(query as any, offer.id) : [];
     const offeredIds = new Set(offered.map((o: any) => o.userId));
-    const candidates = (await gapCandidates(companyId, date, shiftTypeId, trows[0]))
-      .filter((p: any) => !offeredIds.has(p.userId));
+    const audiences = await gapAudiences(companyId, date, shiftTypeId, trows[0]);
     res.json({
       date, shiftTypeId, shiftTypeName: trows[0].name,
       have: counts.have, need: counts.need, short: counts.short, closed: counts.closed,
       offer: offer ? { id: offer.id, needed: offer.needed, recipients: offered } : null,
-      candidates,
+      candidates: audiences.available.filter((p: any) => !offeredIds.has(p.userId)),
+      roleCandidates: audiences.role.filter((p: any) => !offeredIds.has(p.userId)),
     });
   } catch (err) {
     console.error('[schedule] gap candidates failed:', err);
@@ -4787,9 +4795,10 @@ router.post('/gap-offers', requireRole('owner', 'scheduler'), async (req: Reques
       );
       offer = orows[0];
     }
-    // Only real candidates can be offered — recompute and intersect.
-    const candidates = await gapCandidates(companyId, date, shiftTypeId, trows[0]);
-    const candById = new Map(candidates.map((c: any) => [c.userId, c]));
+    // Only real audience members can be offered — recompute and
+    // intersect (either audience: marked-available or same job role).
+    const audiences = await gapAudiences(companyId, date, shiftTypeId, trows[0]);
+    const candById = new Map([...audiences.available, ...audiences.role].map((c: any) => [c.userId, c]));
     const sent: Array<{ userId: string; token: string }> = [];
     const skipped: Array<{ name: string; reason: string }> = [];
     for (const uid of [...new Set(userIds.map(String))]) {
@@ -4856,7 +4865,7 @@ router.get('/gap-offers/act/:token', async (req: Request, res: Response) => {
     }
     const vac = await vacationOn(ctx.companyId, ctx.userId, ctx.date);
     const body = (vac ? '<p style="background:#fdf3e3;border:1px solid #ecc97e;border-radius:8px;padding:10px 12px"><strong>⚠️ You are on vacation</strong> on ' + escHtml(dateLong) + (vac.reason ? ' (' + escHtml(vac.reason) + ')' : '') + '. You can still pick it up if you want to work that day.</p>' : '') +
-      '<p>A <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong> is short of cover, and you marked yourself available for that day.</p>' +
+      '<p>A <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong> is short of cover.</p>' +
       '<p>If you pick it up, the shift is yours. First to pick it up gets it.</p>';
     res.send(actPage('Short cover needed', body + '<form method="POST" action="">' + actButton('claim', '✋ Pick up this shift', '#0e7c86') + '</form><p style="color:#666;font-size:13px">You can also answer in the app.</p>'));
   } catch (err) {
