@@ -22,6 +22,9 @@
 // 4. Request expiry — pending shift requests whose shift day has
 //    passed (company-local) close as 'expired'; held open-pickup
 //    drafts are released and the requester is told once.
+// 5. Still-no-cover warning — the evening before (from 5 PM company
+//    time), a cover request that is still open warns its requester
+//    once, while they can still ask around.
 import { query } from '../db.js';
 import { sendMail, escHtml } from './mailer.js';
 import { notify, resolveSpeed, fmtDateLong } from './notify.js';
@@ -525,15 +528,62 @@ async function runRequestExpirySweep(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 5. Still-no-cover warning
+// ---------------------------------------------------------------------------
+
+async function runCoverWarningScan(): Promise<void> {
+  try {
+    const { rows: companies } = await query(
+      `SELECT DISTINCT company_id AS id FROM shift_requests WHERE status = 'pending' AND request_type = 'pickup'`);
+    for (const c of companies) {
+      const tz = await companyTimezone(c.id);
+      const now = new Date();
+      // Evening before only: from 5 PM company time.
+      if (localParts(now, tz).h < 17) continue;
+      const tomorrow = addDays(localDateStr(now, tz), 1);
+      const { rows: reqs } = await query(
+        `SELECT sr.id, sr.requester_id AS "requesterId",
+                s.date::text AS date, st.name AS "shiftTypeName"
+         FROM shift_requests sr
+         JOIN shifts s ON s.id = sr.shift_id
+         JOIN shift_types st ON st.id = s.shift_type_id
+         WHERE sr.company_id = $1 AND sr.status = 'pending' AND sr.request_type = 'pickup'
+           AND s.date = $2::date`,
+        [c.id, tomorrow]);
+      for (const r of reqs) {
+        // Exactly once per request: a prior warning row carrying this
+        // requestId in its payload means it already went out.
+        const { rows: prior } = await query(
+          `SELECT id FROM notifications
+           WHERE user_id = $1 AND type = 'cover_unfilled' AND payload->>'requestId' = $2
+           LIMIT 1`,
+          [r.requesterId, r.id]);
+        if (prior.length) continue;
+        await notify({
+          companyId: c.id, userIds: [r.requesterId], category: 'schedule', type: 'cover_unfilled',
+          title: `Still no cover for your ${r.shiftTypeName} tomorrow`,
+          body: `Your ${r.shiftTypeName} shift on ${fmtDateLong(r.date)} still has no cover. It closes when the day passes — you may want to ask around or check with a scheduler.`,
+          link: 'requests',
+          payload: { requestId: r.id },
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[notify-jobs] cover warning scan failed: ${e?.message || e}`);
+  }
+}
+
 export function startNotificationJobs(): void {
   const tick = async () => {
     await sendDailyDigests();
     await runReminderScan();
     await runMessageBundleCheck();
     await runRequestExpirySweep();
+    await runCoverWarningScan();
   };
   // Run once shortly after startup (DB is ready by then), then every 15 min.
   setTimeout(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 90_000);
   setInterval(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 15 * 60_000);
-  console.log('[notify-jobs] digest + reminders + message bundles + request expiry started (every 15 min)');
+  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings started (every 15 min)');
 }
