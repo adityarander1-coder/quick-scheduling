@@ -24,6 +24,7 @@ import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverId
 import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
 import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
+import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 
 const router = Router();
@@ -9459,6 +9460,624 @@ router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (re
   } catch (err) {
     console.error('[schedule] session kind delete failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Session availability links + session offers (Deepika 2026-11-04,
+// migration 081) — the calendar mirror of availability links (022)
+// and gap offers (079). A no-login link lists the sessions that still
+// need a presenter (the kind's person name) or a supervisor; people
+// tap the ones they can cover. From the Needs people tool, a scheduler
+// offers a session to those volunteers or everyone on the calendar;
+// each recipient gets a bell + an email with a personal login-free
+// link, and the first to accept is assigned (base row for the series'
+// own date, a per-date override for a recurring occurrence).
+function baseSessionId(id: string): string { return String(id || '').split('@@')[0]; }
+
+// loadOverrides reads through the GLOBAL query — inside a transaction
+// that deadlocks the single-connection dev database (and is wrong on
+// the pool too: the read would miss the lock's snapshot). This twin
+// reads through the caller's handle instead.
+async function loadOverridesVia(q: any, companyId: string, sessionIds: string[], from: string, to: string): Promise<Map<string, any>> {
+  const map = new Map<string, any>();
+  if (!sessionIds.length) return map;
+  const { rows } = await q(
+    'SELECT * FROM academic_session_overrides WHERE company_id = $1 AND session_id = ANY($2) AND date >= $3 AND date <= $4',
+    [companyId, sessionIds, from, to]);
+  for (const o of rows) map.set(o.session_id + '|' + ovDateStr(o.date), o);
+  return map;
+}
+
+async function resolveOccurrence(q: any, companyId: string, baseId: string, occDate: string): Promise<any | null> {
+  const { rows } = await q(
+    `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
+            sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
+     FROM academic_sessions s
+     LEFT JOIN users u ON u.id = s.lecturer_user_id
+     LEFT JOIN users sup ON sup.id = s.supervisor_user_id
+     LEFT JOIN departments d ON d.id = s.department_id
+     WHERE s.id = $1 AND s.company_id = $2`,
+    [baseId, companyId]);
+  if (!rows.length) return null;
+  const base = academicRow(rows[0]);
+  let ovMap = new Map<string, any>();
+  const userName = new Map<string, string>();
+  if (base.recurRule && base.recurRule !== 'none') {
+    ovMap = await loadOverridesVia(q, companyId, [baseId], occDate, occDate);
+    const { rows: us } = await q('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
+    for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+  }
+  const out = expandAcademicSessions(rows, occDate, occDate, ovMap, userName);
+  return out.length ? { base, occ: out[0] } : null;
+}
+
+async function personLabelFor(q: any, companyId: string, dashboardId: string | null, kind: string): Promise<string> {
+  if (dashboardId) {
+    const { rows } = await q('SELECT person_label FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 AND key = $3', [companyId, dashboardId, kind]);
+    if (rows.length && rows[0].person_label) return String(rows[0].person_label);
+  }
+  const { rows: any } = await q('SELECT person_label FROM session_kinds WHERE company_id = $1 AND key = $2 AND person_label IS NOT NULL LIMIT 1', [companyId, kind]);
+  return any.length ? String(any[0].person_label) : 'Presenter';
+}
+
+function timeToMin(t: string | null): number | null {
+  if (!t) return null;
+  const p = String(t).slice(0, 5).split(':');
+  const h = parseInt(p[0], 10), m = parseInt(p[1], 10);
+  return isNaN(h) || isNaN(m) ? null : h * 60 + m;
+}
+function timesOverlap(aS: string | null, aE: string | null, bS: string | null, bE: string | null): boolean {
+  const as = timeToMin(aS), ae = timeToMin(aE), bs = timeToMin(bS), be = timeToMin(bE);
+  if (as === null || bs === null) return true; // untimed on either side: same-day clash
+  const aEnd = ae === null ? as + 60 : ae;
+  const bEnd = be === null ? bs + 60 : be;
+  return as < bEnd && bs < aEnd;
+}
+
+// Why userId cannot take this occurrence in this role (or null = fine):
+// an overlapping session they already present/supervise, the other
+// role on this same session, or an overlapping shift that day.
+async function sessionClaimConflict(q: any, companyId: string, userId: string, occ: any, role: string, visibleDeptIds: string[] | null): Promise<string | null> {
+  const clauses = ['s.company_id = $1'];
+  const params: any[] = [companyId];
+  if (visibleDeptIds) { params.push(visibleDeptIds); clauses.push('s.department_id = ANY($' + params.length + ')'); }
+  params.push(occ.date, occ.date);
+  clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
+  clauses.push(`s.session_date <= $${params.length}`);
+  const { rows } = await q(
+    `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
+            sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
+     FROM academic_sessions s
+     LEFT JOIN users u ON u.id = s.lecturer_user_id
+     LEFT JOIN users sup ON sup.id = s.supervisor_user_id
+     LEFT JOIN departments d ON d.id = s.department_id
+     WHERE ${clauses.join(' AND ')}`,
+    params);
+  let ovMap = new Map<string, any>();
+  const userName = new Map<string, string>();
+  if (rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
+    ovMap = await loadOverridesVia(q, companyId, rows.map((r: any) => r.id), occ.date, occ.date);
+    const { rows: us } = await q('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
+    for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+  }
+  const day = expandAcademicSessions(rows, occ.date, occ.date, ovMap, userName);
+  for (const s of day) {
+    const sameOcc = baseSessionId(s.id) === baseSessionId(occ.id) && s.date === occ.date;
+    if (sameOcc) {
+      // Holding the OTHER role on this same session blocks the claim;
+      // holding the claimed role is the filled case, handled earlier.
+      if (role === 'presenter' && s.supervisorUserId === userId) return 'You are already the supervisor for this session.';
+      if (role === 'supervisor' && s.lecturerUserId === userId) return 'You are already presenting this session.';
+      continue;
+    }
+    if (s.lecturerUserId === userId || s.supervisorUserId === userId) {
+      if (timesOverlap(occ.startTime, occ.endTime, s.startTime, s.endTime)) {
+        return `It overlaps "${s.title}", which you are already on that day.`;
+      }
+    }
+  }
+  const shifts = await getShiftsForRange(q, companyId, occ.date, occ.date);
+  const mine = shifts.filter((s: any) => s.userId === userId);
+  if (mine.length) {
+    const typeIds = [...new Set(mine.map((s: any) => s.shiftTypeId))];
+    const { rows: trows } = await q('SELECT id, name, start_time AS "startTime", end_time AS "endTime" FROM shift_types WHERE id = ANY($1)', [typeIds]);
+    const tmap = new Map(trows.map((t: any) => [t.id, t]));
+    for (const sh of mine) {
+      const t: any = tmap.get(sh.shiftTypeId);
+      if (t && timesOverlap(occ.startTime, occ.endTime, t.startTime, t.endTime)) {
+        return `It overlaps your ${t.name} shift that day.`;
+      }
+    }
+  }
+  return null;
+}
+
+function normNameKey(s: string): string { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function matchUserByName(users: any[], name: string): any | null {
+  const n = normNameKey(name);
+  if (!n) return null;
+  const sorted = n.split(' ').sort().join(' ');
+  return users.find((u) => normNameKey(u.name) === n) ||
+    users.find((u) => normNameKey(u.name).split(' ').sort().join(' ') === sorted) || null;
+}
+
+// Newest link wins per (name, session, date, role).
+async function sessionVolunteers(q: any, companyId: string): Promise<any[]> {
+  const { rows } = await q(
+    `SELECT r.name, r.session_id AS "sessionId", r.occ_date::text AS "occDate", r.role
+     FROM session_avail_responses r JOIN session_avail_links l ON l.id = r.link_id
+     WHERE l.company_id = $1 ORDER BY l.created_at DESC, r.created_at DESC`,
+    [companyId]);
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const r of rows) {
+    const k = normNameKey(r.name) + '|' + r.sessionId + '|' + r.occDate + '|' + r.role;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+}
+
+// GET /api/schedule/session-avail — list links (owner/scheduler).
+router.get('/session-avail', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT id, title, dashboard_id AS "dashboardId", from_date::text AS "fromDate", to_date::text AS "toDate", created_at AS "createdAt",
+              (SELECT COUNT(DISTINCT name) FROM session_avail_responses r WHERE r.link_id = session_avail_links.id) AS "responseCount"
+       FROM session_avail_links WHERE company_id = $1 ORDER BY created_at DESC`,
+      [companyId]);
+    res.json({ links: rows });
+  } catch (err) {
+    console.error('[schedule] list session-avail failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/session-avail — create a link (owner/scheduler).
+router.post('/session-avail', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { fromDate, toDate, title, dashboardId } = req.body ?? {};
+    if (!isValidDate(fromDate) || !isValidDate(toDate) || fromDate > toDate) {
+      res.status(400).json({ error: 'Valid from/to dates are required.' });
+      return;
+    }
+    let dashId: string | null = null;
+    if (dashboardId) {
+      const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(dashboardId), companyId]);
+      if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      dashId = String(dashboardId);
+    }
+    const token = crypto.randomBytes(32).toString('hex');
+    const { rows } = await query(
+      `INSERT INTO session_avail_links (company_id, dashboard_id, token_hash, title, from_date, to_date, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [companyId, dashId, hashShareToken(token), title ? String(title).slice(0, 120) : null, fromDate, toDate, req.session.userId!]);
+    const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    res.status(201).json({ id: rows[0].id, link: `${base}/session-availability.html?t=${token}` });
+  } catch (err) {
+    console.error('[schedule] create session-avail failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// DELETE /api/schedule/session-avail/:id (owner/scheduler).
+router.delete('/session-avail/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    await query('DELETE FROM session_avail_links WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete session-avail failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/session-avail/responses — every volunteer's picks
+// for the company (owner/scheduler); the tool applies newest-link-wins.
+router.get('/session-avail/responses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const rows = await sessionVolunteers(query, req.session.companyId!);
+    res.json({ responses: rows });
+  } catch (err) {
+    console.error('[schedule] session-avail responses failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/session-avail/public?token=xxx — the public page's
+// data: the link, the sessions in range that still need someone, and
+// the answers given so far (for pre-filling a returning name).
+router.get('/session-avail/public', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) { res.status(400).json({ error: 'Invalid link.' }); return; }
+    const { rows: links } = await query(
+      `SELECT l.id, l.title, l.dashboard_id AS "dashboardId", l.from_date::text AS "fromDate", l.to_date::text AS "toDate",
+              c.name AS "companyName", d.name AS "dashboardName", l.company_id AS "companyId"
+       FROM session_avail_links l JOIN companies c ON c.id = l.company_id
+       LEFT JOIN dashboards d ON d.id = l.dashboard_id
+       WHERE l.token_hash = $1`,
+      [hashShareToken(token)]);
+    if (!links.length) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    const link = links[0];
+    const clauses = ['s.company_id = $1'];
+    const params: any[] = [link.companyId];
+    if (link.dashboardId) { params.push(link.dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+    params.push(link.fromDate, link.toDate);
+    clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
+    clauses.push(`s.session_date <= $${params.length}`);
+    const { rows } = await query(
+      `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
+              sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
+       FROM academic_sessions s
+       LEFT JOIN users u ON u.id = s.lecturer_user_id
+       LEFT JOIN users sup ON sup.id = s.supervisor_user_id
+       LEFT JOIN departments d ON d.id = s.department_id
+       WHERE ${clauses.join(' AND ')} ORDER BY s.session_date, s.start_time NULLS LAST, s.title`,
+      params);
+    let ovMap = new Map<string, any>();
+    const userName = new Map<string, string>();
+    if (rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
+      ovMap = await loadOverrides(link.companyId, rows.map((r: any) => r.id), link.fromDate, link.toDate);
+      const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [link.companyId]);
+      for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+    }
+    const expanded = expandAcademicSessions(rows, link.fromDate, link.toDate, ovMap, userName);
+    const { rows: kinds } = await query('SELECT key, label, color, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1', [link.companyId]);
+    const kindOf = (s: any) => kinds.find((k: any) => k.key === s.kind && k.dashboardId === s.dashboardId) || kinds.find((k: any) => k.key === s.kind) || null;
+    const { rows: dashRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [link.companyId]);
+    const dashName = new Map(dashRows.map((d: any) => [d.id, d.name]));
+    const sessions = expanded
+      .filter((s: any) => !s.lecturerUserId || !s.supervisorUserId)
+      .map((s: any) => {
+        const k: any = kindOf(s);
+        const missing: string[] = [];
+        if (!s.lecturerUserId) missing.push('presenter');
+        if (!s.supervisorUserId) missing.push('supervisor');
+        return {
+          sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
+          startTime: s.startTime, endTime: s.endTime, location: s.location,
+          kindLabel: k ? k.label : (s.kind === 'event' ? 'Event' : 'Lecture'),
+          kindColor: k ? k.color : '#475569',
+          personLabel: (k && k.personLabel) || 'Presenter',
+          dashboardName: s.dashboardId ? (dashName.get(s.dashboardId) || null) : null,
+          missing,
+        };
+      });
+    const { rows: responses } = await query(
+      'SELECT name, session_id AS "sessionId", occ_date::text AS "occDate", role FROM session_avail_responses WHERE link_id = $1',
+      [link.id]);
+    res.json({
+      link: { title: link.title, fromDate: link.fromDate, toDate: link.toDate, companyName: link.companyName, dashboardName: link.dashboardName },
+      sessions, responses,
+    });
+  } catch (err) {
+    console.error('[schedule] public session-avail failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/session-avail/public/respond — save a name's picks
+// (no auth). Replaces that name's earlier answers on this link; picks
+// are validated against the sessions that still need someone.
+router.post('/session-avail/public/respond', async (req: Request, res: Response) => {
+  try {
+    const { token, name, picks } = req.body ?? {};
+    if (!token || !name || typeof name !== 'string' || !name.trim() || !Array.isArray(picks)) {
+      res.status(400).json({ error: 'Name and picks are required.' });
+      return;
+    }
+    const { rows: links } = await query(
+      'SELECT id, company_id AS "companyId", dashboard_id AS "dashboardId", from_date::text AS "fromDate", to_date::text AS "toDate" FROM session_avail_links WHERE token_hash = $1',
+      [hashShareToken(String(token))]);
+    if (!links.length) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    const link = links[0];
+    const cleanName = String(name).trim().slice(0, 80);
+    // Live gap set for the link's range.
+    const clauses = ['s.company_id = $1'];
+    const params: any[] = [link.companyId];
+    if (link.dashboardId) { params.push(link.dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+    params.push(link.fromDate, link.toDate);
+    clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
+    clauses.push(`s.session_date <= $${params.length}`);
+    const { rows } = await query(
+      `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
+              sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
+       FROM academic_sessions s
+       LEFT JOIN users u ON u.id = s.lecturer_user_id
+       LEFT JOIN users sup ON sup.id = s.supervisor_user_id
+       LEFT JOIN departments d ON d.id = s.department_id
+       WHERE ${clauses.join(' AND ')}`,
+      params);
+    let ovMap = new Map<string, any>();
+    const userName = new Map<string, string>();
+    if (rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
+      ovMap = await loadOverrides(link.companyId, rows.map((r: any) => r.id), link.fromDate, link.toDate);
+      const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [link.companyId]);
+      for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+    }
+    const expanded = expandAcademicSessions(rows, link.fromDate, link.toDate, ovMap, userName);
+    const gapSet = new Set<string>();
+    for (const s of expanded) {
+      if (!s.lecturerUserId) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|presenter');
+      if (!s.supervisorUserId) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|supervisor');
+    }
+    await query('DELETE FROM session_avail_responses WHERE link_id = $1 AND name = $2', [link.id, cleanName]);
+    let saved = 0;
+    for (const p of picks.slice(0, 200)) {
+      const key = String(p.sessionId || '') + '|' + String(p.occDate || '') + '|' + String(p.role || '');
+      if (!gapSet.has(key)) continue;
+      await query(
+        `INSERT INTO session_avail_responses (link_id, name, session_id, occ_date, role)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (link_id, name, session_id, occ_date, role) DO NOTHING`,
+        [link.id, cleanName, String(p.sessionId), String(p.occDate), String(p.role)]);
+      saved++;
+    }
+    res.json({ ok: true, saved });
+  } catch (err) {
+    console.error('[schedule] session-avail respond failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Shared candidate computation for one occurrence + role.
+async function sessionOfferCandidates(q: any, req: Request, baseId: string, occDate: string, role: string): Promise<any> {
+  const companyId = req.session.companyId!;
+  const resolved = await resolveOccurrence(q, companyId, baseId, occDate);
+  if (!resolved) return { error: 'That session no longer exists on that date.', status: 404 };
+  const { occ } = resolved;
+  const filled = role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+  if (filled) return { filled: true, occ };
+  const visibleIds = await academicVisibleDeptIds(req);
+  const { rows: userRows } = await q(
+    `SELECT id, first_name AS "firstName", last_name AS "lastName", (first_name || ' ' || last_name) AS name
+     FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
+    [companyId]);
+  const { rows: offeredRows } = await q(
+    `SELECT r.user_id AS "userId" FROM session_offers o JOIN session_offer_recipients r ON r.offer_id = o.id
+     WHERE o.company_id = $1 AND o.session_id = $2 AND o.occ_date = $3 AND o.role = $4 AND o.status = 'open'`,
+    [companyId, baseId, occDate, role]);
+  const offered = new Set(offeredRows.map((r: any) => r.userId));
+  const busyOf = async (userId: string) => sessionClaimConflict(q, companyId, userId, occ, role, visibleIds);
+  const volunteers: any[] = [];
+  const volIds = new Set<string>();
+  const responses = await sessionVolunteers(q, companyId);
+  for (const r of responses) {
+    if (r.sessionId !== baseId || r.occDate !== occDate || r.role !== role) continue;
+    const u = matchUserByName(userRows, r.name);
+    if (!u || volIds.has(u.id)) continue;
+    volIds.add(u.id);
+    volunteers.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });
+  }
+  let audience = userRows;
+  if (occ.dashboardId) {
+    const { rows: dd } = await q('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [occ.dashboardId]);
+    if (dd.length) {
+      const memberSet = new Set<string>();
+      for (const d of dd) for (const id of await deptMemberIds(companyId, d.department_id)) memberSet.add(id);
+      if (memberSet.size) audience = userRows.filter((u: any) => memberSet.has(u.id));
+    }
+  }
+  const everyone: any[] = [];
+  for (const u of audience) {
+    if (volIds.has(u.id)) continue;
+    everyone.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });
+  }
+  const roleLabel = role === 'supervisor' ? 'supervisor' : (await personLabelFor(q, companyId, occ.dashboardId, occ.kind)).toLowerCase();
+  return { occ, roleLabel, volunteers, everyone };
+}
+
+// GET /api/schedule/session-offers/candidates (owner/scheduler).
+router.get('/session-offers/candidates', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const baseId = baseSessionId(String(req.query.sessionId || ''));
+    const occDate = String(req.query.occDate || '');
+    const role = String(req.query.role || '');
+    if (!baseId || !isValidDate(occDate) || !['presenter', 'supervisor'].includes(role)) {
+      res.status(400).json({ error: 'sessionId, occDate and role are required.' });
+      return;
+    }
+    const out = await sessionOfferCandidates(query, req, baseId, occDate, role);
+    if (out.error) { res.status(out.status || 400).json({ error: out.error }); return; }
+    if (out.filled) { res.json({ filled: true }); return; }
+    res.json({
+      session: { title: out.occ.title, date: out.occ.date, startTime: out.occ.startTime, endTime: out.occ.endTime },
+      roleLabel: out.roleLabel, volunteers: out.volunteers, everyone: out.everyone,
+    });
+  } catch (err) {
+    console.error('[schedule] session-offer candidates failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/session-offers?from&to (owner/scheduler) — for
+// annotating the Needs people page.
+router.get('/session-offers', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const from = String(req.query.from || ''), to = String(req.query.to || '');
+    if (!isValidDate(from) || !isValidDate(to)) { res.status(400).json({ error: 'from/to required.' }); return; }
+    const { rows } = await query(
+      `SELECT o.id, o.session_id AS "sessionId", o.occ_date::text AS "occDate", o.role, o.status,
+              (SELECT json_agg(json_build_object('userId', r.user_id, 'claimedAt', r.claimed_at)) FROM session_offer_recipients r WHERE r.offer_id = o.id) AS recipients
+       FROM session_offers o WHERE o.company_id = $1 AND o.occ_date BETWEEN $2 AND $3`,
+      [req.session.companyId!, from, to]);
+    res.json({ offers: rows });
+  } catch (err) {
+    console.error('[schedule] list session-offers failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/session-offers (owner/scheduler) — offer one
+// occurrence's open role to the chosen people; merges into an existing
+// open offer for the same occurrence + role.
+router.post('/session-offers', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const baseId = baseSessionId(String(b.sessionId || ''));
+    const occDate = String(b.occDate || '');
+    const role = String(b.role || '');
+    const userIds: string[] = Array.isArray(b.userIds) ? [...new Set<string>(b.userIds.map((x: any) => String(x)))] : [];
+    if (!baseId || !isValidDate(occDate) || !['presenter', 'supervisor'].includes(role) || !userIds.length) {
+      res.status(400).json({ error: 'sessionId, occDate, role and at least one person are required.' });
+      return;
+    }
+    const out = await sessionOfferCandidates(query, req, baseId, occDate, role);
+    if (out.error) { res.status(out.status || 400).json({ error: out.error }); return; }
+    if (out.filled) { res.status(400).json({ error: 'That spot is already filled.' }); return; }
+    const valid = new Map<string, any>();
+    for (const c of [...out.volunteers, ...out.everyone]) if (!c.busy) valid.set(c.userId, c);
+    const chosen = userIds.filter((id) => valid.has(id));
+    if (!chosen.length) { res.status(400).json({ error: 'None of the chosen people can take this session.' }); return; }
+    const { rows: orows } = await query(
+      `INSERT INTO session_offers (company_id, session_id, occ_date, role, dashboard_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (company_id, session_id, occ_date, role) DO UPDATE SET status = session_offers.status
+       RETURNING id, status`,
+      [companyId, baseId, occDate, role, out.occ.dashboardId || null, req.session.userId!]);
+    const offer = orows[0];
+    if (offer.status === 'filled') { res.status(400).json({ error: 'That spot is already filled.' }); return; }
+    const added: Array<{ userId: string; token: string }> = [];
+    let skipped = 0;
+    for (const uid of chosen) {
+      const token = crypto.randomBytes(32).toString('hex');
+      const { rows: ins } = await query(
+        `INSERT INTO session_offer_recipients (offer_id, user_id, token) VALUES ($1, $2, $3)
+         ON CONFLICT (offer_id, user_id) DO NOTHING RETURNING id`,
+        [offer.id, uid, token]);
+      if (ins.length) added.push({ userId: uid, token });
+      else skipped++;
+    }
+    if (added.length) {
+      await sendSessionOfferNotifications(companyId,
+        { id: offer.id, title: out.occ.title, occDate, roleLabel: out.roleLabel, startTime: out.occ.startTime },
+        added);
+    }
+    res.json({ ok: true, added: added.length, skipped });
+  } catch (err) {
+    console.error('[schedule] create session-offer failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET/POST /api/schedule/session-offers/act/:token — the login-free
+// accept page (server-rendered, POST button — a mail scanner's GET
+// prefetch can never accept).
+router.get('/session-offers/act/:token', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      `SELECT r.id AS "recipientId", r.claimed_at AS "claimedAt", o.id AS "offerId", o.company_id AS "companyId",
+              o.session_id AS "sessionId", o.occ_date::text AS "occDate", o.role, o.status,
+              (u.first_name || ' ' || u.last_name) AS "userName", c.name AS "companyName"
+       FROM session_offer_recipients r
+       JOIN session_offers o ON o.id = r.offer_id
+       JOIN users u ON u.id = r.user_id
+       JOIN companies c ON c.id = o.company_id
+       WHERE r.token = $1`,
+      [String(req.params.token)]);
+    if (!rows.length) { res.status(404).send(actPage('Link not valid', '<p>This link is not valid.</p>')); return; }
+    const rec = rows[0];
+    const resolved = await resolveOccurrence(query, rec.companyId, rec.sessionId, rec.occDate);
+    if (!resolved) { res.send(actPage('Session not found', '<p>That session no longer exists on that date.</p>')); return; }
+    const { occ } = resolved;
+    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await personLabelFor(query, rec.companyId, occ.dashboardId, occ.kind)).toLowerCase();
+    const when = `${fmtDateLong(rec.occDate)}${occ.startTime ? ' at ' + String(occ.startTime).slice(0, 5) : ''}`;
+    const head = `<p style="font-size:16px">Hi ${escHtml(String(rec.userName).split(' ')[0])} — <b>${escHtml(occ.title)}</b> on ${escHtml(when)} needs ${/^[aeiou]/i.test(roleLabel) ? 'an' : 'a'} ${escHtml(roleLabel)}.</p>`;
+    if (rec.claimedAt) { res.send(actPage('You are on this session', head + '<p>You already accepted this session. Thank you!</p>')); return; }
+    const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+    if (rec.status === 'filled' || filledNow) {
+      const who = rec.role === 'supervisor' ? occ.supervisorName : occ.lecturerName;
+      res.send(actPage('This session is filled', head + `<p>Someone has already taken this session${who ? ` — ${escHtml(who)}` : ''}. Thank you for offering!</p>`));
+      return;
+    }
+    res.send(actPage('Accept this session?',
+      head + `<p>First to accept gets the session.</p><form method="POST">${actButton('accept', 'Accept this session', '#0e7c86')}</form>`));
+  } catch (err) {
+    console.error('[schedule] session-offer act page failed:', err);
+    res.status(500).send(actPage('Something went wrong', '<p>Please try again later.</p>'));
+  }
+});
+
+router.post('/session-offers/act/:token', async (req: Request, res: Response) => {
+  try {
+    const token = String(req.params.token);
+    const { rows } = await query(
+      `SELECT r.id AS "recipientId", r.user_id AS "userId", r.claimed_at AS "claimedAt", o.id AS "offerId",
+              o.company_id AS "companyId", o.session_id AS "sessionId", o.occ_date::text AS "occDate", o.role,
+              o.status, o.created_by AS "createdBy", (u.first_name || ' ' || u.last_name) AS "userName"
+       FROM session_offer_recipients r
+       JOIN session_offers o ON o.id = r.offer_id
+       JOIN users u ON u.id = r.user_id
+       WHERE r.token = $1`,
+      [token]);
+    if (!rows.length) { res.status(404).send(actPage('Link not valid', '<p>This link is not valid.</p>')); return; }
+    const rec = rows[0];
+    if (rec.claimedAt) { res.send(actPage('Already accepted', '<p>You already accepted this session. Thank you!</p>')); return; }
+    const outcome = await withTransaction(async (tx: any) => {
+      const q = (text: string, params?: any[]) => tx.query(text, params);
+      const { rows: locked } = await q('SELECT id, status FROM session_offers WHERE id = $1 FOR UPDATE', [rec.offerId]);
+      if (!locked.length || locked[0].status === 'filled') return { kind: 'filled' } as any;
+      const resolved = await resolveOccurrence(q, rec.companyId, rec.sessionId, rec.occDate);
+      if (!resolved) return { kind: 'gone' } as any;
+      const { base, occ } = resolved;
+      const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+      if (filledNow) {
+        await q("UPDATE session_offers SET status = 'filled' WHERE id = $1", [rec.offerId]);
+        return { kind: 'filled', occ } as any;
+      }
+      const conflict = await sessionClaimConflict(q, rec.companyId, rec.userId, occ, rec.role, null);
+      if (conflict) return { kind: 'conflict', conflict, occ } as any;
+      if (occ.date === base.date) {
+        if (rec.role === 'supervisor') await q('UPDATE academic_sessions SET supervisor_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
+        else await q('UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
+      } else if (rec.role === 'supervisor') {
+        await q(
+          `INSERT INTO academic_session_overrides (company_id, session_id, date, supervisor_user_id, has_supervisor)
+           VALUES ($1, $2, $3, $4, true)
+           ON CONFLICT (session_id, date) DO UPDATE SET supervisor_user_id = EXCLUDED.supervisor_user_id, has_supervisor = true, updated_at = now()`,
+          [rec.companyId, base.id, occ.date, rec.userId]);
+      } else {
+        await q(
+          `INSERT INTO academic_session_overrides (company_id, session_id, date, lecturer_user_id, has_lecturer)
+           VALUES ($1, $2, $3, $4, true)
+           ON CONFLICT (session_id, date) DO UPDATE SET lecturer_user_id = EXCLUDED.lecturer_user_id, has_lecturer = true, updated_at = now()`,
+          [rec.companyId, base.id, occ.date, rec.userId]);
+      }
+      await q('UPDATE session_offer_recipients SET claimed_at = now() WHERE id = $1', [rec.recipientId]);
+      await q("UPDATE session_offers SET status = 'filled' WHERE id = $1", [rec.offerId]);
+      return { kind: 'claimed', occ, base } as any;
+    });
+    if (outcome.kind === 'filled' || outcome.kind === 'gone') {
+      res.send(actPage('This session is filled', '<p>Someone has already taken this session. Thank you for offering!</p>'));
+      return;
+    }
+    if (outcome.kind === 'conflict') {
+      res.send(actPage('That would clash', `<p>You can't take this session: ${escHtml(outcome.conflict)}</p>`));
+      return;
+    }
+    const occ = outcome.occ;
+    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await personLabelFor(query, rec.companyId, occ.dashboardId, occ.kind)).toLowerCase();
+    try {
+      const approvers = await deptApproverIds(rec.companyId, occ.departmentId || null);
+      const bellTo = [...new Set([...approvers, ...(rec.createdBy ? [rec.createdBy] : [])])].filter((id) => id !== rec.userId);
+      if (bellTo.length) {
+        await notify({
+          companyId: rec.companyId, userIds: bellTo, category: 'calendar', type: 'session_offer_filled',
+          title: `${rec.userName} took "${occ.title}" on ${fmtDateLong(rec.occDate)}`,
+          body: `${rec.userName} accepted the session as ${roleLabel}.`,
+          link: 'calendars', payload: { offerId: rec.offerId },
+        });
+      }
+    } catch (e) { console.error('[schedule] session-offer filled bell failed:', e); }
+    res.send(actPage('You are on this session',
+      `<p>Thank you! You are the ${escHtml(roleLabel)} for <b>${escHtml(occ.title)}</b> on ${escHtml(fmtDateLong(rec.occDate))}${occ.startTime ? ' at ' + escHtml(String(occ.startTime).slice(0, 5)) : ''}.</p>`));
+  } catch (err) {
+    console.error('[schedule] session-offer act failed:', err);
+    res.status(500).send(actPage('Something went wrong', '<p>Please try again later.</p>'));
   }
 });
 
