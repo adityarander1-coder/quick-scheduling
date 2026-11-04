@@ -1641,6 +1641,8 @@
         .av-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border-radius: 20px; padding: 3px 11px; font-size: 12.5px; font-weight: 700; color: var(--text); }
         .av-chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
         .av-inp { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-weight: 600; font-family: inherit; background: var(--surface); color: var(--text); }
+        .sc-offer { border: 2px solid #0e7c86; border-radius: 12px; padding: 12px 14px; margin: 4px 0 12px; background: #f6fefe; }
+        .sc-off-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid #d9ecec; cursor: pointer; }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
         /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
         #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
@@ -5983,11 +5985,13 @@
                 h += '<div class="sc-day"><h3>' + scFmtDay(row.date) + '</h3>';
                 row.gaps.forEach(function (g) {
                   var none = g.have === 0;
-                  h += '<div class="sc-gap"><span class="dot" style="background:' + esc(g.st.color || '#3b82f6') + '"></span>' +
+                  h += '<div class="sc-gap" id="sc-gap-' + row.date + '-' + g.st.id + '"><span class="dot" style="background:' + esc(g.st.color || '#3b82f6') + '"></span>' +
                     '<span class="tname">' + esc(g.st.name) + '</span>' +
-                    '<span class="stat" style="color:' + (none ? '#c92a2a' : '#b45309') + '">' + g.have + ' of ' + g.need + (none ? ' — nobody assigned' : ' — ' + g.short + ' short') + '</span>' +
+                    '<span class="stat" style="color:' + (none ? '#c92a2a' : '#b45309') + '">' + g.have + ' of ' + g.need + (none ? ' — nobody assigned' : ' — ' + g.short + ' short') + '<span class="sc-offered" style="color:#0e7c86"></span></span>' +
                     '<span class="acts"><button type="button" class="btn" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScShare(\'' + g.st.id + '\',\'' + row.date + '\')">Share link to fill</button>' +
-                    '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOpenDay(\'' + row.date + '\')">Open day</button></span></div>';
+                    '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOfferToggle(\'' + g.st.id + '\',\'' + row.date + '\')">✉️ Offer</button>' +
+                    '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOpenDay(\'' + row.date + '\')">Open day</button></span></div>' +
+                    '<div class="sc-offer hidden" id="sc-offer-' + row.date + '-' + g.st.id + '"></div>';
                 });
                 h += '</div>';
               });
@@ -5995,7 +5999,83 @@
             }
             var bodyEl = $('sc-body');
             if (bodyEl) bodyEl.innerHTML = h;
+            qsScLoadOffers(from, to);
           }).catch(function () {});
+        };
+        // --- Gap offers (Deepika 2026-11-04): offer a gap to the staff
+        // who marked themselves available on the link. ---------------
+        var qsScOffers = {};
+        function qsScLoadOffers(from, to) {
+          (api('/api/schedule/gap-offers?from=' + from + '&to=' + to).then(function (r) {
+            if (!r.ok) return;
+            qsScOffers = {};
+            (r.data.offers || []).forEach(function (o) {
+              var key = o.date + '|' + o.shiftTypeId;
+              if (!qsScOffers[key] || o.status === 'open') qsScOffers[key] = o;
+              var gapEl = document.getElementById('sc-gap-' + o.date + '-' + o.shiftTypeId);
+              if (!gapEl) return;
+              var slot = gapEl.querySelector('.sc-offered');
+              if (!slot) return;
+              var claimed = o.recipients.filter(function (x) { return x.claimed; }).length;
+              if (o.status === 'filled') slot.textContent = ' · ✓ Covered by an offer';
+              else slot.textContent = ' · Offered to ' + o.recipients.length + (claimed ? ' · ' + claimed + ' picked up' : '');
+            });
+          })).catch(function () {});
+        }
+        window.qsScOfferToggle = function (typeId, date) {
+          var panel = document.getElementById('sc-offer-' + date + '-' + typeId);
+          if (!panel) return;
+          var opening = panel.classList.contains('hidden');
+          panel.classList.toggle('hidden');
+          if (opening) qsScRenderOfferPanel(typeId, date, panel);
+        };
+        function qsScRenderOfferPanel(typeId, date, panel) {
+          panel.innerHTML = '<p style="color:var(--dim);font-size:13px;margin:2px 0">Loading who\u2019s available…</p>';
+          (api('/api/schedule/gap-offers/candidates?date=' + date + '&shiftTypeId=' + typeId).then(function (r) {
+            if (!r.ok) { panel.innerHTML = '<p style="color:#c92a2a;font-size:13px;margin:2px 0">' + esc((r.data && r.data.error) || 'Could not load.') + '</p>'; return; }
+            var d = r.data;
+            var h = '<div style="font-weight:800;font-size:14px;margin-bottom:2px">✉️ Offer this gap to available staff</div>' +
+              '<div style="color:var(--dim);font-size:12.5px;margin-bottom:8px">From the availability link — they said they\u2019re free on ' + scFmtDay(date) + ', they\u2019re not already working, and the shift fits their role. First to pick up gets it; after that the offer closes.</div>';
+            if (d.closed) {
+              h += '<p style="font-size:13px;margin:4px 0">This day is closed for ' + esc(d.shiftTypeName) + ' — there\u2019s nothing to fill.</p>';
+            } else if (d.short <= 0 && !d.offer) {
+              h += '<p style="font-size:13px;margin:4px 0">This gap has been filled.</p>';
+            } else {
+              if (d.offer) {
+                h += '<div style="background:var(--bg);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:13px"><b>Offer sent</b> — ' +
+                  d.offer.recipients.map(function (x) { return esc(x.name) + (x.claimed ? ' ✓ picked up' : ' · waiting'); }).join(' · ') + '</div>';
+              }
+              if (!d.candidates.length) {
+                h += '<p style="color:var(--dim);font-size:13px;margin:4px 0">' + (d.offer ? 'Nobody else to offer to — everyone else who\u2019s available is already on the offer.' : 'Nobody has marked themselves available for this day yet. Share the availability link (Availability tool) and answers will appear here.') + '</p>';
+              } else {
+                d.candidates.forEach(function (c) {
+                  var tags = c.workedLastNight
+                    ? '<span class="av-tag warn">⚠ Worked last night</span>'
+                    : '<span class="av-tag ok">✓ Marked available</span>';
+                  if (c.conflict) tags += ' <span class="av-tag bad">⚠ ' + esc(c.conflict) + '</span>';
+                  h += '<label class="sc-off-row">' +
+                    '<input type="checkbox" class="sc-off-cb" value="' + c.userId + '"' + (c.conflict ? ' disabled' : ' checked') + ' style="width:17px;height:17px">' +
+                    '<b style="font-size:14px">' + esc(c.name) + '</b>' +
+                    '<span style="color:var(--dim);font-size:12.5px">' + esc(c.jobRoleName) + '</span>' + tags + '</label>';
+                });
+                h += '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">' +
+                  '<button type="button" class="btn" style="padding:7px 16px" onclick="window.qsScOfferSend(\'' + typeId + '\',\'' + date + '\')">' + (d.offer ? 'Send to more people' : 'Send offer') + '</button>' +
+                  '<span style="color:var(--dim);font-size:12.5px">Bell + email, each with their own Pick up button.</span></div>';
+              }
+            }
+            panel.innerHTML = h;
+          })).catch(function () { panel.innerHTML = '<p style="color:#c92a2a;font-size:13px;margin:2px 0">Could not load.</p>'; });
+        }
+        window.qsScOfferSend = function (typeId, date) {
+          var panel = document.getElementById('sc-offer-' + date + '-' + typeId);
+          var ids = [];
+          if (panel) panel.querySelectorAll('.sc-off-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          if (!ids.length) { pageError('Tick at least one person to offer to.'); return; }
+          (api('/api/schedule/gap-offers', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId, userIds: ids }) }).then(function (r) {
+            if (!r.ok) { pageError((r.data && r.data.error) || 'Could not send the offer.'); return; }
+            pageSuccess('Offer sent to ' + r.data.sent + ' ' + (r.data.sent === 1 ? 'person' : 'people') + ' — first pickup wins.');
+            window.qsLoadShortCover();
+          })).catch(function () { pageError('Could not send the offer.'); });
         };
         window.qsScShare = function (typeId, date) {
           var st = shiftTypeById(typeId);

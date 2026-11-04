@@ -23,6 +23,7 @@ import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
 import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
+import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 
 const router = Router();
@@ -4565,6 +4566,417 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
   } catch (err) {
     console.error('[schedule] availability respond failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Gap offers (Deepika 2026-11-04, migration 079): from a Short cover
+// gap, a scheduler offers the shift to staff who marked themselves
+// available on the availability link. Candidates are computed from the
+// DECLARED responses (never from silence), minus people already
+// working that day and people whose job role doesn't fit. Each
+// recipient gets a bell + an email with a personal login-free link;
+// the link's page button claims the shift (first pickup wins), under
+// the same eligibility + conflict guards as an open-slot claim.
+async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: string) {
+  const shifts = await getShiftsForRange(q, companyId, date, date);
+  const have = shifts.filter((s: any) => s.shiftTypeId === shiftTypeId).length;
+  const { rows: trows } = await q(
+    `SELECT target_count AS "targetCount", weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+    [companyId, shiftTypeId]
+  );
+  let target = 0;
+  if (trows.length) {
+    const t = trows[0];
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const wds: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+    if (wds.includes(dow) && (!t.startDate || date >= t.startDate) && (!t.endDate || date <= t.endDate)) {
+      target = Number(t.targetCount) || 0;
+    }
+  }
+  const { rows: erows } = await q(
+    'SELECT COALESCE(SUM(count), 0) AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const { rows: crows } = await q(
+    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const need = target + Number(erows[0]?.n || 0);
+  return { have, need, short: Math.max(0, need - have), closed: crows.length > 0 };
+}
+
+async function openOfferFor(q: any, companyId: string, date: string, shiftTypeId: string) {
+  const { rows } = await q(
+    `SELECT id, needed, created_by AS "createdBy" FROM gap_offers
+     WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND status = 'open'
+     ORDER BY created_at DESC LIMIT 1`,
+    [companyId, date, shiftTypeId]
+  );
+  return rows.length ? rows[0] : null;
+}
+
+async function offerRecipients(q: any, offerId: string) {
+  const { rows } = await q(
+    `SELECT r.user_id AS "userId", r.claimed_shift_id AS "claimedShiftId",
+            (u.first_name || ' ' || u.last_name) AS name, u.nickname
+     FROM gap_offer_recipients r JOIN users u ON u.id = r.user_id
+     WHERE r.offer_id = $1 ORDER BY r.created_at`,
+    [offerId]
+  );
+  return rows.map((r: any) => ({ userId: r.userId, name: r.nickname || r.name, claimed: !!r.claimedShiftId }));
+}
+
+function gapNormName(s: string): string {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function gapNameKeys(u: any): string[] {
+  const keys = new Set<string>();
+  const add = (s: string) => {
+    const k = gapNormName(s);
+    if (k) { keys.add(k); keys.add(k.split(' ').sort().join(' ')); }
+  };
+  add(`${u.firstName || ''} ${u.lastName || ''}`);
+  if (u.nickname) { add(u.nickname); if (u.lastName) add(`${u.nickname} ${u.lastName}`); }
+  return [...keys];
+}
+function gapPrevDate(date: string): string {
+  const d = new Date(date + 'T12:00:00');
+  d.setDate(d.getDate() - 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Who can be offered this gap: said available (latest answer per name),
+// not already working that day, role-eligible. Conflicted people stay
+// listed with the reason so the scheduler sees the whole picture.
+async function gapCandidates(companyId: string, date: string, shiftTypeId: string, type: any) {
+  const { rows: resp } = await query(
+    `SELECT r.name, r.available FROM availability_responses r
+     JOIN availability_requests ar ON ar.id = r.request_id
+     WHERE ar.company_id = $1 AND r.date = $2 ORDER BY ar.created_at DESC`,
+    [companyId, date]
+  );
+  const said = new Map<string, boolean>();
+  for (const r of resp) {
+    const k = gapNormName(r.name);
+    if (!said.has(k)) said.set(k, !!r.available);
+  }
+  const { rows: users } = await query(
+    `SELECT u.id, u.first_name AS "firstName", u.last_name AS "lastName", u.nickname, jr.name AS "jobRoleName"
+     FROM users u LEFT JOIN job_roles jr ON jr.id = u.job_role_id
+     WHERE u.company_id = $1 AND u.is_active = true ORDER BY u.first_name, u.last_name`,
+    [companyId]
+  );
+  const shifts = await getShiftsForRange(query as any, companyId, gapPrevDate(date), date);
+  const working = new Set(shifts.filter((s: any) => s.date === date).map((s: any) => s.userId));
+  const prevNight = new Map<string, string>();
+  shifts.filter((s: any) => s.date === gapPrevDate(date)).forEach((s: any) => {
+    if (/night/i.test(s.shiftTypeName)) prevNight.set(s.userId, s.shiftTypeName);
+  });
+  const people: any[] = [];
+  for (const u of users) {
+    if (working.has(u.id)) continue;
+    const ans = gapNameKeys(u).map((k) => said.get(k)).find((v) => v !== undefined);
+    if (ans !== true) continue;
+    const elig = await checkShiftEligibility(companyId, u.id, type.eligible_job_role_ids);
+    if (!elig.ok) continue;
+    const conflict = await checkShiftConflict(query as any, companyId, {
+      userId: u.id, personName: 'You',
+      proposed: { date, shiftTypeId, shiftTypeName: type.name },
+      exclude: [{ date, shiftTypeId }],
+    });
+    people.push({
+      userId: u.id,
+      name: u.nickname || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+      jobRoleName: u.jobRoleName || '',
+      workedLastNight: prevNight.get(u.id) || null,
+      conflict: conflict || null,
+    });
+  }
+  return people;
+}
+
+// GET /api/schedule/gap-offers/candidates?date=&shiftTypeId=
+router.get('/gap-offers/candidates', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const date = String(req.query.date || '');
+    const shiftTypeId = String(req.query.shiftTypeId || '');
+    if (!isValidDate(date) || !shiftTypeId) {
+      res.status(400).json({ error: 'A valid date and shift type are required.' });
+      return;
+    }
+    const { rows: trows } = await query(
+      'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [shiftTypeId, companyId]
+    );
+    if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    const counts = await gapCounts(query as any, companyId, date, shiftTypeId);
+    const offer = await openOfferFor(query as any, companyId, date, shiftTypeId);
+    const offered = offer ? await offerRecipients(query as any, offer.id) : [];
+    const offeredIds = new Set(offered.map((o: any) => o.userId));
+    const candidates = (await gapCandidates(companyId, date, shiftTypeId, trows[0]))
+      .filter((p: any) => !offeredIds.has(p.userId));
+    res.json({
+      date, shiftTypeId, shiftTypeName: trows[0].name,
+      have: counts.have, need: counts.need, short: counts.short, closed: counts.closed,
+      offer: offer ? { id: offer.id, needed: offer.needed, recipients: offered } : null,
+      candidates,
+    });
+  } catch (err) {
+    console.error('[schedule] gap candidates failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/gap-offers?from=&to= — offers in a range, for the
+// Short cover page annotations.
+router.get('/gap-offers', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!isValidDate(from) || !isValidDate(to)) {
+      res.status(400).json({ error: 'A valid from/to range is required.' });
+      return;
+    }
+    const { rows } = await query(
+      `SELECT o.id, o.date::text AS date, o.shift_type_id AS "shiftTypeId", o.needed,
+              o.status, st.name AS "shiftTypeName"
+       FROM gap_offers o JOIN shift_types st ON st.id = o.shift_type_id
+       WHERE o.company_id = $1 AND o.date >= $2 AND o.date <= $3 ORDER BY o.date, o.created_at`,
+      [companyId, from, to]
+    );
+    const offers: any[] = [];
+    for (const o of rows) {
+      offers.push({ ...o, recipients: await offerRecipients(query as any, o.id) });
+    }
+    res.json({ offers });
+  } catch (err) {
+    console.error('[schedule] gap offers list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/gap-offers — create (or extend) the open offer
+// for a gap and notify the chosen people.
+router.post('/gap-offers', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const { date, shiftTypeId, userIds } = req.body ?? {};
+    if (!isValidDate(date) || typeof shiftTypeId !== 'string' || !shiftTypeId || !Array.isArray(userIds) || !userIds.length) {
+      res.status(400).json({ error: 'A date, a shift type and at least one person are required.' });
+      return;
+    }
+    const { rows: trows } = await query(
+      'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [shiftTypeId, companyId]
+    );
+    if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
+    const counts = await gapCounts(query as any, companyId, date, shiftTypeId);
+    if (counts.closed) { res.status(400).json({ error: 'That day is closed for this shift type.' }); return; }
+    if (counts.short <= 0) { res.status(400).json({ error: 'That gap is already filled.' }); return; }
+    let offer = await openOfferFor(query as any, companyId, date, shiftTypeId);
+    if (!offer) {
+      const { rows: orows } = await query(
+        `INSERT INTO gap_offers (company_id, date, shift_type_id, needed, created_by)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, needed`,
+        [companyId, date, shiftTypeId, counts.short, me]
+      );
+      offer = orows[0];
+    }
+    // Only real candidates can be offered — recompute and intersect.
+    const candidates = await gapCandidates(companyId, date, shiftTypeId, trows[0]);
+    const candById = new Map(candidates.map((c: any) => [c.userId, c]));
+    const sent: Array<{ userId: string; token: string }> = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    for (const uid of [...new Set(userIds.map(String))]) {
+      const cand = candById.get(uid);
+      if (!cand) { skipped.push({ name: uid, reason: 'No longer available for this gap' }); continue; }
+      if (cand.conflict) { skipped.push({ name: cand.name, reason: cand.conflict }); continue; }
+      const token = crypto.randomBytes(24).toString('hex');
+      const { rows: ins } = await query(
+        `INSERT INTO gap_offer_recipients (offer_id, company_id, user_id, token)
+         VALUES ($1, $2, $3, $4) ON CONFLICT (offer_id, user_id) DO NOTHING RETURNING id`,
+        [offer.id, companyId, uid, token]
+      );
+      if (ins.length) sent.push({ userId: uid, token });
+      else skipped.push({ name: cand.name, reason: 'Already offered' });
+    }
+    if (sent.length) {
+      sendGapOfferNotifications(companyId, { id: offer.id, date, shiftTypeName: trows[0].name }, sent).catch(() => {});
+    }
+    res.json({ ok: true, offerId: offer.id, sent: sent.length, skipped });
+  } catch (err) {
+    console.error('[schedule] gap offer create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+async function loadGapOfferContext(token: string) {
+  const { rows } = await query(
+    `SELECT r.id AS "recipientId", r.user_id AS "userId", r.claimed_shift_id AS "claimedShiftId",
+            o.id AS "offerId", o.company_id AS "companyId", o.date::text AS date,
+            o.shift_type_id AS "shiftTypeId", o.status AS "offerStatus", o.created_by AS "createdBy",
+            st.name AS "shiftTypeName",
+            (u.first_name || ' ' || u.last_name) AS "userName", u.nickname AS "userNickname"
+     FROM gap_offer_recipients r
+     JOIN gap_offers o ON o.id = r.offer_id
+     JOIN shift_types st ON st.id = o.shift_type_id
+     JOIN users u ON u.id = r.user_id
+     WHERE r.token = $1`,
+    [token]
+  );
+  return rows.length ? rows[0] : null;
+}
+
+// GET /api/schedule/gap-offers/act/:token — login-free confirmation page.
+router.get('/gap-offers/act/:token', async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadGapOfferContext(String(req.params.token));
+    if (!ctx) {
+      res.status(404).send(actPage('Link not valid', '<p>This link is not valid. If you got it in an email, the offer may have been withdrawn.</p>'));
+      return;
+    }
+    const dateLong = fmtDateLong(ctx.date);
+    if (ctx.claimedShiftId) {
+      res.send(actPage('You picked up this shift', '<p>You picked up the <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong>. It\u2019s on your schedule.</p>'));
+      return;
+    }
+    if (ctx.date < todayStr()) {
+      res.send(actPage('This offer has passed', '<p>The shift date has passed, so this offer is closed.</p>'));
+      return;
+    }
+    const counts = await gapCounts(query as any, ctx.companyId, ctx.date, ctx.shiftTypeId);
+    if (ctx.offerStatus !== 'open' || counts.have >= counts.need) {
+      res.send(actPage('Filled — thank you', '<p>This gap has been covered. Thanks for checking.</p>'));
+      return;
+    }
+    const vac = await vacationOn(ctx.companyId, ctx.userId, ctx.date);
+    const body = (vac ? '<p style="background:#fdf3e3;border:1px solid #ecc97e;border-radius:8px;padding:10px 12px"><strong>⚠️ You are on vacation</strong> on ' + escHtml(dateLong) + (vac.reason ? ' (' + escHtml(vac.reason) + ')' : '') + '. You can still pick it up if you want to work that day.</p>' : '') +
+      '<p>A <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong> is short of cover, and you marked yourself available for that day.</p>' +
+      '<p>If you pick it up, the shift is yours. First to pick it up gets it.</p>';
+    res.send(actPage('Short cover needed', body + '<form method="POST" action="">' + actButton('claim', '✋ Pick up this shift', '#0e7c86') + '</form><p style="color:#666;font-size:13px">You can also answer in the app.</p>'));
+  } catch (err) {
+    console.error('[schedule] gap offer page failed:', err);
+    res.status(500).send(actPage('Something went wrong', '<p>Please try again, or answer in the app.</p>'));
+  }
+});
+
+// POST /api/schedule/gap-offers/act/:token — the button claims.
+router.post('/gap-offers/act/:token', urlencoded({ extended: false }), async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadGapOfferContext(String(req.params.token));
+    if (!ctx) {
+      res.status(404).send(actPage('Link not valid', '<p>This link is not valid.</p>'));
+      return;
+    }
+    const dateLong = fmtDateLong(ctx.date);
+    if (String((req.body && req.body.action) || '') !== 'claim') {
+      res.redirect(req.originalUrl);
+      return;
+    }
+    if (ctx.claimedShiftId) {
+      res.send(actPage('You picked up this shift', '<p>You already picked up the <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong>.</p>'));
+      return;
+    }
+    if (ctx.date < todayStr()) {
+      res.send(actPage('This offer has passed', '<p>The shift date has passed, so this offer is closed.</p>'));
+      return;
+    }
+    const { rows: trows } = await query(
+      'SELECT eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+      [ctx.shiftTypeId, ctx.companyId]
+    );
+    if (!trows.length) {
+      res.send(actPage('No longer available', '<p>This shift type is no longer active.</p>'));
+      return;
+    }
+    const elig = await checkShiftEligibility(ctx.companyId, ctx.userId, trows[0].eligible_job_role_ids);
+    if (!elig.ok) {
+      res.send(actPage('Not eligible', '<p>' + escHtml(elig.error || 'Your role doesn\u2019t fit this shift.') + '</p>'));
+      return;
+    }
+    let outcome = 'error';
+    let conflictMsg: string | null = null;
+    await withTransaction(async (tx) => {
+      const { rows: orows } = await tx.query('SELECT id, status FROM gap_offers WHERE id = $1 FOR UPDATE', [ctx.offerId]);
+      if (!orows.length || orows[0].status !== 'open') { outcome = 'filled'; return; }
+      const counts = await gapCounts(tx.query, ctx.companyId, ctx.date, ctx.shiftTypeId);
+      if (counts.closed || counts.have >= counts.need) {
+        await tx.query("UPDATE gap_offers SET status = 'filled' WHERE id = $1", [ctx.offerId]);
+        outcome = 'filled';
+        return;
+      }
+      const conflict = await checkShiftConflict(tx.query, ctx.companyId, {
+        userId: ctx.userId, personName: 'You',
+        proposed: { date: ctx.date, shiftTypeId: ctx.shiftTypeId, shiftTypeName: ctx.shiftTypeName },
+        exclude: [{ date: ctx.date, shiftTypeId: ctx.shiftTypeId }],
+      });
+      if (conflict) { conflictMsg = conflict; outcome = 'conflict'; return; }
+      // Consume a manually-added extra slot first (mirrors open-slot claim).
+      const { rows: slotRows } = await tx.query(
+        `UPDATE extra_open_slots SET count = count - 1
+         WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0 RETURNING count`,
+        [ctx.companyId, ctx.date, ctx.shiftTypeId]
+      );
+      if (slotRows.length && Number(slotRows[0].count) <= 0) {
+        await tx.query(
+          'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [ctx.companyId, ctx.date, ctx.shiftTypeId]
+        );
+      }
+      const shiftId = crypto.randomUUID();
+      await tx.query(
+        `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
+         VALUES ($1, $2, $3, $4, $5, true, $3)`,
+        [shiftId, ctx.companyId, ctx.userId, ctx.shiftTypeId, ctx.date]
+      );
+      await tx.query('UPDATE gap_offer_recipients SET claimed_shift_id = $1 WHERE id = $2', [shiftId, ctx.recipientId]);
+      const after = await gapCounts(tx.query, ctx.companyId, ctx.date, ctx.shiftTypeId);
+      if (after.have >= after.need) {
+        await tx.query("UPDATE gap_offers SET status = 'filled' WHERE id = $1", [ctx.offerId]);
+      }
+      outcome = 'claimed';
+    });
+    if (outcome === 'claimed') {
+      // Tell the schedulers the gap moved (news for them, not the claimer).
+      try {
+        const depts = await assignmentRelevantDepartments([{ userId: ctx.userId, shiftTypeId: ctx.shiftTypeId }], ctx.companyId);
+        const ids = new Set<string>();
+        if (depts.length) {
+          for (const d of depts) for (const id of await deptApproverIds(ctx.companyId, d)) ids.add(id);
+        } else {
+          for (const id of await deptApproverIds(ctx.companyId, null)) ids.add(id);
+        }
+        if (ctx.createdBy) ids.add(ctx.createdBy);
+        ids.delete(ctx.userId);
+        const still = await gapCounts(query as any, ctx.companyId, ctx.date, ctx.shiftTypeId);
+        const claimer = ctx.userNickname || ctx.userName || 'A team member';
+        await notify({
+          companyId: ctx.companyId, userIds: [...ids], category: 'schedule', type: 'gap_offer_filled',
+          title: `${claimer} picked up ${ctx.shiftTypeName} on ${dateLong}`,
+          body: still.short > 0 ? `That gap is still ${still.short} short.` : 'That gap is now fully covered.',
+          link: 'shortcover', payload: { offerId: ctx.offerId },
+        });
+      } catch (e) { console.error('[schedule] gap filled notify failed:', e); }
+      res.send(actPage('It\u2019s yours', '<p>You picked up the <strong>' + escHtml(ctx.shiftTypeName) + '</strong> shift on <strong>' + escHtml(dateLong) + '</strong>. It\u2019s on your schedule now.</p>'));
+      return;
+    }
+    if (outcome === 'filled') {
+      res.send(actPage('Filled — thank you', '<p>A teammate picked this up first, so the gap is covered. Thanks for checking.</p>'));
+      return;
+    }
+    if (outcome === 'conflict') {
+      res.send(actPage('That no longer works', '<p>' + escHtml(conflictMsg || 'This shift now clashes with your schedule.') + '</p>'));
+      return;
+    }
+    res.status(500).send(actPage('Something went wrong', '<p>Please try again, or answer in the app.</p>'));
+  } catch (err) {
+    console.error('[schedule] gap offer claim failed:', err);
+    res.status(500).send(actPage('Something went wrong', '<p>Please try again, or answer in the app.</p>'));
   }
 });
 
