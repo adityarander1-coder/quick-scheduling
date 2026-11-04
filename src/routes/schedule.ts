@@ -9529,15 +9529,17 @@ function timeToMin(t: string | null): number | null {
 }
 function timesOverlap(aS: string | null, aE: string | null, bS: string | null, bE: string | null): boolean {
   const as = timeToMin(aS), ae = timeToMin(aE), bs = timeToMin(bS), be = timeToMin(bE);
-  if (as === null || bs === null) return true; // untimed on either side: same-day clash
+  if (as === null || bs === null) return false; // untimed: can't prove a clash — sessions are meetings, be lenient
   const aEnd = ae === null ? as + 60 : ae;
   const bEnd = be === null ? bs + 60 : be;
   return as < bEnd && bs < aEnd;
 }
 
 // Why userId cannot take this occurrence in this role (or null = fine):
-// an overlapping session they already present/supervise, the other
-// role on this same session, or an overlapping shift that day.
+// a timed session they already present/supervise at the same time, or
+// the other role on this same session. Shifts NEVER block (Deepika
+// 2026-11-04): a session is a small part of the day, like a meeting —
+// someone working that day can still pick it up.
 async function sessionClaimConflict(q: any, companyId: string, userId: string, occ: any, role: string, visibleDeptIds: string[] | null): Promise<string | null> {
   const clauses = ['s.company_id = $1'];
   const params: any[] = [companyId];
@@ -9574,19 +9576,6 @@ async function sessionClaimConflict(q: any, companyId: string, userId: string, o
     if (s.lecturerUserId === userId || s.supervisorUserId === userId) {
       if (timesOverlap(occ.startTime, occ.endTime, s.startTime, s.endTime)) {
         return `It overlaps "${s.title}", which you are already on that day.`;
-      }
-    }
-  }
-  const shifts = await getShiftsForRange(q, companyId, occ.date, occ.date);
-  const mine = shifts.filter((s: any) => s.userId === userId);
-  if (mine.length) {
-    const typeIds = [...new Set(mine.map((s: any) => s.shiftTypeId))];
-    const { rows: trows } = await q('SELECT id, name, start_time AS "startTime", end_time AS "endTime" FROM shift_types WHERE id = ANY($1)', [typeIds]);
-    const tmap = new Map(trows.map((t: any) => [t.id, t]));
-    for (const sh of mine) {
-      const t: any = tmap.get(sh.shiftTypeId);
-      if (t && timesOverlap(occ.startTime, occ.endTime, t.startTime, t.endTime)) {
-        return `It overlaps your ${t.name} shift that day.`;
       }
     }
   }
@@ -9833,7 +9822,7 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
   if (filled) return { filled: true, occ };
   const visibleIds = await academicVisibleDeptIds(req);
   const { rows: userRows } = await q(
-    `SELECT id, first_name AS "firstName", last_name AS "lastName", (first_name || ' ' || last_name) AS name
+    `SELECT id, role, first_name AS "firstName", last_name AS "lastName", (first_name || ' ' || last_name) AS name
      FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
     [companyId]);
   const { rows: offeredRows } = await q(
@@ -9852,13 +9841,22 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
     volIds.add(u.id);
     volunteers.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });
   }
+  // The offer list shows anyone BY DEPARTMENT (Deepika 2026-11-04):
+  // the session's own department first, then its calendar's
+  // departments; owners are always includable. No department anywhere
+  // means the whole active team.
   let audience = userRows;
-  if (occ.dashboardId) {
-    const { rows: dd } = await q('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [occ.dashboardId]);
-    if (dd.length) {
-      const memberSet = new Set<string>();
+  {
+    const memberSet = new Set<string>();
+    if (occ.departmentId) {
+      for (const id of await deptMemberIds(companyId, occ.departmentId)) memberSet.add(id);
+    } else if (occ.dashboardId) {
+      const { rows: dd } = await q('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [occ.dashboardId]);
       for (const d of dd) for (const id of await deptMemberIds(companyId, d.department_id)) memberSet.add(id);
-      if (memberSet.size) audience = userRows.filter((u: any) => memberSet.has(u.id));
+    }
+    if (memberSet.size) {
+      for (const u of userRows) if ((u as any).role === 'owner') memberSet.add(u.id);
+      audience = userRows.filter((u: any) => memberSet.has(u.id));
     }
   }
   const everyone: any[] = [];
