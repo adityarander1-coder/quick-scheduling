@@ -1238,6 +1238,7 @@
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="availability" onclick="window.qsToolsAvailability()"><span class="qtr-ic">🗓️</span><span class="qtr-tx">Availability</span></button>
+    <button type="button" class="qtr-btn" id="qtr-presenter" data-tool="presenter" onclick="window.qsToolsPresenter()"><span class="qtr-ic">🎤</span><span class="qtr-tx">No presenter</span><span class="req-badge qtr-badge" data-np-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="print" onclick="window.qsToolsPrint()"><span class="qtr-ic">🖨️</span><span class="qtr-tx">Print</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
@@ -1659,6 +1660,11 @@
         .ps-need { color: #b45309; font-weight: 700; font-size: 12px; }
         .ps-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #475569; }
         .ps-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; }
+        #tab-presenter .np-row { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; margin-top: 8px; background: var(--surface); }
+        #tab-presenter .np-row.need { background: #fef2f2; border-color: #fecaca; }
+        #tab-presenter .np-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #fff; font-size: 11px; font-weight: 700; }
+        #tab-presenter .np-meta { color: #64748b; font-size: 12.5px; margin-top: 3px; }
+        #tab-presenter .np-who { font-weight: 800; font-size: 13px; white-space: nowrap; }
         @media print {
           body * { visibility: hidden; }
           #print-area, #print-area * { visibility: visible; }
@@ -6463,6 +6469,7 @@ window.qsCredDelete = function () {
   })).catch(function () {});
 };
 setTimeout(function () { if (window.qsLoadCredentials) window.qsLoadCredentials(true); }, 2800);
+setTimeout(function () { if (window.qsLoadPresenter) window.qsLoadPresenter(true); }, 3400);
 
 // ---------------------------------------------------------------------
 // AVAILABILITY tool (#availability) — link management + who's-available
@@ -6840,6 +6847,122 @@ function qsPrintRender() {
   })).catch(function () { area.innerHTML = '<p style="color:#c92a2a">Could not load the schedule.</p>'; });
 }
 
+window.qsToolsPresenter = function () { location.hash = 'presenter'; };
+var qsNpBadgeRetries = 0;
+function qsNpSetBadge(n) {
+  document.querySelectorAll('[data-np-badge]').forEach(function (b) {
+    if (n > 0) { b.textContent = String(n); b.hidden = false; } else { b.hidden = true; }
+  });
+}
+function qsNpTime(t) {
+  if (!t) return '';
+  var p = String(t).slice(0, 5).split(':');
+  var h = parseInt(p[0], 10);
+  if (isNaN(h)) return String(t).slice(0, 5);
+  var ap = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ':' + p[1] + ' ' + ap;
+}
+function qsNpDayLabel(ds, todayDs, tomorrowDs) {
+  var d = new Date(ds + 'T12:00:00');
+  var base = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] + ', ' +
+    ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()] + ' ' + d.getDate();
+  if (ds === todayDs) return 'Today · ' + base;
+  if (ds === tomorrowDs) return 'Tomorrow · ' + base;
+  return base;
+}
+window.qsNpOpen = function (btn) {
+  var dash = btn.getAttribute('data-dash');
+  var date = btn.getAttribute('data-date');
+  location.hash = 'calendars';
+  if (dash && typeof window.qsOpenDashboardAt === 'function') {
+    setTimeout(function () { window.qsOpenDashboardAt(dash, date); }, 200);
+  }
+};
+window.qsLoadPresenter = function (badgeOnly) {
+  var body = document.getElementById('presenter-body');
+  var empNav = document.querySelector('.emp-nav');
+  if (empNav) {
+    qsNpSetBadge(0);
+    if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="text-align:center;padding:26px 16px"><b>Owners and schedulers</b><p style="color:var(--dim);margin:6px 0 0">Needs a presenter is a schedule-builders\u2019 tool.</p></div>';
+    return;
+  }
+  var todayDs = scDatePlus(new Date(), 0);
+  var toDs = scDatePlus(new Date(), 13);
+  Promise.all([
+    api('/api/schedule/academic-sessions?from=' + todayDs + '&to=' + toDs),
+    api('/api/schedule/session-kinds'),
+    api('/api/schedule/dashboards'),
+  ]).then(function (rs) {
+    if (!rs[0].ok) {
+      if (badgeOnly && qsNpBadgeRetries < 4) { qsNpBadgeRetries++; setTimeout(function () { window.qsLoadPresenter(true); }, 2500); }
+      if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
+      return;
+    }
+    var sessions = rs[0].data.sessions || [];
+    var kindMap = { session: { label: 'Lecture', color: '#00796b' }, event: { label: 'Event', color: '#7c3aed' } };
+    ((rs[1].ok && rs[1].data.kinds) || []).forEach(function (k) { kindMap[k.key] = { label: k.label || k.key, color: k.color || '#475569' }; });
+    var dashName = {};
+    ((rs[2].ok && rs[2].data.dashboards) || []).forEach(function (d) { dashName[d.id] = d.name; });
+    var need = sessions.filter(function (s) { return !s.lecturerUserId; });
+    qsNpSetBadge(need.length);
+    if (badgeOnly) return;
+    if (!body) return;
+    var tomorrowDs = scDatePlus(new Date(), 1);
+    var byDay = {}, dayOrder = [];
+    sessions.forEach(function (s) {
+      if (!byDay[s.date]) { byDay[s.date] = []; dayOrder.push(s.date); }
+      byDay[s.date].push(s);
+    });
+    var h = '';
+    if (need.length) {
+      h += '<div class="sc-day" style="margin-bottom:14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">' +
+        '<span style="font-size:15px"><b style="color:#b91c1c">' + need.length + ' session' + (need.length === 1 ? '' : 's') + '</b> need a presenter</span>' +
+        '<span style="color:var(--dim);font-size:13px">' + (sessions.length - need.length) + ' sessions covered · across all calendars · next 14 days</span></div>';
+    } else {
+      h += '<div class="sc-day" style="margin-bottom:14px"><span style="font-size:15px;color:#15803d;font-weight:700">✓ Every session in the next 14 days has a presenter</span>' +
+        '<span style="color:var(--dim);font-size:13px;margin-left:14px">' + sessions.length + ' sessions · across all calendars</span></div>';
+    }
+    if (!sessions.length) {
+      h += '<div class="sc-day" style="color:var(--dim)">No sessions scheduled in the next 14 days.</div>';
+    }
+    dayOrder.forEach(function (ds) {
+      var list = byDay[ds];
+      var dayNeed = list.filter(function (s) { return !s.lecturerUserId; }).length;
+      var label = qsNpDayLabel(ds, todayDs, tomorrowDs);
+      if (!dayNeed) {
+        h += '<div class="sc-day" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:14.5px">' + esc(label) + '</b>' +
+          '<span style="color:#15803d;font-weight:700;font-size:13px">✓ All ' + list.length + ' session' + (list.length === 1 ? '' : 's') + ' have presenters</span></div>';
+        return;
+      }
+      h += '<div class="sc-day"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">' +
+        '<b style="font-size:14.5px">' + esc(label) + '</b><span style="font-size:12.5px;color:#b91c1c;font-weight:700">' + dayNeed + ' needs a presenter</span></div>';
+      list.forEach(function (s) {
+        var k = kindMap[s.kind] || { label: s.kind || 'Session', color: '#475569' };
+        var meta = [];
+        if (s.startTime) meta.push(qsNpTime(s.startTime) + (s.endTime ? ' – ' + qsNpTime(s.endTime) : ''));
+        if (s.dashboardId && dashName[s.dashboardId]) meta.push(dashName[s.dashboardId]);
+        if (s.location) meta.push(s.location);
+        var main = '<div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<span class="np-chip" style="background:' + esc(k.color) + '">' + esc(k.label) + '</span><b style="font-size:14px">' + esc(s.title) + '</b></div>' +
+          (meta.length ? '<div class="np-meta">' + esc(meta.join(' · ')) + '</div>' : '') + '</div>';
+        if (!s.lecturerUserId) {
+          h += '<div class="np-row need">' + main +
+            '<span class="np-who" style="color:#b91c1c">🔴 No presenter</span>' +
+            '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px;white-space:nowrap" data-dash="' + esc(s.dashboardId || '') + '" data-date="' + esc(s.date) + '" onclick="window.qsNpOpen(this)">Open in Calendars</button></div>';
+        } else {
+          h += '<div class="np-row">' + main +
+            '<span class="np-who" style="color:#15803d">✓ ' + esc(s.lecturerName || 'Assigned') + ' presenting</span></div>';
+        }
+      });
+      h += '</div>';
+    });
+    body.innerHTML = h;
+  }).catch(function () {
+    if (!badgeOnly && body) body.innerHTML = '<div class="sc-day" style="color:#c92a2a">Could not load sessions.</div>';
+  });
+};
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -6925,6 +7048,11 @@ function qsPrintRender() {
         <div id="av-body"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
+
+    <section id="tab-presenter" class="tab-panel">
+        <div class="sc-band"><div><h2>🎤 Needs a presenter</h2><div class="sc-sub">Calendar sessions in the next 14 days with nobody presenting yet</div></div></div>
+        <div id="presenter-body"><div class="sc-day" style="color:var(--dim)">Loading…</div></div>
+      </section>
 
     <section id="tab-print" class="tab-panel">
       <div style="max-width:1020px;margin:0 auto">
@@ -16605,6 +16733,7 @@ function qsPrintRender() {
       'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
       'credentials': function() { activateTab('credentials'); if (window.qsLoadCredentials) window.qsLoadCredentials(); },
       'availability': function() { activateTab('availability'); if (window.qsLoadAvailability) window.qsLoadAvailability(); },
+      'presenter': function() { activateTab('presenter'); if (window.qsLoadPresenter) window.qsLoadPresenter(); },
       'print': function() { activateTab('print'); if (window.qsLoadPrint) window.qsLoadPrint(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
