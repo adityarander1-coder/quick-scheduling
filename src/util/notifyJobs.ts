@@ -19,6 +19,9 @@
 //    been sitting unread for 30+ minutes gets ONE message_bundle
 //    notification (never one per message). Email delivery flows through
 //    the normal dispatcher, so the messages speed applies.
+// 4. Request expiry — pending shift requests whose shift day has
+//    passed (company-local) close as 'expired'; held open-pickup
+//    drafts are released and the requester is told once.
 import { query } from '../db.js';
 import { sendMail, escHtml } from './mailer.js';
 import { notify, resolveSpeed, fmtDateLong } from './notify.js';
@@ -463,14 +466,74 @@ async function checkCompanyMessageBundles(companyId: string, now: Date): Promise
 // Scheduler wiring (payrollScheduler style)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 4. Request expiry sweep
+// ---------------------------------------------------------------------------
+
+async function runRequestExpirySweep(): Promise<void> {
+  try {
+    const { rows: companies } = await query(
+      `SELECT DISTINCT company_id AS id FROM shift_requests WHERE status = 'pending'`);
+    for (const c of companies) {
+      const tz = await companyTimezone(c.id);
+      const today = localDateStr(new Date(), tz);
+      const { rows: reqs } = await query(
+        `SELECT sr.id, sr.request_type AS "requestType", sr.shift_id AS "shiftId",
+                sr.requester_id AS "requesterId",
+                s.date::text AS date, st.name AS "shiftTypeName",
+                ts.date::text AS "theirDate"
+         FROM shift_requests sr
+         JOIN shifts s ON s.id = sr.shift_id
+         JOIN shift_types st ON st.id = s.shift_type_id
+         LEFT JOIN shifts ts ON ts.id = sr.their_shift_id
+         WHERE sr.company_id = $1 AND sr.status = 'pending'`,
+        [c.id]);
+      for (const r of reqs) {
+        // A swap dies when its EARLIER date passes — the exchange is
+        // impossible from that moment.
+        const firstDate = r.theirDate && r.theirDate < r.date ? r.theirDate : r.date;
+        if (!(firstDate < today)) continue;
+        const { rowCount } = await query(
+          `UPDATE shift_requests SET status = 'expired', decided_at = now()
+           WHERE id = $1 AND status = 'pending'`,
+          [r.id]);
+        if (!rowCount) continue;
+        if (r.requestType === 'open_pickup') {
+          // Release the held slot, same as a decline does.
+          await query('DELETE FROM shifts WHERE id = $1 AND published = false', [r.shiftId]);
+        }
+        let title: string, body: string;
+        if (r.requestType === 'swap') {
+          title = 'Your swap request closed';
+          body = `Your swap for ${r.shiftTypeName} on ${fmtDateLong(r.date)} closed when the day passed without a decision.`;
+        } else if (r.requestType === 'open_pickup') {
+          title = 'Your pickup request closed';
+          body = `Your request to pick up ${r.shiftTypeName} on ${fmtDateLong(r.date)} closed when the day passed.`;
+        } else {
+          title = `No one picked up your ${r.shiftTypeName} on ${fmtDateLong(r.date)}`;
+          body = `Your cover request for ${r.shiftTypeName} on ${fmtDateLong(r.date)} closed when the day passed.`;
+        }
+        await notify({
+          companyId: c.id, userIds: [r.requesterId], category: 'schedule', type: 'request_expired',
+          title, body, link: 'requests', bundleKey: 'request_expired',
+          bundleTitle: '{count} requests closed when their day passed',
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[notify-jobs] request expiry sweep failed: ${e?.message || e}`);
+  }
+}
+
 export function startNotificationJobs(): void {
   const tick = async () => {
     await sendDailyDigests();
     await runReminderScan();
     await runMessageBundleCheck();
+    await runRequestExpirySweep();
   };
   // Run once shortly after startup (DB is ready by then), then every 15 min.
   setTimeout(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 90_000);
   setInterval(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 15 * 60_000);
-  console.log('[notify-jobs] digest + reminders + message bundles started (every 15 min)');
+  console.log('[notify-jobs] digest + reminders + message bundles + request expiry started (every 15 min)');
 }

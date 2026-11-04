@@ -7322,6 +7322,19 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
       res.status(409).json({ error: 'This request has already been decided.' });
       return;
     }
+    // Expiry backstop (Deepika 2026-11-03): a request whose shift day
+    // has passed can't be decided — the 15-minute sweep closes these
+    // as 'expired', but refuse here too if it hasn't run yet.
+    {
+      const mainShift = await manualShift(companyId, r.shiftId);
+      const otherShift = r.theirShiftId ? await manualShift(companyId, r.theirShiftId) : null;
+      const firstDate = otherShift && mainShift && otherShift.date < mainShift.date
+        ? otherShift.date : (mainShift ? mainShift.date : null);
+      if (firstDate && firstDate < todayStr()) {
+        res.status(409).json({ error: 'This request has expired — the shift date has passed.' });
+        return;
+      }
+    }
     const isPrivileged = role === 'owner' || role === 'scheduler';
     // Two-stage swaps (Deepika 2026-11-01): at the partner stage ONLY
     // the swap partner can agree — and agreeing does not execute the
@@ -7630,6 +7643,16 @@ router.get('/requests/act/:token', async (req: Request, res: Response) => {
     const shift = await manualShift(ctx.companyId, ctx.shiftId);
     const reqNames = await shiftDisplayNames(ctx.companyId, ctx.requesterId, shift ? shift.shiftTypeId : '');
     const who = reqNames.personName || 'A team member';
+    // Expiry backstop (Deepika 2026-11-03): never render a decision
+    // page for a past-date shift — the sweep closes these as expired.
+    {
+      const theirs = ctx.theirShiftId ? await manualShift(ctx.companyId, ctx.theirShiftId) : null;
+      const firstDate = theirs && shift && theirs.date < shift.date ? theirs.date : (shift ? shift.date : null);
+      if (firstDate && firstDate < todayStr()) {
+        res.send(actPage('This request has expired', '<p>The shift date has passed, so this request is closed.</p>'));
+        return;
+      }
+    }
     // Approver links (Deepika 2026-11-03): an owner/scheduler deciding
     // from email — pickup (approve = they take the shift, like the
     // in-app Approve), open_pickup (approve publishes the held shift),
@@ -7722,6 +7745,19 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
     const id: string = ctx.id;
     const action = String((req.body && req.body.action) || '');
     const decidedPage = () => res.send(actPage('Already decided', '<p>This request has already been decided — there is nothing left to do.</p>'));
+
+    // Expiry backstop (Deepika 2026-11-03): a past-date request can't
+    // be acted on, even if the sweep hasn't closed it yet.
+    {
+      const mainShift = await manualShift(companyId, ctx.shiftId);
+      const otherShift = ctx.theirShiftId ? await manualShift(companyId, ctx.theirShiftId) : null;
+      const firstDate = otherShift && mainShift && otherShift.date < mainShift.date
+        ? otherShift.date : (mainShift ? mainShift.date : null);
+      if (firstDate && firstDate < todayStr()) {
+        res.send(actPage('This request has expired', '<p>The shift date has passed, so this request is closed.</p>'));
+        return;
+      }
+    }
 
     // Approver decisions from email (Deepika 2026-11-03): kind='approver'
     // tokens act with the same semantics as the in-app Requests buttons —
