@@ -7925,6 +7925,7 @@ window.qsNpOfferSend = function (btn) {
         #tab-settings #subtab-rotations .sub-tabs { background: #eef2f5; border: none; border-radius: 999px; padding: 3px; display: inline-flex; }
         #tab-settings #subtab-rotations .subtab-btn { padding: 6px 16px; border-radius: 999px; }
         #tab-settings #subtab-rotations .subtab-btn.active { background: #21414c; color: #fff; }
+        #grot-turn .grot-turn-btn.on { background: #0e7c86; border-color: #0e7c86; color: #fff; }
         @media (max-width: 700px) {
           #tab-settings .erc-head { flex-wrap: wrap; }
           #tab-settings .erc-avatar { width: 36px; height: 36px; font-size: 15px; }
@@ -8140,8 +8141,10 @@ window.qsNpOfferSend = function (btn) {
             <nav class="sub-tabs" role="tablist" style="margin-bottom:1rem">
               <button class="subtab-btn active" data-rottab="rot-list">Assign rotations</button>
               <button class="subtab-btn" data-rottab="rot-skip">Assign vacation</button>
+              <button class="subtab-btn" data-rottab="rot-groups">Groups</button>
             </nav>
             <div id="rottab-rot-list">
+            <div id="rot-group-section"></div>
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
             <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
             <div id="rot-emp-list"></div>
@@ -8170,6 +8173,17 @@ window.qsNpOfferSend = function (btn) {
             </div>
             <h4 style="margin:0 0 0.8rem">Scheduled skips</h4>
             <div id="skip-list"></div>
+            </div>
+            <div id="rottab-rot-groups" class="hidden">
+            <p class="set-desc">Groups are ordered lists of team members. Point a group rotation at a group and its members take turns working that shift — in this order, all the time. Admins and schedulers decide who is in each group.</p>
+            <div id="groups-list"></div>
+            <div class="card" style="margin-top:1rem">
+              <h4 style="margin:0 0 0.8rem">New group</h4>
+              <div style="display:flex;gap:0.6rem;flex-wrap:wrap">
+                <input type="text" id="group-new-name" placeholder="e.g. Weekend Night Team" style="flex:1;min-width:200px;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
+                <button type="button" class="btn" id="group-new-btn">＋ Create group</button>
+              </div>
+            </div>
             </div>
 
             <!-- New/Edit rotation modal -->
@@ -8239,6 +8253,92 @@ window.qsNpOfferSend = function (btn) {
               </div>
             </div>
 
+            <!-- New/Edit GROUP rotation modal (special shift: a group takes turns) -->
+            <div id="grot-modal" class="modal-backdrop hidden">
+              <div class="modal">
+                <h3 id="grot-modal-title">New group rotation</h3>
+                <div id="grot-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <label>Pattern name</label>
+                  <input type="text" id="grot-name" placeholder="e.g. Weekend nights" autocomplete="off">
+                </div>
+                <div class="form-row">
+                  <label>Group — its members take turns, in this order</label>
+                  <div style="display:flex;gap:0.6rem;align-items:center">
+                    <select id="grot-group" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                    <button type="button" class="btn-secondary" id="grot-manage-groups" style="white-space:nowrap">Manage groups</button>
+                  </div>
+                  <div id="grot-order" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:0.6rem"></div>
+                </div>
+                <div class="form-row">
+                  <label>Shift type — the special shift</label>
+                  <select id="grot-shifttype" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                </div>
+                <div class="grid-2">
+                  <div class="form-row">
+                    <label>Repeats every (days, 1–84)</label>
+                    <input type="number" id="grot-cycle" min="1" max="84" value="7">
+                  </div>
+                  <div class="form-row">
+                    <label>Starts on</label>
+                    <input type="date" id="grot-start">
+                  </div>
+                </div>
+                <div class="grid-2">
+                  <div class="form-row">
+                    <label>Start time</label>
+                    <input type="time" id="grot-start-time" value="19:00">
+                  </div>
+                  <div class="form-row">
+                    <label>End time</label>
+                    <input type="time" id="grot-end-time" value="07:00">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Notes <span class="hint">(optional)</span></label>
+                  <input type="text" id="grot-notes" placeholder="e.g. Covers weekend call" maxlength="500" autocomplete="off">
+                </div>
+                <div class="form-row">
+                  <label>Which days of the cycle?</label>
+                  <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
+                    <button type="button" id="grot-days-weekdays" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">Mon–Fri</button>
+                    <button type="button" id="grot-days-all" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">All</button>
+                    <button type="button" id="grot-days-clear" class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem">Clear</button>
+                  </div>
+                  <div class="day-toggles" id="grot-days"></div>
+                </div>
+                <div class="form-row">
+                  <label>A new person takes over</label>
+                  <div class="seg-toggle" id="grot-turn" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                    <button type="button" class="btn-secondary grot-turn-btn on" data-unit="shift">Each shift</button>
+                    <button type="button" class="btn-secondary grot-turn-btn" data-unit="days2">Every 2 days</button>
+                    <button type="button" class="btn-secondary grot-turn-btn" data-unit="days3">Every 3 days</button>
+                    <button type="button" class="btn-secondary grot-turn-btn" data-unit="week">Each week</button>
+                  </div>
+                </div>
+                <div class="form-row hidden" id="grot-weekstart-row">
+                  <label>The week starts on</label>
+                  <select id="grot-weekstart" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                    <option value="0">Sunday</option>
+                    <option value="1" selected>Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                    <option value="6">Saturday</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <div id="grot-preview" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem;color:var(--muted)"></div>
+                </div>
+                <div class="modal-actions">
+                  <button type="button" id="grot-cancel" class="btn-secondary">Cancel</button>
+                  <button type="button" id="grot-del" class="btn-danger hidden">Delete</button>
+                  <button type="button" id="grot-save" class="btn">Save rotation</button>
+                </div>
+              </div>
+            </div>
+
             <script>
             (function () {
               // Rotations sub-panel — employee-centric (demo structure).
@@ -8284,11 +8384,15 @@ window.qsNpOfferSend = function (btn) {
                   api('/api/users'),
                   api('/api/schedule/shift-types'),
                   api('/api/schedule/rotations'),
+                  api('/api/schedule/rotation-groups'),
                 ]).then(function (rs) {
                   if (!rs[0].ok || !rs[1].ok || !rs[2].ok) { pageError('Could not load rotations.'); return; }
                   members = (rs[0].data.users || []).filter(function (u) { return u.isActive; });
                   shiftTypes = rs[1].data.shiftTypes || [];
                   allRots = rs[2].data.rotations || [];
+                  allGroups = (rs[3].ok && rs[3].data.groups) || [];
+                  renderGroupSection();
+                  renderGroupsManager();
                   renderEmployees();
                   if (!$('rot-emp-search').dataset.bound) {
                     $('rot-emp-search').dataset.bound = '1';
@@ -8686,6 +8790,349 @@ window.qsNpOfferSend = function (btn) {
                 });
               });
 
+              // ============ Rotation groups + group rotations (2026-11-04) ============
+              var allGroups = [];
+              var editingGrotId = null;
+              var grotUnit = 'shift';
+
+              function groupById(id) {
+                for (var i = 0; i < allGroups.length; i++) if (allGroups[i].id === id) return allGroups[i];
+                return null;
+              }
+              function groupActiveMembers(g) {
+                return ((g && g.members) || []).filter(function (m) { return m.isActive; });
+              }
+              function memberName(m) { return (((m.firstName || '') + ' ' + (m.lastName || '')).trim()) || 'Member'; }
+              function turnLabel(r) {
+                var DOWS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                if (r.turnUnit === 'week') return 'each week (week starts ' + DOWS[r.weekStart == null ? 1 : r.weekStart] + ')';
+                if (r.turnUnit === 'days') return 'every ' + (r.turnDays || 2) + ' days';
+                return 'each shift';
+              }
+              function grotSt(r) { return stById(r.groupShiftTypeId); }
+              function grotViewable(r) {
+                var st = grotSt(r); if (!st) return true;
+                if (window.qsActiveDeptId) {
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  if (deptIds.length && !deptIds.some(window.qsDeptFilterAllows)) return false;
+                }
+                return window.qsStViewable(st);
+              }
+              function grotEditable(r) { var st = grotSt(r); return !st || window.qsStEditable(st); }
+
+              function qsGroupsLoad() {
+                return api('/api/schedule/rotation-groups').then(function (r) {
+                  if (r.ok) allGroups = r.data.groups || [];
+                  renderGroupSection();
+                  renderGroupsManager();
+                }).catch(function () {});
+              }
+
+              function renderGroupSection() {
+                var el = $('rot-group-section'); if (!el) return;
+                var grots = allRots.filter(function (r) { return r.groupId; }).filter(grotViewable);
+                var html = '<div class="card" style="margin-bottom:1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+                  '<h4 style="margin:0">👥 Group rotations</h4>' +
+                  '<span style="color:var(--dim);font-size:13px">Special shifts — a group\u2019s members take turns, in a fixed order.</span>' +
+                  '<span style="flex:1"></span>' +
+                  '<button type="button" class="btn-secondary" id="grot-goto-groups" style="padding:0.4rem 0.8rem">Manage groups</button>' +
+                  '<button type="button" class="btn" id="grot-new-btn" style="padding:0.4rem 0.8rem">＋ New group rotation</button></div>';
+                if (!grots.length) {
+                  html += '<p style="color:var(--dim);font-size:13px;margin:0.7rem 0 0">None yet. Make a group first (Groups tab), then point a group rotation at it.</p>';
+                }
+                grots.forEach(function (r) {
+                  var g = groupById(r.groupId);
+                  var order = g ? groupActiveMembers(g).map(memberName).join(' → ') : '(group deleted)';
+                  var st = grotSt(r);
+                  html += '<div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-top:1px solid var(--border);margin-top:9px;flex-wrap:wrap">' +
+                    '<span class="erc-rot-dot" style="background:' + esc(st ? st.color : '#637a8e') + '"></span>' +
+                    '<span style="flex:1;min-width:200px"><strong>' + esc(r.name) + '</strong>' +
+                    '<span style="display:block;color:var(--dim);font-size:12.5px">' + esc(r.groupShiftTypeName || (st ? st.name : '')) + ' · ' + esc(g ? g.name : '') + ' · turns: ' + esc(turnLabel(r)) + ' · from ' + esc(r.startDate || '') + '</span>' +
+                    '<span style="display:block;color:var(--dim);font-size:12.5px">' + esc(order) + '</span></span>' +
+                    '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' + (r.isActive ? 'Active' : 'Paused') + '</span>' +
+                    (grotEditable(r) ? '<button type="button" class="btn-secondary grot-edit-btn" data-rot="' + r.id + '" style="padding:0.35rem 0.7rem">Edit</button>' : '') +
+                    '</div>';
+                });
+                html += '</div>';
+                el.innerHTML = html;
+                $('grot-new-btn').addEventListener('click', function () { openGroupRotation(null); });
+                $('grot-goto-groups').addEventListener('click', function () { qsShowRotTab('rot-groups'); });
+                el.querySelectorAll('.grot-edit-btn').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var r = null;
+                    for (var i = 0; i < allRots.length; i++) if (allRots[i].id === b.getAttribute('data-rot')) r = allRots[i];
+                    if (r) openGroupRotation(r);
+                  });
+                });
+              }
+
+              function renderGroupsManager() {
+                var el = $('groups-list'); if (!el) return;
+                if (!allGroups.length) { el.innerHTML = '<p style="color:var(--dim)">No groups yet — create one below.</p>'; return; }
+                var html = '';
+                allGroups.forEach(function (g) {
+                  var usedBy = g.usedBy || [];
+                  html += '<div class="card" style="margin-bottom:0.9rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+                    '<strong style="font-size:15px">' + esc(g.name) + '</strong>' +
+                    '<span style="color:var(--dim);font-size:12.5px">' + (g.members || []).length + ' people' + (usedBy.length ? ' · used by ' + esc(usedBy.join(', ')) : ' · not used by any rotation yet') + '</span>' +
+                    '<span style="flex:1"></span>' +
+                    '<button type="button" class="btn-secondary grp-rename" data-g="' + g.id + '" style="padding:0.35rem 0.7rem">Rename</button>' +
+                    '<button type="button" class="btn-secondary grp-del" data-g="' + g.id + '" style="padding:0.35rem 0.7rem;color:#b91c1c">Delete group</button></div>';
+                  (g.members || []).forEach(function (m, idx) {
+                    html += '<div style="display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:10px;margin-top:7px">' +
+                      '<span style="background:#083f4d;color:#fff;border-radius:999px;width:21px;height:21px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:none">' + (idx + 1) + '</span>' +
+                      '<span style="font-weight:600;font-size:13.5px">' + esc(memberName(m)) + (m.isActive ? '' : ' <span style="color:#b91c1c">(inactive)</span>') + '</span><span style="flex:1"></span>' +
+                      '<button type="button" class="btn-secondary grp-up" data-g="' + g.id + '" data-i="' + idx + '" style="padding:0.2rem 0.55rem">↑</button>' +
+                      '<button type="button" class="btn-secondary grp-dn" data-g="' + g.id + '" data-i="' + idx + '" style="padding:0.2rem 0.55rem">↓</button>' +
+                      '<button type="button" class="btn-secondary grp-rm" data-g="' + g.id + '" data-i="' + idx + '" style="padding:0.2rem 0.55rem">✕</button></div>';
+                  });
+                  var inGroup = {};
+                  (g.members || []).forEach(function (m) { inGroup[m.userId] = true; });
+                  var avail = members.filter(function (m) { return !inGroup[m.id]; });
+                  html += '<div style="display:flex;gap:0.6rem;margin-top:10px"><select class="grp-add-sel" data-g="' + g.id + '" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px"><option value="">＋ Add a person…</option>' +
+                    avail.map(function (m) { return '<option value="' + m.id + '">' + esc(fullName(m)) + '</option>'; }).join('') +
+                    '</select><button type="button" class="btn grp-add-btn" data-g="' + g.id + '" style="padding:0.45rem 0.9rem">Add</button></div>';
+                  html += '</div>';
+                });
+                el.innerHTML = html;
+                function putMembers(g, ids) {
+                  api('/api/schedule/rotation-groups/' + g.id, { method: 'PUT', body: JSON.stringify({ memberIds: ids }) }).then(function (r) {
+                    if (r.ok) qsGroupsLoad(); else pageError((r.data && r.data.error) || 'Could not update the group.');
+                  });
+                }
+                function idsOf(g) { return (g.members || []).map(function (m) { return m.userId; }); }
+                el.querySelectorAll('.grp-add-btn').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  var sel = el.querySelector('.grp-add-sel[data-g="' + g.id + '"]');
+                  if (!sel || !sel.value) return;
+                  putMembers(g, idsOf(g).concat([sel.value]));
+                }); });
+                el.querySelectorAll('.grp-rm').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  var ids = idsOf(g); ids.splice(parseInt(b.getAttribute('data-i'), 10), 1); putMembers(g, ids);
+                }); });
+                el.querySelectorAll('.grp-up').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  var i = parseInt(b.getAttribute('data-i'), 10); if (i <= 0) return;
+                  var ids = idsOf(g); var t = ids[i - 1]; ids[i - 1] = ids[i]; ids[i] = t; putMembers(g, ids);
+                }); });
+                el.querySelectorAll('.grp-dn').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  var i = parseInt(b.getAttribute('data-i'), 10); var ids = idsOf(g); if (i >= ids.length - 1) return;
+                  var t = ids[i + 1]; ids[i + 1] = ids[i]; ids[i] = t; putMembers(g, ids);
+                }); });
+                el.querySelectorAll('.grp-rename').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  var name = prompt('Group name', g.name);
+                  if (!name || !name.trim() || name.trim() === g.name) return;
+                  api('/api/schedule/rotation-groups/' + g.id, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) }).then(function (r) {
+                    if (r.ok) { qsGroupsLoad(); loadAll(); } else pageError((r.data && r.data.error) || 'Could not rename the group.');
+                  });
+                }); });
+                el.querySelectorAll('.grp-del').forEach(function (b) { b.addEventListener('click', function () {
+                  var g = groupById(b.getAttribute('data-g')); if (!g) return;
+                  if (!confirm('Delete the group "' + g.name + '"? Rotations using it will stop dealing turns.')) return;
+                  api('/api/schedule/rotation-groups/' + g.id, { method: 'DELETE' }).then(function (r) {
+                    if (r.ok) { pageSuccess('Group deleted.'); qsGroupsLoad(); loadAll(); }
+                    else pageError((r.data && r.data.error) || 'Could not delete the group.');
+                  });
+                }); });
+              }
+
+              if ($('group-new-btn')) $('group-new-btn').addEventListener('click', function () {
+                var name = $('group-new-name').value.trim();
+                if (!name) { pageError('Give the group a name first.'); return; }
+                api('/api/schedule/rotation-groups', { method: 'POST', body: JSON.stringify({ name: name }) }).then(function (r) {
+                  if (r.ok) { $('group-new-name').value = ''; pageSuccess('Group created — add its people below.'); qsGroupsLoad(); }
+                  else pageError((r.data && r.data.error) || 'Could not create the group.');
+                });
+              });
+
+              // ---- group rotation modal ----
+              function grotRenderDays(selected) {
+                var n = Math.min(84, Math.max(1, parseInt($('grot-cycle').value, 10) || 7));
+                selected = selected || [];
+                var html = '';
+                for (var d = 1; d <= n; d++) {
+                  html += '<button type="button" class="day-toggle' + (selected.indexOf(d) >= 0 ? ' on' : '') + '" data-day="' + d + '">Day ' + d + '</button>';
+                }
+                $('grot-days').innerHTML = html;
+                $('grot-days').querySelectorAll('.day-toggle').forEach(function (b) {
+                  b.addEventListener('click', function () { b.classList.toggle('on'); grotPreviewUpdate(); });
+                });
+              }
+              function grotCollectDays() {
+                var days = [];
+                $('grot-days').querySelectorAll('.day-toggle.on').forEach(function (b) { days.push(parseInt(b.getAttribute('data-day'), 10)); });
+                return days;
+              }
+              function fillGrotShiftTypes(selectedId) {
+                var ts = $('grot-shifttype'); ts.innerHTML = '';
+                shiftTypes.forEach(function (st) {
+                  if (!st.isActive) return;
+                  if (!window.qsStEditable(st) && st.id !== selectedId) return;
+                  var o = document.createElement('option');
+                  o.value = st.id; o.textContent = st.name;
+                  if (st.id === selectedId) o.selected = true;
+                  ts.appendChild(o);
+                });
+              }
+              function fillGrotGroups(selectedId) {
+                var sel = $('grot-group'); sel.innerHTML = '';
+                if (!allGroups.length) {
+                  var o = document.createElement('option'); o.value = ''; o.textContent = '— No groups yet — make one in the Groups tab';
+                  sel.appendChild(o); return;
+                }
+                allGroups.forEach(function (g) {
+                  var o = document.createElement('option');
+                  o.value = g.id; o.textContent = g.name + ' (' + groupActiveMembers(g).length + ' people)';
+                  if (g.id === selectedId) o.selected = true;
+                  sel.appendChild(o);
+                });
+              }
+              function grotOrderChips() {
+                var g = groupById($('grot-group').value);
+                var el = $('grot-order');
+                if (!g) { el.innerHTML = ''; return; }
+                var ms = groupActiveMembers(g);
+                if (!ms.length) { el.innerHTML = '<span style="color:#b91c1c;font-size:13px">This group has no active members yet.</span>'; return; }
+                el.innerHTML = ms.map(function (m, i) {
+                  return '<span style="display:inline-flex;align-items:center;gap:6px;background:#f0fdfa;border:1.5px solid #99e5dd;border-radius:999px;padding:4px 11px 4px 5px;font-weight:700;font-size:12.5px">' +
+                    '<span style="background:#0e7c86;color:#fff;border-radius:999px;width:19px;height:19px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800">' + (i + 1) + '</span>' + esc(memberName(m)) + '</span>';
+                }).join('<span style="color:#94a3b8;font-weight:800">→</span>') +
+                  '<span style="color:var(--dim);font-size:12px">→ back to ' + esc(memberName(ms[0])) + ' — the order never changes</span>';
+              }
+              function grotSetUnit(u) {
+                grotUnit = u;
+                document.querySelectorAll('.grot-turn-btn').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-unit') === u); });
+                $('grot-weekstart-row').classList.toggle('hidden', u !== 'week');
+                grotPreviewUpdate();
+              }
+              function grotPreviewUpdate() {
+                var el = $('grot-preview'); if (!el) return;
+                var g = groupById($('grot-group').value);
+                var names = g ? groupActiveMembers(g).map(memberName) : [];
+                var days = grotCollectDays();
+                var cycle = parseInt($('grot-cycle').value, 10) || 7;
+                var startVal = $('grot-start').value;
+                if (!names.length) { el.textContent = 'Pick a group with people in it to see how the turns land.'; return; }
+                if (!days.length || !startVal) { el.textContent = 'Pick the cycle days and a start date to see how the turns land.'; return; }
+                var p = startVal.split('-').map(Number);
+                var start = new Date(p[0], p[1] - 1, p[2]);
+                var ws = parseInt($('grot-weekstart').value, 10);
+                var anchor = new Date(start); anchor.setDate(anchor.getDate() - ((start.getDay() - ws + 7) % 7));
+                var blocks = [], occ = 0;
+                for (var i = 0; i < 370 && blocks.length < 4; i++) {
+                  var d = new Date(start); d.setDate(d.getDate() + i);
+                  if (days.indexOf((i % cycle) + 1) < 0) continue;
+                  var block;
+                  if (grotUnit === 'week') block = Math.floor((d.getTime() - anchor.getTime()) / (7 * 86400000));
+                  else if (grotUnit === 'days2') block = Math.floor(occ / 2);
+                  else if (grotUnit === 'days3') block = Math.floor(occ / 3);
+                  else block = occ;
+                  occ++;
+                  var who = names[block % names.length];
+                  if (!blocks.length || blocks[blocks.length - 1].who !== who) {
+                    blocks.push({ who: who, lbl: d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) });
+                  }
+                }
+                if (!blocks.length) { el.textContent = 'No turns land in the first year with these settings.'; return; }
+                el.innerHTML = '📋 ' + blocks.map(function (b) { return '<b>' + esc(b.who) + '</b> takes ' + esc(b.lbl); }).join(' · ') +
+                  '… and it keeps cycling in that order. This is a <b>special shift</b>: if it clashes with someone\u2019s other rotation, this one wins.';
+              }
+              function openGroupRotation(r) {
+                editingGrotId = r ? r.id : null;
+                $('grot-modal-title').textContent = r ? 'Edit group rotation' : 'New group rotation';
+                $('grot-name').value = r ? (r.name || '') : '';
+                $('grot-cycle').value = r ? (r.cycleDays || 7) : 7;
+                $('grot-start').value = r ? (r.startDate || '') : new Date().toISOString().slice(0, 10);
+                $('grot-start-time').value = r && r.startTime ? String(r.startTime).slice(0, 5) : '19:00';
+                $('grot-end-time').value = r && r.endTime ? String(r.endTime).slice(0, 5) : '07:00';
+                $('grot-notes').value = r ? (r.notes || '') : '';
+                fillGrotGroups(r ? r.groupId : null);
+                fillGrotShiftTypes(r ? r.groupShiftTypeId : null);
+                var days = r && r.groupDays ? String(r.groupDays).split(',').map(function (x) { return parseInt(x, 10); }).filter(function (n) { return n >= 1; }) : [];
+                grotRenderDays(days);
+                var u = 'shift';
+                if (r && r.turnUnit === 'week') u = 'week';
+                else if (r && r.turnUnit === 'days') u = (r.turnDays === 3 ? 'days3' : 'days2');
+                if (r && r.weekStart != null) $('grot-weekstart').value = String(r.weekStart);
+                hide($('grot-error'));
+                if (r) show($('grot-del')); else hide($('grot-del'));
+                show($('grot-modal'));
+                grotOrderChips();
+                grotSetUnit(u);
+              }
+              $('grot-cancel').addEventListener('click', function () { hide($('grot-modal')); });
+              $('grot-modal').addEventListener('click', function (e) { if (e.target === $('grot-modal')) hide($('grot-modal')); });
+              $('grot-manage-groups').addEventListener('click', function () { hide($('grot-modal')); qsShowRotTab('rot-groups'); });
+              $('grot-group').addEventListener('change', function () { grotOrderChips(); grotPreviewUpdate(); });
+              $('grot-cycle').addEventListener('change', function () { grotRenderDays(grotCollectDays()); grotPreviewUpdate(); });
+              $('grot-start').addEventListener('change', grotPreviewUpdate);
+              $('grot-weekstart').addEventListener('change', grotPreviewUpdate);
+              document.querySelectorAll('.grot-turn-btn').forEach(function (b) {
+                b.addEventListener('click', function () { grotSetUnit(b.getAttribute('data-unit')); });
+              });
+              $('grot-days-weekdays').addEventListener('click', function () {
+                var n = Math.min(84, Math.max(1, parseInt($('grot-cycle').value, 10) || 7));
+                var days = [];
+                for (var d = 1; d <= n; d++) { if (d % 7 >= 1 && d % 7 <= 5) days.push(d); }
+                grotRenderDays(days); grotPreviewUpdate();
+              });
+              $('grot-days-all').addEventListener('click', function () {
+                var n = Math.min(84, Math.max(1, parseInt($('grot-cycle').value, 10) || 7));
+                var days = [];
+                for (var d = 1; d <= n; d++) days.push(d);
+                grotRenderDays(days); grotPreviewUpdate();
+              });
+              $('grot-days-clear').addEventListener('click', function () { grotRenderDays([]); grotPreviewUpdate(); });
+              $('grot-save').addEventListener('click', function () {
+                var days = grotCollectDays();
+                function gerr(msg) { var e = $('grot-error'); e.textContent = msg; show(e); }
+                if (!$('grot-group').value) { gerr('Pick a group — or make one first in the Groups tab.'); return; }
+                if (!$('grot-shifttype').value) { gerr('Pick a shift type.'); return; }
+                if (!days.length) { gerr('Pick at least one day of the cycle.'); return; }
+                if (!$('grot-start').value) { gerr('Pick a start date.'); return; }
+                var body = {
+                  name: $('grot-name').value.trim() || 'Group rotation',
+                  cycleDays: parseInt($('grot-cycle').value, 10) || 7,
+                  startDate: $('grot-start').value,
+                  startTime: $('grot-start-time').value || null,
+                  endTime: $('grot-end-time').value || null,
+                  notes: $('grot-notes').value.trim() || null,
+                  groupId: $('grot-group').value,
+                  groupShiftTypeId: $('grot-shifttype').value,
+                  groupDays: days,
+                  turnUnit: grotUnit === 'week' ? 'week' : (grotUnit === 'shift' ? 'shift' : 'days'),
+                  turnDays: grotUnit === 'days3' ? 3 : 2,
+                  weekStart: parseInt($('grot-weekstart').value, 10),
+                };
+                function doPost(onOk) {
+                  api('/api/schedule/rotations', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                    if (r.ok) onOk();
+                    else gerr((r.data && r.data.error) || 'Could not save.');
+                  }).catch(function () { gerr('Network error. Please try again.'); });
+                }
+                if (editingGrotId) {
+                  var oldId = editingGrotId;
+                  doPost(function () {
+                    api('/api/schedule/rotations/' + oldId, { method: 'DELETE' }).then(function () {
+                      hide($('grot-modal')); pageSuccess('Group rotation updated.'); loadAll();
+                    });
+                  });
+                } else {
+                  doPost(function () { hide($('grot-modal')); pageSuccess('Group rotation saved.'); loadAll(); });
+                }
+              });
+              $('grot-del').addEventListener('click', function () {
+                if (!editingGrotId) return;
+                if (!confirm('Delete this group rotation?')) return;
+                api('/api/schedule/rotations/' + editingGrotId, { method: 'DELETE' }).then(function (r) {
+                  if (r.ok) { hide($('grot-modal')); pageSuccess('Group rotation deleted.'); loadAll(); }
+                  else { var e = $('grot-error'); e.textContent = (r.data && r.data.error) || 'Could not delete.'; show(e); }
+                });
+              });
+
               window.addEventListener('hashchange', function () { if (isActive()) loadAll(); });
               if (isActive()) loadAll();
 
@@ -8693,22 +9140,27 @@ window.qsNpOfferSend = function (btn) {
               // the .active from the HTML is lost when switching Settings
               // sections, so re-apply it on every load.
               function syncRotTabs() {
-                var listVisible = !$('rottab-rot-list').classList.contains('hidden');
+                var vis = !$('rottab-rot-list').classList.contains('hidden') ? 'rot-list'
+                  : !$('rottab-rot-skip').classList.contains('hidden') ? 'rot-skip' : 'rot-groups';
                 document.querySelectorAll('[data-rottab]').forEach(function (b) {
-                  b.classList.toggle('active', (b.getAttribute('data-rottab') === 'rot-list') === listVisible);
+                  b.classList.toggle('active', b.getAttribute('data-rottab') === vis);
                 });
               }
 
-              // Nested tabs: Rotations | Skip rotations
-              document.querySelectorAll('[data-rottab]').forEach(function (btn) {
-                btn.addEventListener('click', function () {
-                  document.querySelectorAll('[data-rottab]').forEach(function (b) { b.classList.remove('active'); });
-                  btn.classList.add('active');
-                  var tab = btn.getAttribute('data-rottab');
-                  document.getElementById('rottab-rot-list').classList.toggle('hidden', tab !== 'rot-list');
-                  document.getElementById('rottab-rot-skip').classList.toggle('hidden', tab !== 'rot-skip');
-                  if (tab === 'rot-skip') loadSkipRotations();
+              function qsShowRotTab(tab) {
+                document.querySelectorAll('[data-rottab]').forEach(function (b) {
+                  b.classList.toggle('active', b.getAttribute('data-rottab') === tab);
                 });
+                document.getElementById('rottab-rot-list').classList.toggle('hidden', tab !== 'rot-list');
+                document.getElementById('rottab-rot-skip').classList.toggle('hidden', tab !== 'rot-skip');
+                document.getElementById('rottab-rot-groups').classList.toggle('hidden', tab !== 'rot-groups');
+                if (tab === 'rot-skip') loadSkipRotations();
+                if (tab === 'rot-groups') qsGroupsLoad();
+              }
+
+              // Nested tabs: Rotations | Skip rotations | Groups
+              document.querySelectorAll('[data-rottab]').forEach(function (btn) {
+                btn.addEventListener('click', function () { qsShowRotTab(btn.getAttribute('data-rottab')); });
               });
 
               // Skip rotations management

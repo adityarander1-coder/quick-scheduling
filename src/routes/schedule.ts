@@ -21,7 +21,7 @@ import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
-import { checkShiftConflict, checkSwapConflicts } from '../util/shiftConflicts.js';
+import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict } from '../util/shiftConflicts.js';
 import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
@@ -394,10 +394,34 @@ router.get('/shifts', async (req: Request, res: Response) => {
 
     // Generate shifts from active rotations
     const { rows: rotations } = await query(
-      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate"
+      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+              group_id AS "groupId", group_shift_type_id AS "groupShiftTypeId",
+              group_days AS "groupDays", turn_unit AS "turnUnit",
+              turn_days AS "turnDays", week_start AS "weekStart"
        FROM rotations WHERE company_id = $1 AND is_active = true`,
       [companyId]
     );
+
+    // Vacation ranges per person (pauses attach to the rotations a
+    // person is assigned to) — group turns skip a member who is on
+    // vacation that date, the same way their own rotation does.
+    const { rows: vacRows } = await query(
+      `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
+       FROM rotation_pauses p
+       JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
+       WHERE p.company_id = $1`,
+      [companyId]
+    );
+    const vacMap = new Map<string, Array<{ start: string; end: string }>>();
+    for (const v of vacRows) {
+      if (!vacMap.has(v.userId)) vacMap.set(v.userId, []);
+      vacMap.get(v.userId)!.push({ start: v.startDate, end: v.endDate });
+    }
+    const onVacation = (userId: string, dateStr: string): boolean => {
+      const periods = vacMap.get(userId);
+      if (!periods) return false;
+      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+    };
 
     // Load rotation pause periods (vacations etc.)
     const { rows: pauseRows } = await query(
@@ -458,6 +482,86 @@ router.get('/shifts', async (req: Request, res: Response) => {
         [rot.id]
       );
       (rot as any).assignments = assignments;
+
+      // Group rotation ("special shift", Deepika 2026-11-04): the
+      // group's members take turns in their fixed order for the
+      // rotation's shift type, on the rotation's chosen cycle days.
+      // Turns are a pure function of the date — counted from the
+      // rotation's start — so a skipped turn (vacation, manual shift)
+      // never reshuffles the order.
+      if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+        const { rows: members } = await query(
+          `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
+                  u.nickname, u.end_date AS "userEndDate",
+                  st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
+                  st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
+                  st.sort_order AS "sortOrder"
+           FROM rotation_group_members gm
+           JOIN users u ON u.id = gm.user_id
+           JOIN shift_types st ON st.id = $2
+           WHERE gm.group_id = $1 AND u.is_active = true
+           ORDER BY gm.position`,
+          [(rot as any).groupId, (rot as any).groupShiftTypeId]
+        );
+        const daySet = new Set(
+          String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
+        );
+        if (members.length && daySet.size) {
+          const stId = (rot as any).groupShiftTypeId as string;
+          const unit = (rot as any).turnUnit || 'shift';
+          const tDays = Math.max(1, Number((rot as any).turnDays) || 1);
+          const wStart = Number.isInteger((rot as any).weekStart) ? (rot as any).weekStart : 1;
+          const dayMs = 86400000;
+          const startMs = Date.parse(rot.startDate + 'T00:00:00Z');
+          const fromMs = Date.parse(from + 'T00:00:00Z');
+          const toMs = Date.parse(to + 'T00:00:00Z');
+          const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
+          let occ = 0;
+          for (let ms = startMs; ms <= toMs; ms += dayMs) {
+            const dayIndex = Math.floor((ms - startMs) / dayMs);
+            const cycleDay = (dayIndex % rot.cycleDays) + 1;
+            if (!daySet.has(cycleDay)) continue;
+            const dateStr = new Date(ms).toISOString().slice(0, 10);
+            let block: number;
+            if (unit === 'week') block = Math.floor((ms - anchorMs) / (7 * dayMs));
+            else if (unit === 'days') block = Math.floor(occ / tDays);
+            else block = occ;
+            occ++;
+            if (ms < fromMs) continue;
+            const m = members[block % members.length];
+            if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
+            const hasManual = rows.some((s: any) =>
+              s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
+            );
+            if (hasManual) continue;
+            if (isPaused(rot.id, dateStr)) continue;
+            if (onVacation(m.userId, dateStr)) continue;
+            const exclKey = `${rot.id}|${m.userId}|${dateStr}|${stId}`;
+            if (exclSet.has(exclKey)) continue;
+            rotationShifts.push({
+              id: `rot-${rot.id}-${m.userId}-${dateStr}`,
+              date: dateStr,
+              notes: null,
+              published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
+              userId: m.userId,
+              firstName: m.firstName,
+              lastName: m.lastName,
+              nickname: m.nickname,
+              shiftTypeId: stId,
+              shiftTypeName: m.shiftTypeName,
+              shiftTypeShort: m.shiftTypeShort,
+              shiftTypeColor: m.shiftTypeColor,
+              shiftTypeTextColor: m.shiftTypeTextColor,
+              isRotation: true,
+              rotationId: rot.id,
+              rotationName: rot.name,
+              _sortOrder: m.sortOrder,
+              _special: true,
+            });
+          }
+        }
+        continue;
+      }
 
       if (assignments.length === 0) continue;
 
@@ -521,6 +625,33 @@ router.get('/shifts', async (req: Request, res: Response) => {
             rotationName: rot.name,
             _sortOrder: a.sortOrder,
           });
+        }
+      }
+    }
+
+    // Special-shift precedence (Deepika 2026-11-04): a group-rotation
+    // shift takes preference over the same person's OTHER rotation
+    // shifts. A normal rotation occurrence that clashes with one of
+    // their special shifts (time overlap, or under 8 hours of rest;
+    // untimed types clash on a shared day) is not generated — the
+    // shortfall shows in Short cover like any other gap. Manual
+    // shifts are never touched.
+    if (rotationShifts.some((s: any) => s._special)) {
+      const typeTimes = await getShiftTypeTimes(query, companyId);
+      const specialsByUser = new Map<string, any[]>();
+      for (const s of rotationShifts) {
+        if (!s._special) continue;
+        if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+        specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s));
+      }
+      for (let i = rotationShifts.length - 1; i >= 0; i--) {
+        const s = rotationShifts[i];
+        if (s._special) { delete s._special; continue; }
+        const specials = specialsByUser.get(s.userId);
+        if (!specials || !specials.length) continue;
+        const timed = makeTimedShift(typeTimes, s.userId, s);
+        if (specials.some((sp: any) => !!findShiftConflict('This person', [sp], timed))) {
+          rotationShifts.splice(i, 1);
         }
       }
     }
@@ -2439,14 +2570,134 @@ router.put('/comments/:id', requireRole('owner', 'scheduler'), async (req: Reque
 // ---------------------------------------------------------------------------
 
 // GET /api/schedule/rotations — list with assignments.
+// ---------------------------------------------------------------------------
+// Rotation groups (Deepika 2026-11-04): named, ordered member lists.
+// Admins/schedulers build them; a rotation in group mode deals its
+// shift to the members in turn ("special shift" — see generation).
+// ---------------------------------------------------------------------------
+
+router.get('/rotation-groups', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: groups } = await query(
+      `SELECT id, name FROM rotation_groups WHERE company_id = $1 ORDER BY lower(name)`,
+      [companyId]
+    );
+    for (const g of groups) {
+      const { rows: ms } = await query(
+        `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
+                u.is_active AS "isActive"
+         FROM rotation_group_members gm JOIN users u ON u.id = gm.user_id
+         WHERE gm.group_id = $1 ORDER BY gm.position`,
+        [g.id]
+      );
+      g.members = ms;
+    }
+    const { rows: used } = await query(
+      `SELECT group_id AS "groupId", name FROM rotations WHERE company_id = $1 AND group_id IS NOT NULL`,
+      [companyId]
+    );
+    const usedBy = new Map<string, string[]>();
+    for (const u of used) {
+      if (!usedBy.has(u.groupId)) usedBy.set(u.groupId, []);
+      usedBy.get(u.groupId)!.push(u.name);
+    }
+    for (const g of groups) g.usedBy = usedBy.get(g.id) || [];
+    res.json({ groups });
+  } catch (err) {
+    console.error('[schedule] list rotation groups failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/rotation-groups', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const name = String(req.body?.name || '').trim();
+    if (!name) { res.status(400).json({ error: 'A group name is required.' }); return; }
+    const id = crypto.randomUUID();
+    await query(
+      'INSERT INTO rotation_groups (id, company_id, name) VALUES ($1, $2, $3)',
+      [id, companyId, name.slice(0, 120)]
+    );
+    res.status(201).json({ id });
+  } catch (err) {
+    console.error('[schedule] create rotation group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /rotation-groups/:id — rename and/or replace the ordered member list.
+router.put('/rotation-groups/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: grows } = await query(
+      'SELECT id FROM rotation_groups WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!grows.length) { res.status(404).json({ error: 'Group not found.' }); return; }
+    const name = req.body?.name != null ? String(req.body.name).trim() : null;
+    if (name) {
+      await query('UPDATE rotation_groups SET name = $1 WHERE id = $2', [name.slice(0, 120), req.params.id]);
+    }
+    if (Array.isArray(req.body?.memberIds)) {
+      const ids = [...new Set(req.body.memberIds.map((x: any) => String(x)))].slice(0, 100);
+      if (ids.length) {
+        const { rows: valid } = await query(
+          'SELECT id FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])',
+          [companyId, ids]
+        );
+        const validSet = new Set(valid.map((r: any) => r.id));
+        if ((ids as string[]).some((x) => !validSet.has(x))) {
+          res.status(400).json({ error: 'Every member must be on your team.' });
+          return;
+        }
+      }
+      await query('DELETE FROM rotation_group_members WHERE group_id = $1', [req.params.id]);
+      for (let i = 0; i < ids.length; i++) {
+        await query(
+          'INSERT INTO rotation_group_members (group_id, user_id, position) VALUES ($1, $2, $3)',
+          [req.params.id, ids[i], i + 1]
+        );
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update rotation group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.delete('/rotation-groups/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rowCount } = await query(
+      'DELETE FROM rotation_groups WHERE id = $1 AND company_id = $2',
+      [req.params.id, companyId]
+    );
+    if (!rowCount) { res.status(404).json({ error: 'Group not found.' }); return; }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete rotation group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 router.get('/rotations', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const { rows: rots } = await query(
-      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
-              is_active AS "isActive",
-              start_time::text AS "startTime", end_time::text AS "endTime", notes
-       FROM rotations WHERE company_id = $1 ORDER BY name`,
+      `SELECT r.id, r.name, r.cycle_days AS "cycleDays", r.start_date::text AS "startDate",
+              r.is_active AS "isActive",
+              r.start_time::text AS "startTime", r.end_time::text AS "endTime", r.notes,
+              r.group_id AS "groupId", rg.name AS "groupName",
+              r.group_shift_type_id AS "groupShiftTypeId", gst.name AS "groupShiftTypeName",
+              r.group_days AS "groupDays", r.turn_unit AS "turnUnit",
+              r.turn_days AS "turnDays", r.week_start AS "weekStart"
+       FROM rotations r
+       LEFT JOIN rotation_groups rg ON rg.id = r.group_id
+       LEFT JOIN shift_types gst ON gst.id = r.group_shift_type_id
+       WHERE r.company_id = $1 ORDER BY r.name`,
       [companyId]
     );
     for (const r of rots) {
@@ -2481,21 +2732,79 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
       res.status(400).json({ error: 'Name, cycle length (1–84 days), and a valid start date are required.' });
       return;
     }
+    // Group mode (Deepika 2026-11-04): the rotation deals one shift
+    // type to a group's members in turn instead of taking assignments.
+    const groupId = req.body?.groupId ? String(req.body.groupId) : null;
+    let groupPayload: any = null;
+    if (groupId) {
+      const gShiftTypeId = req.body?.groupShiftTypeId ? String(req.body.groupShiftTypeId) : null;
+      const gDays = (Array.isArray(req.body?.groupDays) ? req.body.groupDays : [])
+        .map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n >= 1 && n <= cd);
+      const unit = ['shift', 'days', 'week'].includes(req.body?.turnUnit) ? req.body.turnUnit : 'shift';
+      const tDays = Math.min(7, Math.max(1, Number(req.body?.turnDays) || 2));
+      const wStart = Number.isInteger(req.body?.weekStart) && req.body.weekStart >= 0 && req.body.weekStart <= 6
+        ? req.body.weekStart : 1;
+      if (!gShiftTypeId || !gDays.length) {
+        res.status(400).json({ error: 'A group rotation needs a shift type and at least one day of the cycle.' });
+        return;
+      }
+      const { rows: grows } = await query(
+        'SELECT id FROM rotation_groups WHERE id = $1 AND company_id = $2', [groupId, companyId]);
+      if (!grows.length) { res.status(400).json({ error: 'That group no longer exists.' }); return; }
+      const { rows: members } = await query(
+        `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName"
+         FROM rotation_group_members gm JOIN users u ON u.id = gm.user_id
+         WHERE gm.group_id = $1 AND u.is_active = true ORDER BY gm.position`,
+        [groupId]
+      );
+      if (!members.length) {
+        res.status(400).json({ error: 'That group has no active members yet — add people to it first.' });
+        return;
+      }
+      const { rows: trows } = await query(
+        'SELECT eligible_job_role_ids AS "eligibleIds" FROM shift_types WHERE id = $1 AND company_id = $2',
+        [gShiftTypeId, companyId]
+      );
+      if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
+      for (const m of members) {
+        const elig = await checkShiftEligibility(companyId, m.userId, trows[0].eligibleIds);
+        if (!elig.ok) {
+          res.status(400).json({
+            error: `${m.firstName} ${m.lastName} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
+          });
+          return;
+        }
+      }
+      groupPayload = {
+        groupId, groupShiftTypeId: gShiftTypeId, groupDays: [...new Set(gDays as number[])].sort((a, b) => a - b),
+        turnUnit: unit, turnDays: tDays, weekStart: wStart, members,
+      };
+    }
     // Department scoping: the scheduler's active department must be one of
     // the departments touched by the assignments.
+    const scopePairs = groupPayload
+      ? groupPayload.members.map((m: any) => ({ userId: m.userId, shiftTypeId: groupPayload.groupShiftTypeId }))
+      : (Array.isArray(assignments) ? assignments : []);
     if (!(await requireActiveDepartment(
       req, res,
-      await assignmentRelevantDepartments(Array.isArray(assignments) ? assignments : [], companyId)
+      await assignmentRelevantDepartments(scopePairs, companyId)
     ))) return;
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
     const st = startTime && timeRe.test(startTime) ? startTime : null;
     const et = endTime && timeRe.test(endTime) ? endTime : null;
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
+                              group_id, group_shift_type_id, group_days, turn_unit, turn_days, week_start)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [id, companyId, String(name).trim(), cd, startDate, req.session.userId!, st, et,
-       notes ? String(notes).trim().slice(0, 500) : null]
+       notes ? String(notes).trim().slice(0, 500) : null,
+       groupPayload ? groupPayload.groupId : null,
+       groupPayload ? groupPayload.groupShiftTypeId : null,
+       groupPayload ? groupPayload.groupDays.join(',') : null,
+       groupPayload ? groupPayload.turnUnit : null,
+       groupPayload ? groupPayload.turnDays : null,
+       groupPayload ? groupPayload.weekStart : null]
     );
     if (Array.isArray(assignments)) {
       for (const a of assignments) {

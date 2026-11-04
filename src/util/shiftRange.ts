@@ -1,5 +1,6 @@
 // util/shiftRange.ts — shared logic to get all visible shifts (manual + rotation-generated)
 // for a date range. Used by the /shifts API endpoint and email question answering.
+import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
 
 export interface ShiftEntry {
   id: string;
@@ -12,6 +13,9 @@ export interface ShiftEntry {
    * request form's pickers); display callers ignore them. */
   userId?: string;
   shiftTypeId?: string;
+  rotationId?: string;
+  /** Internal: a group-rotation ("special") shift during generation. */
+  _special?: boolean;
 }
 
 type QueryFn = (text: string, params: any[]) => Promise<{ rows: any[] }>;
@@ -43,10 +47,33 @@ export async function getShiftsForRange(
 
   // Active rotations
   const { rows: rotations } = await query(
-    `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate"
+    `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+            group_id AS "groupId", group_shift_type_id AS "groupShiftTypeId",
+            group_days AS "groupDays", turn_unit AS "turnUnit",
+            turn_days AS "turnDays", week_start AS "weekStart"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
     [companyId]
   );
+
+  // Vacation ranges per person (pauses attach to the rotations a
+  // person is assigned to) — group turns skip a member on vacation.
+  const { rows: vacRows } = await query(
+    `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
+     FROM rotation_pauses p
+     JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
+     WHERE p.company_id = $1`,
+    [companyId]
+  );
+  const vacMap = new Map<string, Array<{ start: string; end: string }>>();
+  for (const v of vacRows) {
+    if (!vacMap.has(v.userId)) vacMap.set(v.userId, []);
+    vacMap.get(v.userId)!.push({ start: v.startDate, end: v.endDate });
+  }
+  const onVacation = (userId: string, dateStr: string): boolean => {
+    const periods = vacMap.get(userId);
+    if (!periods) return false;
+    return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+  };
 
   // Pause periods
   const { rows: pauseRows } = await query(
@@ -106,6 +133,74 @@ export async function getShiftsForRange(
        WHERE ra.rotation_id = $1 AND u.is_active = true`,
       [rot.id]
     );
+
+    // Group rotation ("special shift", Deepika 2026-11-04): members
+    // take turns in fixed order; turns are a pure function of the
+    // date, counted from the rotation's start.
+    if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      const { rows: members } = await query(
+        `SELECT gm.user_id AS "userId",
+                COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+                u.end_date AS "userEndDate", st.name AS "shiftTypeName"
+         FROM rotation_group_members gm
+         JOIN users u ON u.id = gm.user_id
+         JOIN shift_types st ON st.id = $2
+         WHERE gm.group_id = $1 AND u.is_active = true
+         ORDER BY gm.position`,
+        [(rot as any).groupId, (rot as any).groupShiftTypeId]
+      );
+      const daySet = new Set(
+        String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
+      );
+      if (members.length && daySet.size) {
+        const stId = (rot as any).groupShiftTypeId as string;
+        const unit = (rot as any).turnUnit || 'shift';
+        const tDays = Math.max(1, Number((rot as any).turnDays) || 1);
+        const wStart = Number.isInteger((rot as any).weekStart) ? (rot as any).weekStart : 1;
+        const dayMs = 86400000;
+        const startMs = Date.parse(rot.startDate + 'T00:00:00Z');
+        const fromMs = Date.parse(from + 'T00:00:00Z');
+        const toMs = Date.parse(to + 'T00:00:00Z');
+        const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
+        let occ = 0;
+        for (let ms = startMs; ms <= toMs; ms += dayMs) {
+          const dayIndex = Math.floor((ms - startMs) / dayMs);
+          const cycleDay = (dayIndex % rot.cycleDays) + 1;
+          if (!daySet.has(cycleDay)) continue;
+          const dateStr = new Date(ms).toISOString().slice(0, 10);
+          let block: number;
+          if (unit === 'week') block = Math.floor((ms - anchorMs) / (7 * dayMs));
+          else if (unit === 'days') block = Math.floor(occ / tDays);
+          else block = occ;
+          occ++;
+          if (ms < fromMs) continue;
+          const m = members[block % members.length];
+          if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
+          const hasManual = manualRows.some((s: any) =>
+            s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
+          );
+          if (hasManual) continue;
+          if (isPaused(rot.id, dateStr)) continue;
+          if (onVacation(m.userId, dateStr)) continue;
+          const exclKey = `${rot.id}|${m.userId}|${dateStr}|${stId}`;
+          if (exclSet.has(exclKey)) continue;
+          rotationShifts.push({
+            id: `rot-${rot.id}-${m.userId}-${dateStr}`,
+            date: dateStr,
+            personName: m.personName,
+            shiftTypeName: m.shiftTypeName,
+            published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
+            isRotation: true,
+            userId: m.userId,
+            shiftTypeId: stId,
+            rotationId: rot.id,
+            _special: true,
+          });
+        }
+      }
+      continue;
+    }
+
     if (assignments.length === 0) continue;
 
     // Track pause periods per user
@@ -183,6 +278,31 @@ export async function getShiftsForRange(
       userId: s.userId,
       shiftTypeId: s.shiftTypeId,
     }));
+
+  // Special-shift precedence (Deepika 2026-11-04): a group-rotation
+  // shift takes preference over the same person's OTHER rotation
+  // shifts — a clashing normal occurrence is not generated. Manual
+  // shifts are never touched.
+  if (rotationShifts.some((s) => s._special)) {
+    const typeTimes = await getShiftTypeTimes(query, companyId);
+    const specialsByUser = new Map<string, any[]>();
+    for (const s of rotationShifts) {
+      if (!s._special || !s.userId || !s.shiftTypeId) continue;
+      if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+      specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s as any));
+    }
+    for (let i = rotationShifts.length - 1; i >= 0; i--) {
+      const s = rotationShifts[i];
+      if (s._special) { delete s._special; continue; }
+      if (!s.userId || !s.shiftTypeId) continue;
+      const specials = specialsByUser.get(s.userId);
+      if (!specials || !specials.length) continue;
+      const timed = makeTimedShift(typeTimes, s.userId, s as any);
+      if (specials.some((sp: any) => !!findShiftConflict('This person', [sp], timed))) {
+        rotationShifts.splice(i, 1);
+      }
+    }
+  }
 
   return [...visibleManual, ...rotationShifts].sort((a, b) => {
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
