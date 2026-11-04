@@ -1235,6 +1235,7 @@
     <div class="qtr-head">TOOLS</div>
     <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
+    <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
       <button type="button" class="qtr-mini" id="qtr-expand" title="Expand or collapse the tools bar">↔</button>
@@ -1596,6 +1597,17 @@
         .sc-gap .stat { font-size: 13px; font-weight: 700; }
         .sc-gap .acts { margin-left: auto; display: flex; gap: 8px; }
         .sc-ok { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; margin-top: 10px; display: flex; justify-content: space-between; gap: 10px; color: var(--dim); font-weight: 600; }
+        .fr-card { margin-bottom: 10px; }
+        .fr-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+        .fr-head h3 { margin: 0; }
+        .fr-sub { color: var(--dim); font-size: 13px; }
+        .fr-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
+        .fr-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; }
+        .fr-nights { display: flex; align-items: center; gap: 10px; }
+        .fr-nights .nl { font-size: 12.5px; font-weight: 700; width: 86px; flex: none; }
+        .fr-barwrap { flex: 1; background: var(--bg); border-radius: 6px; height: 12px; overflow: hidden; }
+        .fr-bar { height: 100%; border-radius: 6px; }
+        .fr-nights .dl { font-size: 12.5px; font-weight: 700; width: 110px; flex: none; }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
         /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
         #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
@@ -5969,6 +5981,84 @@
         };
         setTimeout(function () { if (window.qsLoadShortCover) window.qsLoadShortCover(true); }, 2600);
 
+        // --- Fairness (Deepika 2026-11-04, built as mocked; v1 — she
+        // flagged it for future improvement) -------------------------------
+        // Counts only: per person, per period — total shifts, per-type
+        // counts, nights and weekends, with the nights bar against the
+        // team average. Nothing here changes the schedule.
+        window.qsToolsFairness = function () { location.hash = 'fairness'; };
+        var qsFrPeriod = 'this';
+        window.qsFrPeriodChange = function (v) { qsFrPeriod = v || 'this'; window.qsLoadFairness(); };
+        function frIso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+        function frMonthName(d) { return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); }
+        function frRange() {
+          var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+          var start, end;
+          if (qsFrPeriod === 'last') { start = new Date(y, m - 1, 1); end = new Date(y, m, 0); }
+          else if (qsFrPeriod === 'last3') { start = new Date(y, m - 2, 1); end = new Date(y, m + 1, 0); }
+          else { start = new Date(y, m, 1); end = new Date(y, m + 1, 0); }
+          return { from: frIso(start), to: frIso(end), label: qsFrPeriod === 'last3' ? frMonthName(start) + ' – ' + frMonthName(end) : frMonthName(start) };
+        }
+        window.qsLoadFairness = function () {
+          var bodyEl = $('fr-body');
+          if (!bodyEl) return Promise.resolve();
+          var empNav = $('employee-tabs');
+          if (empNav && !empNav.classList.contains('hidden')) {
+            bodyEl.innerHTML = '<div class="sc-day"><h3>Owners and schedulers</h3><p style="color:var(--dim);font-size:13.5px;margin:4px 0">The Fairness report is a tool for the people who build the schedule.</p></div>';
+            return Promise.resolve();
+          }
+          var sel = $('fr-period');
+          if (sel && !sel.getAttribute('data-named')) {
+            var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+            sel.options[0].textContent = frMonthName(new Date(y, m, 1));
+            sel.options[1].textContent = frMonthName(new Date(y, m - 1, 1));
+            sel.options[2].textContent = 'Last 3 months';
+            sel.setAttribute('data-named', '1');
+          }
+          if (sel && sel.value !== qsFrPeriod) sel.value = qsFrPeriod;
+          var range = frRange();
+          return api('/api/schedule/shifts?from=' + range.from + '&to=' + range.to).then(function (r) {
+            if (!r.ok) { bodyEl.innerHTML = '<div class="sc-day"><h3>Could not load the shifts</h3><p style="color:var(--dim);font-size:13.5px;margin:4px 0">Please try Refresh.</p></div>'; return; }
+            var shifts = r.data.shifts || [];
+            var byUser = new Map();
+            shifts.forEach(function (s) {
+              if (!byUser.has(s.userId)) byUser.set(s.userId, { name: (((s.firstName || '') + ' ' + (s.lastName || '')).trim() || 'Team member'), total: 0, nights: 0, weekends: 0, types: {} });
+              var u = byUser.get(s.userId);
+              u.total++;
+              u.types[s.shiftTypeName] = (u.types[s.shiftTypeName] || 0) + 1;
+              if (/night/i.test(s.shiftTypeName || '')) u.nights++;
+              var dw = new Date(s.date + 'T12:00:00').getDay();
+              if (dw === 0 || dw === 6) u.weekends++;
+            });
+            var rows = Array.from(byUser.values()).sort(function (a, b) { return b.nights - a.nights || b.total - a.total; });
+            if (!rows.length) {
+              bodyEl.innerHTML = '<div class="sc-band"><div><h2>Fairness</h2><div class="sc-sub">' + esc(range.label) + ' · who is carrying what — counts only, nothing changes</div></div></div>' +
+                '<div class="sc-day"><h3>No shifts in this period yet</h3><p style="color:var(--dim);font-size:13.5px;margin:4px 0">Once shifts are scheduled in ' + esc(range.label) + ', the counts will appear here.</p></div>';
+              return;
+            }
+            var avgN = rows.reduce(function (n, u) { return n + u.nights; }, 0) / rows.length;
+            var maxN = Math.max.apply(null, rows.map(function (u) { return u.nights; }).concat([1]));
+            var minN = Math.min.apply(null, rows.map(function (u) { return u.nights; }));
+            var typeOrder = (sched.shiftTypes || []).filter(function (st) { return st.isActive !== false; }).map(function (st) { return st.name; });
+            var h = '<div class="sc-band"><div><h2>Fairness</h2><div class="sc-sub">' + esc(range.label) + ' · who is carrying what — counts only, nothing changes</div></div>' +
+              '<div class="sc-total"><b>Nights ' + minN + ' – ' + maxN + '</b>per person · average ' + avgN.toFixed(1) + '</div></div>';
+            rows.forEach(function (u) {
+              var pct = Math.round((u.nights / maxN) * 100);
+              var col = u.nights >= avgN * 1.4 ? '#c92a2a' : (u.nights >= avgN * 1.15 ? '#b45309' : 'var(--accent)');
+              var diff = u.nights - avgN;
+              var diffTxt = Math.abs(diff) < 0.5 ? 'about average' : (diff > 0 ? '+' + Math.round(diff) + ' over average' : Math.round(diff) + ' under average');
+              var names = typeOrder.filter(function (t) { return u.types[t]; });
+              Object.keys(u.types).forEach(function (t) { if (names.indexOf(t) === -1) names.push(t); });
+              var chips = names.map(function (t) { return '<span class="fr-chip">' + esc(t) + ' · ' + u.types[t] + '</span>'; }).join(' ');
+              h += '<div class="sc-day fr-card"><div class="fr-head"><h3>' + esc(u.name) + '</h3><span class="fr-sub">' + u.total + ' shifts total · ' + u.weekends + ' on weekends</span></div>' +
+                '<div class="fr-chips">' + chips + '</div>' +
+                '<div class="fr-nights"><span class="nl">Nights · ' + u.nights + '</span><div class="fr-barwrap"><div class="fr-bar" style="width:' + pct + '%;background:' + col + '"></div></div><span class="dl" style="color:' + col + '">' + diffTxt + '</span></div></div>';
+            });
+            h += '<p style="color:var(--dim);font-size:12px;margin:12px 2px">Draft shifts count too. Rotation shifts count the same as manual ones.</p>';
+            bodyEl.innerHTML = h;
+          }).catch(function () {});
+        };
+
         // init: load once auth is confirmed; refresh when returning to this tab
         api('/api/auth/me').then(function (r) {
           if (!r.ok) return; // app shell handles redirect
@@ -5995,6 +6085,20 @@
           <button type="button" class="btn-secondary" onclick="window.qsLoadShortCover()">↻ Refresh</button>
         </div>
         <div id="sc-body"><p style="color:var(--dim)">Loading…</p></div>
+      </div>
+    </section>
+
+    <section id="tab-fairness" class="tab-panel">
+      <div style="max-width:880px;margin:0 auto">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <select id="fr-period" aria-label="Period" onchange="window.qsFrPeriodChange(this.value)" style="border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-weight:600;font-family:inherit;background:var(--surface);color:var(--text)">
+            <option value="this">This month</option>
+            <option value="last">Last month</option>
+            <option value="last3">Last 3 months</option>
+          </select>
+          <button type="button" class="btn-secondary" onclick="window.qsLoadFairness()">↻ Refresh</button>
+        </div>
+        <div id="fr-body"><p style="color:var(--dim)">Loading…</p></div>
       </div>
     </section>
 
@@ -15726,6 +15830,7 @@
     var routes = {
       'schedule': function() { activateTab('schedule'); },
       'shortcover': function() { activateTab('shortcover'); if (window.qsLoadShortCover) window.qsLoadShortCover(); },
+      'fairness': function() { activateTab('fairness'); if (window.qsLoadFairness) window.qsLoadFairness(); },
       'requests': function() { activateTab('requests'); if (window.qsLoadRequestsTab) window.qsLoadRequestsTab(); },
       'mysettings': function() { activateTab('mysettings'); if (window.qsLoadMySettings) window.qsLoadMySettings(); },
       'messages': function() { activateTab('messages'); if (window.qsLoadMessagesTab) window.qsLoadMessagesTab(); },
