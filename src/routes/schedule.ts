@@ -9332,7 +9332,13 @@ async function ensureKinds(companyId: string, dashboardId: string) {
 }
 
 function kindRow(r: any) {
-  return { id: r.id, key: r.key, label: r.label, color: r.color || '#00796b', dashboardId: r.dashboard_id || null };
+  return { id: r.id, key: r.key, label: r.label, color: r.color || '#00796b', dashboardId: r.dashboard_id || null, personLabel: r.person_label || null };
+}
+
+function cleanPersonLabel(raw: any): string | null {
+  const v = String(raw ?? '').trim().replace(/\s+/g, ' ');
+  if (!v) return null;
+  return v.slice(0, 40);
 }
 
 // A posted kind key is valid when the session's dashboard has it.
@@ -9406,11 +9412,34 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
     if (keys.has(key)) { let n = 2; while (keys.has(key + '-' + n)) n++; key = key + '-' + n; }
     const { rows: mx } = await query('SELECT COALESCE(MAX(position), 0) AS m FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId]);
     const id = crypto.randomUUID();
-    await query('INSERT INTO session_kinds (id, company_id, dashboard_id, key, label, color, position) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-      [id, companyId, dashboardId, key, label, color, (mx[0].m || 0) + 1]);
-    res.json({ ok: true, kind: { id, key, label, color, dashboardId } });
+    const personLabel = cleanPersonLabel(b.personLabel);
+    await query('INSERT INTO session_kinds (id, company_id, dashboard_id, key, label, color, position, person_label) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [id, companyId, dashboardId, key, label, color, (mx[0].m || 0) + 1, personLabel]);
+    res.json({ ok: true, kind: { id, key, label, color, dashboardId, personLabel } });
   } catch (err) {
     console.error('[schedule] session kind create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/session-kinds/:id — owner or scheduler sets the
+// kind's person label (the "needs a ___" name; empty clears it back to
+// the Presenter default).
+router.put('/session-kinds/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const { rows } = await query('SELECT dashboard_id FROM session_kinds WHERE id = $1 AND company_id = $2', [String(req.params.id), companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    if (rows[0].dashboard_id && !(await dashboardEditAllowed(req, rows[0].dashboard_id))) {
+      res.status(403).json({ error: 'Only this dashboard\'s editors can change its session types.' });
+      return;
+    }
+    const personLabel = cleanPersonLabel(b.personLabel);
+    await query('UPDATE session_kinds SET person_label = $1 WHERE id = $2 AND company_id = $3', [personLabel, String(req.params.id), companyId]);
+    res.json({ ok: true, personLabel });
+  } catch (err) {
+    console.error('[schedule] session kind update failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
