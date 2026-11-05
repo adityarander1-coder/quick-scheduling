@@ -4878,7 +4878,7 @@ router.post('/availability', requireRole('owner', 'scheduler'), async (req: Requ
       [companyId, tokenHash, title ? String(title).slice(0, 120) : null, note ? String(note).slice(0, 500) : null, fromDate, toDate, req.session.userId!]
     );
     const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
-    res.status(201).json({ id: rows[0].id, link: `${base}/availability.html?t=${token}` });
+    res.status(201).json({ id: rows[0].id, link: `${base}/my-availability.html?kind=shift&t=${token}` });
   } catch (err) {
     console.error('[schedule] create availability failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -5056,15 +5056,17 @@ function gapPrevDate(date: string): string {
 // the scheduler sees the whole picture.
 async function gapAudiences(companyId: string, date: string, shiftTypeId: string, type: any) {
   const { rows: resp } = await query(
-    `SELECT r.name, r.available FROM availability_responses r
+    `SELECT r.name, r.available, r.user_id AS "userId" FROM availability_responses r
      JOIN availability_requests ar ON ar.id = r.request_id
      WHERE ar.company_id = $1 AND r.date = $2 ORDER BY ar.created_at DESC`,
     [companyId, date]
   );
   const said = new Map<string, boolean>();
+  const saidById = new Map<string, boolean>();
   for (const r of resp) {
     const k = gapNormName(r.name);
     if (!said.has(k)) said.set(k, !!r.available);
+    if (r.userId && !saidById.has(r.userId)) saidById.set(r.userId, !!r.available);
   }
   const { rows: users } = await query(
     `SELECT u.id, u.first_name AS "firstName", u.last_name AS "lastName", u.nickname, jr.name AS "jobRoleName"
@@ -5082,7 +5084,9 @@ async function gapAudiences(companyId: string, date: string, shiftTypeId: string
   const role: any[] = [];
   for (const u of users) {
     if (working.has(u.id)) continue;
-    const ans = gapNameKeys(u).map((k) => said.get(k)).find((v) => v !== undefined);
+    // Account-keyed answers (login page) win over typed-name ones.
+    const ans = saidById.has(u.id) ? saidById.get(u.id)
+      : gapNameKeys(u).map((k) => said.get(k)).find((v) => v !== undefined);
     const elig = await checkShiftEligibility(companyId, u.id, type.eligible_job_role_ids);
     if (!elig.ok) continue;
     const conflict = await checkShiftConflict(query as any, companyId, {
@@ -9992,14 +9996,14 @@ function matchUserByName(users: any[], name: string): any | null {
 // Newest link wins per (name, session, date, role).
 async function sessionVolunteers(q: any, companyId: string): Promise<any[]> {
   const { rows } = await q(
-    `SELECT r.name, r.session_id AS "sessionId", r.occ_date::text AS "occDate", r.role
+    `SELECT r.name, r.user_id AS "userId", r.session_id AS "sessionId", r.occ_date::text AS "occDate", r.role
      FROM session_avail_responses r JOIN session_avail_links l ON l.id = r.link_id
      WHERE l.company_id = $1 ORDER BY l.created_at DESC, r.created_at DESC`,
     [companyId]);
   const seen = new Set<string>();
   const out: any[] = [];
   for (const r of rows) {
-    const k = normNameKey(r.name) + '|' + r.sessionId + '|' + r.occDate + '|' + r.role;
+    const k = (r.userId || normNameKey(r.name)) + '|' + r.sessionId + '|' + r.occDate + '|' + r.role;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(r);
@@ -10044,7 +10048,7 @@ router.post('/session-avail', requireRole('owner', 'scheduler'), async (req: Req
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [companyId, dashId, hashShareToken(token), title ? String(title).slice(0, 120) : null, fromDate, toDate, req.session.userId!]);
     const base = (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
-    res.status(201).json({ id: rows[0].id, link: `${base}/session-availability.html?t=${token}` });
+    res.status(201).json({ id: rows[0].id, link: `${base}/my-availability.html?kind=session&t=${token}` });
   } catch (err) {
     console.error('[schedule] create session-avail failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -10210,6 +10214,324 @@ router.post('/session-avail/public/respond', async (req: Request, res: Response)
   }
 });
 
+// ---------------------------------------------------------------------------
+// Login-based availability (Deepika, 2026-11-04 evening): availability
+// links now open a page where the person signs in with their normal
+// login; the app picks up their name from the account, shows the
+// sessions for their departments and the shift gaps for their job
+// roles, and saves the answers against their account (user_id) — no
+// typed names, no name matching. Legacy typed-name answers still load
+// when the name matches the account exactly.
+// ---------------------------------------------------------------------------
+
+// Resolve either kind of availability link by its raw token.
+async function resolveAvailLink(kind: string, token: string): Promise<any | null> {
+  if (!token) return null;
+  const hash = hashShareToken(token);
+  if (kind === 'session') {
+    const { rows } = await query(
+      `SELECT l.id, l.company_id AS "companyId", l.dashboard_id AS "dashboardId", l.title,
+              l.from_date::text AS "fromDate", l.to_date::text AS "toDate", c.name AS "companyName"
+       FROM session_avail_links l JOIN companies c ON c.id = l.company_id WHERE l.token_hash = $1`,
+      [hash]);
+    return rows.length ? { ...rows[0], kind: 'session' } : null;
+  }
+  const { rows } = await query(
+    `SELECT r.id, r.company_id AS "companyId", NULL AS "dashboardId", r.title,
+            r.from_date::text AS "fromDate", r.to_date::text AS "toDate", c.name AS "companyName"
+     FROM availability_requests r JOIN companies c ON c.id = r.company_id WHERE r.token_hash = $1`,
+    [hash]);
+  return rows.length ? { ...rows[0], kind: 'shift' } : null;
+}
+
+// The row a login-page answer attaches to: the link itself when the
+// kinds match; otherwise the company's newest link of that kind (or a
+// fresh one) so answers always land where the readers look.
+async function availStorageLink(link: any, wantKind: 'session' | 'shift', userId: string): Promise<any> {
+  if (link.kind === wantKind) return link;
+  if (wantKind === 'session') {
+    const { rows } = await query(
+      'SELECT id, dashboard_id AS "dashboardId" FROM session_avail_links WHERE company_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [link.companyId]);
+    if (rows.length) return { id: rows[0].id, dashboardId: rows[0].dashboardId };
+    const token = crypto.randomBytes(24).toString('hex');
+    const { rows: made } = await query(
+      `INSERT INTO session_avail_links (company_id, dashboard_id, token_hash, title, from_date, to_date, created_by)
+       VALUES ($1, NULL, $2, 'Availability (login page)', $3, $4, $5) RETURNING id`,
+      [link.companyId, hashShareToken(token), link.fromDate, link.toDate, userId]);
+    return { id: made[0].id, dashboardId: null };
+  }
+  const { rows } = await query(
+    'SELECT id FROM availability_requests WHERE company_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [link.companyId]);
+  if (rows.length) return { id: rows[0].id };
+  const token = crypto.randomBytes(24).toString('hex');
+  const { rows: made } = await query(
+    `INSERT INTO availability_requests (company_id, token_hash, title, from_date, to_date, created_by)
+     VALUES ($1, $2, 'Availability (login page)', $3, $4, $5) RETURNING id`,
+    [link.companyId, hashShareToken(token), link.fromDate, link.toDate, userId]);
+  return { id: made[0].id };
+}
+
+// Session occurrences in a window that still need someone, optionally
+// scoped to one dashboard — same expansion as the public link page.
+async function sessionGapsForWindow(companyId: string, dashboardId: string | null, fromDate: string, toDate: string): Promise<any[]> {
+  const clauses = ['s.company_id = $1'];
+  const params: any[] = [companyId];
+  if (dashboardId) { params.push(dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+  params.push(fromDate, toDate);
+  clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
+  clauses.push(`s.session_date <= $${params.length}`);
+  const { rows } = await query(
+    `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
+            sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
+     FROM academic_sessions s
+     LEFT JOIN users u ON u.id = s.lecturer_user_id
+     LEFT JOIN users sup ON sup.id = s.supervisor_user_id
+     LEFT JOIN departments d ON d.id = s.department_id
+     WHERE ${clauses.join(' AND ')} ORDER BY s.session_date, s.start_time NULLS LAST, s.title`,
+    params);
+  let ovMap = new Map<string, any>();
+  const userName = new Map<string, string>();
+  if (rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
+    ovMap = await loadOverrides(companyId, rows.map((r: any) => r.id), fromDate, toDate);
+    const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
+    for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+  }
+  const expanded = expandAcademicSessions(rows, fromDate, toDate, ovMap, userName);
+  const { rows: kinds } = await query('SELECT key, label, color, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1', [companyId]);
+  const kindOf = (s: any) => kinds.find((k: any) => k.key === s.kind && k.dashboardId === s.dashboardId) || kinds.find((k: any) => k.key === s.kind) || null;
+  const { rows: dashRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
+  const dashName = new Map(dashRows.map((d: any) => [d.id, d.name]));
+  return expanded
+    .filter((s: any) => !s.lecturerUserId || !s.supervisorUserId)
+    .map((s: any) => {
+      const k: any = kindOf(s);
+      const missing: string[] = [];
+      if (!s.lecturerUserId) missing.push('presenter');
+      if (!s.supervisorUserId) missing.push('supervisor');
+      return {
+        sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
+        startTime: s.startTime, endTime: s.endTime, location: s.location,
+        kindLabel: k ? k.label : (s.kind === 'event' ? 'Event' : 'Lecture'),
+        kindColor: k ? k.color : '#475569',
+        personLabel: (k && k.personLabel) || 'Presenter',
+        dashboardId: s.dashboardId || null, dashboardName: s.dashboardId ? (dashName.get(s.dashboardId) || null) : null,
+        departmentId: (s as any).departmentId || null,
+        missing,
+      };
+    });
+}
+
+// Is this user in a session's offer audience? (Same rule as session
+// offers: the session's department, else its calendar's departments,
+// else everyone; owners are always in.)
+async function sessionAudienceHas(companyId: string, gap: any, user: any, memberCache: Map<string, Set<string>>): Promise<boolean> {
+  if (user.role === 'owner') return true;
+  let deptIds: string[] = [];
+  if (gap.departmentId) deptIds = [gap.departmentId];
+  else if (gap.dashboardId) {
+    const { rows: dd } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [gap.dashboardId]);
+    deptIds = dd.map((d: any) => d.department_id);
+  }
+  if (!deptIds.length) return true;
+  for (const d of deptIds) {
+    if (!memberCache.has(d)) memberCache.set(d, new Set(await deptMemberIds(companyId, d)));
+    if (memberCache.get(d)!.has(user.id)) return true;
+  }
+  return false;
+}
+
+// Shift gaps in a window the user could take (staffing target +
+// extra slots − assigned, per day and type), filtered to the shift
+// types their job role fits (owners see all).
+async function shiftGapsForUser(companyId: string, user: any, fromDate: string, toDate: string): Promise<any[]> {
+  const { rows: types } = await query(
+    `SELECT id, name, short_name AS "shortName", color, eligible_job_role_ids AS "eligibleIds"
+     FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name`,
+    [companyId]);
+  const { rows: targets } = await query(
+    `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount", weekdays,
+            start_date::text AS "startDate", end_date::text AS "endDate"
+     FROM staffing_targets WHERE company_id = $1`,
+    [companyId]);
+  const targetOf = new Map(targets.map((t: any) => [t.shiftTypeId, t]));
+  const { rows: adj } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM extra_open_slots
+     WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, fromDate, toDate]);
+  const adjMap = new Map<string, number>();
+  for (const a of adj) adjMap.set(a.date + '|' + a.shiftTypeId, (adjMap.get(a.date + '|' + a.shiftTypeId) || 0) + (a.count || 0));
+  const { rows: closed } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId" FROM closed_shifts
+     WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, fromDate, toDate]);
+  const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
+  const shifts = await getShiftsForRange(query as any, companyId, fromDate, toDate);
+  const assigned = new Map<string, number>();
+  for (const s of shifts as any[]) assigned.set(s.date + '|' + s.shiftTypeId, (assigned.get(s.date + '|' + s.shiftTypeId) || 0) + 1);
+  const mine: any[] = [];
+  for (const t of types) {
+    if (user.role !== 'owner') {
+      const elig = await checkShiftEligibility(companyId, user.id, t.eligibleIds);
+      if (!elig.ok) continue;
+    }
+    mine.push(t);
+  }
+  const byDate = new Map<string, any[]>();
+  const d = new Date(fromDate + 'T12:00:00');
+  const end = new Date(toDate + 'T12:00:00');
+  while (d <= end) {
+    const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const dow = d.getDay();
+    for (const t of mine) {
+      const tg: any = targetOf.get(t.id);
+      if (!tg) continue;
+      if (tg.startDate && date < tg.startDate) continue;
+      if (tg.endDate && date > tg.endDate) continue;
+      const wds: number[] = Array.isArray(tg.weekdays) ? tg.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      if (!wds.includes(dow)) continue;
+      if (closedSet.has(date + '|' + t.id)) continue;
+      const needed = (tg.targetCount || 0) + (adjMap.get(date + '|' + t.id) || 0) - (assigned.get(date + '|' + t.id) || 0);
+      if (needed <= 0) continue;
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date)!.push({ shiftTypeId: t.id, typeName: t.name, shortName: t.shortName, color: t.color, needed });
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return [...byDate.entries()].map(([date, gaps]) => ({ date, gaps }));
+}
+
+// GET /api/schedule/availability/mine?kind=shift|session&token=xxx —
+// the login page's data (session required; the link must belong to
+// the signed-in company).
+router.get('/availability/mine', async (req: Request, res: Response) => {
+  try {
+    if (!req.session?.userId) { res.status(401).json({ error: 'Please sign in.' }); return; }
+    const kind = String(req.query.kind || 'shift');
+    const link = await resolveAvailLink(kind, String(req.query.token || ''));
+    if (!link) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    if (link.companyId !== req.session.companyId) {
+      res.status(403).json({ error: 'You are signed in to a different company. Sign out and sign in with the account for this link.' });
+      return;
+    }
+    const { rows: meRows } = await query(
+      `SELECT id, role, first_name AS "firstName", last_name AS "lastName", nickname, job_role_id AS "jobRoleId"
+       FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`,
+      [req.session.userId, link.companyId]);
+    if (!meRows.length) { res.status(403).json({ error: 'Your account is not active in this company.' }); return; }
+    const me = meRows[0];
+    const myName = [me.firstName, me.lastName].filter(Boolean).join(' ');
+    // Sessions for my departments (link scope: its calendar, or all
+    // calendars for a shift link).
+    const allGaps = await sessionGapsForWindow(link.companyId, link.kind === 'session' ? link.dashboardId : null, link.fromDate, link.toDate);
+    const memberCache = new Map<string, Set<string>>();
+    const sessions: any[] = [];
+    for (const g of allGaps) {
+      if (await sessionAudienceHas(link.companyId, g, me, memberCache)) sessions.push(g);
+    }
+    // My saved session picks, across the company's links (account
+    // rows; legacy typed rows whose name is exactly mine count too).
+    const { rows: myResp } = await query(
+      `SELECT r.session_id AS "sessionId", r.occ_date::text AS "occDate", r.role FROM session_avail_responses r
+       JOIN session_avail_links l ON l.id = r.link_id
+       WHERE l.company_id = $1 AND (r.user_id = $2 OR (r.user_id IS NULL AND r.name = $3))`,
+      [link.companyId, me.id, myName]);
+    const shiftDays = await shiftGapsForUser(link.companyId, me, link.fromDate, link.toDate);
+    // My latest shift answers per date (newest request wins, like the
+    // offer panels read them).
+    const { rows: dateResp } = await query(
+      `SELECT r.date::text AS date, r.available FROM availability_responses r
+       JOIN availability_requests ar ON ar.id = r.request_id
+       WHERE ar.company_id = $1 AND (r.user_id = $2 OR (r.user_id IS NULL AND r.name = $3))
+       ORDER BY ar.created_at DESC, r.created_at DESC`,
+      [link.companyId, me.id, myName]);
+    const myDates: Record<string, boolean> = {};
+    for (const r of dateResp) if (!(r.date in myDates)) myDates[r.date] = !!r.available;
+    res.json({
+      companyName: link.companyName, title: link.title, fromDate: link.fromDate, toDate: link.toDate,
+      me: { name: myName, nickname: me.nickname || null },
+      sessions,
+      mySessionPicks: myResp.map((r: any) => r.sessionId + '|' + r.occDate + '|' + r.role),
+      shiftDays, myDates,
+    });
+  } catch (err) {
+    console.error('[schedule] availability mine failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/availability/mine/respond — save my answers
+// against my account. Replaces my earlier answers from the login
+// page; session picks are validated against the live gap set.
+router.post('/availability/mine/respond', async (req: Request, res: Response) => {
+  try {
+    if (!req.session?.userId) { res.status(401).json({ error: 'Please sign in.' }); return; }
+    const b = req.body ?? {};
+    const link = await resolveAvailLink(String(b.kind || 'shift'), String(b.token || ''));
+    if (!link) { res.status(404).json({ error: 'This link is not valid.' }); return; }
+    if (link.companyId !== req.session.companyId) { res.status(403).json({ error: 'Wrong company.' }); return; }
+    const { rows: meRows } = await query(
+      `SELECT id, first_name AS "firstName", last_name AS "lastName" FROM users
+       WHERE id = $1 AND company_id = $2 AND is_active = true`,
+      [req.session.userId, link.companyId]);
+    if (!meRows.length) { res.status(403).json({ error: 'Your account is not active in this company.' }); return; }
+    const me = meRows[0];
+    const myName = [me.firstName, me.lastName].filter(Boolean).join(' ');
+    const sessionLink = await availStorageLink(link, 'session', me.id);
+    const shiftLink = await availStorageLink(link, 'shift', me.id);
+    // Session picks (validated against the page's scope gaps).
+    const picks: any[] = Array.isArray(b.sessionPicks) ? b.sessionPicks.slice(0, 200) : [];
+    const scopeGaps = await sessionGapsForWindow(link.companyId, link.kind === 'session' ? link.dashboardId : null, link.fromDate, link.toDate);
+    const gapSet = new Set<string>();
+    for (const s of scopeGaps) for (const role of s.missing) gapSet.add(s.sessionId + '|' + s.occDate + '|' + role);
+    // Full replace across ALL the company's links, so an answer
+    // given on an older link can never resurface after a change.
+    await query(
+      `DELETE FROM session_avail_responses
+       WHERE (user_id = $1 OR (user_id IS NULL AND name = $2))
+         AND link_id IN (SELECT id FROM session_avail_links WHERE company_id = $3)`,
+      [me.id, myName, link.companyId]);
+    let savedSessions = 0;
+    for (const p of picks) {
+      const key = String(p.sessionId || '') + '|' + String(p.occDate || '') + '|' + String(p.role || '');
+      if (!gapSet.has(key)) continue;
+      await query(
+        `INSERT INTO session_avail_responses (link_id, name, user_id, session_id, occ_date, role)
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (link_id, name, session_id, occ_date, role) DO NOTHING`,
+        [sessionLink.id, myName, me.id, String(p.sessionId), String(p.occDate), String(p.role)]);
+      savedSessions++;
+    }
+    // Per-date shift answers: entries {date, available} where
+    // available is true/false, or null to clear my answer that day.
+    const answers: any[] = Array.isArray(b.dateAnswers) ? b.dateAnswers.slice(0, 40) : [];
+    let savedDates = 0;
+    for (const a of answers) {
+      const date = String(a.date || '');
+      if (!isValidDate(date) || date < link.fromDate || date > link.toDate) continue;
+      // Clear my earlier answers for that date on every request
+      // first (including legacy typed-name rows), then write the
+      // new one — a save is the single source of truth.
+      await query(
+        `DELETE FROM availability_responses
+         WHERE date = $1 AND (user_id = $2 OR (user_id IS NULL AND name = $3))
+           AND request_id IN (SELECT id FROM availability_requests WHERE company_id = $4)`,
+        [date, me.id, myName, link.companyId]);
+      if (a.available === null || a.available === undefined) continue;
+      await query(
+        `INSERT INTO availability_responses (request_id, name, user_id, date, available)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (request_id, name, date) DO UPDATE SET available = EXCLUDED.available, user_id = EXCLUDED.user_id`,
+        [shiftLink.id, myName, me.id, date, !!a.available]);
+      savedDates++;
+    }
+    res.json({ ok: true, savedSessions, savedDates });
+  } catch (err) {
+    console.error('[schedule] availability mine respond failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // Shared candidate computation for one occurrence + role.
 async function sessionOfferCandidates(q: any, req: Request, baseId: string, occDate: string, role: string): Promise<any> {
   const companyId = req.session.companyId!;
@@ -10234,7 +10556,9 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
   const responses = await sessionVolunteers(q, companyId);
   for (const r of responses) {
     if (r.sessionId !== baseId || r.occDate !== occDate || r.role !== role) continue;
-    const u = matchUserByName(userRows, r.name);
+    // Account-keyed answers match the account directly; typed-name
+    // answers (old no-login page) fall back to name matching.
+    const u = (r.userId && userRows.find((x: any) => x.id === r.userId)) || matchUserByName(userRows, r.name);
     if (!u || volIds.has(u.id)) continue;
     volIds.add(u.id);
     volunteers.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });

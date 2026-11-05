@@ -6906,9 +6906,15 @@ function qsNpDayLabel(ds, todayDs, tomorrowDs) {
 window.qsNpOpen = function (btn) {
   var dash = btn.getAttribute('data-dash');
   var date = btn.getAttribute('data-date');
-  location.hash = 'calendars';
+  // Same proven pattern as the schedule's session boxes: open the
+  // dashboard on the date FIRST, then switch tabs via the dash route.
+  // (The old code set hash 'calendars', which is not a route — the
+  // router fell back to the Schedule page. Fixed 2026-11-04.)
   if (dash && typeof window.qsOpenDashboardAt === 'function') {
-    setTimeout(function () { window.qsOpenDashboardAt(dash, date); }, 200);
+    window.qsOpenDashboardAt(dash, date);
+    try { location.hash = '#dash/' + dash; } catch (e) {}
+  } else {
+    location.hash = 'dash';
   }
 };
 window.qsScRenderCal = function (dashId) {

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My availability</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #eef2f5; color: #0f172a; max-width: 560px; margin: 0 auto; }
+  .head { background: #083f4d; color: #fff; padding: 1.1rem 1.1rem 0.95rem; }
+  .head h1 { font-size: 1.2rem; margin-bottom: 0.2rem; }
+  .head .sub { color: #bfe0e6; font-size: 0.88rem; }
+  .head .who { margin-top: 0.45rem; font-size: 0.9rem; }
+  .head .who button { background: none; border: none; color: #7fd4de; font-size: 0.85rem; cursor: pointer; text-decoration: underline; padding: 0; margin-left: 0.5rem; }
+  .wrap { padding: 1rem; }
+  .card { background: #fff; border-radius: 14px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 0.9rem; }
+  label { display: block; font-weight: 700; font-size: 0.8rem; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; margin-top: 0.7rem; }
+  label:first-child { margin-top: 0; }
+  input[type="email"], input[type="password"] { width: 100%; padding: 0.7rem; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 1rem; }
+  .note { color: #475569; font-size: 0.9rem; margin-bottom: 0.9rem; line-height: 1.45; }
+  .sect { font-weight: 800; font-size: 1.02rem; margin: 1.2rem 0 0.1rem; }
+  .sect:first-child { margin-top: 0.2rem; }
+  .day { font-weight: 800; font-size: 0.95rem; margin: 1.05rem 0 0.2rem; }
+  .sess { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.8rem 0.9rem; margin-top: 0.6rem; }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; color: #fff; font-size: 0.68rem; font-weight: 700; vertical-align: 2px; margin-right: 0.4rem; }
+  .gchip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; margin: 0.15rem 0.25rem 0.15rem 0; color: #fff; }
+  .sess b { font-size: 0.98rem; }
+  .meta { color: #64748b; font-size: 0.83rem; margin-top: 0.2rem; }
+  .btns { display: flex; gap: 0.5rem; margin-top: 0.65rem; }
+  .pick { flex: 1; padding: 0.6rem; border-radius: 9px; border: 1.5px solid #cbd5e1; background: #fff; color: #334155; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
+  .pick.on { border-color: #0e7c86; background: #0e7c86; color: #fff; }
+  .pick.no.on { border-color: #b45309; background: #b45309; }
+  .btn { width: 100%; padding: 0.9rem; background: #0e7c86; color: #fff; border: none; border-radius: 12px; font-size: 1rem; font-weight: 800; cursor: pointer; margin-top: 1.1rem; }
+  .btn:disabled { opacity: 0.5; }
+  .msg { text-align: center; padding: 1.2rem 0.4rem; }
+  .error { color: #dc2626; text-align: center; padding: 1rem; }
+  .saved { color: #0e7c86; font-weight: 700; text-align: center; margin-top: 0.7rem; display: none; }
+  .empty { color: #64748b; font-size: 0.9rem; background: #fff; border: 1px dashed #cbd5e1; border-radius: 12px; padding: 0.8rem 0.9rem; margin-top: 0.6rem; }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1 id="title">My availability</h1>
+  <p class="sub" id="subtitle">Loading…</p>
+  <p class="who" id="who" style="display:none"></p>
+</div>
+<div class="wrap">
+  <div id="login" class="card" style="display:none">
+    <p class="note">Sign in with your normal Quick Scheduling login. Your name comes from your account — no typing it in, and your answers go straight to your schedulers.</p>
+    <label for="email">Email</label>
+    <input type="email" id="email" autocomplete="username" placeholder="you@example.com">
+    <label for="password">Password</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="Your password">
+    <div class="error" id="loginErr" style="display:none;padding:0.6rem 0 0"></div>
+    <button class="btn" id="signin">Sign in</button>
+    <p class="note" style="margin:0.8rem 0 0">No account yet? Ask your scheduler to add you, then open this link again.</p>
+  </div>
+  <div id="main" style="display:none">
+    <div id="sessionsSect"></div>
+    <div id="shiftsSect"></div>
+    <button class="btn" id="save">Save my answers</button>
+    <div class="saved" id="saved">Saved ✓ — thank you!</div>
+  </div>
+  <div id="err" class="error" style="display:none"></div>
+</div>
+<script>
+  var params = new URLSearchParams(window.location.search);
+  var kind = params.get('kind') || 'shift';
+  var token = params.get('t') || '';
+  var picks = {};       // 'sessionId|occDate|role' -> true
+  var dateAns = {};     // 'YYYY-MM-DD' -> true | false | null
+  var data = null;
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtDay(ds) {
+    var d = new Date(ds + 'T12:00:00');
+    return d.toLocaleDateString(undefined, { weekday: 'long' }) + ', ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  function fmtTime(t) {
+    if (!t) return '';
+    var parts = String(t).slice(0, 5).split(':');
+    var h = parseInt(parts[0], 10), m = parts[1];
+    var ap = h >= 12 ? 'PM' : 'AM'; h = h % 12; if (h === 0) h = 12;
+    return h + ':' + m + ' ' + ap;
+  }
+  function showErr(msg) {
+    var e = document.getElementById('err');
+    e.textContent = msg; e.style.display = 'block';
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('main').style.display = 'none';
+  }
+  function boot() {
+    fetch('/api/schedule/availability/mine?kind=' + encodeURIComponent(kind) + '&token=' + encodeURIComponent(token), { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.status === 401) {
+          document.getElementById('subtitle').textContent = 'Sign in to answer';
+          document.getElementById('login').style.display = 'block';
+          document.getElementById('main').style.display = 'none';
+          return null;
+        }
+        return r.json().then(function (j) {
+          if (!r.ok) { showErr(j.error || 'Something went wrong.'); return null; }
+          return j;
+        });
+      })
+      .then(function (j) { if (j) { data = j; render(); } })
+      .catch(function () { showErr('Could not load. Please try again.'); });
+  }
+  function render() {
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('err').style.display = 'none';
+    document.getElementById('title').textContent = data.title || 'My availability';
+    document.getElementById('subtitle').textContent = data.companyName + ' · ' + fmtDay(data.fromDate) + ' – ' + fmtDay(data.toDate);
+    var who = document.getElementById('who');
+    who.style.display = 'block';
+    who.innerHTML = 'Signed in as <b>' + esc(data.me.name) + '</b>';
+    var out = document.createElement('button');
+    out.textContent = 'Not you? Sign out';
+    out.addEventListener('click', function () {
+      fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).then(function () { window.location.reload(); });
+    });
+    who.appendChild(out);
+    picks = {};
+    (data.mySessionPicks || []).forEach(function (k) { picks[k] = true; });
+    dateAns = {};
+    (data.shiftDays || []).forEach(function (d) {
+      dateAns[d.date] = (d.date in (data.myDates || {})) ? data.myDates[d.date] : null;
+    });
+    renderSessions();
+    renderShifts();
+    document.getElementById('main').style.display = 'block';
+  }
+  function renderSessions() {
+    var host = document.getElementById('sessionsSect');
+    var h = '<div class="sect">Sessions that need someone</div>';
+    h += '<p class="note">Tap the ones you can do.</p>';
+    if (!data.sessions.length) {
+      h += '<div class="empty">No sessions need anyone in this window.</div>';
+    }
+    var lastDay = '';
+    data.sessions.forEach(function (s, i) {
+      if (s.occDate !== lastDay) { lastDay = s.occDate; h += '<div class="day">' + esc(fmtDay(s.occDate)) + '</div>'; }
+      h += '<div class="sess"><span class="chip" style="background:' + esc(s.kindColor) + '">' + esc(s.kindLabel) + '</span><b>' + esc(s.title) + '</b>';
+      var meta = [];
+      if (s.startTime) meta.push(fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : ''));
+      if (s.location) meta.push(s.location);
+      if (s.dashboardName) meta.push(s.dashboardName);
+      if (meta.length) h += '<div class="meta">' + esc(meta.join(' · ')) + '</div>';
+      h += '<div class="btns">';
+      s.missing.forEach(function (role) {
+        var key = s.sessionId + '|' + s.occDate + '|' + role;
+        var label = role === 'supervisor' ? 'I can supervise' : 'I can be the ' + s.personLabel;
+        h += '<button class="pick' + (picks[key] ? ' on' : '') + '" data-sess="' + i + '" data-role="' + role + '">' + esc(label) + '</button>';
+      });
+      h += '</div></div>';
+    });
+    host.innerHTML = h;
+    host.querySelectorAll('[data-sess]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var s = data.sessions[parseInt(btn.getAttribute('data-sess'), 10)];
+        var key = s.sessionId + '|' + s.occDate + '|' + btn.getAttribute('data-role');
+        if (picks[key]) delete picks[key]; else picks[key] = true;
+        btn.classList.toggle('on', !!picks[key]);
+        document.getElementById('saved').style.display = 'none';
+      });
+    });
+  }
+  function renderShifts() {
+    var host = document.getElementById('shiftsSect');
+    var h = '<div class="sect">Shifts that need cover</div>';
+    h += '<p class="note">These are the open shifts for your job role. Mark the days you can work.</p>';
+    if (!data.shiftDays.length) {
+      h += '<div class="empty">No shift gaps for your role in this window.</div>';
+    }
+    data.shiftDays.forEach(function (d) {
+      h += '<div class="sess"><b>' + esc(fmtDay(d.date)) + '</b><div style="margin-top:0.35rem">';
+      d.gaps.forEach(function (g) {
+        h += '<span class="gchip" style="background:' + esc(g.color || '#475569') + '">' + esc(g.shortName || g.typeName) + ' ×' + g.needed + '</span>';
+      });
+      var a = dateAns[d.date];
+      h += '</div><div class="btns">';
+      h += '<button class="pick' + (a === true ? ' on' : '') + '" data-date="' + d.date + '" data-val="yes">✓ I can work this day</button>';
+      h += '<button class="pick no' + (a === false ? ' on' : '') + '" data-date="' + d.date + '" data-val="no">Can\'t work</button>';
+      h += '</div></div>';
+    });
+    host.innerHTML = h;
+    host.querySelectorAll('[data-date]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var date = btn.getAttribute('data-date');
+        var want = btn.getAttribute('data-val') === 'yes' ? true : false;
+        dateAns[date] = (dateAns[date] === want) ? null : want;
+        var row = btn.parentElement.querySelectorAll('.pick');
+        row.forEach(function (b) {
+          var v = b.getAttribute('data-val') === 'yes' ? true : false;
+          b.classList.toggle('on', dateAns[date] === v);
+        });
+        document.getElementById('saved').style.display = 'none';
+      });
+    });
+  }
+  document.getElementById('signin').addEventListener('click', function () {
+    var btn = this; btn.disabled = true;
+    var err = document.getElementById('loginErr'); err.style.display = 'none';
+    fetch('/api/auth/login', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: document.getElementById('email').value.trim(), password: document.getElementById('password').value }),
+    }).then(function (r) {
+      btn.disabled = false;
+      if (r.ok) { boot(); return; }
+      r.json().then(function (j) { err.textContent = (j && j.error) || 'Sign-in failed.'; err.style.display = 'block'; })
+        .catch(function () { err.textContent = 'Sign-in failed.'; err.style.display = 'block'; });
+    }).catch(function () { btn.disabled = false; err.textContent = 'Network error.'; err.style.display = 'block'; });
+  });
+  document.getElementById('password').addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('signin').click(); });
+  document.getElementById('save').addEventListener('click', function () {
+    var btn = this; btn.disabled = true;
+    var sessionPicks = Object.keys(picks).map(function (k) {
+      var p = k.split('|'); return { sessionId: p[0], occDate: p[1], role: p[2] };
+    });
+    var dateAnswers = Object.keys(dateAns).map(function (date) { return { date: date, available: dateAns[date] }; });
+    fetch('/api/schedule/availability/mine/respond', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, token: token, sessionPicks: sessionPicks, dateAnswers: dateAnswers }),
+    }).then(function (r) {
+      btn.disabled = false;
+      if (r.ok) { document.getElementById('saved').style.display = 'block'; }
+      else r.json().then(function (j) { alert((j && j.error) || 'Could not save.'); }).catch(function () { alert('Could not save.'); });
+    }).catch(function () { btn.disabled = false; alert('Network error.'); });
+  });
+  if (!token) { showErr('This link is not valid.'); } else { boot(); }
+</script>
+</body>
+</html>
