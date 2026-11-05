@@ -405,11 +405,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // Vacation ranges per person (pauses attach to the rotations a
     // person is assigned to) — group turns skip a member who is on
     // vacation that date, the same way their own rotation does.
+    // 'Bulk delete' pauses are NOT vacations: they are admin
+    // removals, so they must never trigger the vacation pass/cover
+    // in group rotations.
     const { rows: vacRows } = await query(
       `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
        FROM rotation_pauses p
        JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
-       WHERE p.company_id = $1`,
+       WHERE p.company_id = $1 AND (p.reason IS NULL OR p.reason <> 'Bulk delete')`,
       [companyId]
     );
     const vacMap = new Map<string, Array<{ start: string; end: string }>>();
@@ -541,6 +544,8 @@ router.get('/shifts', async (req: Request, res: Response) => {
           // A turn is empty only if the whole group is on vacation.
           const queues: any[][] = groupsMembers.map((g) => g.slice());
           let currentMember: any = null;
+          let blockLine: any[] = [];
+          let blockServerIdx = -1;
           for (let ms = startMs; ms <= toMs; ms += dayMs) {
             const dayIndex = Math.floor((ms - startMs) / dayMs);
             const cycleDay = (dayIndex % rot.cycleDays) + 1;
@@ -556,10 +561,13 @@ router.get('/shifts', async (req: Request, res: Response) => {
               blockIdx++;
               const gIdx = blockIdx % groupsMembers.length;
               const q = queues[gIdx];
+              blockLine = q.slice();
+              blockServerIdx = -1;
               currentMember = null;
               for (let qi = 0; qi < q.length; qi++) {
                 if (!onVacation(q[qi].userId, dateStr)) {
                   currentMember = q[qi];
+                  blockServerIdx = qi;
                   q.splice(qi, 1);
                   q.push(currentMember);
                   break;
@@ -567,15 +575,40 @@ router.get('/shifts', async (req: Request, res: Response) => {
               }
             }
             if (ms < fromMs) continue;
-            const m = currentMember;
-            if (!m) continue;
+            if (isPaused(rot.id, dateStr)) continue;
+            let m = currentMember;
+            if (!m || onVacation(m.userId, dateStr)) {
+              // The turn's server is off today (or the whole line was
+              // off when the turn started): the next person in the
+              // SAME group's line covers just this day — chain through
+              // the line, and leave the day blank if nobody in the
+              // group is free (Deepika 2026-11-04 evening). Covers do
+              // not move the line.
+              m = null;
+              const cands: any[] = [];
+              if (blockServerIdx >= 0) {
+                for (let k = 1; k < blockLine.length; k++) cands.push(blockLine[(blockServerIdx + k) % blockLine.length]);
+              } else {
+                for (const c of blockLine) cands.push(c);
+              }
+              for (const cand of cands) {
+                if (onVacation(cand.userId, dateStr)) continue;
+                if (cand.userEndDate && dateStr > String(cand.userEndDate).slice(0, 10)) continue;
+                if (exclSet.has(`${rot.id}|${cand.userId}|${dateStr}|${stId}`)) continue;
+                const candManual = rows.some((s: any) =>
+                  s.userId === cand.userId && s.date === dateStr && s.shiftTypeId === stId
+                );
+                if (candManual) break; // already on this shift type manually — day is filled
+                m = cand;
+                break;
+              }
+              if (!m) continue;
+            }
             if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
             const hasManual = rows.some((s: any) =>
               s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
             );
             if (hasManual) continue;
-            if (isPaused(rot.id, dateStr)) continue;
-            if (onVacation(m.userId, dateStr)) continue;
             const exclKey = `${rot.id}|${m.userId}|${dateStr}|${stId}`;
             if (exclSet.has(exclKey)) continue;
             rotationShifts.push({
@@ -1310,6 +1343,38 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     let paused = 0;
     const from = valid.slice().sort()[0];
     const to = valid.slice().sort()[valid.length - 1];
+    // Group rotations have no assignment rows, so the pause pass
+    // below can't hold them back — exclude their generated
+    // occurrences date by date instead (Deepika 2026-11-04 evening:
+    // bulk delete must work for group rotations too). This runs
+    // BEFORE the pause pass so the occurrences are generated from
+    // the pre-delete state.
+    try {
+      const { rows: gRots } = await query(
+        'SELECT id FROM rotations WHERE company_id = $1 AND group_id IS NOT NULL AND is_active = true',
+        [companyId]
+      );
+      if (gRots.length) {
+        const gSet = new Set(gRots.map((r: any) => r.id));
+        const dateSet = new Set(valid);
+        const gen = await getShiftsForRange(query, companyId, from, to);
+        for (const s of gen as any[]) {
+          if (!s.isRotation || !s.rotationId || !gSet.has(s.rotationId)) continue;
+          if (!dateSet.has(s.date)) continue;
+          if (Array.isArray(userIds) && userIds.length && !userIds.includes(s.userId)) continue;
+          if (shiftTypeId && s.shiftTypeId !== shiftTypeId) continue;
+          await query(
+            `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+            [companyId, s.rotationId, s.userId, s.date, s.shiftTypeId]
+          );
+          paused++;
+        }
+      }
+    } catch (err) {
+      console.error('[schedule] bulk delete group exclusions failed:', err);
+    }
     const rotParams: any[] = [companyId];
     const rotUserFilter = Array.isArray(userIds) && userIds.length
       ? `AND ra.user_id = ANY($${rotParams.length + 1}::uuid[])`
