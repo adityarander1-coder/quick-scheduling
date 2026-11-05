@@ -530,7 +530,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
           let occ = 0;
           let blockIdx = -1;
           let lastKey: string | null = null;
-          const dealtCount = groupsMembers.map(() => 0);
+          // Turns are dealt in the group's fixed order. Vacation rule
+          // (Deepika 2026-11-04 evening): if the person whose turn is
+          // starting is on vacation, the NEXT person in line takes
+          // the whole turn, and the vacationing person takes the next
+          // turn instead (the two swap). A skipped member is "owed"
+          // and serves the first turn they are back for; turns are
+          // empty only when the whole group is on vacation.
+          const dealState = groupsMembers.map(() => ({ ptr: 0, owed: [] as number[] }));
           let currentMember: any = null;
           for (let ms = startMs; ms <= toMs; ms += dayMs) {
             const dayIndex = Math.floor((ms - startMs) / dayMs);
@@ -547,8 +554,21 @@ router.get('/shifts', async (req: Request, res: Response) => {
               blockIdx++;
               const gIdx = blockIdx % groupsMembers.length;
               const gm = groupsMembers[gIdx];
-              currentMember = gm.length ? gm[dealtCount[gIdx] % gm.length] : null;
-              dealtCount[gIdx]++;
+              const st = dealState[gIdx];
+              currentMember = null;
+              if (st.owed.length && !onVacation(gm[st.owed[0]].userId, dateStr)) {
+                currentMember = gm[st.owed.shift()!];
+              } else if (gm.length) {
+                for (let step = 0; step < gm.length; step++) {
+                  const idx = (st.ptr + step) % gm.length;
+                  if (!onVacation(gm[idx].userId, dateStr)) {
+                    currentMember = gm[idx];
+                    st.ptr = (idx + 1) % gm.length;
+                    break;
+                  }
+                  if (!st.owed.includes(idx)) st.owed.push(idx);
+                }
+              }
             }
             if (ms < fromMs) continue;
             const m = currentMember;
