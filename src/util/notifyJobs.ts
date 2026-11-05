@@ -107,6 +107,11 @@ function localDateStr(date: Date, tz: string): string {
   return `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;
 }
 
+/** Today's date (YYYY-MM-DD) in the company's own timezone. */
+export async function companyTodayStr(companyId: string, now: Date = new Date()): Promise<string> {
+  return localDateStr(now, await companyTimezone(companyId));
+}
+
 function addDays(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
@@ -728,6 +733,51 @@ export async function runCredentialReminders(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// End-date deactivation sweep (Deepika, 2026-11-05): a team member's end
+// date is their last working day — once it has passed (company time), the
+// account becomes inactive on its own, exactly as if deactivated by hand
+// (sessions kicked too), and owners/schedulers get one bell per person.
+// The flip is marked (end_date_deactivated) so extending or clearing the
+// date can reactivate the account from the member save (see users.ts).
+// ---------------------------------------------------------------------------
+export async function runEndDateSweep(now: Date = new Date()): Promise<void> {
+  try {
+    const { rows } = await query(
+      `SELECT id, company_id AS "companyId", first_name AS "firstName", last_name AS "lastName",
+              end_date::text AS "endDate"
+       FROM users WHERE is_active = true AND end_date IS NOT NULL`);
+    const adminsCache = new Map<string, string[]>();
+    const adminsOf = async (companyId: string): Promise<string[]> => {
+      if (!adminsCache.has(companyId)) {
+        const { rows: arows } = await query(
+          `SELECT id FROM users WHERE company_id = $1 AND role IN ('owner', 'scheduler') AND is_active = true`, [companyId]);
+        adminsCache.set(companyId, arows.map((r: any) => r.id));
+      }
+      return adminsCache.get(companyId)!;
+    };
+    for (const u of rows) {
+      const today = await companyTodayStr(u.companyId, now);
+      const end = String(u.endDate).slice(0, 10);
+      if (end >= today) continue;
+      await query('UPDATE users SET is_active = false, end_date_deactivated = true WHERE id = $1 AND is_active = true', [u.id]);
+      await query(`DELETE FROM sessions WHERE sess ->> 'userId' = $1`, [u.id]);
+      const name = `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'A team member';
+      const admins = (await adminsOf(u.companyId)).filter((id) => id !== u.id);
+      if (admins.length) {
+        await notify({
+          companyId: u.companyId, userIds: admins, category: 'schedule', type: 'member_end_date',
+          title: `${name}'s account is now inactive — their end date (${fmtDateLong(end)}) has passed`,
+          body: 'They can no longer sign in. To bring them back, extend or clear their end date in Settings → Team members.',
+          payload: { userId: u.id, endDate: end },
+        });
+      }
+    }
+  } catch (e: any) {
+    console.log(`[notify-jobs] end date sweep failed: ${e?.message || e}`);
+  }
+}
+
 export function startNotificationJobs(): void {
   const tick = async () => {
     await sendDailyDigests();
@@ -737,9 +787,10 @@ export function startNotificationJobs(): void {
     await runCoverWarningScan();
     await runShortCoverWeekly();
     await runCredentialReminders();
+    await runEndDateSweep();
   };
   // Run once shortly after startup (DB is ready by then), then every 15 min.
   setTimeout(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 90_000);
   setInterval(() => { tick().catch((e) => console.log('[notify-jobs] tick failed:', e?.message || e)); }, 15 * 60_000);
-  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings + short cover weekly + credential reminders started (every 15 min)');
+  console.log('[notify-jobs] digest + reminders + message bundles + request expiry + cover warnings + short cover weekly + credential reminders + end date sweep started (every 15 min)');
 }

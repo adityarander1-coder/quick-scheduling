@@ -18,6 +18,7 @@ import { getDepartmentAccess, requireActiveDepartment } from '../util/department
 import { splitName, joinName } from '../util/names';
 import { issueInvite, unusablePasswordHash, inviteStatusFrom, InviteStatus } from '../util/invites';
 import { isMailConfigured, sendMail, escHtml } from '../util/mailer';
+import { companyTodayStr } from '../util/notifyJobs.js';
 
 const router = Router();
 
@@ -40,7 +41,7 @@ const PROFILE_SELECT = `
   SELECT u.id, u.first_name, u.last_name, u.name, u.nickname, u.email, u.alt_email, u.phone, u.department_id,
          d.name AS department_name, u.job_role, u.job_role_id,
          jr.name AS job_role_name, u.role,
-         u.end_date, u.is_active, u.created_at, u.special_instructions, u.profile_color, u.avatar_data,
+         u.end_date, u.is_active, u.end_date_deactivated, u.created_at, u.special_instructions, u.profile_color, u.avatar_data,
          inv.used AS inv_used, inv.sent_at AS inv_sent_at, inv.expires_at AS inv_expires_at
   FROM users u LEFT JOIN departments d ON d.id = u.department_id
   LEFT JOIN job_roles jr ON jr.id = u.job_role_id
@@ -464,6 +465,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
         }
       }
       push('is_active', next);
+      // An explicit active/inactive choice is manual control — it clears
+      // the end-date flag so the date logic never overrides it later.
+      push('end_date_deactivated', false);
       if (!next) {
         // Kick the deactivated user out everywhere immediately.
         await query(`DELETE FROM sessions WHERE sess ->> 'userId' = $1`, [targetId]);
@@ -477,18 +481,44 @@ router.patch('/:id', async (req: Request, res: Response) => {
     params.push(targetId);
     await query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
 
+    // End date drives the account status (Deepika, 2026-11-05): when this
+    // save CHANGES the end date (and doesn't itself set isActive), a past
+    // date deactivates the account right away, and extending/clearing the
+    // date reactivates an account the end-date logic deactivated. Manual
+    // deactivations (end_date_deactivated = false) are never undone here.
+    let endDateFlip: 'deactivated' | 'reactivated' | null = null;
+    if (body.endDate !== undefined && body.isActive === undefined) {
+      const oldEnd = target.end_date ? String(target.end_date).slice(0, 10) : null;
+      const newEnd = String(body.endDate).trim() || null;
+      if (newEnd !== oldEnd) {
+        const today = await companyTodayStr(companyId);
+        if (newEnd && newEnd < today && target.is_active) {
+          await query('UPDATE users SET is_active = false, end_date_deactivated = true WHERE id = $1', [targetId]);
+          await query(`DELETE FROM sessions WHERE sess ->> 'userId' = $1`, [targetId]);
+          endDateFlip = 'deactivated';
+        } else if ((!newEnd || newEnd >= today) && !target.is_active && target.end_date_deactivated) {
+          await query('UPDATE users SET is_active = true, end_date_deactivated = false WHERE id = $1', [targetId]);
+          endDateFlip = 'reactivated';
+        }
+      }
+    }
+
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
     const targetName = `${target.first_name || ''} ${target.last_name || ''}`.trim() || 'Team member';
     const fieldNames = sets.map((s: string) => s.split('=')[0].trim());
-    const deactivated = fieldNames.includes('is_active') && body.is_active === false;
+    const deactivated = (fieldNames.includes('is_active') && body.is_active === false) || endDateFlip === 'deactivated';
     await auditLog({
       companyId, date: todayStr(),
       action: deactivated ? 'deleted' : 'updated',
       category: 'settings', source: 'manual', changedBy: callerId,
       personName: targetName,
-      description: deactivated
-        ? `Deactivated team member "${targetName}"`
-        : `Updated team member "${targetName}" (${fieldNames.join(', ')})`,
+      description: endDateFlip === 'deactivated'
+        ? `Deactivated team member "${targetName}" (end date passed)`
+        : endDateFlip === 'reactivated'
+          ? `Reactivated team member "${targetName}" (end date extended)`
+          : deactivated
+            ? `Deactivated team member "${targetName}"`
+            : `Updated team member "${targetName}" (${fieldNames.join(', ')})`,
     });
     res.json({ user: publicProfile(rows[0]) });
   } catch (err) {
