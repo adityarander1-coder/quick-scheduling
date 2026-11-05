@@ -171,10 +171,11 @@ export async function getShiftsForRange(
         let occ = 0;
         let blockIdx = -1;
         let lastKey: string | null = null;
-        // Vacation swap (mirrors schedule.ts): a member on vacation
-        // at their turn's start is owed the next turn; the next
-        // available member in the order takes the whole turn.
-        const dealState = groupsMembers.map(() => ({ ptr: 0, owed: [] as number[] }));
+        // Line model (mirrors schedule.ts): front member serves and
+        // goes to the back; a member on vacation at their turn's
+        // start keeps the front spot, the next member in the same
+        // group covers the whole turn.
+        const queues: any[][] = groupsMembers.map((g) => g.slice());
         let currentMember: any = null;
         for (let ms = startMs; ms <= toMs; ms += dayMs) {
           const dayIndex = Math.floor((ms - startMs) / dayMs);
@@ -190,20 +191,14 @@ export async function getShiftsForRange(
             lastKey = key;
             blockIdx++;
             const gIdx = blockIdx % groupsMembers.length;
-            const gm = groupsMembers[gIdx];
-            const st = dealState[gIdx];
+            const q = queues[gIdx];
             currentMember = null;
-            if (st.owed.length && !onVacation(gm[st.owed[0]].userId, dateStr)) {
-              currentMember = gm[st.owed.shift()!];
-            } else if (gm.length) {
-              for (let step = 0; step < gm.length; step++) {
-                const idx = (st.ptr + step) % gm.length;
-                if (!onVacation(gm[idx].userId, dateStr)) {
-                  currentMember = gm[idx];
-                  st.ptr = (idx + 1) % gm.length;
-                  break;
-                }
-                if (!st.owed.includes(idx)) st.owed.push(idx);
+            for (let qi = 0; qi < q.length; qi++) {
+              if (!onVacation(q[qi].userId, dateStr)) {
+                currentMember = q[qi];
+                q.splice(qi, 1);
+                q.push(currentMember);
+                break;
               }
             }
           }

@@ -530,14 +530,16 @@ router.get('/shifts', async (req: Request, res: Response) => {
           let occ = 0;
           let blockIdx = -1;
           let lastKey: string | null = null;
-          // Turns are dealt in the group's fixed order. Vacation rule
-          // (Deepika 2026-11-04 evening): if the person whose turn is
-          // starting is on vacation, the NEXT person in line takes
-          // the whole turn, and the vacationing person takes the next
-          // turn instead (the two swap). A skipped member is "owed"
-          // and serves the first turn they are back for; turns are
-          // empty only when the whole group is on vacation.
-          const dealState = groupsMembers.map(() => ({ ptr: 0, owed: [] as number[] }));
+          // Each group is a LINE (Deepika 2026-11-04 evening): the
+          // member at the front takes the group's next turn and goes
+          // to the back of the line. If the person whose turn is
+          // starting is on vacation, the next person IN THE SAME
+          // GROUP takes the whole turn; the vacationing member keeps
+          // their place at the front and takes the next turn. Nobody
+          // is pulled from another group, and no one works two turns
+          // in a row because of a swap — the line just keeps moving.
+          // A turn is empty only if the whole group is on vacation.
+          const queues: any[][] = groupsMembers.map((g) => g.slice());
           let currentMember: any = null;
           for (let ms = startMs; ms <= toMs; ms += dayMs) {
             const dayIndex = Math.floor((ms - startMs) / dayMs);
@@ -553,20 +555,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
               lastKey = key;
               blockIdx++;
               const gIdx = blockIdx % groupsMembers.length;
-              const gm = groupsMembers[gIdx];
-              const st = dealState[gIdx];
+              const q = queues[gIdx];
               currentMember = null;
-              if (st.owed.length && !onVacation(gm[st.owed[0]].userId, dateStr)) {
-                currentMember = gm[st.owed.shift()!];
-              } else if (gm.length) {
-                for (let step = 0; step < gm.length; step++) {
-                  const idx = (st.ptr + step) % gm.length;
-                  if (!onVacation(gm[idx].userId, dateStr)) {
-                    currentMember = gm[idx];
-                    st.ptr = (idx + 1) % gm.length;
-                    break;
-                  }
-                  if (!st.owed.includes(idx)) st.owed.push(idx);
+              for (let qi = 0; qi < q.length; qi++) {
+                if (!onVacation(q[qi].userId, dateStr)) {
+                  currentMember = q[qi];
+                  q.splice(qi, 1);
+                  q.push(currentMember);
+                  break;
                 }
               }
             }
