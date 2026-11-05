@@ -8263,12 +8263,14 @@ window.qsNpOfferSend = function (btn) {
                   <input type="text" id="grot-name" placeholder="e.g. Weekend nights" autocomplete="off">
                 </div>
                 <div class="form-row">
-                  <label>Group — its members take turns, in this order</label>
-                  <div style="display:flex;gap:0.6rem;align-items:center">
-                    <select id="grot-group" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                  <label>Groups — they take turns in this order</label>
+                  <div id="grot-groups-list"></div>
+                  <div style="display:flex;gap:0.6rem;align-items:center;margin-top:0.6rem">
+                    <select id="grot-group-add" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                    <button type="button" class="btn-secondary" id="grot-add-group-btn" style="white-space:nowrap">＋ Add group</button>
                     <button type="button" class="btn-secondary" id="grot-manage-groups" style="white-space:nowrap">Manage groups</button>
                   </div>
-                  <div id="grot-order" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:0.6rem"></div>
+                  <p class="hint" style="margin:0.5rem 0 0">Each turn goes to the next group. Inside a group, the next person in its order takes that group's turn — so a group can work a week, rest while the next group works, then come back with its next person.</p>
                 </div>
                 <div class="form-row">
                   <label>Shift type — the special shift</label>
@@ -8308,7 +8310,7 @@ window.qsNpOfferSend = function (btn) {
                   <div class="day-toggles" id="grot-days"></div>
                 </div>
                 <div class="form-row">
-                  <label>A new person takes over</label>
+                  <label>A new turn starts</label>
                   <div class="seg-toggle" id="grot-turn" style="display:flex;gap:0.5rem;flex-wrap:wrap">
                     <button type="button" class="btn-secondary grot-turn-btn on" data-unit="shift">Each shift</button>
                     <button type="button" class="btn-secondary grot-turn-btn" data-unit="days2">Every 2 days</button>
@@ -8794,6 +8796,7 @@ window.qsNpOfferSend = function (btn) {
               var allGroups = [];
               var editingGrotId = null;
               var grotUnit = 'shift';
+              var grotGroupIds = [];
 
               function groupById(id) {
                 for (var i = 0; i < allGroups.length; i++) if (allGroups[i].id === id) return allGroups[i];
@@ -8833,7 +8836,7 @@ window.qsNpOfferSend = function (btn) {
                 var grots = allRots.filter(function (r) { return r.groupId; }).filter(grotViewable);
                 var html = '<div class="card" style="margin-bottom:1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
                   '<h4 style="margin:0">👥 Group rotations</h4>' +
-                  '<span style="color:var(--dim);font-size:13px">Special shifts — a group\u2019s members take turns, in a fixed order.</span>' +
+                  '<span style="color:var(--dim);font-size:13px">Special shifts — groups take turns; inside each group, its people rotate in a fixed order.</span>' +
                   '<span style="flex:1"></span>' +
                   '<button type="button" class="btn-secondary" id="grot-goto-groups" style="padding:0.4rem 0.8rem">Manage groups</button>' +
                   '<button type="button" class="btn" id="grot-new-btn" style="padding:0.4rem 0.8rem">＋ New group rotation</button></div>';
@@ -8841,13 +8844,17 @@ window.qsNpOfferSend = function (btn) {
                   html += '<p style="color:var(--dim);font-size:13px;margin:0.7rem 0 0">None yet. Make a group first (Groups tab), then point a group rotation at it.</p>';
                 }
                 grots.forEach(function (r) {
-                  var g = groupById(r.groupId);
-                  var order = g ? groupActiveMembers(g).map(memberName).join(' → ') : '(group deleted)';
+                  var gids = r.groupIds ? String(r.groupIds).split(',').map(function (x) { return x.trim(); }).filter(Boolean) : (r.groupId ? [r.groupId] : []);
+                  var gnames = gids.map(function (id) { var g = groupById(id); return g ? g.name : '(deleted group)'; }).join(' → ');
+                  var order = gids.map(function (id) {
+                    var g = groupById(id); if (!g) return '';
+                    return g.name + ': ' + groupActiveMembers(g).map(memberName).join(' → ');
+                  }).filter(Boolean).join('   ·   ');
                   var st = grotSt(r);
                   html += '<div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-top:1px solid var(--border);margin-top:9px;flex-wrap:wrap">' +
                     '<span class="erc-rot-dot" style="background:' + esc(st ? st.color : '#637a8e') + '"></span>' +
                     '<span style="flex:1;min-width:200px"><strong>' + esc(r.name) + '</strong>' +
-                    '<span style="display:block;color:var(--dim);font-size:12.5px">' + esc(r.groupShiftTypeName || (st ? st.name : '')) + ' · ' + esc(g ? g.name : '') + ' · turns: ' + esc(turnLabel(r)) + ' · from ' + esc(r.startDate || '') + '</span>' +
+                    '<span style="display:block;color:var(--dim);font-size:12.5px">' + esc(r.groupShiftTypeName || (st ? st.name : '')) + ' · ' + esc(gnames) + ' · turns: ' + esc(turnLabel(r)) + ' · from ' + esc(r.startDate || '') + '</span>' +
                     '<span style="display:block;color:var(--dim);font-size:12.5px">' + esc(order) + '</span></span>' +
                     '<span class="badge ' + (r.isActive ? 'badge-active' : 'badge-inactive') + '">' + (r.isActive ? 'Active' : 'Paused') + '</span>' +
                     (grotEditable(r) ? '<button type="button" class="btn-secondary grot-edit-btn" data-rot="' + r.id + '" style="padding:0.35rem 0.7rem">Edit</button>' : '') +
@@ -8977,30 +8984,64 @@ window.qsNpOfferSend = function (btn) {
                   ts.appendChild(o);
                 });
               }
-              function fillGrotGroups(selectedId) {
-                var sel = $('grot-group'); sel.innerHTML = '';
-                if (!allGroups.length) {
-                  var o = document.createElement('option'); o.value = ''; o.textContent = '— No groups yet — make one in the Groups tab';
-                  sel.appendChild(o); return;
+              function grotRenderGroupList() {
+                var el = $('grot-groups-list'); if (!el) return;
+                if (!grotGroupIds.length) {
+                  el.innerHTML = '<p style="color:var(--dim);font-size:13px;margin:0.2rem 0 0">No groups on this rotation yet — add at least one below.</p>';
+                } else {
+                  el.innerHTML = grotGroupIds.map(function (gid, gi) {
+                    var g = groupById(gid);
+                    if (!g) return '';
+                    var ms = groupActiveMembers(g);
+                    var chips = ms.length ? ms.map(function (m, i) {
+                      return '<span style="display:inline-flex;align-items:center;gap:6px;background:#f0fdfa;border:1.5px solid #99e5dd;border-radius:999px;padding:3px 10px 3px 4px;font-weight:700;font-size:12px">' +
+                        '<span style="background:#0e7c86;color:#fff;border-radius:999px;width:17px;height:17px;display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800">' + (i + 1) + '</span>' + esc(memberName(m)) + '</span>';
+                    }).join('<span style="color:#94a3b8;font-weight:800;font-size:12px">→</span>') : '<span style="color:#b91c1c;font-size:12.5px">No active members yet — add people in the Groups tab.</span>';
+                    return '<div style="border:1px solid var(--border);border-radius:10px;padding:0.55rem 0.7rem;margin-top:0.5rem">' +
+                      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+                      '<span style="background:#083f4d;color:#fff;border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:800">Group ' + (gi + 1) + '</span>' +
+                      '<strong style="font-size:14px">' + esc(g.name) + '</strong>' +
+                      '<span style="flex:1"></span>' +
+                      '<button type="button" class="btn-secondary grot-grp-up" data-i="' + gi + '"' + (gi === 0 ? ' disabled' : '') + ' style="padding:0.2rem 0.55rem">↑</button>' +
+                      '<button type="button" class="btn-secondary grot-grp-down" data-i="' + gi + '"' + (gi === grotGroupIds.length - 1 ? ' disabled' : '') + ' style="padding:0.2rem 0.55rem">↓</button>' +
+                      '<button type="button" class="btn-secondary grot-grp-del" data-i="' + gi + '" style="padding:0.2rem 0.55rem">✕</button>' +
+                      '</div>' +
+                      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:0.45rem">' + chips + '</div></div>';
+                  }).join('');
                 }
-                allGroups.forEach(function (g) {
-                  var o = document.createElement('option');
-                  o.value = g.id; o.textContent = g.name + ' (' + groupActiveMembers(g).length + ' people)';
-                  if (g.id === selectedId) o.selected = true;
-                  sel.appendChild(o);
+                var sel = $('grot-group-add'); sel.innerHTML = '';
+                var remaining = allGroups.filter(function (g) { return grotGroupIds.indexOf(g.id) < 0; });
+                if (!allGroups.length) {
+                  var o0 = document.createElement('option'); o0.value = ''; o0.textContent = '— No groups yet — make one in the Groups tab';
+                  sel.appendChild(o0);
+                } else if (!remaining.length) {
+                  var o1 = document.createElement('option'); o1.value = ''; o1.textContent = '— All groups added —';
+                  sel.appendChild(o1);
+                } else {
+                  remaining.forEach(function (g) {
+                    var o = document.createElement('option');
+                    o.value = g.id; o.textContent = g.name + ' (' + groupActiveMembers(g).length + ' people)';
+                    sel.appendChild(o);
+                  });
+                }
+                el.querySelectorAll('.grot-grp-up').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var i = parseInt(b.getAttribute('data-i'), 10);
+                    if (i > 0) { var t = grotGroupIds[i - 1]; grotGroupIds[i - 1] = grotGroupIds[i]; grotGroupIds[i] = t; grotRenderGroupList(); grotPreviewUpdate(); }
+                  });
                 });
-              }
-              function grotOrderChips() {
-                var g = groupById($('grot-group').value);
-                var el = $('grot-order');
-                if (!g) { el.innerHTML = ''; return; }
-                var ms = groupActiveMembers(g);
-                if (!ms.length) { el.innerHTML = '<span style="color:#b91c1c;font-size:13px">This group has no active members yet.</span>'; return; }
-                el.innerHTML = ms.map(function (m, i) {
-                  return '<span style="display:inline-flex;align-items:center;gap:6px;background:#f0fdfa;border:1.5px solid #99e5dd;border-radius:999px;padding:4px 11px 4px 5px;font-weight:700;font-size:12.5px">' +
-                    '<span style="background:#0e7c86;color:#fff;border-radius:999px;width:19px;height:19px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800">' + (i + 1) + '</span>' + esc(memberName(m)) + '</span>';
-                }).join('<span style="color:#94a3b8;font-weight:800">→</span>') +
-                  '<span style="color:var(--dim);font-size:12px">→ back to ' + esc(memberName(ms[0])) + ' — the order never changes</span>';
+                el.querySelectorAll('.grot-grp-down').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var i = parseInt(b.getAttribute('data-i'), 10);
+                    if (i < grotGroupIds.length - 1) { var t = grotGroupIds[i + 1]; grotGroupIds[i + 1] = grotGroupIds[i]; grotGroupIds[i] = t; grotRenderGroupList(); grotPreviewUpdate(); }
+                  });
+                });
+                el.querySelectorAll('.grot-grp-del').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    grotGroupIds.splice(parseInt(b.getAttribute('data-i'), 10), 1);
+                    grotRenderGroupList(); grotPreviewUpdate();
+                  });
+                });
               }
               function grotSetUnit(u) {
                 grotUnit = u;
@@ -9010,34 +9051,45 @@ window.qsNpOfferSend = function (btn) {
               }
               function grotPreviewUpdate() {
                 var el = $('grot-preview'); if (!el) return;
-                var g = groupById($('grot-group').value);
-                var names = g ? groupActiveMembers(g).map(memberName) : [];
+                var groups = grotGroupIds.map(function (gid) { return groupById(gid); }).filter(Boolean);
+                var memberLists = groups.map(function (g) { return groupActiveMembers(g).map(memberName); });
                 var days = grotCollectDays();
                 var cycle = parseInt($('grot-cycle').value, 10) || 7;
                 var startVal = $('grot-start').value;
-                if (!names.length) { el.textContent = 'Pick a group with people in it to see how the turns land.'; return; }
+                if (!groups.length || memberLists.some(function (ms) { return !ms.length; })) {
+                  el.textContent = 'Add at least one group with people in it to see how the turns land.';
+                  return;
+                }
                 if (!days.length || !startVal) { el.textContent = 'Pick the cycle days and a start date to see how the turns land.'; return; }
                 var p = startVal.split('-').map(Number);
                 var start = new Date(p[0], p[1] - 1, p[2]);
                 var ws = parseInt($('grot-weekstart').value, 10);
                 var anchor = new Date(start); anchor.setDate(anchor.getDate() - ((start.getDay() - ws + 7) % 7));
-                var blocks = [], occ = 0;
-                for (var i = 0; i < 370 && blocks.length < 4; i++) {
+                var blocks = [], occ = 0, lastKey = null, blockIdx = -1;
+                var dealt = groups.map(function () { return 0; });
+                var cur = null;
+                for (var i = 0; i < 370 && blocks.length < 5; i++) {
                   var d = new Date(start); d.setDate(d.getDate() + i);
                   if (days.indexOf((i % cycle) + 1) < 0) continue;
-                  var block;
-                  if (grotUnit === 'week') block = Math.floor((d.getTime() - anchor.getTime()) / (7 * 86400000));
-                  else if (grotUnit === 'days2') block = Math.floor(occ / 2);
-                  else if (grotUnit === 'days3') block = Math.floor(occ / 3);
-                  else block = occ;
+                  var key;
+                  if (grotUnit === 'week') key = 'w' + Math.floor((d.getTime() - anchor.getTime()) / (7 * 86400000));
+                  else if (grotUnit === 'days2') key = 'd' + Math.floor(occ / 2);
+                  else if (grotUnit === 'days3') key = 'd' + Math.floor(occ / 3);
+                  else key = 's' + occ;
                   occ++;
-                  var who = names[block % names.length];
-                  if (!blocks.length || blocks[blocks.length - 1].who !== who) {
-                    blocks.push({ who: who, lbl: d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) });
+                  if (key !== lastKey) {
+                    lastKey = key; blockIdx++;
+                    var gi = blockIdx % groups.length;
+                    cur = { who: memberLists[gi][dealt[gi] % memberLists[gi].length], grp: groups[gi].name };
+                    dealt[gi]++;
+                    blocks.push({ who: cur.who, grp: cur.grp, lbl: d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) });
                   }
                 }
                 if (!blocks.length) { el.textContent = 'No turns land in the first year with these settings.'; return; }
-                el.innerHTML = '📋 ' + blocks.map(function (b) { return '<b>' + esc(b.who) + '</b> takes ' + esc(b.lbl); }).join(' · ') +
+                var multi = groups.length > 1;
+                el.innerHTML = '📋 ' + blocks.map(function (b) {
+                  return '<b>' + esc(b.who) + '</b>' + (multi ? ' (' + esc(b.grp) + ')' : '') + ' takes ' + esc(b.lbl);
+                }).join(' · ') +
                   '… and it keeps cycling in that order. This is a <b>special shift</b>: if it clashes with someone\u2019s other rotation, this one wins.';
               }
               function openGroupRotation(r) {
@@ -9049,7 +9101,11 @@ window.qsNpOfferSend = function (btn) {
                 $('grot-start-time').value = r && r.startTime ? String(r.startTime).slice(0, 5) : '19:00';
                 $('grot-end-time').value = r && r.endTime ? String(r.endTime).slice(0, 5) : '07:00';
                 $('grot-notes').value = r ? (r.notes || '') : '';
-                fillGrotGroups(r ? r.groupId : null);
+                grotGroupIds = r
+                  ? (r.groupIds ? String(r.groupIds).split(',').map(function (x) { return x.trim(); }).filter(Boolean)
+                     : (r.groupId ? [r.groupId] : []))
+                  : (allGroups.length ? [allGroups[0].id] : []);
+                grotRenderGroupList();
                 fillGrotShiftTypes(r ? r.groupShiftTypeId : null);
                 var days = r && r.groupDays ? String(r.groupDays).split(',').map(function (x) { return parseInt(x, 10); }).filter(function (n) { return n >= 1; }) : [];
                 grotRenderDays(days);
@@ -9060,13 +9116,15 @@ window.qsNpOfferSend = function (btn) {
                 hide($('grot-error'));
                 if (r) show($('grot-del')); else hide($('grot-del'));
                 show($('grot-modal'));
-                grotOrderChips();
                 grotSetUnit(u);
               }
               $('grot-cancel').addEventListener('click', function () { hide($('grot-modal')); });
               $('grot-modal').addEventListener('click', function (e) { if (e.target === $('grot-modal')) hide($('grot-modal')); });
               $('grot-manage-groups').addEventListener('click', function () { hide($('grot-modal')); qsShowRotTab('rot-groups'); });
-              $('grot-group').addEventListener('change', function () { grotOrderChips(); grotPreviewUpdate(); });
+              $('grot-add-group-btn').addEventListener('click', function () {
+                var v = $('grot-group-add').value;
+                if (v && grotGroupIds.indexOf(v) < 0) { grotGroupIds.push(v); grotRenderGroupList(); grotPreviewUpdate(); }
+              });
               $('grot-cycle').addEventListener('change', function () { grotRenderDays(grotCollectDays()); grotPreviewUpdate(); });
               $('grot-start').addEventListener('change', grotPreviewUpdate);
               $('grot-weekstart').addEventListener('change', grotPreviewUpdate);
@@ -9089,7 +9147,7 @@ window.qsNpOfferSend = function (btn) {
               $('grot-save').addEventListener('click', function () {
                 var days = grotCollectDays();
                 function gerr(msg) { var e = $('grot-error'); e.textContent = msg; show(e); }
-                if (!$('grot-group').value) { gerr('Pick a group — or make one first in the Groups tab.'); return; }
+                if (!grotGroupIds.length) { gerr('Add at least one group — or make one first in the Groups tab.'); return; }
                 if (!$('grot-shifttype').value) { gerr('Pick a shift type.'); return; }
                 if (!days.length) { gerr('Pick at least one day of the cycle.'); return; }
                 if (!$('grot-start').value) { gerr('Pick a start date.'); return; }
@@ -9100,7 +9158,7 @@ window.qsNpOfferSend = function (btn) {
                   startTime: $('grot-start-time').value || null,
                   endTime: $('grot-end-time').value || null,
                   notes: $('grot-notes').value.trim() || null,
-                  groupId: $('grot-group').value,
+                  groupIds: grotGroupIds.slice(),
                   groupShiftTypeId: $('grot-shifttype').value,
                   groupDays: days,
                   turnUnit: grotUnit === 'week' ? 'week' : (grotUnit === 'shift' ? 'shift' : 'days'),

@@ -48,7 +48,7 @@ export async function getShiftsForRange(
   // Active rotations
   const { rows: rotations } = await query(
     `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
-            group_id AS "groupId", group_shift_type_id AS "groupShiftTypeId",
+            group_id AS "groupId", group_ids AS "groupIds", group_shift_type_id AS "groupShiftTypeId",
             group_days AS "groupDays", turn_unit AS "turnUnit",
             turn_days AS "turnDays", week_start AS "weekStart"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
@@ -138,21 +138,27 @@ export async function getShiftsForRange(
     // take turns in fixed order; turns are a pure function of the
     // date, counted from the rotation's start.
     if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
-      const { rows: members } = await query(
-        `SELECT gm.user_id AS "userId",
-                COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
-                u.end_date AS "userEndDate", st.name AS "shiftTypeName"
-         FROM rotation_group_members gm
-         JOIN users u ON u.id = gm.user_id
-         JOIN shift_types st ON st.id = $2
-         WHERE gm.group_id = $1 AND u.is_active = true
-         ORDER BY gm.position`,
-        [(rot as any).groupId, (rot as any).groupShiftTypeId]
-      );
+      const groupIds = String((rot as any).groupIds || (rot as any).groupId)
+        .split(',').map((x: string) => x.trim()).filter(Boolean);
+      const groupsMembers: any[][] = [];
+      for (const gid of groupIds) {
+        const { rows: members } = await query(
+          `SELECT gm.user_id AS "userId",
+                  COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+                  u.end_date AS "userEndDate", st.name AS "shiftTypeName"
+           FROM rotation_group_members gm
+           JOIN users u ON u.id = gm.user_id
+           JOIN shift_types st ON st.id = $2
+           WHERE gm.group_id = $1 AND u.is_active = true
+           ORDER BY gm.position`,
+          [gid, (rot as any).groupShiftTypeId]
+        );
+        groupsMembers.push(members);
+      }
       const daySet = new Set(
         String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
       );
-      if (members.length && daySet.size) {
+      if (groupsMembers.length && groupsMembers.some((g) => g.length) && daySet.size) {
         const stId = (rot as any).groupShiftTypeId as string;
         const unit = (rot as any).turnUnit || 'shift';
         const tDays = Math.max(1, Number((rot as any).turnDays) || 1);
@@ -163,18 +169,31 @@ export async function getShiftsForRange(
         const toMs = Date.parse(to + 'T00:00:00Z');
         const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
         let occ = 0;
+        let blockIdx = -1;
+        let lastKey: string | null = null;
+        const dealtCount = groupsMembers.map(() => 0);
+        let currentMember: any = null;
         for (let ms = startMs; ms <= toMs; ms += dayMs) {
           const dayIndex = Math.floor((ms - startMs) / dayMs);
           const cycleDay = (dayIndex % rot.cycleDays) + 1;
           if (!daySet.has(cycleDay)) continue;
           const dateStr = new Date(ms).toISOString().slice(0, 10);
-          let block: number;
-          if (unit === 'week') block = Math.floor((ms - anchorMs) / (7 * dayMs));
-          else if (unit === 'days') block = Math.floor(occ / tDays);
-          else block = occ;
+          let key: string;
+          if (unit === 'week') key = 'w' + Math.floor((ms - anchorMs) / (7 * dayMs));
+          else if (unit === 'days') key = 'd' + Math.floor(occ / tDays);
+          else key = 's' + occ;
           occ++;
+          if (key !== lastKey) {
+            lastKey = key;
+            blockIdx++;
+            const gIdx = blockIdx % groupsMembers.length;
+            const gm = groupsMembers[gIdx];
+            currentMember = gm.length ? gm[dealtCount[gIdx] % gm.length] : null;
+            dealtCount[gIdx]++;
+          }
           if (ms < fromMs) continue;
-          const m = members[block % members.length];
+          const m = currentMember;
+          if (!m) continue;
           if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
           const hasManual = manualRows.some((s: any) =>
             s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
