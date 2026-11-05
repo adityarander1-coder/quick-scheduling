@@ -544,8 +544,6 @@ router.get('/shifts', async (req: Request, res: Response) => {
           // A turn is empty only if the whole group is on vacation.
           const queues: any[][] = groupsMembers.map((g) => g.slice());
           let currentMember: any = null;
-          let blockLine: any[] = [];
-          let blockServerIdx = -1;
           for (let ms = startMs; ms <= toMs; ms += dayMs) {
             const dayIndex = Math.floor((ms - startMs) / dayMs);
             const cycleDay = (dayIndex % rot.cycleDays) + 1;
@@ -561,13 +559,10 @@ router.get('/shifts', async (req: Request, res: Response) => {
               blockIdx++;
               const gIdx = blockIdx % groupsMembers.length;
               const q = queues[gIdx];
-              blockLine = q.slice();
-              blockServerIdx = -1;
               currentMember = null;
               for (let qi = 0; qi < q.length; qi++) {
                 if (!onVacation(q[qi].userId, dateStr)) {
                   currentMember = q[qi];
-                  blockServerIdx = qi;
                   q.splice(qi, 1);
                   q.push(currentMember);
                   break;
@@ -576,34 +571,14 @@ router.get('/shifts', async (req: Request, res: Response) => {
             }
             if (ms < fromMs) continue;
             if (isPaused(rot.id, dateStr)) continue;
-            let m = currentMember;
-            if (!m || onVacation(m.userId, dateStr)) {
-              // The turn's server is off today (or the whole line was
-              // off when the turn started): the next person in the
-              // SAME group's line covers just this day — chain through
-              // the line, and leave the day blank if nobody in the
-              // group is free (Deepika 2026-11-04 evening). Covers do
-              // not move the line.
-              m = null;
-              const cands: any[] = [];
-              if (blockServerIdx >= 0) {
-                for (let k = 1; k < blockLine.length; k++) cands.push(blockLine[(blockServerIdx + k) % blockLine.length]);
-              } else {
-                for (const c of blockLine) cands.push(c);
-              }
-              for (const cand of cands) {
-                if (onVacation(cand.userId, dateStr)) continue;
-                if (cand.userEndDate && dateStr > String(cand.userEndDate).slice(0, 10)) continue;
-                if (exclSet.has(`${rot.id}|${cand.userId}|${dateStr}|${stId}`)) continue;
-                const candManual = rows.some((s: any) =>
-                  s.userId === cand.userId && s.date === dateStr && s.shiftTypeId === stId
-                );
-                if (candManual) break; // already on this shift type manually — day is filled
-                m = cand;
-                break;
-              }
-              if (!m) continue;
-            }
+            const m = currentMember;
+            if (!m) continue;
+            // A few days off in the middle of a turn changes
+            // nothing (Deepika 2026-11-04 evening - keep it
+            // simple): those days are simply blank for an admin
+            // to fill manually. Only a vacation at the turn's
+            // start moves the turn, settled when dealt above.
+            if (onVacation(m.userId, dateStr)) continue;
             if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
             const hasManual = rows.some((s: any) =>
               s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId

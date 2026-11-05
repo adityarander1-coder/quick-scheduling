@@ -177,8 +177,6 @@ export async function getShiftsForRange(
         // group covers the whole turn.
         const queues: any[][] = groupsMembers.map((g) => g.slice());
         let currentMember: any = null;
-        let blockLine: any[] = [];
-        let blockServerIdx = -1;
         for (let ms = startMs; ms <= toMs; ms += dayMs) {
           const dayIndex = Math.floor((ms - startMs) / dayMs);
           const cycleDay = (dayIndex % rot.cycleDays) + 1;
@@ -194,13 +192,10 @@ export async function getShiftsForRange(
             blockIdx++;
             const gIdx = blockIdx % groupsMembers.length;
             const q = queues[gIdx];
-            blockLine = q.slice();
-            blockServerIdx = -1;
             currentMember = null;
             for (let qi = 0; qi < q.length; qi++) {
               if (!onVacation(q[qi].userId, dateStr)) {
                 currentMember = q[qi];
-                blockServerIdx = qi;
                 q.splice(qi, 1);
                 q.push(currentMember);
                 break;
@@ -209,31 +204,13 @@ export async function getShiftsForRange(
           }
           if (ms < fromMs) continue;
           if (isPaused(rot.id, dateStr)) continue;
-          let m = currentMember;
-          if (!m || onVacation(m.userId, dateStr)) {
-            // Mid-turn cover (mirrors schedule.ts): next person in
-            // the same group's line covers the day; blank if nobody
-            // in the group is free. Covers do not move the line.
-            m = null;
-            const cands: any[] = [];
-            if (blockServerIdx >= 0) {
-              for (let k = 1; k < blockLine.length; k++) cands.push(blockLine[(blockServerIdx + k) % blockLine.length]);
-            } else {
-              for (const c of blockLine) cands.push(c);
-            }
-            for (const cand of cands) {
-              if (onVacation(cand.userId, dateStr)) continue;
-              if (cand.userEndDate && dateStr > String(cand.userEndDate).slice(0, 10)) continue;
-              if (exclSet.has(`${rot.id}|${cand.userId}|${dateStr}|${stId}`)) continue;
-              const candManual = manualRows.some((s: any) =>
-                s.userId === cand.userId && s.date === dateStr && s.shiftTypeId === stId
-              );
-              if (candManual) break;
-              m = cand;
-              break;
-            }
-            if (!m) continue;
-          }
+          const m = currentMember;
+          if (!m) continue;
+          // A few days off mid-turn changes nothing (mirrors
+          // schedule.ts): the day is simply blank for an admin to
+          // fill manually; only a vacation at the turn's start
+          // moves the turn, settled when the block is dealt above.
+          if (onVacation(m.userId, dateStr)) continue;
           if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
           const hasManual = manualRows.some((s: any) =>
             s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
