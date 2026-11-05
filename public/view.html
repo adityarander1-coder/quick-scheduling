@@ -10,6 +10,8 @@
   header { background: #1e3a5f; color: #fff; padding: 1rem; text-align: center; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 1.2rem; }
   header p { font-size: 0.85rem; opacity: 0.8; margin-top: 2px; }
+  header .who { margin-top: 0.4rem; font-size: 0.85rem; }
+  header .who button { background: transparent; border: 1px solid rgba(255,255,255,0.6); color: #fff; border-radius: 6px; padding: 0.15rem 0.6rem; margin-left: 0.5rem; cursor: pointer; font-size: 0.8rem; }
   .nav { display: flex; justify-content: center; align-items: center; gap: 0.8rem; padding: 0.8rem; background: #fff; border-bottom: 1px solid #e2e8f0; position: sticky; top: 64px; z-index: 9; }
   .nav button { border: 1px solid #cbd5e1; background: #fff; border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; cursor: pointer; }
   .nav .week-label { font-weight: 700; min-width: 180px; text-align: center; }
@@ -21,25 +23,43 @@
   .empty { color: #94a3b8; font-size: 0.85rem; }
   .error { text-align: center; padding: 3rem 1rem; color: #991b1b; }
   .loading { text-align: center; padding: 3rem 1rem; color: #64748b; }
+  .login-card { background: #fff; margin: 1.2rem auto; max-width: 380px; border-radius: 12px; padding: 1.2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .login-card h2 { font-size: 1.05rem; margin-bottom: 0.4rem; color: #1e3a5f; }
+  .login-card p { font-size: 0.88rem; color: #64748b; margin-bottom: 0.8rem; }
+  .login-card label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.6rem; }
+  .login-card input { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 0.25rem; font-size: 0.95rem; }
+  .login-card button { width: 100%; background: #0e7c86; color: #fff; border: 0; border-radius: 8px; padding: 0.65rem; font-size: 0.95rem; font-weight: 700; cursor: pointer; }
+  .login-err { color: #991b1b; font-size: 0.85rem; min-height: 1.1em; margin-bottom: 0.5rem; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="company-name">Team Schedule</h1>
   <p>Published schedule — view only</p>
+  <div class="who" id="who" style="display:none">Signed in as <strong id="who-name"></strong><button type="button" id="sign-out">Sign out</button></div>
 </header>
-<div class="nav">
+<div class="nav" id="week-nav" style="display:none">
   <button id="prev-week">&larr; Prev</button>
   <span class="week-label" id="week-label"></span>
   <button id="next-week">Next &rarr;</button>
 </div>
 <div id="content"><div class="loading">Loading schedule…</div></div>
+<div class="login-card" id="login-card" style="display:none">
+  <h2>Sign in to see this schedule</h2>
+  <p>This schedule is shared with the team — sign in with the account your company gave you and it opens right here.</p>
+  <div class="login-err" id="login-err"></div>
+  <label>Email <input type="email" id="login-email" autocomplete="username"></label>
+  <label>Password <input type="password" id="login-pass" autocomplete="current-password"></label>
+  <button type="button" id="login-btn">Sign in</button>
+</div>
 <script>
 (function () {
   var params = new URLSearchParams(window.location.search);
   var token = params.get('t');
   var content = document.getElementById('content');
   var weekLabel = document.getElementById('week-label');
+  var weekNav = document.getElementById('week-nav');
+  var loginCard = document.getElementById('login-card');
   var weekStart = startOfWeek(new Date());
 
   if (!token) {
@@ -72,18 +92,33 @@
     return '#' + [r, g, b].map(function (x) { return x.toString(16).padStart(2, '0'); }).join('');
   }
 
+  function showLogin(msg) {
+    weekNav.style.display = 'none';
+    content.innerHTML = '';
+    loginCard.style.display = 'block';
+    document.getElementById('login-err').textContent = msg || '';
+  }
+
   function load() {
     var from = fmtDate(weekStart);
     var end = new Date(weekStart); end.setDate(end.getDate() + 6);
     var to = fmtDate(end);
     weekLabel.textContent = fmtLong(from) + ' – ' + fmtLong(to);
     content.innerHTML = '<div class="loading">Loading schedule…</div>';
-    fetch('/api/schedule/public?token=' + encodeURIComponent(token) + '&from=' + from + '&to=' + to)
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+    fetch('/api/schedule/share/mine?token=' + encodeURIComponent(token) + '&from=' + from + '&to=' + to)
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
       .then(function (res) {
-        if (!res.ok) {
+        if (res.status === 401) { showLogin(''); return; }
+        if (res.status !== 200) {
+          weekNav.style.display = 'none';
           content.innerHTML = '<div class="error">' + esc((res.data && res.data.error) || 'Could not load.') + '</div>';
           return;
+        }
+        loginCard.style.display = 'none';
+        weekNav.style.display = 'flex';
+        if (res.data.viewer && res.data.viewer.name) {
+          document.getElementById('who-name').textContent = res.data.viewer.name;
+          document.getElementById('who').style.display = 'block';
         }
         if (res.data.companyName) document.getElementById('company-name').textContent = res.data.companyName + ' — Schedule';
         var shifts = res.data.shifts || [];
@@ -116,6 +151,32 @@
         content.innerHTML = '<div class="error">Could not load the schedule. Please try again.</div>';
       });
   }
+
+  function doLogin() {
+    var email = document.getElementById('login-email').value.trim();
+    var pass = document.getElementById('login-pass').value;
+    var err = document.getElementById('login-err');
+    err.textContent = '';
+    if (!email || !pass) { err.textContent = 'Enter your email and password.'; return; }
+    fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, password: pass }),
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { err.textContent = (res.data && res.data.error) || 'Sign-in failed.'; return; }
+        loginCard.style.display = 'none';
+        load();
+      })
+      .catch(function () { err.textContent = 'Sign-in failed. Please try again.'; });
+  }
+  document.getElementById('login-btn').addEventListener('click', doLogin);
+  document.getElementById('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('sign-out').addEventListener('click', function () {
+    fetch('/api/auth/logout', { method: 'POST' }).then(function () {
+      document.getElementById('who').style.display = 'none';
+      showLogin('');
+    });
+  });
 
   document.getElementById('prev-week').addEventListener('click', function () {
     weekStart.setDate(weekStart.getDate() - 7); load();

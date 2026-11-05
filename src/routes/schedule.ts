@@ -3868,7 +3868,7 @@ router.post('/shift-types/:id/restore', requireRole('owner', 'scheduler'), async
 });
 
 // ---------------------------------------------------------------------------
-// Employee Link — public schedule sharing
+// Employee Link — schedule sharing (sign-in required since 2026-11-04)
 // ---------------------------------------------------------------------------
 
 function hashShareToken(token: string): string {
@@ -3952,29 +3952,11 @@ router.delete('/share', requireRole('owner', 'scheduler'), async (req: Request, 
   }
 });
 
-// GET /api/schedule/public?token=xxx&from=YYYY-MM-DD&to=YYYY-MM-DD — public read-only schedule.
-// Returns only published shifts (per-shift state; the date itself does not
-// need to be published — departments publish on their own cadence).
-router.get('/public', async (req: Request, res: Response) => {
-  try {
-    const token = String(req.query.token || '');
-    const from = String(req.query.from || '');
-    const to = String(req.query.to || '');
-    if (!token || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      res.status(400).json({ error: 'Invalid request.' });
-      return;
-    }
-    const { rows: shares } = await query(
-      'SELECT company_id, department_id, shift_type_id FROM schedule_shares WHERE token_hash = $1',
-      [hashShareToken(token)]
-    );
-    if (!shares.length) {
-      res.status(404).json({ error: 'This link is not valid.' });
-      return;
-    }
-    const companyId = shares[0].company_id;
-    const deptId = shares[0].department_id;
-    const shiftTypeId = shares[0].shift_type_id;
+// The published-schedule payload behind a share link: only published shifts
+// (per-shift state; the date itself does not need to be published —
+// departments publish on their own cadence), optionally scoped to the link's
+// department and/or shift type.
+async function shareSchedulePayload(companyId: string, deptId: string | null, shiftTypeId: string | null, from: string, to: string) {
     // Only published shifts. Optionally scoped to a department and/or shift type.
     const shiftParams: any[] = [companyId, from, to];
     let extraFilter = '';
@@ -4000,13 +3982,56 @@ router.get('/public', async (req: Request, res: Response) => {
       [companyId]
     );
     const { rows: comp } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
-    res.json({
+    return {
       companyName: comp.length ? comp[0].name : '',
       shifts,
       shiftTypes: types,
-    });
+    };
+}
+
+// GET /api/schedule/public — RETIRED as an unauthenticated endpoint
+// (2026-11-04, Deepika: every link should be signed in, so the app knows who
+// is clicking). Share links now resolve through /share/mine below; this
+// route stays only so stale pages get a clear answer instead of data.
+router.get('/public', async (_req: Request, res: Response) => {
+  res.status(401).json({ error: 'This schedule is for team members only — please sign in to view it.' });
+});
+
+// GET /api/schedule/share/mine?token&from&to — the share-link schedule for a
+// SIGNED-IN viewer. The token identifies the link (and its company + scope);
+// the session identifies the person. Only members of the link's own company
+// can open it.
+router.get('/share/mine', async (req: Request, res: Response) => {
+  try {
+    if (!req.session.userId || !req.session.companyId) {
+      res.status(401).json({ error: 'Please sign in to view this schedule.' });
+      return;
+    }
+    const token = String(req.query.token || '');
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!token || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      res.status(400).json({ error: 'Invalid request.' });
+      return;
+    }
+    const { rows: shares } = await query(
+      'SELECT company_id, department_id, shift_type_id FROM schedule_shares WHERE token_hash = $1',
+      [hashShareToken(token)]
+    );
+    if (!shares.length) {
+      res.status(404).json({ error: 'This link is not valid.' });
+      return;
+    }
+    if (shares[0].company_id !== req.session.companyId) {
+      res.status(403).json({ error: 'This link belongs to a different company than your account.' });
+      return;
+    }
+    const payload = await shareSchedulePayload(shares[0].company_id, shares[0].department_id, shares[0].shift_type_id, from, to);
+    const { rows: me } = await query('SELECT first_name, last_name FROM users WHERE id = $1', [req.session.userId]);
+    const viewerName = me.length ? `${me[0].first_name} ${me[0].last_name}`.trim() : '';
+    res.json({ ...payload, viewer: { name: viewerName } });
   } catch (err) {
-    console.error('[schedule] public schedule failed:', err);
+    console.error('[schedule] share mine failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
