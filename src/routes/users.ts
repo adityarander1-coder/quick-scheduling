@@ -19,6 +19,7 @@ import { splitName, joinName } from '../util/names';
 import { issueInvite, unusablePasswordHash, inviteStatusFrom, InviteStatus } from '../util/invites';
 import { isMailConfigured, sendMail, escHtml } from '../util/mailer';
 import { companyTodayStr } from '../util/notifyJobs.js';
+import * as XLSX from 'xlsx';
 
 const router = Router();
 
@@ -253,6 +254,293 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
     res.status(201).json({ user: publicProfile(rows[0]), inviteLink });
   } catch (err) {
     console.error('[users] create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bulk member import (Deepika, 2026-11-05): upload ONE file listing new
+// team members (CSV or Excel) -> a preview checks every row -> one tap
+// creates a profile for each clean row. Invites are NOT sent by the
+// import; they start "not sent", exactly like a manual add.
+// ---------------------------------------------------------------------------
+
+const IMPORT_MAX_ROWS = 200;
+const IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+
+function parseCsvGrid(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  const s = String(text || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+      } else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && s[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      rows.push(row); row = [];
+    } else cell += ch;
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+function excelSerialToYmd(n: number): string {
+  const d = new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+function importCellText(c: any): string {
+  if (c instanceof Date && !isNaN(c.getTime())) return c.toISOString().slice(0, 10);
+  if (typeof c === 'number' && isFinite(c) && c >= 20000 && c <= 80000) return excelSerialToYmd(c);
+  return String(c ?? '').trim();
+}
+
+/** '2026-11-05' or '11/5/2026' -> 'YYYY-MM-DD', else null. */
+function normalizeMemberDate(raw: string): string | null {
+  const t = String(raw || '').trim();
+  if (!t) return null;
+  if (DATE_RE.test(t)) {
+    const d = new Date(t + 'T00:00:00Z');
+    return isNaN(d.getTime()) ? null : t;
+  }
+  const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (m) {
+    const mo = +m[1], da = +m[2];
+    let y = +m[3];
+    if (y < 100) y += 2000;
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+    const iso = `${y}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+    const d = new Date(iso + 'T00:00:00Z');
+    if (isNaN(d.getTime()) || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== da) return null;
+    return iso;
+  }
+  return null;
+}
+
+type ImportCol = 'firstName' | 'lastName' | 'name' | 'email' | 'phone' | 'department' | 'jobRole' | 'role' | 'endDate';
+function importColKind(header: string): ImportCol | null {
+  const t = header.toLowerCase().replace(/[^a-z]/g, '');
+  if (t === 'firstname' || t === 'first') return 'firstName';
+  if (t === 'lastname' || t === 'last' || t === 'surname') return 'lastName';
+  if (t === 'name' || t === 'fullname' || t === 'teammember' || t === 'member' || t === 'employee' || t === 'employeename') return 'name';
+  if (t === 'email' || t === 'emailaddress' || t === 'mail') return 'email';
+  if (t === 'phone' || t === 'phonenumber' || t === 'mobile' || t === 'cell' || t === 'telephone') return 'phone';
+  if (t === 'department' || t === 'dept') return 'department';
+  if (t === 'jobrole' || t === 'position' || t === 'title' || t === 'jobtitle') return 'jobRole';
+  if (t === 'role' || t === 'systemrole' || t === 'access' || t === 'accesslevel') return 'role';
+  if (t === 'enddate' || t === 'lastday' || t === 'end') return 'endDate';
+  return null;
+}
+
+// POST /api/users/import/preview — parse the uploaded file and check
+// every row. Writes NOTHING; the client shows the result and sends the
+// clean rows back to POST /api/users/import.
+router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { filename, dataBase64 } = req.body ?? {};
+    if (!dataBase64) { res.status(400).json({ error: 'No file was uploaded.' }); return; }
+    const buf = Buffer.from(String(dataBase64), 'base64');
+    if (!buf.length) { res.status(400).json({ error: 'That file appears to be empty.' }); return; }
+    if (buf.length > IMPORT_MAX_BYTES) { res.status(413).json({ error: 'That file is too large (max 8 MB).' }); return; }
+    const fname = String(filename || '').toLowerCase();
+    let grid: string[][];
+    const isZip = buf.subarray(0, 2).toString('latin1') === 'PK';
+    if (!isZip && (fname.endsWith('.csv') || fname.endsWith('.txt') || !fname)) {
+      grid = parseCsvGrid(buf.toString('utf8')).map((r) => r.map((c) => c.trim()));
+    } else {
+      let wb: XLSX.WorkBook;
+      try { wb = XLSX.read(buf, { type: 'buffer', cellDates: true }); }
+      catch { res.status(400).json({ error: 'That file could not be read as a spreadsheet or CSV.' }); return; }
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }) as any[][];
+      grid = raw.map((r) => (r || []).map(importCellText));
+    }
+    grid = grid.filter((r) => r.some((c) => c !== ''));
+    if (!grid.length) { res.status(400).json({ error: 'That file appears to be empty.' }); return; }
+    // Header row: first of the first 5 rows naming an email column and a
+    // name column.
+    let headerIdx = -1;
+    let cols: Partial<Record<ImportCol, number>> = {};
+    for (let i = 0; i < Math.min(5, grid.length); i++) {
+      const found: Partial<Record<ImportCol, number>> = {};
+      grid[i].forEach((cell, ci) => {
+        const k = importColKind(cell);
+        if (k && found[k] === undefined) found[k] = ci;
+      });
+      if (found.email !== undefined && (found.name !== undefined || found.firstName !== undefined)) {
+        headerIdx = i; cols = found; break;
+      }
+    }
+    if (headerIdx < 0) {
+      res.status(400).json({ error: 'The file needs a header row with at least a Name (or First name) column and an Email column.' });
+      return;
+    }
+    const { rows: deptRows } = await query('SELECT id, name FROM departments WHERE company_id = $1', [companyId]);
+    const deptByName = new Map<string, any>(deptRows.map((d: any) => [String(d.name).toLowerCase(), d]));
+    const { rows: roleRows } = await query('SELECT id, name, department_id AS "departmentId" FROM job_roles WHERE company_id = $1', [companyId]);
+    const { rows: ex } = await query('SELECT lower(email) AS e, company_id AS c FROM users');
+    const existingAll = new Set<string>(ex.map((r: any) => r.e));
+    const existingMine = new Set<string>(ex.filter((r: any) => r.c === companyId).map((r: any) => r.e));
+    const myAccess = req.session.role === 'scheduler' ? await getDepartmentAccess(req.session.userId!, companyId) : null;
+    const seen = new Set<string>();
+    const out: any[] = [];
+    let truncated = false;
+    for (let i = headerIdx + 1; i < grid.length; i++) {
+      const r = grid[i];
+      if (!r.some((c) => c !== '')) continue;
+      if (out.length >= IMPORT_MAX_ROWS) { truncated = true; break; }
+      const get = (k: ImportCol) => (cols[k] !== undefined ? String(r[cols[k]!] || '').trim() : '');
+      const problems: string[] = [];
+      let first = get('firstName');
+      let last = get('lastName');
+      if (!first && get('name')) {
+        const sp = splitName(get('name'));
+        first = sp.first;
+        if (!last) last = sp.last;
+      }
+      if (!first) problems.push('Missing name');
+      const email = get('email');
+      const emailKey = email.toLowerCase();
+      if (!email) problems.push('Missing email');
+      else if (!EMAIL_RE.test(email)) problems.push('Email looks invalid');
+      else if (seen.has(emailKey)) problems.push('Same email appears twice in this file');
+      else if (existingMine.has(emailKey)) problems.push('Already on your team');
+      else if (existingAll.has(emailKey)) problems.push('This email already has an account');
+      if (email) seen.add(emailKey);
+      const deptName = get('department');
+      let departmentId: string | null = null;
+      let departmentName: string | null = null;
+      if (deptName) {
+        const d = deptByName.get(deptName.toLowerCase());
+        if (!d) problems.push(`Department "${deptName}" not found`);
+        else {
+          departmentId = d.id; departmentName = d.name;
+          if (myAccess && !myAccess.edit.includes(d.id)) problems.push('Outside the departments you can edit');
+        }
+      }
+      // A "role" column value that names a system role (owner / scheduler
+      // / employee) IS the system role; anything else is the job role.
+      // Both are shown in the preview, so a misread is visible first.
+      let systemRole = 'employee';
+      let jobRoleText = get('jobRole');
+      const roleVal = get('role');
+      if (roleVal) {
+        const lv = roleVal.toLowerCase();
+        if ((VALID_ROLES as string[]).includes(lv)) systemRole = lv;
+        else if (!jobRoleText) jobRoleText = roleVal;
+      }
+      if (systemRole === 'owner' && req.session.role !== 'owner') problems.push('Only an owner can add an owner account');
+      let jobRoleId: string | null = null;
+      if (jobRoleText && departmentId) {
+        const jr = roleRows.find((x: any) => x.departmentId === departmentId && String(x.name).toLowerCase() === jobRoleText.toLowerCase());
+        if (jr) { jobRoleId = jr.id; jobRoleText = jr.name; }
+      }
+      let endDate: string | null = null;
+      const endRaw = get('endDate');
+      if (endRaw) {
+        endDate = normalizeMemberDate(endRaw);
+        if (!endDate) problems.push(`End date "${endRaw}" not understood (use YYYY-MM-DD)`);
+      }
+      out.push({
+        row: out.length + 1, firstName: first, lastName: last, name: joinName(first, last),
+        email, phone: get('phone') || null, departmentId, departmentName,
+        jobRoleId, jobRole: jobRoleText || null, systemRole, endDate,
+        ok: problems.length === 0, problems,
+      });
+    }
+    res.json({ rows: out, total: out.length, ready: out.filter((r) => r.ok).length, truncated });
+  } catch (err) {
+    console.error('[users] import preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/users/import — create the members. Every row is re-validated
+// here (the preview is advice, never proof); bad rows come back in
+// `skipped` with the reason instead of failing the whole batch.
+router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const members = Array.isArray(req.body?.members) ? req.body.members : null;
+    if (!members || !members.length) { res.status(400).json({ error: 'No members to import.' }); return; }
+    if (members.length > IMPORT_MAX_ROWS) { res.status(400).json({ error: `An import is limited to ${IMPORT_MAX_ROWS} people at a time.` }); return; }
+    const today = await companyTodayStr(companyId);
+    const myAccess = req.session.role === 'scheduler' ? await getDepartmentAccess(req.session.userId!, companyId) : null;
+    const created: any[] = [];
+    const skipped: any[] = [];
+    const seen = new Set<string>();
+    for (const m of members) {
+      const first = String(m?.firstName || '').trim();
+      const last = String(m?.lastName || '').trim();
+      const email = String(m?.email || '').trim();
+      const skip = (reason: string) => skipped.push({ email: email || null, name: joinName(first, last) || null, reason });
+      if (!first || !email) { skip('First name and email are required.'); continue; }
+      if (!EMAIL_RE.test(email)) { skip('Email looks invalid.'); continue; }
+      const key = email.toLowerCase();
+      if (seen.has(key)) { skip('Same email appears twice.'); continue; }
+      seen.add(key);
+      const { rows: ex } = await query('SELECT id, company_id AS c FROM users WHERE lower(email) = lower($1)', [email]);
+      if (ex.length) { skip(ex[0].c === companyId ? 'Already on your team.' : 'This email already has an account.'); continue; }
+      const systemRole = (VALID_ROLES as string[]).includes(String(m.systemRole)) ? String(m.systemRole) : 'employee';
+      if (systemRole === 'owner' && req.session.role !== 'owner') { skip('Only an owner can add an owner account.'); continue; }
+      let deptId: string | null = null;
+      if (m.departmentId) {
+        const dept = await resolveDepartment(String(m.departmentId), companyId);
+        if (!dept.ok) { skip(dept.error); continue; }
+        deptId = dept.id;
+        if (myAccess && deptId && !myAccess.edit.includes(deptId)) { skip('Outside the departments you can edit.'); continue; }
+      }
+      let jobRoleIdVal: string | null = null;
+      let jobRoleText: string | null = String(m.jobRole || '').trim() || null;
+      if (m.jobRoleId) {
+        const jr = await resolveJobRole(String(m.jobRoleId), deptId, companyId);
+        if (jr.ok) { jobRoleIdVal = jr.id; jobRoleText = jr.name; }
+      }
+      if (!jobRoleIdVal && jobRoleText && deptId) {
+        const { rows: jrRows } = await query(
+          'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, deptId, jobRoleText]);
+        if (jrRows.length) { jobRoleIdVal = jrRows[0].id; jobRoleText = jrRows[0].name; }
+      }
+      let endDate: string | null = null;
+      if (m.endDate) {
+        const nd = normalizeMemberDate(String(m.endDate));
+        if (!nd) { skip('End date not understood (use YYYY-MM-DD).'); continue; }
+        endDate = nd;
+      }
+      // A past end date means the account starts inactive, marked as an
+      // end-date deactivation (same rule as the sweep, 2026-11-05).
+      const ended = !!endDate && endDate < today;
+      const passwordHash = await unusablePasswordHash();
+      const userId = crypto.randomUUID();
+      await query(
+        `INSERT INTO users (id, company_id, first_name, last_name, name, email, phone, department_id, job_role, job_role_id, password_hash, role, end_date, is_active, end_date_deactivated)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [userId, companyId, first, last, joinName(first, last), email,
+         String(m.phone || '').trim() || null, deptId, jobRoleText, jobRoleIdVal,
+         passwordHash, systemRole, endDate, !ended, ended]
+      );
+      await issueInvite(userId, companyId);
+      created.push({ id: userId, name: joinName(first, last), email, inactive: ended });
+      await auditLog({
+        companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
+        changedBy: req.session.userId!, personName: joinName(first, last),
+        description: `Imported team member "${joinName(first, last)}" from a file${ended ? ' (end date already passed — account starts inactive)' : ''}`,
+      });
+    }
+    res.json({ created, skipped });
+  } catch (err) {
+    console.error('[users] import failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

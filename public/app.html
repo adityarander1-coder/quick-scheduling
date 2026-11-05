@@ -9441,6 +9441,7 @@ window.qsNpOfferSend = function (btn) {
             <div style="display:flex;gap:0.8rem;margin-bottom:0.8rem;align-items:center;flex-wrap:wrap">
               <input type="text" id="team-search" placeholder="Search team members…" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
               <button type="button" id="team-add-toggle" class="btn">+ Add team member</button>
+              <button type="button" id="team-import-toggle" class="btn-secondary">Import from file</button>
             </div>
             <div class="team-list" id="team-members-list"></div>
 
@@ -9477,6 +9478,19 @@ window.qsNpOfferSend = function (btn) {
                 </div>
                 <div id="team-invite-note" class="alert hidden" role="status" style="margin-top:0.6rem"></div>
               </div>
+            </div>
+
+            <div class="sub-card hidden" id="team-import-card">
+              <h3>Import team members from a file</h3>
+              <p style="color:var(--dim);font-size:14px;margin-top:0">Upload a spreadsheet (Excel or CSV) with one row per person. It needs a <b>Name</b> (or First name / Last name) column and an <b>Email</b> column. Optional columns: Phone, Department, Job role, Role, End date. You will see a preview and confirm before anyone is added — invites are <b>not</b> sent automatically.</p>
+              <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+                <input type="file" id="team-import-file" accept=".csv,.xlsx,.xls,.txt" style="font-size:13px">
+                <button type="button" id="team-import-template" class="btn-secondary">Download template</button>
+                <button type="button" id="team-import-cancel" class="btn-secondary">Close</button>
+              </div>
+              <div id="team-import-error" class="alert alert-error hidden" role="alert" style="margin-top:0.8rem"></div>
+              <div id="team-import-preview" style="margin-top:0.8rem"></div>
+              <div id="team-import-result" style="margin-top:0.8rem"></div>
             </div>
 
             <div id="team-edit-section" class="sub-card hidden">
@@ -10234,6 +10248,142 @@ window.qsNpOfferSend = function (btn) {
                 });
               }
 
+              // Bulk import (2026-11-05): pick a file -> server preview ->
+              // confirm -> create. Problem rows are shown and skipped;
+              // nothing is written until the Import button is tapped.
+              function setupImport() {
+                var importRows = [];
+                function escH(s) {
+                  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                }
+                $('team-import-toggle').addEventListener('click', function () {
+                  var card = $('team-import-card');
+                  card.classList.toggle('hidden');
+                  if (!card.classList.contains('hidden')) card.scrollIntoView({ block: 'nearest' });
+                });
+                $('team-import-cancel').addEventListener('click', function () {
+                  $('team-import-card').classList.add('hidden');
+                });
+                $('team-import-template').addEventListener('click', function () {
+                  var csv = 'First name,Last name,Email,Phone,Department,Job role,End date\n' +
+                    'Jane,Doe,jane.doe@example.com,(555) 010-2030,Internal Medicine,Physician,\n';
+                  var blob = new Blob([csv], { type: 'text/csv' });
+                  var a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = 'team-members-template.csv';
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+                });
+                $('team-import-file').addEventListener('change', function () {
+                  var f = this.files && this.files[0];
+                  if (!f) return;
+                  var errEl = $('team-import-error');
+                  hideErr(errEl);
+                  $('team-import-result').innerHTML = '';
+                  $('team-import-preview').innerHTML = '<p style="color:var(--dim)">Reading ' + escH(f.name) + '…</p>';
+                  var reader = new FileReader();
+                  reader.onload = function () {
+                    var dataUrl = String(reader.result || '');
+                    var b64 = dataUrl.indexOf(',') >= 0 ? dataUrl.slice(dataUrl.indexOf(',') + 1) : dataUrl;
+                    api('/api/users/import/preview', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ filename: f.name, dataBase64: b64 })
+                    }).then(function (r) {
+                      if (!r.ok) {
+                        $('team-import-preview').innerHTML = '';
+                        showErr(errEl, (r.data && r.data.error) || 'Could not read that file.');
+                        return;
+                      }
+                      importRows = (r.data && r.data.rows) || [];
+                      renderImportPreview(r.data);
+                    }).catch(function () {
+                      $('team-import-preview').innerHTML = '';
+                      showErr(errEl, 'Network error. Please try again.');
+                    });
+                  };
+                  reader.onerror = function () { showErr(errEl, 'Could not read that file.'); };
+                  reader.readAsDataURL(f);
+                });
+                function renderImportPreview(data) {
+                  var box = $('team-import-preview');
+                  var rows = data.rows || [];
+                  if (!rows.length) { box.innerHTML = '<p style="color:var(--dim)">No people found in that file.</p>'; return; }
+                  var h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                    '<thead><tr>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Name</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Email</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Department</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Job role</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">App role</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">End date</th>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Status</th>' +
+                    '</tr></thead><tbody>';
+                  rows.forEach(function (r) {
+                    h += '<tr' + (r.ok ? '' : ' style="background:#fdf0f0"') + '>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.name || '—') + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.email || '—') + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.departmentName || '—') + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.jobRole || '—') + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.systemRole) + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.endDate || '—') + '</td>' +
+                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + (r.ok ? '<span style="color:#15803d;font-weight:600">✓ Ready</span>' : '<span style="color:#b91c1c">' + escH((r.problems || []).join('; ')) + '</span>') + '</td></tr>';
+                  });
+                  h += '</tbody></table></div>';
+                  h += '<p style="font-size:13.5px;margin:10px 0 6px"><b>' + data.ready + ' of ' + data.total + '</b> ready to add.' +
+                    (data.truncated ? ' The file had more rows — only the first 200 were read.' : '') +
+                    (data.ready < data.total ? ' Rows with problems are skipped — fix them in the file and import again if needed.' : '') + '</p>';
+                  if (data.ready > 0) {
+                    h += '<button type="button" id="team-import-go" class="btn">Import ' + data.ready + ' team member' + (data.ready === 1 ? '' : 's') + '</button>';
+                  }
+                  box.innerHTML = h;
+                  var go = $('team-import-go');
+                  if (go) go.addEventListener('click', runImport);
+                }
+                function runImport() {
+                  var go = $('team-import-go');
+                  if (go) { go.disabled = true; go.textContent = 'Importing…'; }
+                  var members = importRows.filter(function (r) { return r.ok; }).map(function (r) {
+                    return {
+                      firstName: r.firstName, lastName: r.lastName, email: r.email, phone: r.phone,
+                      departmentId: r.departmentId, jobRoleId: r.jobRoleId, jobRole: r.jobRole,
+                      systemRole: r.systemRole, endDate: r.endDate
+                    };
+                  });
+                  api('/api/users/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ members: members })
+                  }).then(function (r) {
+                    if (!r.ok) {
+                      showErr($('team-import-error'), (r.data && r.data.error) || 'Import failed.');
+                      if (go) { go.disabled = false; go.textContent = 'Import'; }
+                      return;
+                    }
+                    var created = (r.data && r.data.created) || [];
+                    var skipped = (r.data && r.data.skipped) || [];
+                    var h = '<div class="alert alert-success" role="status">Added ' + created.length + ' team member' + (created.length === 1 ? '' : 's') + ': ' +
+                      created.map(function (c) { return escH(c.name); }).join(', ') +
+                      '. Their invites are ready in the team list — send them when you are ready.</div>';
+                    if (skipped.length) {
+                      h += '<div class="alert alert-error" role="alert" style="margin-top:0.6rem">Skipped ' + skipped.length + ': ' +
+                        skipped.map(function (s) { return escH((s.name || s.email || 'A row') + ' — ' + s.reason); }).join('; ') + '</div>';
+                    }
+                    $('team-import-preview').innerHTML = '';
+                    $('team-import-result').innerHTML = h;
+                    var fileInput = $('team-import-file');
+                    if (fileInput) fileInput.value = '';
+                    importRows = [];
+                    loadMembers();
+                  }).catch(function () {
+                    showErr($('team-import-error'), 'Network error. Please try again.');
+                    if (go) { go.disabled = false; go.textContent = 'Import'; }
+                  });
+                }
+              }
+
               function setupEdit() {
                 $('team-edit-cancel').addEventListener('click', function () {
                   editingId = null;
@@ -10441,6 +10591,7 @@ window.qsNpOfferSend = function (btn) {
                     });
                   }
                   setupAdd();
+                  setupImport();
                   setupEdit();
                   setupDeptForm();
                   setupPromote();
@@ -18517,6 +18668,11 @@ window.qsNpOfferSend = function (btn) {
         '<select id="sw-role" style="flex:1;padding:0.6rem;border-radius:8px;border:1px solid var(--border)"><option value="">Job role (optional)</option></select>' +
         '<button type="button" id="sw-add" class="btn" style="padding:0.6rem 1.2rem;border-radius:8px">Add</button>' +
         '</div></div>' +
+        '<div style="background:var(--bg);border-radius:12px;padding:0.9rem;margin-top:0.8rem">' +
+        '<div style="font-weight:600;margin-bottom:0.3rem">Have a list already? Import it 📄</div>' +
+        '<p style="color:var(--dim);font-size:0.85rem;margin:0 0 0.6rem">Upload a spreadsheet (Excel or CSV) with a Name and an Email column — one row per person — and everyone on it is added at once. Optional columns: Phone, Department, Job role, End date.</p>' +
+        '<input type="file" id="sw-import-file" accept=".csv,.xlsx,.xls,.txt" style="font-size:13px">' +
+        '<div id="sw-import-preview" style="margin-top:0.6rem"></div></div>' +
         navRow(function () { prevStepBefore('team'); }, 'Continue', function () { nextStepAfter('team'); }, null));
       wireNav(function () { prevStepBefore('team'); }, function () { nextStepAfter('team'); }, null);
       renderMembers([]);
@@ -18565,6 +18721,48 @@ window.qsNpOfferSend = function (btn) {
           refreshMemberList();
           pageSuccess(fn + ' added.');
         }).catch(function () { pageError('Could not add member.'); });
+      });
+      // Import from file (2026-11-05): same preview + import endpoints as
+      // Settings -> Team members.
+      var swImportFile = document.getElementById('sw-import-file');
+      if (swImportFile) swImportFile.addEventListener('change', function () {
+        var f = this.files && this.files[0];
+        if (!f) return;
+        var box = document.getElementById('sw-import-preview');
+        box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">Reading ' + esc(f.name) + '…</p>';
+        var reader = new FileReader();
+        reader.onload = function () {
+          var dataUrl = String(reader.result || '');
+          var b64 = dataUrl.indexOf(',') >= 0 ? dataUrl.slice(dataUrl.indexOf(',') + 1) : dataUrl;
+          api('/api/users/import/preview', { method: 'POST', body: JSON.stringify({ filename: f.name, dataBase64: b64 }) })
+            .then(function (r) {
+              if (!r.ok) { box.innerHTML = '<p style="color:#991b1b;font-size:0.9rem">' + esc((r.data && r.data.error) || 'Could not read that file.') + '</p>'; return; }
+              var rows = (r.data && r.data.rows) || [];
+              if (!rows.length) { box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No people found in that file.</p>'; return; }
+              var h = rows.map(function (x) {
+                return '<div style="display:flex;justify-content:space-between;gap:0.6rem;font-size:0.88rem;padding:0.3rem 0;border-bottom:1px solid var(--border)"><span>' + esc(x.name || x.email || '—') + '</span>' +
+                  (x.ok ? '<span style="color:#15803d;font-weight:600">✓ Ready</span>' : '<span style="color:#b91c1c">' + esc((x.problems || []).join('; ')) + '</span>') + '</div>';
+              }).join('');
+              h += '<p style="font-size:0.9rem;margin:0.6rem 0"><b>' + r.data.ready + ' of ' + r.data.total + '</b> ready to add.</p>';
+              if (r.data.ready > 0) h += '<button type="button" id="sw-import-go" class="btn" style="width:100%;padding:0.7rem;border-radius:10px">Add ' + r.data.ready + ' team member' + (r.data.ready === 1 ? '' : 's') + '</button>';
+              box.innerHTML = h;
+              var go = document.getElementById('sw-import-go');
+              if (go) go.addEventListener('click', function () {
+                go.disabled = true; go.textContent = 'Adding…';
+                var members = rows.filter(function (x) { return x.ok; }).map(function (x) {
+                  return { firstName: x.firstName, lastName: x.lastName, email: x.email, phone: x.phone, departmentId: x.departmentId, jobRoleId: x.jobRoleId, jobRole: x.jobRole, systemRole: x.systemRole, endDate: x.endDate };
+                });
+                api('/api/users/import', { method: 'POST', body: JSON.stringify({ members: members }) })
+                  .then(function (r2) {
+                    if (!r2.ok) { box.innerHTML = '<p style="color:#991b1b;font-size:0.9rem">' + esc((r2.data && r2.data.error) || 'Import failed.') + '</p>'; return; }
+                    var added = ((r2.data && r2.data.created) || []).length;
+                    box.innerHTML = '<p style="color:#15803d;font-size:0.9rem;font-weight:600">✓ Added ' + added + ' team member' + (added === 1 ? '' : 's') + '.</p>';
+                    refreshMemberList();
+                  }).catch(function () { box.innerHTML = '<p style="color:#991b1b;font-size:0.9rem">Network error. Please try again.</p>'; });
+              });
+            }).catch(function () { box.innerHTML = '<p style="color:#991b1b;font-size:0.9rem">Network error. Please try again.</p>'; });
+        };
+        reader.readAsDataURL(f);
       });
       refreshMemberList();
     }
