@@ -125,10 +125,25 @@
     .step p { color: var(--dim); font-size: 0.95rem; }
 
     /* Pricing */
-    .pricing-card { background: var(--navy); color: #fff; border-radius: var(--radius); padding: 3rem; text-align: center; max-width: 640px; margin: 0 auto; }
-    .pricing-card h2 { margin-bottom: 0.5rem; }
-    .pricing-card p { opacity: 0.85; margin-bottom: 1.5rem; }
-    .pricing-card .fine { font-size: 0.82rem; opacity: 0.65; margin-top: 1rem; margin-bottom: 0; }
+    .pricing-head { text-align: center; }
+    .pricing-head p.lead { margin-left: auto; margin-right: auto; }
+    .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; align-items: stretch; }
+    .plan { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; display: flex; flex-direction: column; }
+    .plan h3 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--dim); margin-bottom: 0.4rem; }
+    .plan .price { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+    .plan .price span { font-size: 0.95rem; font-weight: 600; color: var(--dim); }
+    .plan .tag { color: var(--dim); font-size: 0.93rem; margin: 0.4rem 0 1.3rem; }
+    .plan ul { list-style: none; margin-bottom: 1.75rem; }
+    .plan li { padding-left: 1.6rem; position: relative; margin-bottom: 0.55rem; font-size: 0.95rem; }
+    .plan li::before { content: "✓"; position: absolute; left: 0; color: var(--teal); font-weight: 800; }
+    .plan .btn { margin-top: auto; text-align: center; }
+    .plan.featured { background: var(--navy); color: #fff; border-color: var(--navy); position: relative; }
+    .plan.featured h3 { color: var(--teal); }
+    .plan.featured .tag { color: #c6cde0; }
+    .plan.featured .price span { color: #c6cde0; }
+    .plan .pop { position: absolute; top: -0.85rem; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.32rem 0.85rem; border-radius: 999px; white-space: nowrap; }
+    .plans-fine { text-align: center; color: var(--dim); font-size: 0.85rem; max-width: 46rem; margin: 1.6rem auto 0; }
+    @media (max-width: 860px) { .plans { grid-template-columns: 1fr; } .plan.featured { margin-top: 0.85rem; } }
 
     /* CTA + footer */
     .final-cta { text-align: center; }
@@ -408,13 +423,55 @@
 
   <section class="block" id="pricing">
     <div class="wrap">
-      <div class="pricing-card">
-        <div class="kicker" style="color:var(--teal)">Pricing</div>
-        <h2>Start free. Pay only if it works for you.</h2>
-        <p>Every workspace starts with a 14-day free trial. Add a card at signup — you're not charged until the trial ends, and you can cancel anytime from your billing page.</p>
-        <a class="btn btn-primary" href="/signup.html">Start free trial</a>
-        <p class="fine">Simple per-workspace pricing. Details at signup.</p>
+      <div class="pricing-head">
+        <div class="kicker">Pricing</div>
+        <h2 class="sec">Every feature. Every plan.</h2>
+        <p class="lead">Nothing is locked behind a bigger plan — scheduling, calendars, rotations, Email Q-Scheduler, Ask, all of it is in every plan. Plans differ only in size. Every plan starts with a 14-day free trial, and you can cancel anytime.</p>
       </div>
+      <div class="plans">
+        <div class="plan">
+          <h3>Basic</h3>
+          <div class="price">$20<span> / month</span></div>
+          <p class="tag">For a single department getting off spreadsheets.</p>
+          <ul>
+            <li><strong>1 department</strong> included</li>
+            <li>Extra departments $17/month each</li>
+            <li>Up to 20 employees</li>
+            <li>100 AI credits per department / month</li>
+            <li>Every feature included</li>
+          </ul>
+          <a class="btn btn-outline" href="/signup.html">Start free trial</a>
+        </div>
+        <div class="plan featured">
+          <div class="pop">Most popular</div>
+          <h3>Standard</h3>
+          <div class="price">$49<span> / month</span></div>
+          <p class="tag">For clinics and teams scheduling across departments.</p>
+          <ul>
+            <li><strong>3 departments</strong> included</li>
+            <li>Extra departments $15/month each</li>
+            <li>Unlimited employees</li>
+            <li>100 AI credits per department / month</li>
+            <li>Every feature included</li>
+          </ul>
+          <a class="btn btn-primary" href="/signup.html">Start free trial</a>
+        </div>
+        <div class="plan">
+          <h3>Institutional</h3>
+          <div class="price">$299<span> / month</span></div>
+          <p class="tag">For hospitals and multi-department organizations.</p>
+          <ul>
+            <li><strong>25 departments</strong> included</li>
+            <li>Extra departments $10/month each</li>
+            <li>Unlimited employees</li>
+            <li>100 AI credits per department / month</li>
+            <li>Done-for-you setup &amp; staff training</li>
+            <li>Audit trail, invoice billing, priority support</li>
+          </ul>
+          <a class="btn btn-outline" href="/signup.html">Start free trial</a>
+        </div>
+      </div>
+      <p class="plans-fine">AI credits are pooled across your whole company — one credit covers one AI-handled email or one Ask question. If credits run out, the AI pauses but scheduling by email form keeps working. Prices in USD, per company.</p>
     </div>
   </section>
 
