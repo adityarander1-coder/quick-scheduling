@@ -14884,6 +14884,22 @@ window.qsNpOfferSend = function (btn) {
         </div>
 
         <div class="card" style="padding:16px;margin-bottom:14px">
+          <h3 style="margin:0 0 10px">📅 Calendar feed</h3>
+          <p style="font-size:0.85rem;color:var(--dim);margin:0 0 10px">See your shifts and sessions on your own Google, Outlook or Apple calendar. Subscribe to your private feed link in your calendar app — it keeps itself up to date. Anyone who has the link can see your shifts, so keep it to yourself.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="ms-feed-url" readonly placeholder="Loading…" style="flex:1;min-width:220px;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb;font-size:0.82rem">
+            <button type="button" id="ms-feed-copy" class="btn-secondary" style="padding:0.45rem 0.9rem">Copy</button>
+            <button type="button" id="ms-feed-reset" class="btn-secondary" style="padding:0.45rem 0.9rem">Reset link</button>
+          </div>
+          <span id="ms-feed-msg" style="font-size:0.85rem"></span>
+          <div style="font-size:0.83rem;color:var(--dim);margin-top:10px;display:grid;gap:4px">
+            <div><strong>Google Calendar:</strong> Settings → Add calendar → From URL → paste the link.</div>
+            <div><strong>Outlook:</strong> Add calendar → Subscribe from web → paste the link.</div>
+            <div><strong>Apple Calendar:</strong> File → New Calendar Subscription → paste the link.</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:16px;margin-bottom:14px">
           <h3 style="margin:0 0 10px">🔑 Password</h3>
           <div style="display:grid;gap:10px">
             <label style="font-size:0.88rem">Current password<br><input type="password" id="ms-pw-current" autocomplete="current-password" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px"></label>
@@ -19170,8 +19186,35 @@ window.qsNpOfferSend = function (btn) {
       if (appearance.header_color) $('ms-header-color').value = appearance.header_color;
       if (appearance.footer_color) $('ms-footer-color').value = appearance.footer_color;
     }).catch(function () {});
+    api('/api/users/me/calendar-feed').then(function (r) {
+      var url = r && r.data && r.data.url;
+      var inp = $('ms-feed-url');
+      if (inp && url) inp.value = url;
+    }).catch(function () {});
     if (window.qsInitPushSettings) window.qsInitPushSettings();
   };
+
+  // ---- Calendar feed (2026-11-06): private .ics subscription link ----
+  var msFeedCopy = $('ms-feed-copy');
+  if (msFeedCopy) msFeedCopy.addEventListener('click', function () {
+    var inp = $('ms-feed-url');
+    if (!inp || !inp.value) { msg('ms-feed-msg', 'Still loading — try again in a second.', false); return; }
+    function done() { msg('ms-feed-msg', 'Copied ✓', true); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(inp.value).then(done, function () { inp.select(); document.execCommand('copy'); done(); });
+    } else { inp.select(); document.execCommand('copy'); done(); }
+  });
+  var msFeedReset = $('ms-feed-reset');
+  if (msFeedReset) msFeedReset.addEventListener('click', function () {
+    if (!window.confirm('Reset your calendar feed link? The old link will stop working, and you will need to subscribe again with the new one.')) return;
+    api('/api/users/me/calendar-feed/reset', { method: 'POST', body: '{}' }).then(function (r) {
+      var url = r && r.data && r.data.url;
+      if (!r || !r.ok || !url) throw new Error('reset failed');
+      var inp = $('ms-feed-url');
+      if (inp) inp.value = url;
+      msg('ms-feed-msg', 'New link created ✓ — subscribe again in your calendar app.', true);
+    }).catch(function () { msg('ms-feed-msg', 'Could not reset — try again.', false); });
+  });
 
   $('ms-profile-save').addEventListener('click', function () {
     if (!myId) { msg('ms-profile-msg', 'Still loading — try again in a second.', false); return; }

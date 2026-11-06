@@ -24,6 +24,7 @@ import notificationsRouter from './routes/notifications';
 import pushRouter from './routes/push';
 import credentialsRouter from './routes/credentials';
 import inboundRouter from './routes/inbound';
+import { calendarFeedMeRouter, calendarFeedPublicRouter } from './routes/calendarFeed';
 import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
 import { billingWriteGate } from './middleware/billing';
 
@@ -80,7 +81,12 @@ app.use('/api/inbound', inboundRouter);
 // canceled, or trial-expired-without-card companies. Reads always pass.
 app.use('/api', billingWriteGate);
 app.use('/api/billing', billingRouter);
+// Calendar feed "me" endpoints mount BEFORE the users router so
+// /api/users/me/calendar-feed is not swallowed by a users pattern.
+app.use('/api/users', calendarFeedMeRouter);
 app.use('/api/users', usersRouter);
+// Public .ics subscription feed — the token in the URL is the auth.
+app.use('/api/calendar-feed', calendarFeedPublicRouter);
 app.use('/api/departments', departmentsRouter);
 app.use('/api/job-roles', jobRolesRouter);
 app.use('/api/candidates', candidatesRouter);
