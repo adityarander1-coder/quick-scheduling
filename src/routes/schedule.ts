@@ -4400,17 +4400,8 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
       let heldRequestId: string | null = null;
       try {
         await withTransaction(async (tx) => {
-          const { rows: slotRows } = await tx.query(
-            `UPDATE extra_open_slots SET count = count - 1
-             WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
-             RETURNING count`,
-            [companyId, date, shiftTypeId]);
-          if (slotRows.length) {
-            if (Number(slotRows[0].count) <= 0) {
-              await tx.query('DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-                [companyId, date, shiftTypeId]);
-            }
-          } else {
+          const tookSlot = await consumeExtraOpenSlot(tx.query, companyId, date, shiftTypeId);
+          if (!tookSlot) {
             const { rows: crows } = await tx.query(
               'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
               [companyId, date, shiftTypeId]);
@@ -5002,6 +4993,29 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
 // recipient gets a bell + an email with a personal login-free link;
 // the link's page button claims the shift (first pickup wins), under
 // the same eligibility + conflict guards as an open-slot claim.
+// Consume one manually-added extra open slot without ever writing count = 0:
+// migration 020's CHECK (count <> 0) kills a plain decrement 1 → 0 before any
+// delete-at-zero cleanup can run (found 2026-11-06 — last-slot claims 500'd on
+// every claim path). One atomic statement instead: decrement when count > 1,
+// delete the row when count = 1. Returns true when a slot was consumed.
+async function consumeExtraOpenSlot(q: any, companyId: string, date: string, shiftTypeId: string): Promise<boolean> {
+  const { rows } = await q(
+    `WITH dec AS (
+       UPDATE extra_open_slots SET count = count - 1
+        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 1
+        RETURNING 1 AS taken
+     ), del AS (
+       DELETE FROM extra_open_slots
+        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count = 1
+          AND NOT EXISTS (SELECT 1 FROM dec)
+        RETURNING 1 AS taken
+     )
+     SELECT taken FROM dec UNION ALL SELECT taken FROM del`,
+    [companyId, date, shiftTypeId]
+  );
+  return rows.length > 0;
+}
+
 async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: string) {
   const shifts = await getShiftsForRange(q, companyId, date, date);
   const have = shifts.filter((s: any) => s.shiftTypeId === shiftTypeId).length;
@@ -5354,17 +5368,7 @@ router.post('/gap-offers/act/:token', urlencoded({ extended: false }), async (re
       });
       if (conflict) { conflictMsg = conflict; outcome = 'conflict'; return; }
       // Consume a manually-added extra slot first (mirrors open-slot claim).
-      const { rows: slotRows } = await tx.query(
-        `UPDATE extra_open_slots SET count = count - 1
-         WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0 RETURNING count`,
-        [ctx.companyId, ctx.date, ctx.shiftTypeId]
-      );
-      if (slotRows.length && Number(slotRows[0].count) <= 0) {
-        await tx.query(
-          'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-          [ctx.companyId, ctx.date, ctx.shiftTypeId]
-        );
-      }
+      await consumeExtraOpenSlot(tx.query, ctx.companyId, ctx.date, ctx.shiftTypeId);
       const shiftId = crypto.randomUUID();
       await tx.query(
         `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
@@ -7764,20 +7768,8 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
           exclude: [{ date, shiftTypeId }],
         });
         if (conflict) { conflictMsg = conflict; return; }
-        // Path 1: manually-added extra open slots (atomic row-locked decrement).
-        const { rows: slotRows } = await tx.query(
-          `UPDATE extra_open_slots SET count = count - 1
-           WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 0
-           RETURNING count`,
-          [companyId, date, shiftTypeId]
-        );
-        if (slotRows.length) {
-          if (Number(slotRows[0].count) <= 0) {
-            await tx.query(
-              'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-              [companyId, date, shiftTypeId]
-            );
-          }
+        // Path 1: manually-added extra open slots (atomic consume).
+        if (await consumeExtraOpenSlot(tx.query, companyId, date, shiftTypeId)) {
           await tx.query(
             `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
              VALUES ($1, $2, $3, $4, $5, true, $6)`,
