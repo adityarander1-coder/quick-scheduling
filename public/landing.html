@@ -53,6 +53,54 @@
     .wk-pill .cat { background: #dbeafe; color: #1e3a8a; font-weight: 700; font-size: 0.78rem; padding: 0.45rem 0.6rem; white-space: nowrap; }
     .wk-pill .nm { color: #131a2c; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.6rem; }
     .wk-pill .nm.open { color: #b91c1c; }
+    /* Hero visual: the employee My Schedule view, as it really looks */
+    .appwin { background: #fff; border-radius: 18px; overflow: hidden; box-shadow: 0 24px 55px rgba(16,24,40,.28); color: var(--text); }
+    .appwin-bar { background: #083f4d; color: #fff; display: flex; align-items: center; gap: 0.5rem; padding: 0.55rem 0.85rem; font-weight: 800; font-size: 0.88rem; }
+    .appwin-bar .bell { margin-left: auto; position: relative; font-size: 0.85rem; }
+    .appwin-bar .bell i { position: absolute; top: -6px; right: -8px; background: #dc2626; color: #fff; font-style: normal; font-size: 0.58rem; font-weight: 800; border-radius: 99px; padding: 0.05rem 0.32rem; }
+    .appwin-av { background: var(--accent); border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; font-size: 0.68rem; font-weight: 800; }
+    .appwin-tabs { display: flex; gap: 1rem; padding: 0.5rem 0.85rem 0; font-size: 0.78rem; color: var(--dim); font-weight: 600; border-bottom: 1px solid #eef0f8; }
+    .appwin-tabs span { padding-bottom: 0.45rem; }
+    .appwin-tabs .on { color: var(--accent-hover); border-bottom: 2.5px solid var(--accent); font-weight: 800; }
+    .appwin-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; padding: 0.7rem 0.85rem 0.4rem; }
+    .aw-day { font-size: 0.62rem; color: var(--dim); font-weight: 700; }
+    .aw-cell { min-height: 64px; }
+    .aw-chip { border-radius: 6px; padding: 0.22rem 0.35rem; font-size: 0.6rem; line-height: 1.35; margin-bottom: 3px; }
+    .aw-chip b { display: block; font-size: 0.62rem; }
+    .aw-chip.me { background: #dbeafe; color: #1e3a8a; }
+    .aw-chip.mate { background: #f3e3cf; color: #7c4a12; }
+    .aw-open { background: #eef7ee; color: #4c7a57; border-radius: 6px; padding: 0.22rem 0.35rem; font-size: 0.58rem; line-height: 1.35; }
+    .aw-cell.today { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+    .appwin-today { margin: 0.35rem 0.85rem 0.85rem; background: #f7f8fd; border: 1px solid #eef0f8; border-radius: 10px; padding: 0.55rem 0.7rem; font-size: 0.74rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .appwin-btn { background: var(--accent); color: #fff; border-radius: 999px; padding: 0.22rem 0.65rem; font-weight: 700; font-size: 0.68rem; margin-left: auto; }
+    /* Glance mock: month cells like the real My Schedule */
+    .mx-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .mx-day { background: #fff; border: 1px solid #eef0f8; border-radius: 7px; padding: 0.3rem; font-size: 0.6rem; min-height: 58px; }
+    .mx-day .d { font-weight: 800; font-size: 0.66rem; margin-bottom: 0.2rem; }
+    .mx-day.today { outline: 2px solid var(--accent); }
+    /* Range-view day cards (hero + glance), mirroring the app's Range view */
+    .rg-bar { display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 0.85rem 0; font-size: 0.72rem; color: var(--dim); flex-wrap: wrap; }
+    .rg-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-weight: 700; }
+    .rg-toggle span { padding: 0.22rem 0.6rem; background: #fff; }
+    .rg-toggle span.on { background: var(--navy-soft); color: #fff; }
+    .rg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0.65rem 0.85rem 0.85rem; }
+    .rg-card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 0.5rem 0.6rem; }
+    .rg-card.today { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .rg-day { font-weight: 800; font-size: 0.74rem; }
+    .rg-day span { color: var(--dim); font-weight: 600; font-size: 0.66rem; margin-left: 0.25rem; }
+    .rg-today { background: var(--accent); color: #fff; border-radius: 99px; font-size: 0.56rem; font-weight: 800; padding: 0.1rem 0.45rem; margin-left: 0.35rem; vertical-align: 1px; }
+    .rg-row { display: flex; align-items: center; gap: 0.45rem; background: #eef2fb; border-radius: 6px; padding: 0.28rem 0.45rem; margin-top: 4px; font-size: 0.66rem; }
+    .rg-row .t { font-weight: 700; color: #31456e; }
+    .rg-row.tan { background: #f7ecdc; } .rg-row.tan .t { color: #7c4a12; }
+    .rg-you { background: var(--accent); color: #fff; border-radius: 99px; font-size: 0.56rem; font-weight: 800; padding: 0.08rem 0.42rem; }
+    .rg-open { color: #0a7d4f; font-weight: 800; font-size: 0.6rem; letter-spacing: 0.03em; }
+    .rg-actions { display: flex; gap: 4px; margin-top: 4px; }
+    .rg-btn { border: 1px solid var(--border); background: #fff; border-radius: 7px; font-size: 0.6rem; font-weight: 700; padding: 0.18rem 0.5rem; color: var(--text); }
+    .rg-btn.go { background: var(--accent); border-color: var(--accent); color: #fff; margin-left: auto; }
+    /* Rotation turn cards */
+    .turn { border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.7rem; margin-bottom: 0.55rem; background: #fff; }
+    .turn .tw { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); margin-bottom: 0.35rem; }
+    .turn .tnote { font-size: 0.72rem; color: var(--dim); margin-top: 0.4rem; line-height: 1.45; }
     /* Three mini feature cards under the hero */
     .mini-feats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; padding-bottom: 0.5rem; }
     .mini-feat { background: #fbfbff; border: 1px solid #eef0f8; border-radius: 14px; padding: 1.05rem 1.15rem; }
@@ -220,15 +268,17 @@
         </div>
         <p class="hero-note">30-day free trial · No charge until the trial ends · Cancel anytime</p>
       </div>
-      <div class="wk-panel">
-        <div class="wk-day">Monday <span>Oct 19</span></div>
-        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Avery K.</span></div>
-        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Jordan M.</span></div>
-        <div class="wk-pill"><span class="cat">Night Hospitalist</span><span class="nm">Casey L.</span></div>
-        <div class="wk-pill"><span class="cat">Night NP</span><span class="nm open">OPEN — tap to claim</span></div>
-        <div class="wk-day">Tuesday <span>Oct 20</span></div>
-        <div class="wk-pill"><span class="cat">Day Hospitalist</span><span class="nm">Riley P.</span></div>
-        <div class="wk-pill" style="margin-bottom:0"><span class="cat">Night Hospitalist</span><span class="nm">Morgan S.</span></div>
+      <div class="appwin">
+        <div class="appwin-bar"><span class="brand-tile-sm" style="margin-right:0">◈</span> Quick Scheduling <span class="bell">🔔<i>3</i></span><span class="appwin-av">JM</span></div>
+        <div class="appwin-tabs"><span class="on">My schedule</span><span>Requests</span><span>Messages</span><span>Ask Q-Scheduler</span></div>
+        <div class="rg-bar"><span class="rg-toggle"><span class="on">Range</span><span>Month</span><span>Block</span></span><span>Oct 19 → Oct 25</span></div>
+        <div class="rg-grid">
+          <div class="rg-card"><div class="rg-day">Monday <span>Oct 19</span></div><div class="rg-row"><span class="t">Day Hospitalist</span> Nurse <span class="rg-you">YOU</span></div><div class="rg-actions"><span class="rg-btn">Swap</span><span class="rg-btn">Ask for cover</span></div><div class="rg-row"><span class="t">Night Hospitalist</span> <span class="rg-open">OPEN</span></div></div>
+          <div class="rg-card"><div class="rg-day">Tuesday <span>Oct 20</span></div><div class="rg-row tan"><span class="t">Day Hospitalist</span> Physician</div><div class="rg-row"><span class="t">Night Hospitalist</span> Nurse</div></div>
+          <div class="rg-card today"><div class="rg-day">Thursday <span>Oct 22</span><span class="rg-today">TODAY</span></div><div class="rg-row"><span class="t">Day Hospitalist</span> <span class="rg-open">OPEN</span> <span class="rg-btn go">Pick up</span></div><div class="rg-row tan"><span class="t">Night Hospitalist</span> Physician</div></div>
+          <div class="rg-card"><div class="rg-day">Friday <span>Oct 23</span></div><div class="rg-row"><span class="t">Day Hospitalist</span> Nurse <span class="rg-you">YOU</span></div><div class="rg-actions"><span class="rg-btn">Swap</span><span class="rg-btn">Ask for cover</span></div></div>
+        </div>
+        <div class="appwin-today"><span><b>Your week:</b> days Mon, Wed, Fri — and the open Thursday day shift is one tap away.</span><span class="appwin-btn">See open shifts</span></div>
       </div>
     </div>
   </header>
@@ -292,13 +342,13 @@
           </ul>
         </div>
         <div class="f-vis"><div class="mock">
-          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Week view</div>
-          <div class="mock-body"><div class="mock-week">
-            <div class="mock-day"><div class="d">Thu 15</div><div class="mock-shift" style="background:#dbeafe">Morning Shift<br><b>Casey L.</b></div></div>
-            <div class="mock-day"><div class="d">Fri 16</div><div class="mock-shift" style="background:#fef3c7">Evening Shift<br><b>Jordan M.</b></div><div class="mock-shift" style="background:#e0e7ff">Night Shift<br><b>Riley P.</b></div></div>
-            <div class="mock-day"><div class="d">Sat 17</div><div class="mock-shift" style="background:#f1f5f9;color:#94a3b8">Draft — not published</div></div>
-          </div></div>
-        </div></div>
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; My schedule — range view</div>
+          <div class="mock-body"><div class="rg-grid" style="padding:0">
+            <div class="rg-card"><div class="rg-day">Tuesday <span>Oct 20</span></div><div class="rg-row"><span class="t">Day Hospitalist</span> Nurse <span class="rg-you">YOU</span></div><div class="rg-actions"><span class="rg-btn">Swap</span><span class="rg-btn">Ask for cover</span></div><div class="rg-row"><span class="t">Night Hospitalist</span> <span class="rg-open">OPEN</span></div></div>
+            <div class="rg-card today"><div class="rg-day">Thursday <span>Oct 22</span><span class="rg-today">TODAY</span></div><div class="rg-row tan"><span class="t">Day Hospitalist</span> Physician</div><div class="rg-row"><span class="t">Night Hospitalist</span> <span class="rg-open">OPEN</span> <span class="rg-btn go">Pick up</span></div></div>
+          </div>
+          <p style="font-size:0.75rem;color:var(--dim);margin-top:0.5rem">Every day is its own card: your shifts carry a <b>YOU</b> badge with Swap and Cover buttons, open shifts say <b>OPEN</b> — with a Pick up button when you want them.</p></div></div>
+        </div>
       </div>
 
       <div class="feature flip">
@@ -345,22 +395,28 @@
 
       <div class="feature flip">
         <div class="f-text">
-          <h3>Rotations that survive vacations</h3>
-          <p>Set the pattern once — people, or whole groups, take their turns in order and the schedule fills itself in for months. And when the person whose turn is starting goes on vacation, the next person in their group takes that turn. Nobody works two turns in a row because someone else took a holiday.</p>
+          <h3>Night shifts that rotate themselves</h3>
+          <p>Somebody has to work nights — but nobody can do them all the time. So <b>people take turns.</b></p>
+          <p>Say your night team is two groups of three people. The groups take turns having the night week — Group A one week, Group B the next. And inside each group, its three people take turns too: when Group A's week comes round again, the next person in Group A's line takes it.</p>
+          <p>On paper, somebody has to hold all of that in their head — which group, which person, who was away — and assign it again every single week.</p>
+          <p><b>Quick Scheduling holds it instead.</b> You set up the groups and the order once, and the app assigns the night shift by itself, week after week. Nobody has to keep assigning it, and nobody has to keep track.</p>
           <ul>
-            <li>Group rotations: teams rotate, and each team rotates its own people</li>
-            <li>Vacation cover is automatic — the line moves, the order stays fair</li>
-            <li>Manual shifts always win over rotation shifts</li>
+            <li>Each group rotates its own people — everyone gets their turn, in order</li>
+            <li>Set it up once — the app assigns it from then on</li>
+            <li>If someone is on vacation when their turn comes, the next person in their group takes that week — and they keep their place in line, so nobody works two turns in a row</li>
           </ul>
         </div>
         <div class="f-vis"><div class="mock">
-          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Rotations</div>
-          <div class="mock-body"><div class="mock-week">
-            <div class="mock-day"><div class="d">Day 1</div><div class="mock-shift" style="background:#dbeafe"><b>Avery K.</b></div></div>
-            <div class="mock-day"><div class="d">Day 2</div><div class="mock-shift" style="background:#dbeafe"><b>Casey L.</b></div></div>
-            <div class="mock-day"><div class="d">Day 3</div><div class="mock-shift" style="background:#f1f5f9;color:#94a3b8">Off</div></div>
-          </div>
-          <p style="font-size:0.75rem;color:var(--dim);margin-top:0.5rem">Repeats every 3 days · 2 people cycling</p></div>
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Night shift — two groups of three</div>
+          <div class="mock-body">
+            <div class="turn"><div class="tw">Week 1 · Group A has nights</div><div class="rg-row"><span class="t">🌙 Night Hospitalist</span> Jordan <span style="color:var(--dim)">(1st in Group A)</span></div></div>
+            <div class="turn"><div class="tw">Week 2 · Group B has nights</div><div class="rg-row tan"><span class="t">🌙 Night Hospitalist</span> Avery <span style="color:var(--dim)">(1st in Group B)</span></div></div>
+            <div class="turn"><div class="tw">Week 3 · Group A again</div><div class="rg-row"><span class="t">🌙 Night Hospitalist</span> Riley <span style="color:var(--dim)">(2nd in Group A)</span></div></div>
+            <div class="turn"><div class="tw">Week 4 · Group B again</div><div class="rg-row tan"><span class="t">🌙 Night Hospitalist</span> Casey <span style="color:var(--dim)">(2nd in Group B)</span></div></div>
+            <div class="turn"><div class="tw">Week 5 · Group A again</div><div class="rg-row"><span class="t">🌙 Night Hospitalist</span> Sam <span style="color:var(--dim)">(3rd in Group A)</span></div></div>
+            <div class="turn"><div class="tw">Week 6 · Group B again</div><div class="rg-row tan"><span class="t">🌙 Night Hospitalist</span> Morgan <span style="color:var(--dim)">(3rd in Group B)</span></div></div>
+            <div class="turn"><div class="tw">Week 7 · Next cycle — Group A again</div><div class="rg-row"><span class="t">🌙 Night Hospitalist</span> Jordan <span style="color:var(--dim)">(1st in Group A, again)</span></div><div class="tnote">The next cycle starts over — and around it goes, week after week.</div></div>
+            <p style="font-size:0.75rem;color:var(--dim)">Two groups of three. Set the order once — the app keeps track.</p></div>
         </div></div>
       </div>
 
