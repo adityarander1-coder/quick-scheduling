@@ -1,7 +1,7 @@
 // routes/billing.ts — self-serve signup + Stripe billing.
 //
 // Flow: owner signs up -> POST /api/billing/checkout creates a Stripe
-// Checkout Session (subscription mode, 14-day trial) -> owner enters card on
+// Checkout Session (subscription mode, 30-day trial) -> owner enters card on
 // Stripe -> webhook checkout.session.completed links the subscription ->
 // Stripe auto-charges when the trial ends -> invoice.payment_succeeded marks
 // the company active. Failures move the company through
@@ -21,7 +21,7 @@ import { getStripe, billingPriceId, appBaseUrl, stripeConfigured } from '../util
 
 export const billingRouter = Router();
 
-const TRIAL_DAYS = 14;
+const TRIAL_DAYS = 30;
 const GRACE_DAYS = 7;
 const READ_ONLY_DAYS = 30; // read_only -> suspended after this long
 

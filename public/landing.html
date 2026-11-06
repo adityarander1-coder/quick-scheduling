@@ -143,6 +143,40 @@
     .plan.featured .price span { color: #c6cde0; }
     .plan .pop { position: absolute; top: -0.85rem; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.32rem 0.85rem; border-radius: 999px; white-space: nowrap; }
     .plans-fine { text-align: center; color: var(--dim); font-size: 0.85rem; max-width: 46rem; margin: 1.6rem auto 0; }
+
+    /* Tools grid */
+    .tools-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
+    .tool-card { background: var(--bg); border-radius: var(--radius); padding: 1.75rem; }
+    .tool-card .t-ico { font-size: 1.5rem; margin-bottom: 0.6rem; }
+    .tool-card h3 { margin-bottom: 0.5rem; font-size: 1.08rem; }
+    .tool-card p { color: var(--dim); font-size: 0.95rem; }
+    .tool-vis { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem 0.7rem; margin-bottom: 1rem; font-size: 0.72rem; }
+    .tool-vis .tv-row { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding: 0.32rem 0; border-bottom: 1px solid #eef3f7; }
+    .tool-vis .tv-row:last-child { border-bottom: none; }
+    .tv-pill { border-radius: 999px; padding: 0.12rem 0.5rem; font-size: 0.65rem; font-weight: 700; white-space: nowrap; }
+    .tv-pill.red { background: #fee2e2; color: #991b1b; }
+    .tv-pill.amber { background: #fef3c7; color: #92400e; }
+    .tv-pill.green { background: #dcfce7; color: #166534; }
+    .tv-pill.grey { background: #f1f5f9; color: var(--dim); }
+    .tv-bar { height: 7px; border-radius: 99px; background: #e6f4f5; overflow: hidden; flex: 1; }
+    .tv-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+    .tv-search { display: flex; align-items: center; gap: 0.4rem; border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem 0.5rem; color: var(--dim); margin-bottom: 0.4rem; }
+    .tv-chip { display: inline-block; border-radius: 6px; padding: 0.18rem 0.5rem; font-weight: 700; margin: 0.1rem 0.15rem 0.1rem 0; }
+    .tv-page { border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.55rem; background: #fff; }
+    .tv-page .tv-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin: 0.35rem 0; }
+    .tv-page .tv-grid i { display: block; height: 12px; border-radius: 3px; background: #eef0f8; }
+    .tv-page .tv-grid i.on { background: #dbeafe; }
+    @media (max-width: 860px) { .tools-grid { grid-template-columns: 1fr; } }
+
+    /* Comparison */
+    .compare { max-width: 880px; margin: 0 auto; }
+    .compare-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; padding: 1.15rem 0; border-bottom: 1px solid var(--border); }
+    .compare-row:last-child { border-bottom: none; }
+    .compare-row .c-label { grid-column: 1 / -1; font-weight: 800; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+    .compare .us { background: #e6f4f5; border-radius: 12px; padding: 0.9rem 1.1rem; font-size: 0.96rem; }
+    .compare .us b { color: var(--accent-hover); }
+    .compare .them { padding: 0.9rem 1.1rem; font-size: 0.96rem; color: var(--dim); }
+    @media (max-width: 860px) { .compare-row { grid-template-columns: 1fr; } }
     @media (max-width: 860px) { .plans { grid-template-columns: 1fr; } .plan.featured { margin-top: 0.85rem; } }
 
     /* CTA + footer */
@@ -181,10 +215,10 @@
         <h1>Scheduling your team runs itself — <em>from your inbox</em></h1>
         <p class="sub">Build the schedule, publish it, and let staff swap, pick up and request changes — you approve everything with one tap, even by email.</p>
         <div class="hero-ctas">
-          <a class="btn btn-primary" href="/signup.html">Start 14-day free trial</a>
+          <a class="btn btn-primary" href="/signup.html">Start 30-day free trial</a>
           <a class="btn btn-ghost-dark" href="#features">See how it works</a>
         </div>
-        <p class="hero-note">14-day free trial · No charge until the trial ends · Cancel anytime</p>
+        <p class="hero-note">30-day free trial · No charge until the trial ends · Cancel anytime</p>
       </div>
       <div class="wk-panel">
         <div class="wk-day">Monday <span>Oct 19</span></div>
@@ -213,8 +247,8 @@
     <div class="wrap">
       <div class="feature standout" style="text-align:center;display:block">
         <div class="kicker">Meet Q-Scheduler</div>
-        <h2 class="sec">Your built-in AI scheduling assistant</h2>
-        <p class="lead" style="max-width:640px;margin:0 auto">Q-Scheduler lives inside Quick Scheduling and does the busywork for you. <strong>Ask</strong> it anything about the schedule, give it <strong>Tasks</strong> in plain language, or handle it all by <strong>Email</strong> — it drafts every plan, and nothing happens until you tap approve.</p>
+        <h2 class="sec">The scheduling assistant that works from your inbox</h2>
+        <p class="lead" style="max-width:640px;margin:0 auto">Q-Scheduler does the busywork for you. <strong>Ask</strong> it anything about the schedule, give it <strong>Tasks</strong> in plain language, or handle it all by <strong>Email</strong> — it drafts every plan, and nothing happens until you tap approve.</p>
       </div>
     </div>
   </section>
@@ -228,12 +262,13 @@
       <div class="feature standout">
         <div class="f-text">
           <span class="standout-badge">★ What makes us different</span>
-          <h3>Email Q-Scheduler</h3>
-          <p class="sub" style="margin-bottom:0.6rem">Get scheduling tasks done by email — assign shifts, add team members, publish schedules. Just send an email and tap approve.</p>
-          <p>Team members send schedule requests by email — time off, shift swaps, cover requests. Email Q-Scheduler drafts the plan, and admins and schedulers approve or reject with one tap — right from the email, no login needed. Schedule questions get answered automatically.</p>
+          <h3>Approvals that happen in your inbox</h3>
+          <p class="sub" style="margin-bottom:0.6rem">Your team already lives in email. So that's where scheduling requests get decided — no app to open, no login, no queue waiting for you at your desk.</p>
+          <p>A request arrives — time off, a swap, cover for a shift. Email Q-Scheduler works out the plan and emails it to you with exactly what changes, for whom, and on which dates. You tap <strong>Approve</strong> or <strong>Reject</strong> right in the email, and the schedule updates itself. Prefer picking from menus? The same request takes 60 seconds with the built-in form.</p>
           <ul>
-            <li>One-tap <strong>Approve &amp; Apply</strong> / Reject — no login needed</li>
-            <li>Plans show who asked, their email, and who's CC'd</li>
+            <li>One-tap <strong>Approve &amp; Apply</strong> / Reject — right from the email, no login needed</li>
+            <li>Swaps go to the swap partner first — only agreed swaps reach you</li>
+            <li>Double-bookings and too-short rest are flagged <em>before</em> anything is applied</li>
             <li>"Send me the schedule for Oct 11–14" gets an automatic reply</li>
           </ul>
         </div>
@@ -250,7 +285,8 @@
           <h3>See the whole schedule at a glance</h3>
           <p>Day, Week, and Range views with full shift names — never cryptic abbreviations. Draft shifts stay hidden until you publish.</p>
           <ul>
-            <li>Tap any shift to reassign, swap, or remove</li>
+            <li>Tap any shift to reassign, swap, or remove — or just drag it</li>
+            <li>Made a mistake? Undo brings the old schedule back, redo restores it</li>
             <li>Filter by department or shift type</li>
             <li>Publish dates when they're final — staff only see published days</li>
           </ul>
@@ -309,11 +345,12 @@
 
       <div class="feature flip">
         <div class="f-text">
-          <h3>Rotations that run themselves</h3>
-          <p>Build repeating patterns from 1 to 84 days. Assign people to cycle days once — the schedule fills itself in. Pause for vacations, exclude one-off swaps.</p>
+          <h3>Rotations that survive vacations</h3>
+          <p>Set the pattern once — people, or whole groups, take their turns in order and the schedule fills itself in for months. And when the person whose turn is starting goes on vacation, the next person in their group takes that turn. Nobody works two turns in a row because someone else took a holiday.</p>
           <ul>
+            <li>Group rotations: teams rotate, and each team rotates its own people</li>
+            <li>Vacation cover is automatic — the line moves, the order stays fair</li>
             <li>Manual shifts always win over rotation shifts</li>
-            <li>Convert a rotation to real shifts for any date range</li>
           </ul>
         </div>
         <div class="f-vis"><div class="mock">
@@ -329,11 +366,11 @@
 
       <div class="feature">
         <div class="f-text">
-          <h3>New hire? They're on the schedule in minutes</h3>
-          <p>Add newly hired team members straight from the <strong>Invite new team members</strong> tab — enter their details, send the invite, and they're on the roster ready to schedule. They set their own password from the invite email.</p>
+          <h3>A whole team onboarded in minutes, not days</h3>
+          <p>Starting from a spreadsheet? Upload the file — every name lands as a ready-to-schedule team profile, checked row by row before anything is saved. One or two hires at a time work the same way, with an invite email that lets them set their own password.</p>
           <ul>
-            <li>Add a new hire manually — no paperwork chase</li>
-            <li>Per-member special instructions and end dates</li>
+            <li>Bulk import from CSV or Excel — duplicates and mistakes flagged first</li>
+            <li>End dates switch accounts off by themselves — nobody keeps access after their last day</li>
           </ul>
         </div>
         <div class="f-vis"><div class="mock">
@@ -351,12 +388,12 @@
 
       <div class="feature flip">
         <div class="f-text">
-          <h3>Reach everyone — even without logins</h3>
-          <p><strong>Share Links</strong> create no-login pages for temps, float staff, and the group chat.</p>
+          <h3>Links that know who's clicking</h3>
+          <p>Every link asks for a quick sign-in, so a shared schedule or an availability answer is always tied to a real person — never a name typed into a box by someone else.</p>
           <ul>
-            <li>View-only schedule links, filterable by department or shift</li>
-            <li>Availability links — staff tap Available / Unavailable per date</li>
-            <li><strong>Open shifts broadcast</strong> — pick dates and shift types, get a ready-to-send message</li>
+            <li>Share the schedule by link — each person sees exactly their departments</li>
+            <li>Availability links pre-filled with the right sessions and open shifts for that person</li>
+            <li>Answers save to their account, so the next link already knows what they said</li>
           </ul>
         </div>
         <div class="f-vis"><div class="mock-phone">
@@ -370,18 +407,18 @@
       <div class="feature">
         <div class="f-text">
           <span class="standout-badge">★ What makes us different</span>
-          <h3>Fill open shifts fast with broadcast</h3>
-          <p><strong>Open shifts broadcast</strong> turns empty shifts into a message you can send anywhere — group chat, email, bulletin board. Staff see what's open and pick it up themselves.</p>
+          <h3>See next week's gaps today</h3>
+          <p>Tell it how many people each shift needs, and <strong>Short cover</strong> watches the next two weeks for you. The morning someone calls out isn't when you find the gap — you saw it days ago, and the offer is already out.</p>
           <ul>
-            <li>Choose dates and shift types — the message writes itself</li>
-            <li>Copy-paste into any chat or email</li>
-            <li>Pickups flow straight back into the schedule</li>
+            <li>Every understaffed day flagged, with how many people are missing</li>
+            <li>One tap offers the gap to the people who fit it — first pickup wins</li>
+            <li>Sessions missing a presenter or supervisor show up in the same place</li>
           </ul>
         </div>
         <div class="f-vis"><div class="mock">
-          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Open shifts broadcast</div>
+          <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>&nbsp; Short cover</div>
           <div class="mock-body"><div class="mock-chat">
-            <div class="mock-msg a"><strong>Open shifts this week:</strong><br>Mon Oct 19 — Morning (2 open)<br>Tue Oct 20 — Night (1 open)<br><br>Reply to pick up a shift!</div>
+            <div class="mock-msg a"><strong>Short next week:</strong><br>Mon Oct 19 — Day Hospitalist: 3 of 4 (1 short)<br>Tue Oct 20 — Night: covered ✓<br><br><span style="color:#0e7c86">✉️ Offer the Monday gap</span> — sent to 6 people who fit</div>
           </div></div>
         </div></div>
       </div>
@@ -408,13 +445,49 @@
     </div>
   </section>
 
+
+  <section class="block steps" id="tools">
+    <div class="wrap">
+      <div class="kicker">The tools</div>
+      <h2 class="sec">Six tools, on every page, for the jobs that eat your week</h2>
+      <p class="lead">A slim rail follows you through the app — no hunting through menus when something needs doing.</p>
+      <div class="tools-grid">
+        <div class="tool-card"><div class="tool-vis"><div class="tv-row"><span><b>Mon</b> · Day Hospitalist — 3 of 4</span><span class="tv-pill red">1 short</span></div><div class="tv-row"><span><b>Tue</b> · Night — 1 of 1</span><span class="tv-pill green">Covered ✓</span></div><div class="tv-row"><span><b>Wed</b> · Day Hospitalist — 2 of 4</span><span class="tv-pill red">2 short</span></div></div><h3>Short cover</h3><p>Next week's understaffed days, flagged today — and one tap offers each gap to the people who can actually fill it.</p></div>
+        <div class="tool-card"><div class="tool-vis"><div class="tv-row"><span><b>Interview</b> · Tue 10 AM — needs a presenter</span><span class="tv-pill green">Pat: can do it</span></div><div class="tv-row"><span><b>Lecture</b> · Thu 2 PM — needs a supervisor</span><span class="tv-pill amber">Sue: waiting</span></div><div class="tv-row"><span><b>Night shift</b> · Fri — open</span><span class="tv-pill grey">Ron: can't</span></div></div><h3>Availability</h3><p>Who can present, supervise, or pick up a shift — collected from your team and joined with the real schedule, clashes marked.</p></div>
+        <div class="tool-card"><div class="tool-vis"><div class="tv-row"><span><b>RN Licence</b> — Pat P.</span><span class="tv-pill amber">Expires in 24 days</span></div><div class="tv-row"><span><b>CPR</b> — Sue S.</span><span class="tv-pill green">Current</span></div><div class="tv-row"><span><b>DEA</b> — Avery K.</span><span class="tv-pill green">Current</span></div></div><h3>Credentials</h3><p>Nobody works a shift on an expired licence. Every expiry is watched — the person and the schedulers hear about it 30 days ahead, not the morning of.</p></div>
+        <div class="tool-card"><div class="tool-vis"><div class="tv-row"><span style="min-width:74px"><b>Pat</b> · 14 shifts</span><span class="tv-bar"><i style="width:92%"></i></span></div><div class="tv-row"><span style="min-width:74px"><b>Sue</b> · 11 shifts</span><span class="tv-bar"><i style="width:72%"></i></span></div><div class="tv-row"><span style="min-width:74px"><b>Ron</b> · 6 shifts</span><span class="tv-bar"><i style="width:40%"></i></span></div><div class="tv-row"><span>Team average</span><b>10.3 shifts · 2.1 weekends</b></div></div><h3>Fairness</h3><p>"I always get the weekends" ends with numbers: total shifts, weekends, and nights per person, next to the team average.</p></div>
+        <div class="tool-card"><div class="tool-vis"><div class="tv-search">🔍 <span>pat…</span></div><span class="tv-chip" style="background:#fde68a">Pat — Day</span><span class="tv-chip" style="background:#bbf7d0">Pat — Night</span><span class="tv-chip" style="background:#eef0f8;color:var(--dim)">Sue — Day</span><div style="margin-top:0.35rem;color:var(--dim)">2 shifts found this month</div></div><h3>Highlight</h3><p>Colour-code the people and shifts you are watching, and find any name on the schedule in seconds.</p></div>
+        <div class="tool-card"><div class="tool-vis"><div class="tv-page"><b>Week of Oct 19</b> · Internal Medicine<div class="tv-grid"><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i></div><span class="tv-pill red">Still needed: Night ×1</span></div></div><h3>Print</h3><p>A clean schedule for the break-room wall: one week per page, with who's still needed printed right on it.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="compare">
+    <div class="wrap">
+      <div class="pricing-head">
+        <div class="kicker">How we compare</div>
+        <h2 class="sec">Built differently from the usual scheduling apps</h2>
+        <p class="lead" style="margin-bottom:2rem">The big apps are built around logging in and digging. Quick Scheduling is built around your inbox and your afternoons back.</p>
+      </div>
+      <div class="compare">
+        <div class="compare-row"><div class="c-label">Approving a request</div><div class="us"><b>Quick Scheduling:</b> tap Approve in the email itself — no login, done from your phone in seconds.</div><div class="them"><b>Typical apps:</b> open the app, log in, find the request, then approve it there.</div></div>
+        <div class="compare-row"><div class="c-label">Pricing</div><div class="us"><b>Quick Scheduling:</b> one price per company — and every feature is in every plan.</div><div class="them"><b>Typical apps:</b> charged per employee, with the useful features held for higher tiers.</div></div>
+        <div class="compare-row"><div class="c-label">Vacations</div><div class="us"><b>Quick Scheduling:</b> the rotation group covers the turn itself, in order — the pattern never breaks.</div><div class="them"><b>Typical apps:</b> repeating shifts you rebuild by hand every time someone is away.</div></div>
+        <div class="compare-row"><div class="c-label">Finding gaps</div><div class="us"><b>Quick Scheduling:</b> shortfalls are flagged days ahead and offered to the right people automatically.</div><div class="them"><b>Typical apps:</b> you spot the empty slot in the grid — sometimes on the day itself.</div></div>
+        <div class="compare-row"><div class="c-label">Expiring licences</div><div class="us"><b>Quick Scheduling:</b> watched for you, with a warning 30 days before anyone's credential lapses.</div><div class="them"><b>Typical apps:</b> a spreadsheet — if somebody remembers to keep one.</div></div>
+        <div class="compare-row"><div class="c-label">Answering questions</div><div class="us"><b>Quick Scheduling:</b> ask "Where are we short next week?" in plain words and get the answer.</div><div class="them"><b>Typical apps:</b> reports, filters, and counting rows yourself.</div></div>
+      </div>
+      <p class="plans-fine">Compared on scheduling, where the work above happens. Quick Scheduling does not include time clocks or built-in payroll processing — payroll hours export for whatever you already use.</p>
+    </div>
+  </section>
+
   <section class="block steps">
     <div class="wrap">
       <div class="kicker">How it works</div>
       <h2 class="sec">Live in an afternoon</h2>
       <p class="lead">No implementation project. No training sessions.</p>
       <div class="steps-grid">
-        <div class="step"><div class="n">1</div><h3>Create your workspace</h3><p>Sign up with your company name. Your 14-day free trial starts immediately.</p></div>
+        <div class="step"><div class="n">1</div><h3>Create your workspace</h3><p>Sign up with your company name. Your 30-day free trial starts immediately.</p></div>
         <div class="step"><div class="n">2</div><h3>Invite your team</h3><p>Add members or share your application link. Everyone sets their own password from the invite email.</p></div>
         <div class="step"><div class="n">3</div><h3>Publish the schedule</h3><p>Assign shifts or set up rotations, then publish. Staff see it instantly — on any device.</p></div>
       </div>
@@ -426,7 +499,7 @@
       <div class="pricing-head">
         <div class="kicker">Pricing</div>
         <h2 class="sec">Every feature. Every plan.</h2>
-        <p class="lead">Nothing is locked behind a bigger plan — scheduling, calendars, rotations, Email Q-Scheduler, Ask, all of it is in every plan. Plans differ only in size. Every plan starts with a 14-day free trial, and you can cancel anytime.</p>
+        <p class="lead">Nothing is locked behind a bigger plan — scheduling, calendars, rotations, Email Q-Scheduler, Ask, all of it is in every plan. Plans differ only in size. Every plan starts with a 30-day free trial, and you can cancel anytime.</p>
       </div>
       <div class="plans">
         <div class="plan">

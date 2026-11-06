@@ -17998,7 +17998,7 @@ window.qsNpOfferSend = function (btn) {
       // Stripe Checkout return: show a confirmation.
       var qs = new URLSearchParams(window.location.search);
       if (qs.get('billing') === 'success') {
-        pageSuccess('Billing is set up — your 14-day free trial is active.');
+        pageSuccess('Billing is set up — your 30-day free trial is active.');
         window.history.replaceState({}, '', window.location.pathname + window.location.hash);
       } else if (qs.get('billing') === 'cancelled') {
         pageError('Billing setup was cancelled. You can finish it anytime from the billing banner.');

@@ -176,7 +176,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const cleanIndustry = validIndustries.includes(String(industry)) ? String(industry) : 'other';
 
     await query(
-      `INSERT INTO companies (id, name, billing_status, trial_ends_at, industry) VALUES ($1, $2, 'trial', now() + interval '14 days', $3)`,
+      `INSERT INTO companies (id, name, billing_status, trial_ends_at, industry) VALUES ($1, $2, 'trial', now() + interval '30 days', $3)`,
       [companyId, String(companyName).trim(), cleanIndustry]
     );
     await query(
