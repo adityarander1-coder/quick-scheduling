@@ -34,8 +34,9 @@ import {
 import {
   isMeetingProvider, providerName, providerConfigured, getValidAccessToken,
   createMeeting, updateMeeting, normalizeMeetingTimes, deleteExternalMeetingQuiet,
-  MeetingError, MeetingInput,
+  MeetingError, MeetingInput, wallTimeToUtc,
 } from '../util/meetingProviders.js';
+import { fetchConnectedRooms } from '../util/roomProviders.js';
 
 const router = Router();
 
@@ -9035,7 +9036,14 @@ router.post('/shift-requests/:id/cancel', requireRole('owner', 'scheduler', 'emp
 // external calendar feed (ICS — Outlook/Google room calendars can publish
 // one) so the session form can warn when the room is already booked.
 function roomRow(r: any) {
-  return { id: r.id, name: r.name, hasFeed: !!r.ics_url, icsUrl: r.ics_url || null, createdAt: r.created_at };
+  return {
+    id: r.id, name: r.name, hasFeed: !!r.ics_url, icsUrl: r.ics_url || null, createdAt: r.created_at,
+    // Migration 092: a details note (capacity / floor) and an active
+    // flag — rooms are deactivated, not deleted, so old sessions keep
+    // pointing at a real room.
+    details: r.details || null,
+    active: r.active !== false,
+  };
 }
 
 router.get('/rooms', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
@@ -9059,8 +9067,9 @@ router.post('/rooms', requireRole('owner', 'scheduler'), async (req: Request, re
     const { rows: dupe } = await query('SELECT id FROM rooms WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
     if (dupe.length) { res.status(400).json({ error: 'A room with that name already exists.' }); return; }
     const id = crypto.randomUUID();
-    await query('INSERT INTO rooms (id, company_id, name, ics_url, created_by) VALUES ($1,$2,$3,$4,$5)',
-      [id, companyId, name, icsUrl, req.session.userId!]);
+    const details = b.details ? String(b.details).trim().slice(0, 200) : null;
+    await query('INSERT INTO rooms (id, company_id, name, ics_url, created_by, details) VALUES ($1,$2,$3,$4,$5,$6)',
+      [id, companyId, name, icsUrl, req.session.userId!, details]);
     res.json({ ok: true, id });
   } catch (err) {
     console.error('[schedule] create room failed:', err);
@@ -9078,7 +9087,9 @@ router.put('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request,
     if (!name) { res.status(400).json({ error: 'A room name is required.' }); return; }
     const icsUrl = b.icsUrl !== undefined ? (b.icsUrl ? String(b.icsUrl).trim() : null) : rows[0].ics_url;
     if (icsUrl && !/^https?:\/\//i.test(icsUrl)) { res.status(400).json({ error: 'The calendar link must start with http:// or https://' }); return; }
-    await query('UPDATE rooms SET name = $1, ics_url = $2 WHERE id = $3', [name, icsUrl, req.params.id]);
+    const details = b.details !== undefined ? (b.details ? String(b.details).trim().slice(0, 200) : null) : rows[0].details;
+    const active = b.active !== undefined ? !!b.active : rows[0].active !== false;
+    await query('UPDATE rooms SET name = $1, ics_url = $2, details = $3, active = $4 WHERE id = $5', [name, icsUrl, details, active, req.params.id]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] update room failed:', err);
@@ -9296,6 +9307,260 @@ router.get('/room-availability', requireRole('owner', 'scheduler', 'employee'), 
   } catch (err) {
     console.error('[schedule] room-availability failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------- Room bookings (migration 092) ----------
+// A session HOLDS one of our rooms when it points at it (room_id),
+// or — for sessions saved before room_id existed — when its location
+// text is the room's name. Availability is computed from our own
+// sessions: series are expanded per date and per-date overrides are
+// honoured (a cancelled / re-located / re-timed date doesn't hold
+// the room). A room with a linked ICS calendar also counts blocks
+// from that feed as bookings. Saving a session into a held room is
+// REFUSED (the double-book guard below) — no override.
+
+async function companyTimezone(companyId: string): Promise<string> {
+  const { rows } = await query(
+    `SELECT value FROM company_settings WHERE company_id = $1 AND key = 'timezone'`, [companyId]);
+  const tz = rows.length ? String(rows[0].value || '') : '';
+  return /^[A-Za-z_]+\/[A-Za-z_+\-0-9]+$/.test(tz) ? tz : 'UTC';
+}
+
+// Does `base` (an academicRow-shaped session) hold the room on
+// dateStr? Returns the effective time window or null.
+function roomHoldOn(base: any, ov: any | null, roomName: string, roomId: string | null, dateStr: string):
+  { startMin: number | null; endMin: number | null; allDay: boolean } | null {
+  if (!sessionOccursOn(base, dateStr)) return null;
+  if (ov && ov.cancelled) return null;
+  let loc = base.location || null;
+  if (ov && ov.has_location) {
+    // This date sits somewhere else (a text location): it holds the
+    // room only if that text IS the room's name.
+    loc = ov.location;
+    if (!loc || String(loc).toLowerCase() !== roomName.toLowerCase()) return null;
+    let st2 = ov.has_times ? ov.start_time : base.startTime;
+    let et2 = ov.has_times ? ov.end_time : base.endTime;
+    const s2 = timeToMin(st2);
+    return { startMin: s2, endMin: timeToMin(et2), allDay: s2 === null };
+  }
+  const byId = !!roomId && base.roomId === roomId;
+  const byName = !base.roomId && !!loc && String(loc).toLowerCase() === roomName.toLowerCase();
+  if (!byId && !byName) return null;
+  let st = base.startTime, et = base.endTime;
+  if (ov && ov.has_times) { st = ov.start_time; et = ov.end_time; }
+  const sMin = timeToMin(st);
+  return { startMin: sMin, endMin: timeToMin(et), allDay: sMin === null };
+}
+
+interface RoomHolderData { bases: any[]; ovBy: Map<string, Map<string, any>>; }
+
+async function loadRoomHolderData(companyId: string, room: { id: string; name: string }, throughDate: string, excludeSessionId?: string | null): Promise<RoomHolderData> {
+  const { rows } = await query(
+    `SELECT * FROM academic_sessions WHERE company_id = $1
+       AND (room_id = $2 OR (room_id IS NULL AND lower(location) = lower($3)))
+       AND session_date <= $4`,
+    [companyId, room.id, room.name, throughDate]);
+  const bases = rows.map(academicRow).filter((b: any) => !excludeSessionId || b.id !== excludeSessionId);
+  const ovBy = new Map<string, Map<string, any>>();
+  if (bases.length) {
+    const { rows: ovs } = await query(
+      'SELECT * FROM academic_session_overrides WHERE company_id = $1 AND session_id = ANY($2)',
+      [companyId, bases.map((b: any) => b.id)]);
+    for (const o of ovs) {
+      const ds = o.date instanceof Date ? o.date.toISOString().slice(0, 10) : String(o.date).slice(0, 10);
+      if (!ovBy.has(o.session_id)) ovBy.set(o.session_id, new Map());
+      ovBy.get(o.session_id)!.set(ds, o);
+    }
+  }
+  return { bases, ovBy };
+}
+
+function roomHoldersOn(data: RoomHolderData, room: { id: string; name: string }, dateStr: string) {
+  const out: { sessionId: string; title: string; startMin: number | null; endMin: number | null; allDay: boolean }[] = [];
+  for (const base of data.bases) {
+    const ov = (data.ovBy.get(base.id) || new Map()).get(dateStr) || null;
+    const hold = roomHoldOn(base, ov, room.name, room.id, dateStr);
+    if (hold) out.push({ sessionId: base.id, title: base.title, ...hold });
+  }
+  return out;
+}
+
+function windowOverlapsHold(winS: number | null, winE: number | null, hold: { startMin: number | null; endMin: number | null; allDay: boolean }): boolean {
+  if (hold.allDay) return true;
+  if (winS === null) return true; // a whole-day query touches any timed hold
+  const hs = hold.startMin!;
+  const he = hold.endMin !== null ? hold.endMin : hs + 60;
+  const we = winE !== null ? winE : winS + 60;
+  return winS < he && we > hs;
+}
+
+// Busy blocks from the room's linked ICS calendar overlapping the
+// [winStartUtc, winEndUtc) window. Best-effort: a dead feed is not a
+// booking.
+async function roomFeedConflict(room: { ics_url?: string | null }, winStartUtc: Date, winEndUtc: Date): Promise<{ title: string } | null> {
+  if (!room.ics_url) return null;
+  try {
+    const events = await fetchIcsEvents(room.ics_url);
+    // Pad a day either side so blocks straddling the window are seen.
+    const dayStart = new Date(winStartUtc.getTime() - 86400000);
+    const dayEnd = new Date(winEndUtc.getTime() + 86400000);
+    for (const ev of events) {
+      for (const b of icsBlocksOn(ev, dayStart, dayEnd)) {
+        if (b.start.getTime() < winEndUtc.getTime() && b.end.getTime() > winStartUtc.getTime()) {
+          return { title: ev.summary || 'Busy' };
+        }
+      }
+    }
+  } catch { /* a broken feed never blocks a save */ }
+  return null;
+}
+
+// The double-book guard: would saving a session with this shape
+// into `room` collide with an existing hold (or the room's linked
+// calendar)? Returns the holding session's title (+ date for a
+// series) or null.
+async function findRoomConflict(companyId: string, room: { id: string; name: string; ics_url?: string | null }, cand: {
+  date: string; startTime: any; endTime: any;
+  recurRule: string; recurInterval: number; recurDays: number[]; recurUntil: string | null; recurCount: number | null;
+}, excludeSessionId?: string | null): Promise<{ title: string; date: string } | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cand.date || '')) return null;
+  const winS = timeToMin(cand.startTime), winE = timeToMin(cand.endTime);
+  // Enumerate the candidate's occurrence dates (bounded scan).
+  const candBase: any = {
+    date: cand.date, recurRule: cand.recurRule, recurInterval: cand.recurInterval,
+    recurDays: cand.recurDays, recurUntil: cand.recurUntil, recurCount: cand.recurCount,
+  };
+  const occDates: string[] = [];
+  const startMs = new Date(cand.date + 'T00:00:00Z').getTime();
+  for (let i = 0; i < 1100; i++) {
+    const ds = new Date(startMs + i * 86400000).toISOString().slice(0, 10);
+    if (cand.recurUntil && ds > cand.recurUntil) break;
+    if (sessionOccursOn(candBase, ds)) occDates.push(ds);
+    if (cand.recurRule === 'none') break;
+  }
+  if (!occDates.length) return null;
+  const lastDate = occDates[occDates.length - 1];
+  const data = await loadRoomHolderData(companyId, room, lastDate, excludeSessionId);
+  const tz = await companyTimezone(companyId);
+  for (const ds of occDates) {
+    for (const h of roomHoldersOn(data, room, ds)) {
+      if (windowOverlapsHold(winS, winE, h)) return { title: h.title, date: ds };
+    }
+    if (room.ics_url) {
+      const wStart = wallTimeToUtc(ds, winS !== null ? cand.startTime : '00:00', tz);
+      const wEnd = winS !== null
+        ? wallTimeToUtc(cand.endTime && winE !== null && winE <= winS ? nextDateStr(ds) : ds, cand.endTime || cand.startTime, tz)
+        : wallTimeToUtc(nextDateStr(ds), '00:00', tz);
+      const feed = await roomFeedConflict(room, wStart, wEnd);
+      if (feed) return { title: feed.title, date: ds };
+    }
+  }
+  return null;
+}
+
+function nextDateStr(ds: string): string {
+  return new Date(new Date(ds + 'T00:00:00Z').getTime() + 86400000).toISOString().slice(0, 10);
+}
+
+// Clean the room selection a session save posts (migration 092):
+// an in-app room (roomId), a connected room (roomSource +
+// roomExternalId), or nothing. For an in-app room the server is
+// authoritative for the name — location text becomes the room name.
+async function cleanRoomSelection(companyId: string, b: any): Promise<
+  { roomId: string | null; roomSource: string | null; roomExternalId: string | null; roomName: string | null } | { error: string }> {
+  if (b.roomId) {
+    const { rows } = await query('SELECT id, name, ics_url, active FROM rooms WHERE id = $1 AND company_id = $2', [String(b.roomId), companyId]);
+    if (!rows.length) return { error: 'That room no longer exists.' };
+    if (rows[0].active === false) return { error: 'That room is not in use anymore — pick another.' };
+    return { roomId: rows[0].id, roomSource: 'app', roomExternalId: null, roomName: rows[0].name };
+  }
+  if ((b.roomSource === 'google' || b.roomSource === 'microsoft') && b.roomExternalId) {
+    return { roomId: null, roomSource: b.roomSource, roomExternalId: String(b.roomExternalId).slice(0, 300), roomName: null };
+  }
+  return { roomId: null, roomSource: null, roomExternalId: null, roomName: null };
+}
+
+async function roomRowById(companyId: string, roomId: string): Promise<any | null> {
+  const { rows } = await query('SELECT id, name, ics_url FROM rooms WHERE id = $1 AND company_id = $2', [roomId, companyId]);
+  return rows.length ? rows[0] : null;
+}
+
+// GET /api/schedule/rooms/availability?date&start&end&excludeSessionId
+// — every ACTIVE room with its status for that window, computed from
+// our own sessions (plus linked-calendar blocks). Powers the session
+// form's Room picker.
+router.get('/rooms/availability', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A date (YYYY-MM-DD) is required.' }); return; }
+    const winS = timeToMin(req.query.start ? String(req.query.start).slice(0, 5) : null);
+    const winE = timeToMin(req.query.end ? String(req.query.end).slice(0, 5) : null);
+    const excludeSessionId = req.query.excludeSessionId ? String(req.query.excludeSessionId).split('@@')[0] : null;
+    const { rows: roomRows } = await query(
+      'SELECT * FROM rooms WHERE company_id = $1 AND active = true ORDER BY name', [companyId]);
+    const tz = await companyTimezone(companyId);
+    const out: any[] = [];
+    for (const room of roomRows) {
+      const data = await loadRoomHolderData(companyId, room, date, excludeSessionId);
+      let bookedBy: string | null = null;
+      for (const h of roomHoldersOn(data, room, date)) {
+        if (windowOverlapsHold(winS, winE, h)) { bookedBy = h.title; break; }
+      }
+      if (!bookedBy && room.ics_url) {
+        const wStart = wallTimeToUtc(date, winS !== null ? String(req.query.start) : '00:00', tz);
+        const wEnd = winS !== null
+          ? wallTimeToUtc(winE !== null && winE <= winS ? nextDateStr(date) : date, String(req.query.end || req.query.start), tz)
+          : wallTimeToUtc(nextDateStr(date), '00:00', tz);
+        const feed = await roomFeedConflict(room, wStart, wEnd);
+        if (feed) bookedBy = feed.title;
+      }
+      out.push({
+        id: room.id, name: room.name, details: room.details || null,
+        status: bookedBy ? 'booked' : 'available',
+        bookedByTitle: bookedBy,
+      });
+    }
+    res.json({ date, rooms: out });
+  } catch (err) {
+    console.error('[schedule] rooms availability failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/rooms/connected?date&start&end&timezone — the
+// Room picker's connected sections: rooms from the company's Google
+// Workspace / Microsoft 365 with live free/busy. Best-effort: an
+// unconnected or failing provider simply doesn't appear (or appears
+// with a muted note) — this endpoint never 500s on provider trouble.
+router.get('/rooms/connected', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A date (YYYY-MM-DD) is required.' }); return; }
+    const tzRaw = String(req.query.timezone || '');
+    const tz = /^[A-Za-z_]+\/[A-Za-z_+\-0-9]+$/.test(tzRaw) ? tzRaw : await companyTimezone(companyId);
+    const start = req.query.start ? String(req.query.start).slice(0, 5) : null;
+    const end = req.query.end ? String(req.query.end).slice(0, 5) : null;
+    const startUtc = wallTimeToUtc(date, start || '00:00', tz);
+    let endUtc: Date;
+    if (start) {
+      const endDate = end && timeToMin(end) !== null && timeToMin(end)! <= timeToMin(start)! ? nextDateStr(date) : date;
+      endUtc = wallTimeToUtc(endDate, end || start, tz);
+      if (endUtc.getTime() <= startUtc.getTime()) endUtc = new Date(startUtc.getTime() + 3600000);
+    } else {
+      endUtc = wallTimeToUtc(nextDateStr(date), '00:00', tz);
+    }
+    const providers: any[] = [];
+    for (const p of ['google', 'microsoft'] as const) {
+      const r = await fetchConnectedRooms(companyId, p, startUtc, endUtc);
+      if (r.connected) providers.push({ provider: p, rooms: r.rooms, note: r.note });
+    }
+    res.json({ date, providers });
+  } catch (err) {
+    console.error('[schedule] connected rooms failed:', err);
+    res.json({ date: String(req.query.date || ''), providers: [] });
   }
 });
 
@@ -9575,13 +9840,19 @@ router.get('/dashboards', requireRole('owner', 'scheduler', 'employee'), async (
     }
     if (!includeArchived) clause += ' AND d.archived_at IS NULL';
     const { rows } = await query(
-      `SELECT d.id, d.name, d.created_at, d.archived_at, d.archived_by,
+      `SELECT d.id, d.name, d.created_at, d.archived_at, d.archived_by, d.interview_link_url, d.interview_link_label,
               (SELECT array_agg(dd.department_id) FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) AS department_ids
        FROM dashboards d ${clause} ORDER BY d.created_at`, params);
+    // Interview platform link (migration 092): the company switch
+    // travels with the list so every client surface can gate on it.
+    const { rows: compRows } = await query('SELECT residency_program FROM companies WHERE id = $1', [companyId]);
+    const residencyProgram = !!(compRows.length && compRows[0].residency_program);
     const out: any[] = [];
     for (const r of rows) {
       const row: any = {
         id: r.id, name: r.name, createdAt: r.created_at,
+        interviewLinkUrl: residencyProgram ? (r.interview_link_url || null) : null,
+        interviewLinkLabel: residencyProgram ? (r.interview_link_label || 'Interviews') : null,
         departmentIds: r.department_ids || [],
         editorIds: await dashboardEditorIds(r.id),
         canEdit: await dashboardEditAllowed(req, r.id),
@@ -9605,9 +9876,23 @@ router.get('/dashboards', requireRole('owner', 'scheduler', 'employee'), async (
       }
       out.push(row);
     }
-    res.json({ dashboards: out });
+    res.json({ dashboards: out, residencyProgram });
   } catch (err) {
     console.error('[schedule] dashboards list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/company-residency — the "We run a residency
+// program" switch (owner only, migration 092). Default OFF: other
+// businesses never see the interview-link feature at all.
+router.put('/company-residency', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const on = !!(req.body && req.body.on);
+    await query('UPDATE companies SET residency_program = $1 WHERE id = $2', [on, req.session.companyId!]);
+    res.json({ ok: true, residencyProgram: on });
+  } catch (err) {
+    console.error('[schedule] company residency update failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -9675,6 +9960,21 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
       await query('DELETE FROM dashboard_editors WHERE dashboard_id = $1', [req.params.id]);
       for (const u of editorIds) {
         await query('INSERT INTO dashboard_editors (dashboard_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, u]);
+      }
+    }
+    // Interview platform link (migration 092): saved only while the
+    // company's residency switch is on — the fields don't exist for
+    // other businesses, so a stale form can't set one behind it.
+    if (req.body?.interviewLinkUrl !== undefined || req.body?.interviewLinkLabel !== undefined) {
+      const { rows: compRows } = await query('SELECT residency_program FROM companies WHERE id = $1', [companyId]);
+      if (compRows.length && compRows[0].residency_program) {
+        const url = req.body?.interviewLinkUrl !== undefined
+          ? (req.body.interviewLinkUrl ? String(req.body.interviewLinkUrl).trim().slice(0, 500) : null) : undefined;
+        if (url && !/^https?:\/\//i.test(url)) { res.status(400).json({ error: 'The interview link must start with http:// or https://' }); return; }
+        const label = req.body?.interviewLinkLabel !== undefined
+          ? (req.body.interviewLinkLabel ? String(req.body.interviewLinkLabel).trim().slice(0, 60) : null) : undefined;
+        if (url !== undefined) await query('UPDATE dashboards SET interview_link_url = $1 WHERE id = $2', [url, req.params.id]);
+        if (label !== undefined) await query('UPDATE dashboards SET interview_link_label = $1 WHERE id = $2', [label, req.params.id]);
       }
     }
     res.json({ ok: true });
@@ -10131,6 +10431,12 @@ function academicRow(r: any) {
     // links.
     meetingProvider: r.meeting_provider || null,
     meetingExternalId: r.meeting_external_id || null,
+    // Room booking (migration 092): roomId for one of our rooms,
+    // roomSource/roomExternalId for a connected Google/Microsoft
+    // room; the room's NAME always rides in `location` either way.
+    roomId: r.room_id || null,
+    roomSource: r.room_source || null,
+    roomExternalId: r.room_external_id || null,
     notes: r.notes,
     dashboardId: r.dashboard_id || null,
     recurRule: r.recur_rule === 'biweekly' ? 'weekly' : (r.recur_rule || 'none'),
@@ -11752,7 +12058,10 @@ router.post('/sessions/meeting-link', requireRole('owner', 'scheduler', 'employe
     const input = meetingInputFrom(title, b.date, b.startTime, b.endTime, b.timezone);
     if ('error' in input) { res.status(400).json({ error: input.error }); return; }
     const token = await getValidAccessToken(companyId, provider);
-    const made = await createMeeting(provider, token, input);
+    // A Google room picked in the form (migration 092) rides along
+    // as a resource attendee, booking the room on Google's side too.
+    const roomResourceId = provider === 'google' && b.roomResourceId ? String(b.roomResourceId).slice(0, 300) : null;
+    const made = await createMeeting(provider, token, { ...input, roomResourceId });
     res.json({ ok: true, link: made.link, provider, externalId: made.externalId });
   } catch (err) {
     if (err instanceof MeetingError) {
@@ -11861,14 +12170,29 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     // already created the provider meeting and posts its pair; the
     // link itself rides in meeting_url (mu) as usual.
     const pair = cleanMeetingPair(b);
+    // Room booking (migration 092): an in-app room is double-book
+    // guarded — saving into a held room is refused outright. The
+    // server is authoritative for an app room's name (it becomes the
+    // location text); a connected room keeps the posted location.
+    const roomSel = await cleanRoomSelection(companyId, b);
+    if ('error' in roomSel) { res.status(400).json({ error: roomSel.error }); return; }
+    if (roomSel.roomId) {
+      const roomFull = await roomRowById(companyId, roomSel.roomId);
+      const conflict = await findRoomConflict(companyId, roomFull, {
+        date: String(b.date || ''), startTime: b.startTime || null, endTime: b.endTime || null,
+        recurRule, recurInterval: rec.interval, recurDays, recurUntil: recurUntil ? String(recurUntil).slice(0, 10) : null, recurCount: rec.count,
+      });
+      if (conflict) { res.status(409).json({ error: `'${roomFull.name}' is already booked by '${conflict.title}' at that time.` }); return; }
+    }
+    const locationVal = roomSel.roomId ? roomSel.roomName : (b.location ? String(b.location).trim() : null);
     const { rows } = await query(
-      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url, person_label, meeting_provider, meeting_external_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url, person_label, meeting_provider, meeting_external_id, room_id, room_source, room_external_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING id`,
       [crypto.randomUUID(), companyId, title, lecturerId, departmentId,
-       b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
+       b.date, b.startTime || null, b.endTime || null, locationVal,
        kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url, personLabelVal,
-       pair.provider, pair.externalId]);
+       pair.provider, pair.externalId, roomSel.roomId, roomSel.roomSource, roomSel.roomExternalId]);
     const newSessionId = rows[0].id;
     if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
@@ -12423,6 +12747,32 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     // (The one-date scope returned earlier and never reaches here,
     // so per-date overrides can't carry it — series-level only.)
     const personLabelVal = b.personLabel !== undefined ? cleanPersonLabel(b.personLabel) : (cur.person_label || null);
+    // Room booking (migration 092): the form posts the room fields
+    // on every save; a caller that doesn't mention them keeps the
+    // session's saved booking. Picking an in-app room re-runs the
+    // double-book guard (excluding this session itself).
+    const dstrR = (v: any) => (v instanceof Date ? v.toISOString().slice(0, 10) : String(v || '').slice(0, 10));
+    let roomId = cur.room_id || null;
+    let roomSource = cur.room_source || null;
+    let roomExternalId = cur.room_external_id || null;
+    let locationForSave = b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location;
+    if (b.roomId !== undefined || b.roomSource !== undefined || b.roomExternalId !== undefined) {
+      const roomSel = await cleanRoomSelection(companyId, b);
+      if ('error' in roomSel) { res.status(400).json({ error: roomSel.error }); return; }
+      roomId = roomSel.roomId; roomSource = roomSel.roomSource; roomExternalId = roomSel.roomExternalId;
+      if (roomSel.roomId) {
+        const roomFull = await roomRowById(companyId, roomSel.roomId);
+        const conflict = await findRoomConflict(companyId, roomFull, {
+          date: b.date || dstrR(cur.session_date),
+          startTime: b.startTime !== undefined ? b.startTime : cur.start_time,
+          endTime: b.endTime !== undefined ? b.endTime : cur.end_time,
+          recurRule, recurInterval: rec.interval, recurDays,
+          recurUntil: recurUntil ? dstrR(recurUntil) : null, recurCount: rec.count,
+        }, seriesId);
+        if (conflict) { res.status(409).json({ error: `'${roomFull.name}' is already booked by '${conflict.title}' at that time.` }); return; }
+        locationForSave = roomSel.roomName;
+      }
+    }
     // Generated meeting link (migration 091): a save that posts the
     // pair sets it (nulls = the link was replaced by a pasted one or
     // a new generated one was staged); a save that doesn't mention
@@ -12434,16 +12784,16 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
       : (oldPair ? { provider: oldPair.provider, externalId: oldPair.externalId } : { provider: null, externalId: null });
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
-        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18, meeting_provider=$19, meeting_external_id=$20 WHERE id=$21`,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18, meeting_provider=$19, meeting_external_id=$20, room_id=$21, room_source=$22, room_external_id=$23 WHERE id=$24`,
       [title, newLecturer,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
        b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
-       b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
+       locationForSave,
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
        dashboardId, recurRule, recurUntil, supervisorUserId,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, personLabelVal,
-       pair.provider, pair.externalId, seriesId]);
+       pair.provider, pair.externalId, roomId, roomSource, roomExternalId, seriesId]);
     if (speakersIn) await saveSpeakers(query as any, seriesId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, seriesId, beneficiaries.departmentIds, beneficiaries.userIds);
     // External meeting sync (best effort — a provider hiccup never

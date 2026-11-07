@@ -72,8 +72,10 @@ function googleApiBase(): string { return env('GOOGLE_API_BASE') || 'https://www
 function msOAuthBase(): string { return env('MS_OAUTH_BASE') || 'https://login.microsoftonline.com'; }
 function msGraphBase(): string { return env('MS_GRAPH_BASE') || 'https://graph.microsoft.com'; }
 
-const GOOGLE_SCOPE = 'openid email https://www.googleapis.com/auth/calendar.events';
-const MS_SCOPE = 'openid profile User.Read OnlineMeetings.ReadWrite offline_access';
+// calendar.readonly / Calendars.Read (migration 092): the Room
+// picker's live room lists + free/busy read over the same connection.
+const GOOGLE_SCOPE = 'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly';
+const MS_SCOPE = 'openid profile User.Read OnlineMeetings.ReadWrite Calendars.Read offline_access';
 
 export function authorizeUrl(p: MeetingProvider, redirectUri: string, state: string): string {
   const { clientId } = providerEnv(p);
@@ -285,6 +287,10 @@ export interface MeetingInput {
   endDate: string;    // YYYY-MM-DD (end wall date — may roll past midnight)
   durationMin: number;
   timezone: string;   // IANA name
+  /** Google only (migration 092): a Workspace room resource picked
+   *  in the session form rides along as a resource attendee, which
+   *  is how the room actually gets booked on Google's side. */
+  roomResourceId?: string | null;
 }
 
 /** Fill a missing/!later end time with start + 60 min (may roll the
@@ -368,6 +374,7 @@ export async function createMeeting(p: MeetingProvider, tok: string, input: Meet
         summary: input.title,
         start: { dateTime: `${input.date}T${input.startTime}:00`, timeZone: input.timezone },
         end: { dateTime: `${input.endDate}T${input.endTime}:00`, timeZone: input.timezone },
+        ...(input.roomResourceId ? { attendees: [{ email: input.roomResourceId, resource: true }] } : {}),
         conferenceData: { createRequest: { requestId: crypto.randomUUID(), conferenceSolutionKey: { type: 'hangoutsMeet' } } },
       }),
     });
