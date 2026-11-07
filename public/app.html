@@ -68,22 +68,40 @@
         var curDept = deptChoices.length ? deptChoices[0].id : null;
         var old = document.getElementById('cg-modal');
         if (old) old.remove();
+        // Creator layout (Deepika, 2026-11-07, approved on the live
+        // demo page): on wide screens (≥1024px) the three boxes stand
+        // SIDE BY SIDE in one row — name | departments | people —
+        // with the summary strip spanning beneath; on phones they
+        // stack exactly as before. Layout only — no behaviour change.
+        // The wide overlay starts at left:228px because the app's
+        // fixed sidebar is 228 wide and layered above modals — a
+        // viewport-centred panel this wide would slide under it.
+        if (!document.getElementById('cg-style')) {
+          var cgSt = document.createElement('style');
+          cgSt.id = 'cg-style';
+          cgSt.textContent = '#cg-modal .cg-panel{max-width:520px}' +
+            '@media (min-width:1024px){#cg-modal{left:228px !important}#cg-modal .cg-panel{max-width:1024px}' +
+            '#cg-modal .cg-boxes{display:grid;grid-template-columns:1fr 1.1fr 1.35fr;gap:0.7rem;align-items:start}' +
+            '#cg-modal .cg-boxes .cg-box{margin-bottom:0 !important}}';
+          document.head.appendChild(cgSt);
+        }
         var m = document.createElement('div');
         m.id = 'cg-modal';
         m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:90;padding:1rem';
         var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
         var HEAD = 'font-weight:700;letter-spacing:0.02em;font-size:0.9rem;margin-bottom:0.5rem';
         var BOX = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem';
-        m.innerHTML = '<div style="background:var(--bg);border-radius:16px;padding:1.3rem;width:100%;max-width:520px;max-height:90vh;overflow-y:auto">' +
+        m.innerHTML = '<div class="cg-panel" style="background:var(--bg);border-radius:16px;padding:1.3rem;width:100%;max-height:90vh;overflow-y:auto">' +
           '<h3 style="margin:0 0 0.3rem">' + (group ? 'Edit communication group' : 'New communication group') + '</h3>' +
           '<p class="muted" style="margin:0 0 0.9rem;font-size:0.88rem">A saved circle of people you can pick in one tap — for event beneficiaries, and later for messages.</p>' +
-          '<div style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
+          '<div class="cg-boxes">' +
+          '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
           '<input id="cg-name" type="text" maxlength="80" placeholder="e.g. Interview Panel" value="' + (group ? esc(group.name) : '') + '" style="' + IN + ';margin-top:0"></div>' +
-          '<div style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENT</div>' +
+          '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENT</div>' +
           '<div id="cg-depts" style="display:flex;gap:0.35rem;flex-wrap:wrap"></div>' +
           '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Pick a department, tick its people below — then switch departments to add people from anywhere in the company. A group isn\'t tied to one department.</p></div>' +
-          '<div style="' + BOX + '"><div style="' + HEAD + '" id="cg-people-head">③ PEOPLE</div>' +
-          '<div id="cg-people"></div></div>' +
+          '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '" id="cg-people-head">③ PEOPLE</div>' +
+          '<div id="cg-people"></div></div></div>' +
           '<div id="cg-summary" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;padding:0.75rem 0.9rem;margin-bottom:0.7rem;font-size:0.9rem"></div>' +
           '<div id="cg-error" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-bottom:0.7rem;font-size:0.88rem"></div>' +
           '<button type="button" class="btn" id="cg-save" style="width:100%;padding:0.75rem;border-radius:10px">Save group</button>' +
