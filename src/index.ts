@@ -23,6 +23,7 @@ import requestFormRouter from './routes/requestForm';
 import notificationsRouter from './routes/notifications';
 import pushRouter from './routes/push';
 import credentialsRouter from './routes/credentials';
+import integrationsRouter from './routes/integrations';
 import inboundRouter from './routes/inbound';
 import { calendarFeedMeRouter, calendarFeedPublicRouter } from './routes/calendarFeed';
 import { billingRouter, handleBillingWebhook, startBillingSync } from './routes/billing';
@@ -99,6 +100,7 @@ app.use('/api/schedule', scheduleRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/push', pushRouter);
 app.use('/api/credentials', credentialsRouter);
+app.use('/api/integrations', integrationsRouter);
 
 // GET / → /app.html when signed in, else the public landing page.
 app.get('/', (req: Request, res: Response) => {

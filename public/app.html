@@ -8165,6 +8165,7 @@ window.qsNpOfferSend = function (btn) {
           <button class="subtab-btn" data-subtab="candidates">Invite new team members</button>
           <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
           <button class="subtab-btn" data-subtab="inbox">Email inbox</button>
+          <button class="subtab-btn" data-subtab="meetings">Meeting services</button>
         </nav>
       </div>
       <div class="card">
@@ -12179,6 +12180,81 @@ window.qsNpOfferSend = function (btn) {
               });
               document.querySelector('[data-subtab="inbox"]').addEventListener('click', function () { if (!loaded) load(); });
               if (document.querySelector('[data-subtab="inbox"]').classList.contains('active')) load();
+            })();
+            </script>
+          </div>
+          <div id="subtab-meetings" class="sub-panel">
+            <div class="set-head-row">
+              <h3 class="set-h3" style="margin:0">Meeting services</h3>
+            </div>
+            <p class="set-desc">Connect Zoom, Microsoft Teams or Google Meet <strong>once</strong> and the event form grows a one-tap button for that service: it creates the meeting for the session's date and time and fills in the link. If the session's time changes, its meeting updates too. Only the owner connects or disconnects a service; after that, the buttons work for everyone who can edit the session.</p>
+            <div id="meet-flash"></div>
+            <div id="meet-list"><p class="muted">Loading…</p></div>
+            <script>
+            (function () {
+              var box = document.getElementById('meet-list');
+              var flashBox = document.getElementById('meet-flash');
+              var ICONS = { zoom: '🎥', microsoft: '💼', google: '🟢' };
+              function fmtWhen(v) {
+                if (!v) return '';
+                var d = new Date(v);
+                return isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+              }
+              function card(p) {
+                var head = '<div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap"><span style="font-size:1.15rem">' + (ICONS[p.provider] || '🔗') + '</span><strong style="font-size:1.02rem">' + esc(p.name) + '</strong>';
+                var body = '';
+                var actions = '';
+                if (!p.configured) {
+                  head += '<span style="margin-left:auto;font-size:0.82rem;color:var(--dim)">Not set up yet</span>';
+                  body = '<p class="muted" style="margin:0.45rem 0 0">' + esc(p.name) + ' is not set up on this platform yet.</p>';
+                } else if (p.connected) {
+                  head += '<span style="margin-left:auto;font-size:0.82rem;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:999px;padding:0.15rem 0.6rem">Connected</span>';
+                  body = '<p style="margin:0.45rem 0 0;font-size:0.92rem">Connected' + (p.accountLabel ? ' as <strong>' + esc(p.accountLabel) + '</strong>' : '') +
+                    (p.connectedByName ? ' · connected by ' + esc(p.connectedByName) : '') +
+                    (p.connectedAt ? ' · ' + esc(fmtWhen(p.connectedAt)) : '') + '</p>';
+                  if (p.canManage) actions = '<div style="margin-top:0.6rem"><button type="button" class="btn-danger" data-meet-disconnect="' + p.provider + '" style="padding:0.45rem 0.9rem;border-radius:8px">Disconnect</button></div>';
+                } else {
+                  head += '<span style="margin-left:auto;font-size:0.82rem;color:var(--dim)">Not connected</span>';
+                  if (p.canManage) {
+                    body = '<p class="muted" style="margin:0.45rem 0 0">Sign in once with your ' + esc(p.name) + ' account — your team never has to.</p>';
+                    actions = '<div style="margin-top:0.6rem"><a class="btn" href="/api/integrations/' + p.provider + '/connect" style="display:inline-block;padding:0.5rem 1rem;border-radius:8px;text-decoration:none">Connect ' + esc(p.name) + '</a></div>';
+                    if (p.provider === 'microsoft' && p.adminConsentUrl) {
+                      body += '<p class="muted" style="margin:0.5rem 0 0">Microsoft may ask your company\'s Microsoft 365 admin to approve this app for the whole company first. If your sign-in is blocked, your admin can approve it here: <a href="' + esc(p.adminConsentUrl) + '" target="_blank" rel="noopener">Admin approval link</a></p>';
+                    }
+                  } else {
+                    body = '<p class="muted" style="margin:0.45rem 0 0">Not connected yet — the owner connects it here, once.</p>';
+                  }
+                }
+                return '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-bottom:0.7rem;background:var(--surface)">' + head + '</div>' + body + actions + '</div>';
+              }
+              function load() {
+                api('/api/integrations').then(function (r) {
+                  if (!r.ok || !r.data || !r.data.providers) { box.innerHTML = '<p class="muted">Could not load meeting services.</p>'; return; }
+                  if (r.data.flash) {
+                    flashBox.innerHTML = '<div style="background:#eef6f7;border:1px solid #bfe3e6;color:#134e4a;border-radius:10px;padding:0.7rem 0.9rem;margin-bottom:0.8rem">' + esc(r.data.flash) + '</div>';
+                  }
+                  box.innerHTML = r.data.providers.map(card).join('');
+                  box.querySelectorAll('[data-meet-disconnect]').forEach(function (b) {
+                    b.addEventListener('click', function () {
+                      var p = b.getAttribute('data-meet-disconnect');
+                      var name = p === 'zoom' ? 'Zoom' : p === 'microsoft' ? 'Microsoft Teams' : 'Google Meet';
+                      var go = function () {
+                        api('/api/integrations/' + p, { method: 'DELETE' }).then(function (rr) {
+                          if (rr.ok) { pageSuccess(name + ' disconnected.'); load(); }
+                          else pageError((rr.data && rr.data.error) || 'Could not disconnect.');
+                        }).catch(function () { pageError('Could not disconnect.'); });
+                      };
+                      if (window.qsShowDialog) window.qsShowDialog('Disconnect ' + name + '?',
+                        '<p>Sessions keep their links as plain links, but the one-tap ' + esc(name) + ' button stops working until someone connects it again.</p>',
+                        [{ label: 'Keep it connected' }, { label: 'Disconnect', danger: true, onClick: go }]);
+                      else if (confirm('Disconnect ' + name + '?')) go();
+                    });
+                  });
+                }).catch(function () { box.innerHTML = '<p class="muted">Could not load meeting services.</p>'; });
+              }
+              window.qsLoadMeetingSettings = load;
+              document.querySelector('[data-subtab="meetings"]').addEventListener('click', load);
+              if (document.querySelector('[data-subtab="meetings"]').classList.contains('active')) load();
             })();
             </script>
           </div>
@@ -17486,7 +17562,14 @@ window.qsNpOfferSend = function (btn) {
           '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
           '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
           '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">🔗 Meeting link (Zoom / Teams)<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom or Teams meeting link" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:0.35rem">🔗 Meeting link<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom, Teams or Google Meet link" style="' + IN + '"></label>' +
+          '<div id="acf-meetgen" style="display:flex;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.35rem">' +
+            '<button type="button" class="btn-secondary" data-mgen="zoom" style="padding:0.45rem 0.8rem;border-radius:8px;font-size:0.88rem">＋ Zoom link</button>' +
+            '<button type="button" class="btn-secondary" data-mgen="microsoft" style="padding:0.45rem 0.8rem;border-radius:8px;font-size:0.88rem">＋ Teams link</button>' +
+            '<button type="button" class="btn-secondary" data-mgen="google" style="padding:0.45rem 0.8rem;border-radius:8px;font-size:0.88rem">＋ Google Meet link</button>' +
+          '</div>' +
+          '<div id="acf-meetnote" style="display:none;font-size:0.82rem;color:var(--dim);margin-bottom:0.7rem"></div>' +
+          '<div id="acf-meetspacer" style="margin-bottom:0.35rem"></div>' +
           '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
           '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Repeats</div>' +
           '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
@@ -17511,6 +17594,101 @@ window.qsNpOfferSend = function (btn) {
           (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
         document.body.appendChild(m);
+
+        // --- Generated meeting links (migration 091): one tap on a
+        // service button creates the meeting from the form's current
+        // values on the company's once-connected account and fills
+        // the link box. The provider + meeting id ride along in form
+        // state and are persisted with the save (readPayload); on a
+        // later save the server PATCHes the meeting when time/name
+        // changed, and deletes it when this session is deleted or
+        // the link is replaced. Typing over a generated link by hand
+        // un-stages the pair (the box becomes a plain pasted link).
+        var MEET_NAMES = { zoom: 'Zoom', microsoft: 'Microsoft Teams', google: 'Google Meet' };
+        var MEET_SHORT = { zoom: 'Zoom', microsoft: 'Teams', google: 'Google Meet' };
+        var meetPair = { provider: (s && s.meetingProvider) || null, externalId: (s && s.meetingExternalId) || null };
+        var meetPairLink = (s && s.meetingUrl) || '';
+        var meetInput = m.querySelector('#acf-meeting');
+        var meetNote = m.querySelector('#acf-meetnote');
+        function meetRender() {
+          m.querySelectorAll('[data-mgen]').forEach(function (b) {
+            var p = b.getAttribute('data-mgen');
+            b.textContent = (meetPair.provider === p ? '↻ New ' : '＋ ') + MEET_SHORT[p] + ' link';
+          });
+          if (meetPair.provider) {
+            meetNote.style.display = 'block';
+            meetNote.textContent = 'Made with ' + MEET_SHORT[meetPair.provider] + ' — if you change the time or name and save, the meeting updates too.';
+          } else {
+            meetNote.style.display = 'none';
+            meetNote.textContent = '';
+          }
+        }
+        meetRender();
+        if (meetInput) meetInput.addEventListener('input', function () {
+          if (meetPair.provider && meetInput.value.trim() !== meetPairLink) {
+            meetPair = { provider: null, externalId: null };
+            meetPairLink = '';
+            meetRender();
+          }
+        });
+        function meetDialog(title, bodyHtml, buttons) {
+          if (window.qsShowDialog) window.qsShowDialog(title, bodyHtml, buttons);
+          else pageError(bodyHtml.replace(/<[^>]+>/g, ''));
+        }
+        m.querySelectorAll('[data-mgen]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var p = btn.getAttribute('data-mgen');
+            var title = m.querySelector('#acf-title').value.trim();
+            var date = m.querySelector('#acf-date').value;
+            var start = m.querySelector('#acf-start').value;
+            var end = m.querySelector('#acf-end').value;
+            if (!title) { meetDialog('One thing first', '<p>Give the event a name first — the meeting takes its name from it.</p>', [{ label: 'OK', primary: true }]); return; }
+            if (!date || !start) { meetDialog('One thing first', '<p>Add a date and a start time first — an online meeting needs both.</p>', [{ label: 'OK', primary: true }]); return; }
+            var oldLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Creating…';
+            api('/api/schedule/sessions/meeting-link', {
+              method: 'POST',
+              body: JSON.stringify({
+                provider: p, title: title, date: date,
+                startTime: start, endTime: end || null,
+                timezone: (window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC',
+              }),
+            }).then(function (r) {
+              btn.disabled = false;
+              btn.textContent = oldLabel;
+              if (r.ok && r.data && r.data.link) {
+                meetInput.value = r.data.link;
+                meetPair = { provider: p, externalId: r.data.externalId };
+                meetPairLink = r.data.link;
+                meetRender();
+                return;
+              }
+              var code = r.data && r.data.code;
+              var msg = (r.data && r.data.error) || 'Could not create the meeting link.';
+              if (code === 'not_connected') {
+                var buttons = [{ label: 'Not now' }];
+                if (window.isOwner) buttons.unshift({
+                  label: 'Go to Settings', primary: true,
+                  onClick: function () { m.remove(); window.location.hash = '#settings/meetings'; },
+                });
+                else buttons = [{ label: 'OK', primary: true }];
+                meetDialog(MEET_NAMES[p] + ' isn\'t connected yet',
+                  '<p>' + esc(MEET_NAMES[p]) + ' isn\'t connected yet. The owner connects it once in Settings → Meeting services.</p>', buttons);
+              } else if (code === 'not_configured') {
+                meetDialog('Not set up yet', '<p>' + esc(MEET_NAMES[p]) + ' is not set up yet.</p>', [{ label: 'OK', primary: true }]);
+              } else if (code === 'consent_required') {
+                meetDialog('Admin approval needed', '<p>' + esc(msg) + '</p>', [{ label: 'OK', primary: true }]);
+              } else {
+                pageError(msg);
+              }
+            }).catch(function () {
+              btn.disabled = false;
+              btn.textContent = oldLabel;
+              pageError('Could not create the meeting link.');
+            });
+          });
+        });
 
         // --- EVENT model wiring: speakers, beneficiaries, organizing
         // department, and the From-the-schedule pull. ---
@@ -17895,6 +18073,13 @@ window.qsNpOfferSend = function (btn) {
             location: m.querySelector('#acf-loc').value.trim() || null,
             notes: m.querySelector('#acf-notes').value.trim() || null,
             meetingUrl: m.querySelector('#acf-meeting').value.trim() || null,
+            // Generated meeting pair staged by the ＋ buttons above
+            // (nulls when the box holds a plain pasted link); the
+            // timezone lets the server PATCH the external meeting in
+            // the same wall-clock terms the form shows.
+            meetingProvider: meetPair.provider,
+            meetingExternalId: meetPair.externalId,
+            timezone: (window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC',
             dashboardId: curDash ? curDash.id : null,
           };
         }
@@ -17931,7 +18116,13 @@ window.qsNpOfferSend = function (btn) {
             ? api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify(payload) })
             : api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) });
           req.then(function (r) {
-            if (r.ok) { m.remove(); pageSuccess(s ? 'Event updated.' : 'Event added.'); load(); }
+            if (r.ok) {
+              m.remove(); pageSuccess(s ? 'Event updated.' : 'Event added.'); load();
+              if (r.data && r.data.meetingWarning) {
+                if (window.qsShowDialog) window.qsShowDialog('Saved — one thing to know', '<p>' + esc(r.data.meetingWarning) + '</p>', [{ label: 'OK', primary: true }]);
+                else pageError(r.data.meetingWarning);
+              }
+            }
             else pageError((r.data && r.data.error) || 'Could not save.');
           }).catch(function () { pageError('Could not save.'); });
         });
@@ -17940,6 +18131,10 @@ window.qsNpOfferSend = function (btn) {
           var payload = readPayload();
           payload.recurRule = 'none';
           payload.recurUntil = null;
+          // The copy keeps the link as a plain link — the generated
+          // meeting belongs to the original session alone.
+          payload.meetingProvider = null;
+          payload.meetingExternalId = null;
           if (!payload.title) { pageError('A title is required.'); return; }
           api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
             if (r.ok) { m.remove(); pageSuccess('Duplicated — the copy is on the same day. Tap it to change its time.'); load(); }
@@ -18202,6 +18397,7 @@ window.qsNpOfferSend = function (btn) {
         // Arriving by hash/deep link must load the panel's data too —
         // the subtab buttons' own click handlers don't fire then.
         if (tabId === 'settings' && subtabId === 'dashboards' && window.qsLoadDashboardsSettings) window.qsLoadDashboardsSettings();
+        if (tabId === 'settings' && subtabId === 'meetings' && window.qsLoadMeetingSettings) window.qsLoadMeetingSettings();
         if (tabId === 'settings' && subtabId === 'inbox') { var ib = document.querySelector('[data-subtab="inbox"]'); if (ib) ib.click(); }
         // Keep the active section pill visible in the scrollable band.
         if (tabId === 'settings') { try { var ab = document.querySelector('#tab-settings .set-band .subtab-btn.active'); if (ab && ab.scrollIntoView) ab.scrollIntoView({ inline: 'center', block: 'nearest' }); } catch (e) {} }

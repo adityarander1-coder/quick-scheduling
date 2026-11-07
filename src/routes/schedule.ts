@@ -31,6 +31,11 @@ import {
   cleanBeneficiaries, saveBeneficiaries, loadBeneficiaries, loadInvitedUserIds,
   emailGuests, newlyAddedGuests, describeRecur,
 } from '../util/sessionPeople.js';
+import {
+  isMeetingProvider, providerName, providerConfigured, getValidAccessToken,
+  createMeeting, updateMeeting, normalizeMeetingTimes, deleteExternalMeetingQuiet,
+  MeetingError, MeetingInput,
+} from '../util/meetingProviders.js';
 
 const router = Router();
 
@@ -10120,6 +10125,12 @@ function academicRow(r: any) {
     // person_label ?? 'Speaker', resolved where kinds are at hand.
     personLabelOverride: r.person_label || null,
     meetingUrl: r.meeting_url || null,
+    // Generated meeting links (migration 091): which service made
+    // the link in meetingUrl, and its meeting id there — edits and
+    // deletes of this session sync to that meeting. Null for pasted
+    // links.
+    meetingProvider: r.meeting_provider || null,
+    meetingExternalId: r.meeting_external_id || null,
     notes: r.notes,
     dashboardId: r.dashboard_id || null,
     recurRule: r.recur_rule === 'biweekly' ? 'weekly' : (r.recur_rule || 'none'),
@@ -11698,6 +11709,62 @@ async function academicDeptCheck(req: Request, res: Response, departmentId: stri
   return true;
 }
 
+// ---------- Generated meeting links (migration 091) ----------
+// Clean the meeting pair a form posts: a provider + external id only
+// ride along together, and only for a known provider.
+function cleanMeetingPair(b: any): { provider: string | null; externalId: string | null } {
+  const provider = isMeetingProvider(b.meetingProvider) ? b.meetingProvider : null;
+  const externalId = b.meetingExternalId ? String(b.meetingExternalId).slice(0, 300) : null;
+  if (!provider || !externalId) return { provider: null, externalId: null };
+  return { provider, externalId };
+}
+
+// Build the provider-side meeting input from session-shaped values
+// (shared by the generate endpoint and the edit-sync below).
+function meetingInputFrom(title: string, dateStr: any, startTime: any, endTime: any, timezone: any): MeetingInput | { error: string } {
+  const date = dateStr instanceof Date ? dateStr.toISOString().slice(0, 10) : String(dateStr || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'Pick a date first — the meeting needs one.' };
+  const start = startTime ? String(startTime).slice(0, 5) : '';
+  if (!/^\d{2}:\d{2}$/.test(start)) return { error: 'Add a start time first — online meetings need one.' };
+  const end = endTime ? String(endTime).slice(0, 5) : null;
+  const tz = timezone && /^[A-Za-z_]+\/[A-Za-z_+\-0-9]+$/.test(String(timezone)) ? String(timezone) : 'UTC';
+  const n = normalizeMeetingTimes(date, start, end && /^\d{2}:\d{2}$/.test(end) ? end : null);
+  return { title: title || 'Session', timezone: tz, ...n };
+}
+
+// POST /api/schedule/sessions/meeting-link — one tap in the session
+// form: create a real Zoom / Teams / Google Meet meeting from the
+// form's CURRENT (possibly unsaved) values, on the company's
+// once-connected account. The form stashes provider + externalId and
+// persists them with the session save.
+router.post('/sessions/meeting-link', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    if (!isMeetingProvider(b.provider)) { res.status(400).json({ error: 'Unknown meeting service.' }); return; }
+    const provider = b.provider;
+    if (!providerConfigured(provider)) {
+      res.status(400).json({ code: 'not_configured', error: `${providerName(provider)} is not set up yet.` });
+      return;
+    }
+    const title = String(b.title || '').trim();
+    if (!title) { res.status(400).json({ error: 'Give the event a name first — the meeting takes its name from it.' }); return; }
+    const input = meetingInputFrom(title, b.date, b.startTime, b.endTime, b.timezone);
+    if ('error' in input) { res.status(400).json({ error: input.error }); return; }
+    const token = await getValidAccessToken(companyId, provider);
+    const made = await createMeeting(provider, token, input);
+    res.json({ ok: true, link: made.link, provider, externalId: made.externalId });
+  } catch (err) {
+    if (err instanceof MeetingError) {
+      const status = err.code === 'not_connected' || err.code === 'reconnect' || err.code === 'consent_required' ? 409 : 502;
+      res.status(status).json({ code: err.code, error: err.message });
+      return;
+    }
+    console.error('[schedule] meeting-link generate failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/academic-sessions — edit-scoped for
 // owner/scheduler; employees may create events they organize.
 router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
@@ -11790,13 +11857,18 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     // null to follow the type. Callers that don't post it (the Email
     // Q-Scheduler plan path) leave it NULL — the type label applies.
     const personLabelVal = b.personLabel !== undefined ? cleanPersonLabel(b.personLabel) : null;
+    // Generated meeting link (migration 091): the form may have
+    // already created the provider meeting and posts its pair; the
+    // link itself rides in meeting_url (mu) as usual.
+    const pair = cleanMeetingPair(b);
     const { rows } = await query(
-      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url, person_label)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url, person_label, meeting_provider, meeting_external_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
       [crypto.randomUUID(), companyId, title, lecturerId, departmentId,
        b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
        kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
-       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url, personLabelVal]);
+       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url, personLabelVal,
+       pair.provider, pair.externalId]);
     const newSessionId = rows[0].id;
     if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
@@ -12351,9 +12423,18 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     // (The one-date scope returned earlier and never reaches here,
     // so per-date overrides can't carry it — series-level only.)
     const personLabelVal = b.personLabel !== undefined ? cleanPersonLabel(b.personLabel) : (cur.person_label || null);
+    // Generated meeting link (migration 091): a save that posts the
+    // pair sets it (nulls = the link was replaced by a pasted one or
+    // a new generated one was staged); a save that doesn't mention
+    // it keeps the session's saved pair.
+    const oldPair = (cur.meeting_provider && cur.meeting_external_id)
+      ? { provider: String(cur.meeting_provider), externalId: String(cur.meeting_external_id) } : null;
+    const pair = (b.meetingProvider !== undefined || b.meetingExternalId !== undefined)
+      ? cleanMeetingPair(b)
+      : (oldPair ? { provider: oldPair.provider, externalId: oldPair.externalId } : { provider: null, externalId: null });
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
-        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18 WHERE id=$19`,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18, meeting_provider=$19, meeting_external_id=$20 WHERE id=$21`,
       [title, newLecturer,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
@@ -12361,10 +12442,40 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
        b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
        dashboardId, recurRule, recurUntil, supervisorUserId,
-       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, personLabelVal, seriesId]);
+       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, personLabelVal,
+       pair.provider, pair.externalId, seriesId]);
     if (speakersIn) await saveSpeakers(query as any, seriesId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, seriesId, beneficiaries.departmentIds, beneficiaries.userIds);
-    res.json({ ok: true });
+    // External meeting sync (best effort — a provider hiccup never
+    // blocks the save; a failed update rides back as a warning).
+    let meetingWarning: string | null = null;
+    if (oldPair && (!pair.provider || pair.provider !== oldPair.provider || pair.externalId !== oldPair.externalId)) {
+      // Link replaced or pair cleared: the old meeting goes away.
+      void deleteExternalMeetingQuiet(companyId, oldPair.provider, oldPair.externalId);
+    } else if (oldPair && pair.provider) {
+      const dstr2 = (v: any) => !v ? '' : (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+      const tstr = (v: any) => v ? String(v).slice(0, 5) : null;
+      const newDate = b.date || cur.session_date;
+      const newStart = b.startTime !== undefined ? (b.startTime || null) : cur.start_time;
+      const newEnd = b.endTime !== undefined ? (b.endTime || null) : cur.end_time;
+      const coreChanged = title !== cur.title
+        || dstr2(newDate) !== dstr2(cur.session_date)
+        || tstr(newStart) !== tstr(cur.start_time)
+        || tstr(newEnd) !== tstr(cur.end_time);
+      if (coreChanged) {
+        const input = meetingInputFrom(title, newDate, newStart, newEnd, b.timezone);
+        if (!('error' in input)) {
+          try {
+            const token = await getValidAccessToken(companyId, pair.provider as any);
+            await updateMeeting(pair.provider as any, token, pair.externalId!, input);
+          } catch (err) {
+            console.error('[schedule] meeting sync on session update failed:', err);
+            meetingWarning = `The session saved, but its ${providerName(pair.provider as any)} meeting could not be updated — it may still show the old time or name.`;
+          }
+        }
+      }
+    }
+    res.json(meetingWarning ? { ok: true, meetingWarning } : { ok: true });
     // Newly added guest speakers get their ONE details email (guests
     // already on the event are not re-emailed on every edit).
     if (speakersIn) {
@@ -12448,7 +12559,7 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'emplo
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
-    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id, created_by FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id, created_by, meeting_provider, meeting_external_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (await sessionWriteBlocked(res, rows[0].dashboard_id)) return;
     if (req.session.role === 'employee') {
@@ -12459,6 +12570,10 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'emplo
     } else if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
     await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
     res.json({ ok: true });
+    // A generated meeting dies with its session (best effort).
+    if (rows[0].meeting_provider && rows[0].meeting_external_id) {
+      void deleteExternalMeetingQuiet(companyId, rows[0].meeting_provider, rows[0].meeting_external_id);
+    }
     {
       const people = [rows[0].lecturer_user_id, rows[0].supervisor_user_id].filter(Boolean) as string[];
       if (people.length) {

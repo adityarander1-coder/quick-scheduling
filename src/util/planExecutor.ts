@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { query } from '../db.js';
 import { getDepartmentAccess } from './departmentAccess.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
+import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 
 interface PlanChange {
   action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
@@ -558,7 +559,12 @@ export async function cancelSessionDate(companyId: string, sessionId: string, da
 }
 
 export async function deleteSessionRow(companyId: string, sessionId: string): Promise<void> {
+  // A generated meeting dies with its session (best effort, 091).
+  const { rows } = await query('SELECT meeting_provider, meeting_external_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [sessionId, companyId]).catch(() => ({ rows: [] as any[] }));
   await query('DELETE FROM academic_sessions WHERE id = $1 AND company_id = $2', [sessionId, companyId]);
+  if (rows[0] && rows[0].meeting_provider && rows[0].meeting_external_id) {
+    void deleteExternalMeetingQuiet(companyId, rows[0].meeting_provider, rows[0].meeting_external_id);
+  }
 }
 
 /** Move ONE date of a recurring series: cancel that date and create a
