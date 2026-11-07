@@ -236,6 +236,7 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
        LEFT JOIN users sup ON sup.id = s.supervisor_user_id
        LEFT JOIN departments d ON d.id = s.department_id
        WHERE s.company_id = $1
+         AND NOT EXISTS (SELECT 1 FROM dashboards dx WHERE dx.id = s.dashboard_id AND dx.archived_at IS NOT NULL)
          AND (s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $2)
          AND s.session_date <= $3`,
       [companyId, from, to]

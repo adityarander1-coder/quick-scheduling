@@ -149,7 +149,7 @@ export async function buildFormPack(
   openShifts.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.shiftTypeName.localeCompare(b.shiftTypeName)));
 
   // Sessions: expand occurrences in the window, overrides applied.
-  const { rows: dashes } = await q('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
+  const { rows: dashes } = await q('SELECT id, name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL ORDER BY name', [companyId]);
   const { rows: roomRows } = await q('SELECT name FROM rooms WHERE company_id = $1 ORDER BY name', [companyId]);
   const { rows: kindRows } = await q(
     'SELECT key, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1',

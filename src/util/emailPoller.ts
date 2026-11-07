@@ -196,7 +196,7 @@ export async function buildSessionContext(
 ): Promise<{ dashboards: string[]; sessionKinds: string[]; rooms: string[]; sessions: string[]; dashboardDepartments: string[] }> {
   const out = { dashboards: [] as string[], sessionKinds: [] as string[], rooms: [] as string[], sessions: [] as string[], dashboardDepartments: [] as string[] };
   try {
-    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL ORDER BY name', [companyId]);
     out.dashboards = dashes.map((d: any) => d.name);
     const dashName = new Map(dashes.map((d: any) => [d.id, d.name]));
     if (dashes.length) {

@@ -322,7 +322,7 @@ function noShiftFoundMsg(display: string, date: string, shiftTypeName?: string):
 /* ------------------------------------------------------------------ */
 
 async function findDashboard(companyId: string, name: string): Promise<{ id: string; name: string } | null> {
-  const { rows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
+  const { rows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL', [companyId]);
   const lower = name.toLowerCase().trim();
   for (const d of rows) if (d.name.toLowerCase() === lower) return { id: d.id, name: d.name };
   const cands = rows.filter((d: any) => d.name.toLowerCase().includes(lower) || lower.includes(d.name.toLowerCase()));

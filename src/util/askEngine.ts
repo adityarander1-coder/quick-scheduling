@@ -178,6 +178,8 @@ interface CalSession {
 async function loadCalendarSessions(ctx: AskContext, from: string, to: string): Promise<CalSession[]> {
   const clauses = ['s.company_id = $1'];
   const params: any[] = [ctx.companyId];
+  // Archived dashboards are history: their sessions never surface in Ask.
+  clauses.push('(d.id IS NULL OR d.archived_at IS NULL)');
   {
     // VISIBILITY RULE (Deepika, 2026-11-07, final form): for EVERY
     // role, Ask only surfaces the asker's own events — ones they
@@ -484,7 +486,7 @@ export async function buildAskDataPack(ctx: AskContext, from: string, to: string
   if (ctx.visibleDeptIds !== null) { typeParams.push(ctx.visibleDeptIds); typeClauses.push(`(department_id IS NULL OR department_id = ANY($${typeParams.length}))`); }
   const { rows: typeRows } = await query(`SELECT id, name FROM shift_types WHERE ${typeClauses.join(' AND ')} ORDER BY sort_order, name`, typeParams);
   if (typeRows.length) parts.push(`Shift types: ${typeRows.map((r: any) => r.name).join(', ')}`);
-  const dashClauses = ['d.company_id = $1']; const dashParams: any[] = [ctx.companyId];
+  const dashClauses = ['d.company_id = $1', 'd.archived_at IS NULL']; const dashParams: any[] = [ctx.companyId];
   if (ctx.visibleDeptIds !== null) {
     dashParams.push(ctx.visibleDeptIds);
     dashClauses.push(`(NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id AND dd.department_id = ANY($${dashParams.length})))`);
@@ -688,7 +690,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
       return `Shift types in this account:\n${rows.map((r: any) => '• ' + r.name).join('\n')}`;
     }
     if ((/\bcalendars?\b|\bdashboards?\b/.test(lower)) && !/\b(sessions?|events?|present(ing|er|ers)?)\b/.test(lower)) {
-      const clauses = ['d.company_id = $1']; const params: any[] = [ctx.companyId];
+      const clauses = ['d.company_id = $1', 'd.archived_at IS NULL']; const params: any[] = [ctx.companyId];
       if (ctx.visibleDeptIds !== null) {
         params.push(ctx.visibleDeptIds);
         clauses.push(`(NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = d.id AND dd.department_id = ANY($${params.length})))`);
@@ -711,7 +713,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     if (mySessions) sessions = sessions.filter(s => s.speakerIds.includes(ctx.userId));
     else if (member) sessions = sessions.filter(s => s.speakerIds.includes(member.id));
     if (/\bevents?\b/.test(lower)) sessions = sessions.filter(s => s.kind === 'event');
-    const { rows: dashRows } = await query('SELECT name FROM dashboards WHERE company_id = $1', [ctx.companyId]);
+    const { rows: dashRows } = await query('SELECT name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL', [ctx.companyId]);
     const namedDash = dashRows.map((r: any) => r.name).find((n: string) => n && lower.includes(n.toLowerCase()));
     if (namedDash) sessions = sessions.filter(s => s.dashboard === namedDash);
     const when = date ? prettyDate(date) : `from ${prettyDate(from)} to ${prettyDate(to)}`;

@@ -6279,7 +6279,7 @@ async function buildClarification(
     'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY name LIMIT 20',
     [companyId])).rows.map((r: any) => r.name).filter(Boolean);
   const dashNames = async () => (await query(
-    'SELECT name FROM dashboards WHERE company_id = $1 ORDER BY name LIMIT 20',
+    'SELECT name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL ORDER BY name LIMIT 20',
     [companyId])).rows.map((r: any) => r.name).filter(Boolean);
   const sessionTitles = async () => (await query(
     'SELECT DISTINCT title FROM academic_sessions WHERE company_id = $1 ORDER BY title LIMIT 20',
@@ -7242,7 +7242,7 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
       return;
     }
     const companyId = link.company_id;
-    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: dashes } = await query('SELECT id, name FROM dashboards WHERE company_id = $1 AND archived_at IS NULL ORDER BY name', [companyId]);
     const { rows: kinds } = await query('SELECT dashboard_id, key, label FROM session_kinds WHERE company_id = $1 ORDER BY position, label', [companyId]);
     const { rows: dds } = await query(
       `SELECT dd.dashboard_id, d.id, d.name FROM dashboard_departments dd
@@ -9308,6 +9308,78 @@ async function dashboardEditorIds(dashboardId: string): Promise<string[]> {
   return rows.map((r: any) => r.user_id);
 }
 
+// ---------- Dashboard archive + delete requests (migration 090) ----------
+// "Delete" a dashboard = ARCHIVE it (Deepika, 2026-11-07): the row and
+// every session on it stay saved, hidden from all live surfaces, and
+// restorable from Settings. The owner archives immediately; a
+// scheduler's delete is a REQUEST that the first OTHER admin of the
+// dashboard's departments (or the owner) approves — a rejection or the
+// requester's own cancel closes it with nothing archived.
+
+async function dashboardRowById(companyId: string, dashboardId: string): Promise<any | null> {
+  const { rows } = await query(
+    'SELECT id, name, archived_at, archived_by FROM dashboards WHERE id = $1 AND company_id = $2',
+    [dashboardId, companyId]);
+  return rows.length ? rows[0] : null;
+}
+
+async function isDashboardArchived(dashboardId: string | null | undefined): Promise<boolean> {
+  if (!dashboardId) return false;
+  const { rows } = await query('SELECT archived_at FROM dashboards WHERE id = $1', [dashboardId]);
+  return !!(rows.length && rows[0].archived_at);
+}
+
+async function userDisplayName(userId: string | null | undefined): Promise<string> {
+  if (!userId) return 'Someone';
+  const { rows } = await query('SELECT first_name, last_name, nickname, email FROM users WHERE id = $1', [userId]);
+  if (!rows.length) return 'Someone';
+  const u = rows[0];
+  return u.nickname || [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email || 'Someone';
+}
+
+// Who may approve a dashboard delete request (besides the requester,
+// who never can): every owner of the company, plus schedulers holding
+// Edit access on ANY of the dashboard's departments. A dashboard with
+// NO departments spans the whole company, so every scheduler counts.
+async function dashboardDeleteApproverIds(companyId: string, dashboardId: string): Promise<string[]> {
+  const { rows: owners } = await query(
+    `SELECT id FROM users WHERE company_id = $1 AND role = 'owner' AND is_active = true`, [companyId]);
+  const ids = owners.map((r: any) => r.id);
+  const dIds = await dashboardDeptIds(dashboardId);
+  const { rows: scheds } = await query(
+    `SELECT id FROM users WHERE company_id = $1 AND role = 'scheduler' AND is_active = true`, [companyId]);
+  for (const s of scheds) {
+    if (!dIds.length) { ids.push(s.id); continue; }
+    const access = await getDepartmentAccess(s.id, companyId);
+    if ((access.edit || []).some((d) => dIds.includes(d))) ids.push(s.id);
+  }
+  return [...new Set(ids)];
+}
+
+async function pendingDeleteRequest(dashboardId: string): Promise<any | null> {
+  const { rows } = await query(
+    `SELECT id, requested_by, created_at FROM dashboard_delete_requests
+     WHERE dashboard_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
+    [dashboardId]);
+  return rows.length ? rows[0] : null;
+}
+
+async function archiveDashboardRow(dashboardId: string, archivedBy: string): Promise<void> {
+  await query('UPDATE dashboards SET archived_at = now(), archived_by = $2 WHERE id = $1', [dashboardId, archivedBy]);
+}
+
+// Write gate for the session endpoints: nothing on an archived
+// dashboard can be created, edited, claimed, RSVP'd or deleted —
+// restore the dashboard from Settings first. Returns true (and has
+// already answered 409) when the write is blocked.
+async function sessionWriteBlocked(res: Response, dashboardId: string | null | undefined): Promise<boolean> {
+  if (await isDashboardArchived(dashboardId)) {
+    res.status(409).json({ error: 'That dashboard is archived — restore it from Settings → Dashboards to make changes.' });
+    return true;
+  }
+  return false;
+}
+
 // Can this user adjust a dashboard's sessions/kinds at all? Owner:
 // always. Scheduler: when the dashboard has an editors list, only its
 // members; otherwise, Edit access touching the dashboard (any Edit
@@ -9458,7 +9530,7 @@ async function validateDashboardEditors(companyId: string, ids: any): Promise<st
   return rows.map((r: any) => r.id);
 }
 
-async function visibleDashboardIds(req: Request): Promise<string[] | null> {
+async function visibleDashboardIds(req: Request, includeArchived = false): Promise<string[] | null> {
   const companyId = req.session.companyId!;
   const deptIds = await academicVisibleDeptIds(req);
   if (deptIds === null) return null; // owner sees everything
@@ -9467,7 +9539,11 @@ async function visibleDashboardIds(req: Request): Promise<string[] | null> {
   // a team member without a department (or a scheduler with no view
   // access yet) still gets those dashboards. (Bug found 2026-10-20:
   // returning [] here hid every dashboard from dept-less employees.)
-  const { rows } = await query('SELECT id FROM dashboards WHERE company_id = $1', [companyId]);
+  // Archived dashboards are history, not live calendars: excluded
+  // unless the caller is the Settings manager asking for them.
+  const { rows } = await query(
+    `SELECT id FROM dashboards WHERE company_id = $1 ${includeArchived ? '' : 'AND archived_at IS NULL'}`,
+    [companyId]);
   const out: string[] = [];
   for (const r of rows) {
     const dIds = await dashboardDeptIds(r.id);
@@ -9477,28 +9553,52 @@ async function visibleDashboardIds(req: Request): Promise<string[] | null> {
 }
 
 // GET /api/schedule/dashboards — all roles, scoped like sessions.
+// Archived dashboards are excluded everywhere by default; the
+// Settings manager passes ?includeArchived=1 (owner/scheduler only)
+// to also get them, flagged, for the Archived section. Rows carry any
+// pending delete request so Settings can render its state.
 router.get('/dashboards', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const visible = await visibleDashboardIds(req);
+    const includeArchived = req.query.includeArchived === '1' && req.session.role !== 'employee';
+    const visible = await visibleDashboardIds(req, includeArchived);
     const params: any[] = [companyId];
     let clause = 'WHERE d.company_id = $1';
     if (visible) {
       params.push(visible);
-      clause += ' AND d.id = ANY($2)';
+      clause += ` AND d.id = ANY($${params.length})`;
     }
+    if (!includeArchived) clause += ' AND d.archived_at IS NULL';
     const { rows } = await query(
-      `SELECT d.id, d.name, d.created_at,
+      `SELECT d.id, d.name, d.created_at, d.archived_at, d.archived_by,
               (SELECT array_agg(dd.department_id) FROM dashboard_departments dd WHERE dd.dashboard_id = d.id) AS department_ids
        FROM dashboards d ${clause} ORDER BY d.created_at`, params);
     const out: any[] = [];
     for (const r of rows) {
-      out.push({
+      const row: any = {
         id: r.id, name: r.name, createdAt: r.created_at,
         departmentIds: r.department_ids || [],
         editorIds: await dashboardEditorIds(r.id),
         canEdit: await dashboardEditAllowed(req, r.id),
-      });
+        archivedAt: r.archived_at || null,
+        archivedByName: r.archived_at ? await userDisplayName(r.archived_by) : null,
+        pendingDeleteRequest: null,
+      };
+      if (!r.archived_at && req.session.role !== 'employee') {
+        const pend = await pendingDeleteRequest(r.id);
+        if (pend) {
+          const approvers = await dashboardDeleteApproverIds(companyId, r.id);
+          row.pendingDeleteRequest = {
+            id: pend.id,
+            requestedBy: pend.requested_by,
+            requestedByName: await userDisplayName(pend.requested_by),
+            createdAt: pend.created_at,
+            mine: pend.requested_by === req.session.userId,
+            canApprove: pend.requested_by !== req.session.userId && approvers.includes(req.session.userId!),
+          };
+        }
+      }
+      out.push(row);
     }
     res.json({ dashboards: out });
   } catch (err) {
@@ -9556,8 +9656,9 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
       editorIds = await validateDashboardEditors(companyId, req.body.editorIds);
       if (!editorIds) { res.status(400).json({ error: 'One or more editors are invalid.' }); return; }
     }
-    const { rows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const { rows } = await query('SELECT id, archived_at FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (rows[0].archived_at) { res.status(409).json({ error: 'That dashboard is archived — restore it to make changes.' }); return; }
     if (name !== undefined) await query('UPDATE dashboards SET name = $1 WHERE id = $2', [name, req.params.id]);
     if (deptIds !== null) {
       await query('DELETE FROM dashboard_departments WHERE dashboard_id = $1', [req.params.id]);
@@ -9578,15 +9679,208 @@ router.put('/dashboards/:id', requireRole('owner'), async (req: Request, res: Re
   }
 });
 
-// DELETE /api/schedule/dashboards/:id — owner only. Sessions keep their rows (dashboard_id set null).
-router.delete('/dashboards/:id', requireRole('owner'), async (req: Request, res: Response) => {
+// DELETE /api/schedule/dashboards/:id — "delete" = ARCHIVE, never a
+// hard delete (Deepika, 2026-11-07; migration 090). The owner archives
+// immediately. A scheduler files a delete REQUEST instead: every other
+// admin of the dashboard's departments (plus the owners) is belled,
+// and the first of them to approve archives it. Sessions keep their
+// rows and their dashboard_id — the whole calendar is history in the
+// archive, restorable from Settings.
+router.delete('/dashboards/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { rowCount } = await query('DELETE FROM dashboards WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
-    if (!rowCount) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
-    res.json({ ok: true });
-  } catch (err) {
+    const me = req.session.userId!;
+    const dash = await dashboardRowById(companyId, req.params.id);
+    if (!dash) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (dash.archived_at) { res.status(409).json({ error: 'That dashboard is already archived.' }); return; }
+    if (req.session.role === 'owner') {
+      await archiveDashboardRow(dash.id, me);
+      // A direct owner archive settles any pending request as approved.
+      await query(
+        `UPDATE dashboard_delete_requests SET status = 'approved', decided_by = $2, decided_at = now()
+         WHERE dashboard_id = $1 AND status = 'pending'`, [dash.id, me]);
+      await auditLog({
+        companyId, date: todayStr(), action: 'archived', category: 'settings',
+        source: 'manual', changedBy: me,
+        description: `Archived the dashboard "${dash.name}"`,
+      });
+      res.json({ ok: true, archived: true });
+      return;
+    }
+    const existing = await pendingDeleteRequest(dash.id);
+    if (existing) {
+      res.status(409).json({ error: 'A delete request for this dashboard is already waiting for approval.' });
+      return;
+    }
+    const { rows } = await query(
+      `INSERT INTO dashboard_delete_requests (company_id, dashboard_id, requested_by)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [companyId, dash.id, me]);
+    const myName = await userDisplayName(me);
+    const approvers = await dashboardDeleteApproverIds(companyId, dash.id);
+    notify({
+      companyId, userIds: approvers, category: 'approvals', type: 'dashboard_delete_request',
+      title: `${myName} asked to delete the dashboard "${dash.name}"`,
+      body: `${myName} asked to delete the dashboard "${dash.name}". Review it in Settings → Dashboards — the first admin to approve archives it.`,
+      link: 'settings/dashboards',
+      excludeUserId: me,
+    });
+    await auditLog({
+      companyId, date: todayStr(), action: 'delete_requested', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Asked to delete the dashboard "${dash.name}"`,
+    });
+    res.json({ ok: true, requested: true, requestId: rows[0].id });
+  } catch (err: any) {
+    if (err?.code === '23505') { // one-pending-per-dashboard race
+      res.status(409).json({ error: 'A delete request for this dashboard is already waiting for approval.' });
+      return;
+    }
     console.error('[schedule] dashboard delete failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Shared loader for the delete-request decision endpoints: resolves
+// the dashboard + its pending request, and whether THIS caller may
+// decide it (an eligible approver who is not the requester).
+async function loadDecidableRequest(req: Request, res: Response): Promise<any | null> {
+  const companyId = req.session.companyId!;
+  const dash = await dashboardRowById(companyId, req.params.id);
+  if (!dash) { res.status(404).json({ error: 'Dashboard not found.' }); return null; }
+  if (dash.archived_at) { res.status(409).json({ error: 'That dashboard is already archived.' }); return null; }
+  const pend = await pendingDeleteRequest(dash.id);
+  if (!pend) { res.status(409).json({ error: 'There is no pending delete request for this dashboard.' }); return null; }
+  if (pend.requested_by === req.session.userId) {
+    res.status(403).json({ error: "You can't decide your own delete request — another admin has to." });
+    return null;
+  }
+  const approvers = await dashboardDeleteApproverIds(companyId, dash.id);
+  if (!approvers.includes(req.session.userId!)) {
+    res.status(403).json({ error: 'Only an admin of this dashboard\'s departments (or the owner) can decide this request.' });
+    return null;
+  }
+  return { companyId, dash, pend };
+}
+
+// POST /api/schedule/dashboards/:id/delete-request/approve — archive
+// the dashboard and close the request. archived_by records the
+// REQUESTER (the deletion was theirs, countersigned by the approver).
+router.post('/dashboards/:id/delete-request/approve', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadDecidableRequest(req, res);
+    if (!ctx) return;
+    const { companyId, dash, pend } = ctx;
+    const me = req.session.userId!;
+    await archiveDashboardRow(dash.id, pend.requested_by);
+    await query(
+      `UPDATE dashboard_delete_requests SET status = 'approved', decided_by = $2, decided_at = now() WHERE id = $1`,
+      [pend.id, me]);
+    const myName = await userDisplayName(me);
+    const requesterName = await userDisplayName(pend.requested_by);
+    notify({
+      companyId, userIds: [pend.requested_by], category: 'approvals', type: 'dashboard_delete_decided',
+      title: `Your delete request for "${dash.name}" was approved`,
+      body: `Your delete request for "${dash.name}" was approved by ${myName} — the dashboard is archived. Its sessions stay saved in the archive.`,
+      link: 'settings/dashboards',
+    });
+    const others = (await dashboardDeleteApproverIds(companyId, dash.id))
+      .filter((id: string) => id !== pend.requested_by && id !== me);
+    if (others.length) {
+      notify({
+        companyId, userIds: others, category: 'approvals', type: 'dashboard_delete_decided',
+        title: `The dashboard "${dash.name}" was archived`,
+        body: `${requesterName}'s delete request for "${dash.name}" was approved by ${myName} — the dashboard is archived.`,
+        link: 'settings/dashboards',
+      });
+    }
+    await auditLog({
+      companyId, date: todayStr(), action: 'archived', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Approved ${requesterName}'s request — archived the dashboard "${dash.name}"`,
+    });
+    res.json({ ok: true, archived: true });
+  } catch (err) {
+    console.error('[schedule] dashboard delete approve failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/dashboards/:id/delete-request/reject — close the
+// request; the dashboard stays live.
+router.post('/dashboards/:id/delete-request/reject', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadDecidableRequest(req, res);
+    if (!ctx) return;
+    const { companyId, dash, pend } = ctx;
+    const me = req.session.userId!;
+    await query(
+      `UPDATE dashboard_delete_requests SET status = 'rejected', decided_by = $2, decided_at = now() WHERE id = $1`,
+      [pend.id, me]);
+    const myName = await userDisplayName(me);
+    notify({
+      companyId, userIds: [pend.requested_by], category: 'approvals', type: 'dashboard_delete_decided',
+      title: `Your delete request for "${dash.name}" was rejected`,
+      body: `Your delete request for "${dash.name}" was rejected by ${myName} — the dashboard stays as it is.`,
+      link: 'settings/dashboards',
+    });
+    await auditLog({
+      companyId, date: todayStr(), action: 'delete_rejected', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Rejected the request to delete the dashboard "${dash.name}"`,
+    });
+    res.json({ ok: true, rejected: true });
+  } catch (err) {
+    console.error('[schedule] dashboard delete reject failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/dashboards/:id/delete-request/cancel — the
+// requester withdraws their own pending request.
+router.post('/dashboards/:id/delete-request/cancel', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dash = await dashboardRowById(companyId, req.params.id);
+    if (!dash) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    const pend = await pendingDeleteRequest(dash.id);
+    if (!pend) { res.status(409).json({ error: 'There is no pending delete request for this dashboard.' }); return; }
+    if (pend.requested_by !== req.session.userId) {
+      res.status(403).json({ error: 'Only the person who asked can cancel this request.' });
+      return;
+    }
+    await query(
+      `UPDATE dashboard_delete_requests SET status = 'cancelled', decided_by = $2, decided_at = now() WHERE id = $1`,
+      [pend.id, req.session.userId!]);
+    await auditLog({
+      companyId, date: todayStr(), action: 'delete_cancelled', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Withdrew the request to delete the dashboard "${dash.name}"`,
+    });
+    res.json({ ok: true, cancelled: true });
+  } catch (err) {
+    console.error('[schedule] dashboard delete cancel failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/dashboards/:id/restore — bring an archived
+// dashboard back, sessions and all. Direct, no approval.
+router.post('/dashboards/:id/restore', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dash = await dashboardRowById(companyId, req.params.id);
+    if (!dash) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
+    if (!dash.archived_at) { res.status(409).json({ error: 'That dashboard is not archived.' }); return; }
+    await query('UPDATE dashboards SET archived_at = NULL, archived_by = NULL WHERE id = $1', [dash.id]);
+    await auditLog({
+      companyId, date: todayStr(), action: 'restored', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Restored the dashboard "${dash.name}" from the archive`,
+    });
+    res.json({ ok: true, restored: true });
+  } catch (err) {
+    console.error('[schedule] dashboard restore failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -10289,8 +10583,9 @@ router.post('/session-avail', requireRole('owner', 'scheduler'), async (req: Req
     }
     let dashId: string | null = null;
     if (dashboardId) {
-      const { rows: d } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(dashboardId), companyId]);
+      const { rows: d } = await query('SELECT id, archived_at FROM dashboards WHERE id = $1 AND company_id = $2', [String(dashboardId), companyId]);
       if (!d.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      if (d[0].archived_at) { res.status(409).json({ error: 'That dashboard is archived.' }); return; }
       dashId = String(dashboardId);
     }
     const token = crypto.randomBytes(32).toString('hex');
@@ -10348,6 +10643,7 @@ router.get('/session-avail/public', async (req: Request, res: Response) => {
     const clauses = ['s.company_id = $1'];
     const params: any[] = [link.companyId];
     if (link.dashboardId) { params.push(link.dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+    clauses.push('NOT EXISTS (SELECT 1 FROM dashboards dx WHERE dx.id = s.dashboard_id AND dx.archived_at IS NOT NULL)');
     params.push(link.fromDate, link.toDate);
     clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
     clauses.push(`s.session_date <= $${params.length}`);
@@ -10424,6 +10720,7 @@ router.post('/session-avail/public/respond', async (req: Request, res: Response)
     const clauses = ['s.company_id = $1'];
     const params: any[] = [link.companyId];
     if (link.dashboardId) { params.push(link.dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+    clauses.push('NOT EXISTS (SELECT 1 FROM dashboards dx WHERE dx.id = s.dashboard_id AND dx.archived_at IS NOT NULL)');
     params.push(link.fromDate, link.toDate);
     clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
     clauses.push(`s.session_date <= $${params.length}`);
@@ -10533,6 +10830,7 @@ async function sessionGapsForWindow(companyId: string, dashboardId: string | nul
   const clauses = ['s.company_id = $1'];
   const params: any[] = [companyId];
   if (dashboardId) { params.push(dashboardId); clauses.push(`s.dashboard_id = $${params.length}`); }
+    clauses.push('NOT EXISTS (SELECT 1 FROM dashboards dx WHERE dx.id = s.dashboard_id AND dx.archived_at IS NOT NULL)');
   params.push(fromDate, toDate);
   clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
   clauses.push(`s.session_date <= $${params.length}`);
@@ -11215,7 +11513,19 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
       }
       return sql + ')';
     };
-    if (req.query.dashboardId || req.session.role === 'employee') {
+    // ARCHIVED dashboards (migration 090): their sessions vanish from
+    // every live fetch. The one exception is the archive history view:
+    // an owner/scheduler explicitly opening THAT archived dashboard
+    // from Settings sees all of its sessions, read-only (writes are
+    // refused by the write endpoints). Employees never get it.
+    let archivedDashRow: any = null;
+    if (req.query.dashboardId && req.session.role !== 'employee') {
+      const dRow = await dashboardRowById(companyId, String(req.query.dashboardId));
+      if (dRow && dRow.archived_at) archivedDashRow = dRow;
+    }
+    if (archivedDashRow) {
+      // No visibility clause: the whole archived calendar is history.
+    } else if (req.query.dashboardId || req.session.role === 'employee') {
       clauses.push(ownEventsSql());
     } else if (ids) {
       params.push(ids);
@@ -11237,6 +11547,9 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
       if (to) { params.push(to); clauses.push(`s.session_date <= $${params.length}`); }
     }
     if (req.query.dashboardId) { params.push(String(req.query.dashboardId)); clauses.push(`s.dashboard_id = $${params.length}`); }
+    if (!archivedDashRow) {
+      clauses.push('NOT EXISTS (SELECT 1 FROM dashboards dx WHERE dx.id = s.dashboard_id AND dx.archived_at IS NOT NULL)');
+    }
     const { rows } = await query(
       `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
               sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
@@ -11343,6 +11656,7 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
             || (dd ? (dd.some((d) => ids.includes(d)) || dd.length === 0) : false);
           o.viewerInvitedOnly = !viaCalendar && o.viewerIsBeneficiary;
         }
+        o.dashboardArchived = !!archivedDashRow;
         // RSVP attach: this occurrence's own reply + tally.
         const rsvpsHere = (rsvpMap.get(sid) || new Map()).get(o.date) || [];
         const mine = rsvpsHere.find((r: any) => r.userId === req.session.userId);
@@ -11360,7 +11674,11 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
         }
       }
     }
-    res.json({ sessions: out });
+    res.json({
+      sessions: out,
+      dashboardArchived: !!archivedDashRow,
+      archivedAt: archivedDashRow ? archivedDashRow.archived_at : null,
+    });
   } catch (err) {
     console.error('[schedule] academic sessions list failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -11390,8 +11708,9 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
     let dashboardId: string | null = null;
     if (b.dashboardId) {
-      const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
+      const { rows: dRows } = await query('SELECT id, archived_at FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
       if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
+      if (dRows[0].archived_at) { res.status(409).json({ error: 'That dashboard is archived — restore it from Settings → Dashboards to add sessions.' }); return; }
       dashboardId = String(b.dashboardId);
     }
     // EVENT model (2026-11-07): on a calendar, department_id is the
@@ -11567,6 +11886,7 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
       const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
       if (!rows.length) { skipped.push({ id: it.id, error: 'Not found.' }); continue; }
       const cur = rows[0];
+      if (await isDashboardArchived(cur.dashboard_id)) { skipped.push({ id: it.id, error: 'Archived dashboard.' }); continue; }
       if (!(await canEditSessionQuiet(req, cur.dashboard_id, cur.department_id))) { skipped.push({ id: it.id, error: 'Not editable.' }); continue; }
       const recurring = cur.recur_rule && cur.recur_rule !== 'none';
       // Who holds this slot now (for notifications below)?
@@ -11650,6 +11970,7 @@ router.post('/academic-sessions/:id/rsvp', requireRole('owner', 'scheduler', 'em
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const s = rows[0];
+    if (await sessionWriteBlocked(res, s.dashboard_id)) return;
     const date = b.date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.date)) ? String(b.date) : (s.session_date instanceof Date ? s.session_date.toISOString().slice(0, 10) : String(s.session_date));
     const me = req.session.userId!;
     // Speakers (incl. the lecturer mirror) host — no RSVP.
@@ -11682,6 +12003,7 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    if (await sessionWriteBlocked(res, cur.dashboard_id)) return;
     const ids = await academicVisibleDeptIds(req);
     if (ids) {
       // Own department first; inherit-model sessions (no department of
@@ -11777,6 +12099,7 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    if (await sessionWriteBlocked(res, cur.dashboard_id)) return;
     const effPerson = (await sessionPersonLabel(query, companyId, cur)).toLowerCase();
     const occDateU = req.body?.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date)) ? String(req.body.date) : null;
     if (occDateU && cur.recur_rule && cur.recur_rule !== 'none') {
@@ -11836,6 +12159,7 @@ router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'sc
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    if (await sessionWriteBlocked(res, cur.dashboard_id)) return;
     if (req.session.role === 'employee') {
       if (cur.created_by !== req.session.userId) { res.status(403).json({ error: 'You can only edit events you organized.' }); return; }
     } else if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
@@ -11871,6 +12195,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    if (await sessionWriteBlocked(res, cur.dashboard_id)) return;
     const b = req.body ?? {};
     const isEmployeeOrganizer = req.session.role === 'employee' && cur.created_by === req.session.userId;
     if (req.session.role === 'employee' && !isEmployeeOrganizer) {
@@ -11883,6 +12208,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     // employee organizer's department stays as saved.
     let departmentId = cur.department_id;
     const targetDashboardId = b.dashboardId !== undefined ? (b.dashboardId ? String(b.dashboardId) : null) : cur.dashboard_id;
+    if (targetDashboardId !== cur.dashboard_id && await sessionWriteBlocked(res, targetDashboardId)) return;
     if (!isEmployeeOrganizer && !(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
     if (!isEmployeeOrganizer && b.departmentId !== undefined && (b.departmentId ? String(b.departmentId) : null) !== cur.department_id) {
       const dashForOrg = targetDashboardId || cur.dashboard_id;
@@ -12124,6 +12450,7 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'emplo
     const seriesId = String(req.params.id).split('@@')[0];
     const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id, created_by FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    if (await sessionWriteBlocked(res, rows[0].dashboard_id)) return;
     if (req.session.role === 'employee') {
       if (rows[0].created_by !== req.session.userId) {
         res.status(403).json({ error: 'You can only delete events you organized.' });

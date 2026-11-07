@@ -969,6 +969,12 @@
     .modal h3 { font-size: 1.12rem; font-weight: 800; letter-spacing: -0.01em; }
     html:not([data-theme="dark"]) .modal input:not([type="color"]):not([type="checkbox"]):not([type="radio"]), html:not([data-theme="dark"]) .modal select, html:not([data-theme="dark"]) .modal textarea { border-radius: 9px; border-color: #d5daee; }
     .modal .modal-actions .btn-primary, .modal .modal-actions .btn-secondary, .modal .modal-actions button { border-radius: 9px; font-weight: 700; padding-top: 0.55rem; padding-bottom: 0.55rem; }
+    /* #action-dialog can be moved to <body> for cross-tab use (qsShowDialog);
+       the per-tab .modal-backdrop/.modal rules then no longer reach it, so
+       repeat their exact declarations unscoped for this one element. */
+    #action-dialog.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    #action-dialog .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
+    #action-dialog .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
     /* ---- Restyle B, stage 6: Messages polish (cards + avatars + bubbles) ---- */
     .msg-side { display: flex; flex-direction: column; width: 280px; flex-shrink: 0; min-height: 0; }
     .msg-search { margin-bottom: 8px; }
@@ -4368,6 +4374,17 @@
           actions.innerHTML = html;
           show($('action-dialog'));
         }
+        // Shared with later scopes (e.g. the Settings dashboards manager)
+        // that need the same in-app dialog instead of native confirm().
+        // #action-dialog lives inside the Schedule tab panel, which is
+        // display:none while another tab is active — so on first cross-tab
+        // use, move it to <body> (unscoped #action-dialog CSS below keeps
+        // its exact look) or it would open invisibly.
+        window.qsShowDialog = function (title, bodyHtml, buttons) {
+          var dlg = document.getElementById('action-dialog');
+          if (dlg && dlg.parentNode !== document.body) document.body.appendChild(dlg);
+          showDialog(title, bodyHtml, buttons);
+        };
         function showInfo(msg) {
           showDialog('Notice', '<p>' + esc(msg) + '</p>', [{ label: 'OK', primary: true }]);
         }
@@ -7440,6 +7457,7 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
       </div>
+      <div id="db-archived-banner" style="display:none;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:10px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-weight:600"></div>
       <div id="db-filters"><div id="db-today-slot"></div>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Department
           <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
@@ -8129,6 +8147,9 @@ window.qsNpOfferSend = function (btn) {
         #tab-settings .dash-ms-btn.open { border-radius: 8px 8px 0 0; }
         #tab-settings .dash-ms-panel { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 8px 8px; padding: 6px 12px; background: #fff; max-height: 220px; overflow-y: auto; }
         #tab-settings .dash-ms-hint { font-size: 12px; color: var(--dim); margin-top: 4px; }
+        /* Schedulers may delete dashboards but not create/edit them (owner-only):
+           the panel gets .dash-nonowner for them and the add form hides. */
+        #tab-settings #subtab-dashboards.dash-nonowner .dash-owner-only { display: none !important; }
       </style>
       <div class="set-band">
         <nav class="sub-tabs" role="tablist">
@@ -8152,19 +8173,20 @@ window.qsNpOfferSend = function (btn) {
             <h3>🎓 Dashboards</h3>
             <p class="muted">Each dashboard becomes its own tab — a calendar for sessions and events. People are picked from the team roster.</p>
             <div id="dash-list"></div>
-            <h4>Add a dashboard</h4>
-            <div class="form-row">
+            <div id="dash-archived"></div>
+            <h4 class="dash-owner-only">Add a dashboard</h4>
+            <div class="form-row dash-owner-only">
               <input type="text" id="dash-new-name" placeholder="Dashboard name (e.g. Teaching, Conferences)" style="max-width:340px">
             </div>
-            <div class="form-row">
+            <div class="form-row dash-owner-only">
               <label style="font-weight:600">Departments (leave all unchecked = all departments)</label>
               <div id="dash-new-depts" class="checklist" style="max-width:340px"></div>
             </div>
-            <div class="form-row">
+            <div class="form-row dash-owner-only">
               <label style="font-weight:600">Who can adjust it (leave all unchecked = schedulers who can edit its departments)</label>
               <div id="dash-new-editors" class="checklist" style="max-width:340px"></div>
             </div>
-            <button type="button" class="btn" id="dash-new-save">＋ Add dashboard</button>
+            <button type="button" class="btn dash-owner-only" id="dash-new-save">＋ Add dashboard</button>
             <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
             <p class="muted">Rooms you can book sessions into. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and the session form will warn you when the room is already booked at that time.</p>
             <div id="room-list"></div>
@@ -16134,7 +16156,12 @@ window.qsNpOfferSend = function (btn) {
     })();
 
     // ---------- Settings: Dashboards sub-tab ----------
-    // Owner-only. List, add, rename, re-scope, delete dashboards.
+    // Owners: list, add, rename, re-scope, archive dashboards (archive =
+    // "delete", migration 090 — nothing is ever destroyed). Schedulers
+    // see the same list read-only; their Delete files a request that
+    // another admin of the dashboard's departments (or the owner) must
+    // approve. Archived dashboards live in the section at the bottom:
+    // View (read-only calendar) and Restore, no approval needed.
     (function () {
       var dashes = [], depts = [], scheds = [];
       function el(id) { return document.getElementById(id); }
@@ -16185,20 +16212,95 @@ window.qsNpOfferSend = function (btn) {
         if (root) { var lab = root.querySelector('[data-ms-label]'); if (lab) lab.textContent = msSummary(root); }
       });
 
+      var archived = [];
       function load() {
-        Promise.all([api('/api/schedule/dashboards'), api('/api/departments'), api('/api/users')]).then(function (rs) {
-          dashes = (rs[0].ok && rs[0].data.dashboards) || [];
+        var panel = el('subtab-dashboards');
+        if (panel) panel.classList.toggle('dash-nonowner', !window.isOwner);
+        Promise.all([api('/api/schedule/dashboards?includeArchived=1'), api('/api/departments'), api('/api/users')]).then(function (rs) {
+          var all = (rs[0].ok && rs[0].data.dashboards) || [];
+          dashes = all.filter(function (d) { return !d.archivedAt; });
+          archived = all.filter(function (d) { return !!d.archivedAt; });
+          // The calendar page opens archived dashboards from this
+          // registry (they are not in the live nav list).
+          window.qsArchivedDashboards = {};
+          archived.forEach(function (d) { window.qsArchivedDashboards[d.id] = d; });
           depts = (rs[1].ok && rs[1].data.departments) || [];
           scheds = ((rs[2].ok && rs[2].data.users) || []).filter(function (u) { return u.role === 'scheduler' && u.isActive !== false; });
           renderList();
+          renderArchived();
           renderNewDepts();
           renderNewEditors();
         }).catch(function () { el('dash-list').innerHTML = '<p class="muted">Could not load dashboards.</p>'; });
       }
+      // Pending delete-request state shown under a live dashboard's
+      // row: who asked, and the buttons THIS viewer may use.
+      function requestHtml(d) {
+        var p = d.pendingDeleteRequest;
+        if (!p) return '';
+        var when = '';
+        try { when = new Date(p.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); } catch (e) {}
+        var html = '<div style="margin-top:0.7rem;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:0.6rem 0.8rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">' +
+          '<span style="font-size:0.9rem">🗑 <strong>' + esc(p.requestedByName) + '</strong> asked to delete this dashboard' + (when ? ' · ' + esc(when) : '') + '</span>';
+        if (p.canApprove) {
+          html += '<button type="button" data-dash-approve="' + d.id + '" style="margin-left:auto;padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer;font-weight:700">Approve delete</button>' +
+            '<button type="button" class="btn-secondary" data-dash-reject="' + d.id + '" style="padding:0.45rem 0.85rem;border-radius:8px">Reject</button>';
+        } else if (p.mine) {
+          html += '<span class="muted" style="font-size:0.85rem;margin-left:auto">Waiting for another admin to approve.</span>' +
+            '<button type="button" class="btn-secondary" data-dash-cancel="' + d.id + '" style="padding:0.45rem 0.85rem;border-radius:8px">Cancel request</button>';
+        } else {
+          html += '<span class="muted" style="font-size:0.85rem;margin-left:auto">Waiting for an admin of its departments to decide.</span>';
+        }
+        return html + '</div>';
+      }
+      function renderArchived() {
+        var wrap = el('dash-archived');
+        if (!wrap) return;
+        if (!archived.length) { wrap.innerHTML = ''; return; }
+        wrap.innerHTML = '<h4 style="margin-top:1.6rem">🗄 Archived dashboards</h4>' +
+          '<p class="muted">Deleted dashboards are kept here — nothing is destroyed. Open one to see its old sessions (read-only), or restore it.</p>' +
+          archived.map(function (d) {
+            var when = '';
+            try { when = new Date(d.archivedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) {}
+            return '<div class="dash-row" style="border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem;background:var(--surface)">' +
+              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">' +
+              '<strong style="font-size:1rem">' + esc(d.name) + '</strong>' +
+              '<span class="muted" style="font-size:0.85rem">Archived' + (when ? ' ' + esc(when) : '') + (d.archivedByName ? ' · by ' + esc(d.archivedByName) : '') + '</span>' +
+              '<button type="button" class="btn-secondary" data-dash-view="' + d.id + '" style="margin-left:auto;padding:0.5rem 0.9rem;border-radius:8px">View</button>' +
+              '<button type="button" class="btn" data-dash-restore="' + d.id + '" style="padding:0.5rem 0.9rem;border-radius:8px">Restore</button>' +
+              '</div></div>';
+          }).join('');
+        wrap.querySelectorAll('[data-dash-restore]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-dash-restore');
+            api('/api/schedule/dashboards/' + id + '/restore', { method: 'POST' }).then(function (r) {
+              if (r.ok) { pageSuccess('Dashboard restored.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
+              else pageError((r.data && r.data.error) || 'Could not restore.');
+            });
+          });
+        });
+        wrap.querySelectorAll('[data-dash-view]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-dash-view');
+            var target = '#dash/' + id;
+            if (window.location.hash === target) { if (window.qsOpenDashboard) window.qsOpenDashboard(id); }
+            else window.location.hash = target;
+          });
+        });
+      }
       function renderList() {
         var wrap = el('dash-list');
         if (!dashes.length) { wrap.innerHTML = '<p class="muted">No dashboards yet.</p>'; return; }
+        var canEditDash = !!window.isOwner;
         wrap.innerHTML = dashes.map(function (d) {
+          if (!canEditDash) {
+            // Scheduler view: name as text + Delete only — no name input,
+            // department/editor pickers or Save (dashboard edits are owner-only).
+            return '<div class="dash-row" style="border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">' +
+              '<strong style="font-size:1rem">' + esc(d.name) + '</strong>' +
+              (d.pendingDeleteRequest ? '' : '<button type="button" data-dash-del="' + d.id + '" style="margin-left:auto;padding:0.5rem 0.9rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button>') +
+              '</div>' + requestHtml(d) + '</div>';
+          }
           var boxes = depts.map(function (x) {
             var on = d.departmentIds.includes(x.id);
             return '<label style="display:flex;align-items:center;gap:0.5rem;font-weight:400;padding:5px 0"><input type="checkbox" data-dash-edit-dept="' + d.id + '" value="' + x.id + '"' + (on ? ' checked' : '') + '> ' + esc(x.name) + '</label>';
@@ -16215,7 +16317,7 @@ window.qsNpOfferSend = function (btn) {
             '</div><div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-top:0.8rem">' +
             '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Departments</label>' + msDropdown(boxes, 'All departments', 'departments selected', '<span class="muted">none</span>') + '<div class="dash-ms-hint">Leave all unchecked = all departments</div></div>' +
             '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Who can adjust it</label>' + msDropdown(editorBoxes, 'All schedulers who can edit', 'schedulers selected', '<span class="muted">No schedulers yet</span>') + '<div class="dash-ms-hint">Leave all unchecked = any scheduler who can edit its departments can adjust this dashboard. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div>' +
-            '</div></div>';
+            '</div>' + requestHtml(d) + '</div>';
         }).join('');
         refreshMsLabels(wrap);
         wrap.querySelectorAll('[data-dash-save]').forEach(function (b) {
@@ -16235,10 +16337,69 @@ window.qsNpOfferSend = function (btn) {
         wrap.querySelectorAll('[data-dash-del]').forEach(function (b) {
           b.addEventListener('click', function () {
             var id = b.getAttribute('data-dash-del');
-            if (!confirm('Delete this dashboard? Its sessions will stay but lose this dashboard.')) return;
-            api('/api/schedule/dashboards/' + id, { method: 'DELETE' }).then(function (r) {
-              if (r.ok) { pageSuccess('Dashboard deleted.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
-              else pageError((r.data && r.data.error) || 'Could not delete.');
+            var d = dashes.find(function (x) { return x.id === id; });
+            var nm = d ? d.name : 'this dashboard';
+            var doDelete = function () {
+              api('/api/schedule/dashboards/' + id, { method: 'DELETE' }).then(function (r) {
+                if (r.ok) {
+                  pageSuccess(r.data && r.data.requested ? 'Delete request sent — the other admins have been notified.' : 'Dashboard archived.');
+                  load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav();
+                }
+                else pageError((r.data && r.data.error) || 'Could not delete.');
+              });
+            };
+            // In-app dialog (like qsDeleteShift) — the native confirm() never
+            // appears on some phone clients, so the tap used to die silently.
+            // "Delete" = archive (migration 090): the owner archives at
+            // once; a scheduler's delete asks the other admins first.
+            if (window.qsShowDialog) {
+              if (window.isOwner) {
+                window.qsShowDialog('Archive dashboard',
+                  '<p>Archive <strong>' + esc(nm) + '</strong>? It leaves the calendars list, and all its sessions stay saved in the archive — you can restore it any time.</p>',
+                  [{ label: 'Cancel' }, { label: 'Archive', danger: true, onClick: doDelete }]);
+              } else {
+                window.qsShowDialog('Request delete',
+                  '<p>Ask the other admins to delete <strong>' + esc(nm) + '</strong>? The dashboard stays until one of them approves. If approved it is archived — its sessions stay saved and it can be restored.</p>',
+                  [{ label: 'Cancel' }, { label: 'Send request', danger: true, onClick: doDelete }]);
+              }
+            } else if (confirm('Delete "' + nm + '"?')) {
+              doDelete();
+            }
+          });
+        });
+        wrap.querySelectorAll('[data-dash-approve]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-dash-approve');
+            var d = dashes.find(function (x) { return x.id === id; });
+            var nm = d ? d.name : 'this dashboard';
+            var doApprove = function () {
+              api('/api/schedule/dashboards/' + id + '/delete-request/approve', { method: 'POST' }).then(function (r) {
+                if (r.ok) { pageSuccess('Dashboard archived.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
+                else pageError((r.data && r.data.error) || 'Could not approve.');
+              });
+            };
+            if (window.qsShowDialog) {
+              window.qsShowDialog('Approve delete',
+                '<p>Approve deleting <strong>' + esc(nm) + '</strong>? It will be archived — its sessions stay saved in the archive and it can be restored.</p>',
+                [{ label: 'Cancel' }, { label: 'Approve', danger: true, onClick: doApprove }]);
+            } else if (confirm('Approve deleting "' + nm + '"?')) doApprove();
+          });
+        });
+        wrap.querySelectorAll('[data-dash-reject]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-dash-reject');
+            api('/api/schedule/dashboards/' + id + '/delete-request/reject', { method: 'POST' }).then(function (r) {
+              if (r.ok) { pageSuccess('Delete request rejected — the dashboard stays.'); load(); }
+              else pageError((r.data && r.data.error) || 'Could not reject.');
+            });
+          });
+        });
+        wrap.querySelectorAll('[data-dash-cancel]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var id = b.getAttribute('data-dash-cancel');
+            api('/api/schedule/dashboards/' + id + '/delete-request/cancel', { method: 'POST' }).then(function (r) {
+              if (r.ok) { pageSuccess('Delete request cancelled.'); load(); }
+              else pageError((r.data && r.data.error) || 'Could not cancel.');
             });
           });
         });
@@ -16575,6 +16736,16 @@ window.qsNpOfferSend = function (btn) {
       }
 
       window.qsOpenDashboard = function (id) {
+        // Archived dashboards (Settings → Archived → View) open from
+        // the registry the Settings manager filled: read-only history.
+        var arch = (window.qsArchivedDashboards || {})[id];
+        if (arch) {
+          window.qsDashReadOnly = true;
+          curDash = arch;
+          document.getElementById('db-name').textContent = arch.name;
+          load();
+          return;
+        }
         if (!dashList.length) {
           window.qsRefreshDashboardNav().then(function () { window.qsOpenDashboard(id); });
           return;
@@ -16623,6 +16794,19 @@ window.qsNpOfferSend = function (btn) {
       function load() {
         if (!curDash) return;
         if (acSelDashId !== curDash.id) { if (acSelMode) acExitSel(); acSelDashId = curDash.id; }
+        // Archived view (migration 090): a hard read-only flag the
+        // render paths check on top of the My-Schedule read-only one —
+        // no add/edit/claim/RSVP affordances at all, plus the banner.
+        window.qsArchivedViewing = !!curDash.archivedAt;
+        var bn = document.getElementById('db-archived-banner');
+        if (bn) {
+          if (curDash.archivedAt) {
+            var aw = '';
+            try { aw = new Date(curDash.archivedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) {}
+            bn.textContent = '🗄 Archived — read-only' + (aw ? ' · archived ' + aw : '') + (curDash.archivedByName ? ' by ' + curDash.archivedByName : '') + '. Restore it from Settings → Dashboards to make changes.';
+            bn.style.display = '';
+          } else bn.style.display = 'none';
+        }
         var r = viewRange();
         document.getElementById('db-date').textContent = '📅 ' + acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
         Promise.all([
@@ -17027,7 +17211,7 @@ window.qsNpOfferSend = function (btn) {
           var color = chipColor(s);
           var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">Repeats</span>' : '';
           var claimBtn = '';
-          if (!sessHasSpeakers(s)) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
+          if (!sessHasSpeakers(s) && !window.qsArchivedViewing) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
           else if (acMyId && sessMine(s) && s.supervisorUserId !== acMyId && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
           var mineTag = '', rowStyle = '';
           if (acMyId && (s.lecturerUserId === acMyId || (s.speakers || []).some(function (sp) { return sp.userId === acMyId; }))) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
@@ -17060,10 +17244,15 @@ window.qsNpOfferSend = function (btn) {
           var hasSp = e.speakers ? e.speakers.length > 0 : !!e.lecturerUserId;
           var spText = e.speakers && e.speakers.length ? e.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ') : (e.lecturerName || null);
           var iSpeak = !!(myId && (e.lecturerUserId === myId || (e.speakers || []).some(function (sp) { return sp.userId === myId; })));
-          var pres = !hasSp
+          // Archived calendar (migration 090): details are history —
+          // no pickup buttons and no RSVP controls.
+          var archView = !!window.qsArchivedViewing || !!e.dashboardArchived;
+          var pres = archView ? ''
+            : !hasSp
             ? '<button type="button" class="btn" data-sd-claim="presenter" style="flex:1;padding:0.7rem;border-radius:10px">✋ Pick it up — I\'ll present</button>'
             : (iSpeak ? '<div style="font-weight:700;color:#b45309">⭐ You\'re presenting</div>' : '');
-          var sup = !e.supervisorUserId
+          var sup = archView ? ''
+            : !e.supervisorUserId
             ? '<button type="button" class="btn" data-sd-claim="supervisor" style="flex:1;padding:0.7rem;border-radius:10px;background:#7c3aed">✋ Pick it up — I\'ll supervise</button>'
             : (myId && e.supervisorUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re supervising</div>' : '');
           // RSVP (Deepika, 2026-11-07): invited attendees reply Yes /
@@ -17071,7 +17260,7 @@ window.qsNpOfferSend = function (btn) {
           // editors see the count. Speakers don't RSVP.
           var tally = e.rsvpSummary ? '<div>👥 <strong>' + e.rsvpSummary.yes + '</strong> yes · <strong>' + e.rsvpSummary.maybe + '</strong> maybe · <strong>' + e.rsvpSummary.no + '</strong> no · <strong>' + e.rsvpSummary.notReplied + '</strong> not replied</div>' : '';
           var rsvpCtl = '';
-          if (e.viewerIsBeneficiary && !iSpeak) {
+          if (e.viewerIsBeneficiary && !iSpeak && !archView) {
             var rb = function (v, label) {
               var on = e.myRsvp === v;
               return '<button type="button" data-sd-rsvp="' + v + '" style="flex:1;padding:0.6rem;border-radius:10px;font-weight:700;cursor:pointer;' + (on ? 'background:var(--accent);color:#fff;border:1px solid var(--accent)' : 'background:var(--surface);color:inherit;border:1px solid var(--border)') + '">' + label + '</button>';
@@ -17142,6 +17331,15 @@ window.qsNpOfferSend = function (btn) {
       // ---------- Add / edit form ----------
       var acShiftTypes = null;
       function openForm(id, presetDate, opts) {
+        // Archived calendar: history only — an existing event opens
+        // as read-only details, and there is no create at all.
+        if (curDash && curDash.archivedAt) {
+          if (id) {
+            var archTgt = acSessions.find(function (x) { return x.id === id; });
+            if (archTgt) window.qsShowSessionDetails(archTgt, function () { load(); });
+          }
+          return;
+        }
         // Edit gate: full editors, or the event's organizer (an
         // employee edits only their own events — others open as
         // read-only details). Create gate: editors + any employee.

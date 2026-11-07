@@ -7,7 +7,8 @@ import { query } from '../db.js';
 export interface AuditEntry {
   companyId: string;
   date: string; // YYYY-MM-DD (schedule date, or today for settings changes)
-  action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded';
+  action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded'
+    | 'archived' | 'restored' | 'delete_requested' | 'delete_rejected' | 'delete_cancelled';
   category?: 'schedule' | 'settings';
   personName?: string | null;
   shiftTypeName?: string | null;
