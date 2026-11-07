@@ -19,6 +19,7 @@ import {
   fetchAccountLabel, getIntegration, saveIntegration, deleteIntegration,
   MeetingError,
 } from '../util/meetingProviders.js';
+import { syncRoomsForCompany, RoomProvider } from '../util/roomProviders.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -122,6 +123,14 @@ router.get('/:provider/callback', async (req: Request, res: Response) => {
     const tokens = await exchangeCode(p, code, callbackUri(p));
     const label = await fetchAccountLabel(p, tokens);
     await saveIntegration(req.session.companyId!, p, tokens, req.session.userId!, label);
+    // Room sync (migration 093): a fresh Google/Microsoft connection
+    // pulls the company's rooms into our table right away. A sync
+    // failure never fails the connection — syncRoomsForCompany
+    // records the outcome for Settings and reports it via its result.
+    if (p === 'google' || p === 'microsoft') {
+      await syncRoomsForCompany(req.session.companyId!, p as RoomProvider)
+        .catch((e) => console.error('[integrations] room sync after connect failed:', e));
+    }
     sess.meetFlash = `${providerName(p)} is connected${label ? ` as ${label}` : ''}. The meeting buttons in the event form now work for your whole team.`;
     res.redirect(settingsUrl());
   } catch (err) {

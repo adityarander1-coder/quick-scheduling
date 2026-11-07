@@ -36,7 +36,11 @@ import {
   createMeeting, updateMeeting, normalizeMeetingTimes, deleteExternalMeetingQuiet,
   MeetingError, MeetingInput, wallTimeToUtc,
 } from '../util/meetingProviders.js';
-import { fetchConnectedRooms } from '../util/roomProviders.js';
+import {
+  fetchConnectedRooms, syncRoomsForCompany, importRoomsForCompany,
+  getRoomSyncState, hasSyncedRooms, maybeLazySyncRooms, RoomProvider,
+} from '../util/roomProviders.js';
+import { getIntegration } from '../util/meetingProviders.js';
 
 const router = Router();
 
@@ -9043,18 +9047,77 @@ function roomRow(r: any) {
     // pointing at a real room.
     details: r.details || null,
     active: r.active !== false,
+    // Migration 093: where the room came from. 'app' = ours;
+    // 'google'/'microsoft' = synced (provider owns name/details);
+    // 'imported-google'/'imported-microsoft' = detached by an
+    // import — ours now, sync never touches it again.
+    source: r.source || 'app',
+    externalId: r.external_id || null,
+    userDisabled: r.user_disabled === true,
+    lastSyncedAt: r.last_synced_at || null,
   };
+}
+
+// Per-provider room-sync state for Settings (connected? last sync?
+// last result?). Only google/microsoft carry rooms.
+async function roomSyncSummary(companyId: string) {
+  const out: any[] = [];
+  for (const p of ['google', 'microsoft'] as const) {
+    const integ = await getIntegration(companyId, p).catch(() => null);
+    const state = await getRoomSyncState(companyId, p);
+    out.push({
+      provider: p, connected: !!integ,
+      lastSyncAt: state.lastSyncAt, lastAttemptAt: state.lastAttemptAt,
+      lastResult: state.lastResult,
+    });
+  }
+  return out;
 }
 
 router.get('/rooms', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
-    const { rows } = await query('SELECT * FROM rooms WHERE company_id = $1 ORDER BY name', [req.session.companyId!]);
-    res.json({ rooms: rows.map(roomRow) });
+    const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT * FROM rooms WHERE company_id = $1 ORDER BY name', [companyId]);
+    res.json({ rooms: rows.map(roomRow), sync: await roomSyncSummary(companyId) });
   } catch (err) {
     console.error('[schedule] list rooms failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
+
+// POST /api/schedule/rooms/sync {provider} — pull the provider's room
+// list into our table now (mode A: keep both systems live).
+router.post('/rooms/sync', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const provider = String((req.body ?? {}).provider || '');
+    if (provider !== 'google' && provider !== 'microsoft') { res.status(400).json({ error: 'Unknown room service.' }); return; }
+    const result = await syncRoomsForCompany(req.session.companyId!, provider);
+    if (!result.ok) { res.status(502).json({ error: result.error || 'Sync failed.' }); return; }
+    res.json(result);
+  } catch (err) {
+    console.error('[schedule] rooms sync failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/rooms/import {provider} — one-time import that
+// makes the rooms OURS (mode B: they can leave the other app).
+router.post('/rooms/import', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const provider = String((req.body ?? {}).provider || '');
+    if (provider !== 'google' && provider !== 'microsoft') { res.status(400).json({ error: 'Unknown room service.' }); return; }
+    const result = await importRoomsForCompany(req.session.companyId!, provider, req.session.userId!);
+    if (!result.ok) { res.status(502).json({ error: result.error || 'Import failed.' }); return; }
+    res.json(result);
+  } catch (err) {
+    console.error('[schedule] rooms import failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+function isSyncedRoom(r: any): boolean {
+  return (r.source === 'google' || r.source === 'microsoft') && !!r.external_id;
+}
 
 router.post('/rooms', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -9083,6 +9146,25 @@ router.put('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request,
     const companyId = req.session.companyId!;
     const { rows } = await query('SELECT * FROM rooms WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Room not found.' }); return; }
+    // Synced rooms (migration 093) belong to the source system: the
+    // name/details are read-only here. The one local choice is
+    // switching the room off/on — recorded as user_disabled so a
+    // re-sync never turns it back on behind the user's back.
+    if (isSyncedRoom(rows[0])) {
+      const wantsRename = b.name !== undefined && String(b.name).trim() !== rows[0].name;
+      const wantsDetails = b.details !== undefined && (b.details ? String(b.details).trim() : null) !== (rows[0].details || null);
+      const wantsIcs = b.icsUrl !== undefined && (b.icsUrl ? String(b.icsUrl).trim() : null) !== (rows[0].ics_url || null);
+      if (wantsRename || wantsDetails || wantsIcs) {
+        const where = rows[0].source === 'google' ? 'Google' : 'Microsoft 365';
+        res.status(400).json({ error: `This room is synced from ${where} — change its name or details there. (Or import it to manage it here.)` });
+        return;
+      }
+      if (b.active !== undefined) {
+        await query('UPDATE rooms SET active = $1, user_disabled = $2 WHERE id = $3', [!!b.active, !b.active, req.params.id]);
+      }
+      res.json({ ok: true });
+      return;
+    }
     const name = b.name !== undefined ? String(b.name).trim() : rows[0].name;
     if (!name) { res.status(400).json({ error: 'A room name is required.' }); return; }
     const icsUrl = b.icsUrl !== undefined ? (b.icsUrl ? String(b.icsUrl).trim() : null) : rows[0].ics_url;
@@ -9099,6 +9181,13 @@ router.put('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request,
 
 router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
+    const { rows } = await query('SELECT * FROM rooms WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
+    if (rows.length && isSyncedRoom(rows[0])) {
+      // Deleting a synced room would just resurrect it at the next
+      // sync — switching it off (which sync respects) is the way.
+      res.status(400).json({ error: 'This room is synced — switch it off instead of deleting it. It stays off across syncs.' });
+      return;
+    }
     await query('DELETE FROM rooms WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
     res.json({ ok: true });
   } catch (err) {
@@ -9470,9 +9559,17 @@ function nextDateStr(ds: string): string {
 async function cleanRoomSelection(companyId: string, b: any): Promise<
   { roomId: string | null; roomSource: string | null; roomExternalId: string | null; roomName: string | null } | { error: string }> {
   if (b.roomId) {
-    const { rows } = await query('SELECT id, name, ics_url, active FROM rooms WHERE id = $1 AND company_id = $2', [String(b.roomId), companyId]);
+    const { rows } = await query('SELECT id, name, ics_url, active, source, external_id FROM rooms WHERE id = $1 AND company_id = $2', [String(b.roomId), companyId]);
     if (!rows.length) return { error: 'That room no longer exists.' };
     if (rows[0].active === false) return { error: 'That room is not in use anymore — pick another.' };
+    // A synced room (migration 093) stamps its provider source + id,
+    // so the session knows exactly which provider room it holds (a
+    // generated Google Meet still adds it as a resource attendee);
+    // our own rooms (incl. imported ones) stamp 'app'.
+    const src = rows[0].source;
+    if ((src === 'google' || src === 'microsoft') && rows[0].external_id) {
+      return { roomId: rows[0].id, roomSource: src, roomExternalId: String(rows[0].external_id), roomName: rows[0].name };
+    }
     return { roomId: rows[0].id, roomSource: 'app', roomExternalId: null, roomName: rows[0].name };
   }
   if ((b.roomSource === 'google' || b.roomSource === 'microsoft') && b.roomExternalId) {
@@ -9498,9 +9595,36 @@ router.get('/rooms/availability', requireRole('owner', 'scheduler', 'employee'),
     const winS = timeToMin(req.query.start ? String(req.query.start).slice(0, 5) : null);
     const winE = timeToMin(req.query.end ? String(req.query.end).slice(0, 5) : null);
     const excludeSessionId = req.query.excludeSessionId ? String(req.query.excludeSessionId).split('@@')[0] : null;
+    // Picker data requested — a stale provider sync refreshes in the
+    // background (migration 093, lazy >24h), never blocking this.
+    maybeLazySyncRooms(companyId);
     const { rows: roomRows } = await query(
       'SELECT * FROM rooms WHERE company_id = $1 AND active = true ORDER BY name', [companyId]);
     const tz = await companyTimezone(companyId);
+    // Synced rooms (migration 093): availability MERGES our own
+    // sessions' holds with the provider's LIVE free/busy for the same
+    // room. Fetch each needed provider once for the whole list.
+    const extStatus = new Map<string, 'available' | 'booked'>();
+    {
+      const syncedProviders = [...new Set(roomRows
+        .filter((r: any) => (r.source === 'google' || r.source === 'microsoft') && r.external_id)
+        .map((r: any) => r.source))] as RoomProvider[];
+      if (syncedProviders.length) {
+        const startUtc = wallTimeToUtc(date, winS !== null ? String(req.query.start) : '00:00', tz);
+        let endUtc: Date;
+        if (winS !== null) {
+          const endDate = winE !== null && winE <= winS ? nextDateStr(date) : date;
+          endUtc = wallTimeToUtc(endDate, String(req.query.end || req.query.start), tz);
+          if (endUtc.getTime() <= startUtc.getTime()) endUtc = new Date(startUtc.getTime() + 3600000);
+        } else {
+          endUtc = wallTimeToUtc(nextDateStr(date), '00:00', tz);
+        }
+        for (const p of syncedProviders) {
+          const live = await fetchConnectedRooms(companyId, p, startUtc, endUtc);
+          for (const lr of live.rooms) extStatus.set(`${p}:${lr.externalId}`, lr.status);
+        }
+      }
+    }
     const out: any[] = [];
     for (const room of roomRows) {
       const data = await loadRoomHolderData(companyId, room, date, excludeSessionId);
@@ -9516,10 +9640,18 @@ router.get('/rooms/availability', requireRole('owner', 'scheduler', 'employee'),
         const feed = await roomFeedConflict(room, wStart, wEnd);
         if (feed) bookedBy = feed.title;
       }
+      // Provider says the synced room is busy at this time → Booked
+      // too (advisory for saves: the hard guard stays our-side only).
+      let externalBooked = false;
+      if (!bookedBy && room.external_id && (room.source === 'google' || room.source === 'microsoft')) {
+        externalBooked = extStatus.get(`${room.source}:${room.external_id}`) === 'booked';
+      }
       out.push({
         id: room.id, name: room.name, details: room.details || null,
-        status: bookedBy ? 'booked' : 'available',
+        source: room.source || 'app', externalId: room.external_id || null,
+        status: bookedBy || externalBooked ? 'booked' : 'available',
         bookedByTitle: bookedBy,
+        externalBooked,
       });
     }
     res.json({ date, rooms: out });
@@ -9552,8 +9684,14 @@ router.get('/rooms/connected', requireRole('owner', 'scheduler', 'employee'), as
     } else {
       endUtc = wallTimeToUtc(nextDateStr(date), '00:00', tz);
     }
+    maybeLazySyncRooms(companyId);
     const providers: any[] = [];
     for (const p of ['google', 'microsoft'] as const) {
+      // Once a provider's rooms are SYNCED into our table (migration
+      // 093), the picker serves them from the table (in the OUR ROOMS
+      // list, via /rooms/availability) — listing them here too would
+      // show every room twice.
+      if (await hasSyncedRooms(companyId, p)) continue;
       const r = await fetchConnectedRooms(companyId, p, startUtc, endUtc);
       if (r.connected) providers.push({ provider: p, rooms: r.rooms, note: r.note });
     }

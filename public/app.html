@@ -8192,6 +8192,7 @@ window.qsNpOfferSend = function (btn) {
             <button type="button" class="btn dash-owner-only" id="dash-new-save">＋ Add dashboard</button>
             <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
             <p class="muted">Rooms you can book sessions into. The session form's Room picker shows each room as Available or Booked for the picked time — booking a room that's already taken is refused. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and its bookings there count too.</p>
+            <div id="room-sync-box"></div>
             <div id="room-list"></div>
             <h4>Add a room</h4>
             <div class="form-row">
@@ -16536,21 +16537,89 @@ window.qsNpOfferSend = function (btn) {
       }
 
       // --- Rooms manager (same sub-tab) ---
+      // Room sync (migration 093): per connected provider, the two
+      // modes — Sync rooms (keep both systems live) and Import rooms
+      // and manage them here (one-time, detached, ours for good).
+      function renderRoomSyncBox(syncArr) {
+        var box = el('room-sync-box');
+        if (!box) return;
+        var rows = (syncArr || []).filter(function (s) { return s.connected; });
+        if (!rows.length) { box.innerHTML = ''; return; }
+        box.innerHTML = rows.map(function (s) {
+          var pname = s.provider === 'google' ? 'Google' : 'Microsoft 365';
+          var when = 'Not synced yet';
+          if (s.lastResult && s.lastResult.ok) {
+            when = 'Last synced ' + new Date(s.lastSyncAt).toLocaleString() + ' — ' +
+              (s.lastResult.added ? s.lastResult.added + ' added, ' : '') +
+              (s.lastResult.updated ? s.lastResult.updated + ' updated, ' : '') +
+              (s.lastResult.switchedOff ? s.lastResult.switchedOff + ' switched off' : 'all current');
+          } else if (s.lastResult && !s.lastResult.ok) {
+            when = 'Last sync attempt ' + new Date(s.lastAttemptAt).toLocaleString() + ' — ' + esc(s.lastResult.error || 'failed');
+          }
+          return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+            '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>Rooms from ' + pname + '</strong>' +
+            '<span class="muted" style="font-size:0.85rem">' + when + '</span>' +
+            '<span style="margin-left:auto;display:flex;gap:0.45rem;flex-wrap:wrap">' +
+            '<button type="button" class="btn-secondary" data-room-sync="' + s.provider + '" style="padding:0.45rem 0.85rem;border-radius:8px">Sync rooms</button>' +
+            '<button type="button" class="btn-secondary" data-room-import="' + s.provider + '" style="padding:0.45rem 0.85rem;border-radius:8px">Import rooms and manage them here</button>' +
+            '</span></div>' +
+            '<p class="muted" style="margin:0.5rem 0 0;font-size:0.85rem"><strong>Sync</strong> keeps both systems live — names and details stay managed in ' + pname + ', availability is still checked live. <strong>Import</strong> copies the rooms once and makes them yours — editable here, and they keep working even if you later disconnect ' + pname + '.</p></div>';
+        }).join('');
+        box.querySelectorAll('[data-room-sync]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            b.disabled = true;
+            api('/api/schedule/rooms/sync', { method: 'POST', body: JSON.stringify({ provider: b.getAttribute('data-room-sync') }) }).then(function (r) {
+              if (r.ok) { pageSuccess('Rooms synced — ' + r.data.added + ' added, ' + r.data.updated + ' updated, ' + r.data.switchedOff + ' switched off.'); loadRooms(); }
+              else { pageError((r.data && r.data.error) || 'Could not sync rooms.'); b.disabled = false; }
+            }).catch(function () { pageError('Could not sync rooms.'); b.disabled = false; });
+          });
+        });
+        box.querySelectorAll('[data-room-import]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var provider = b.getAttribute('data-room-import');
+            var pname = provider === 'google' ? 'Google' : 'Microsoft 365';
+            var doImport = function () {
+              b.disabled = true;
+              api('/api/schedule/rooms/import', { method: 'POST', body: JSON.stringify({ provider: provider }) }).then(function (r) {
+                if (r.ok) { pageSuccess('Rooms imported — they are managed here now (' + (r.data.imported + r.data.converted) + ' room' + ((r.data.imported + r.data.converted) === 1 ? '' : 's') + ').'); loadRooms(); }
+                else { pageError((r.data && r.data.error) || 'Could not import rooms.'); b.disabled = false; }
+              }).catch(function () { pageError('Could not import rooms.'); b.disabled = false; });
+            };
+            if (window.qsShowDialog) {
+              window.qsShowDialog('Import rooms from ' + pname,
+                '<p>Copy the rooms from ' + pname + ' into Quick Scheduling and manage them here from now on. They will <strong>not</strong> follow changes in ' + pname + ' anymore — and they keep working even if you disconnect ' + pname + ' later.</p>',
+                [{ label: 'Cancel' }, { label: 'Import rooms', onClick: doImport }]);
+            } else if (confirm('Import rooms from ' + pname + ' and manage them here? They will no longer follow changes in ' + pname + '.')) doImport();
+          });
+        });
+      }
       function loadRooms() {
         api('/api/schedule/rooms').then(function (r) {
           var rooms = (r.ok && r.data.rooms) || [];
+          renderRoomSyncBox(r.ok ? r.data.sync : null);
           var wrap = el('room-list');
           if (!wrap) return;
           if (!rooms.length) { wrap.innerHTML = '<p class="muted">No rooms yet.</p>'; return; }
           wrap.innerHTML = rooms.map(function (rm) {
             var inactive = rm.active === false;
-            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem' + (inactive ? ';opacity:0.65' : '') + '">' +
-              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(rm.name) + '</strong>' +
-              (rm.hasFeed ? '<span style="background:#dcfce7;color:#166534;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">📅 Calendar linked</span>' : '<span style="background:#f1f5f9;color:#64748b;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">No calendar link</span>') +
+            var synced = (rm.source === 'google' || rm.source === 'microsoft') && rm.externalId;
+            var originChip = synced
+              ? '<span style="background:#e0f2fe;color:#075985;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">⇄ From ' + (rm.source === 'google' ? 'Google' : 'Microsoft 365') + '</span>'
+              : (rm.source === 'imported-google' ? '<span style="background:#f1f5f9;color:#475569;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">Imported from Google</span>'
+                : (rm.source === 'imported-microsoft' ? '<span style="background:#f1f5f9;color:#475569;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">Imported from Microsoft 365</span>' : ''));
+            var head = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem' + (inactive ? ';opacity:0.65' : '') + '">' +
+              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(rm.name) + '</strong>' + originChip +
+              (synced ? '' : (rm.hasFeed ? '<span style="background:#dcfce7;color:#166534;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">📅 Calendar linked</span>' : '<span style="background:#f1f5f9;color:#64748b;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">No calendar link</span>')) +
               (inactive ? '<span style="background:#fef3c7;color:#92400e;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">Not in use</span>' : '') +
               '<span style="margin-left:auto;display:flex;gap:0.45rem">' +
               '<button type="button" class="btn-secondary" data-room-toggle="' + rm.id + '" data-room-on="' + (inactive ? '1' : '0') + '" style="padding:0.45rem 0.85rem;border-radius:8px">' + (inactive ? 'Use again' : 'Stop using') + '</button>' +
-              '<button type="button" data-room-del="' + rm.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></span></div>' +
+              (synced ? '' : '<button type="button" data-room-del="' + rm.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button>') + '</span></div>';
+            if (synced) {
+              return head +
+                (rm.details ? '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">' + esc(rm.details) + '</div>' : '') +
+                '<p class="muted" style="margin:0.5rem 0 0;font-size:0.83rem">Synced from ' + (rm.source === 'google' ? 'Google' : 'Microsoft 365') + ' — rename it or change its details there, or import it above to manage it here. Switching it off here sticks: syncs will not turn it back on.</p></div>';
+            }
+            return head +
               '<div style="margin-top:0.55rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.name) + '" data-room-name="' + rm.id + '" placeholder="Room name" style="min-width:180px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
               '<input type="text" value="' + esc(rm.details || '') + '" data-room-details="' + rm.id + '" placeholder="Details — seats, floor… (optional)" style="flex:1;min-width:200px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)"></div>' +
               '<div style="margin-top:0.5rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.icsUrl || '') + '" data-room-ics="' + rm.id + '" placeholder="Calendar link (ICS) — optional" style="flex:1;min-width:280px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
@@ -18192,7 +18261,12 @@ window.qsNpOfferSend = function (btn) {
             var appRooms = (rs[0].ok && rs[0].data.rooms) || [];
             if (!appRooms.length) html += '<div style="padding:0.3rem 0.6rem;font-size:0.86rem;color:var(--dim)">No rooms yet — add them in Settings → Conference rooms.</div>';
             appRooms.forEach(function (rm) {
-              html += roomRowHtml('data-roompick="app" data-roomid="' + rm.id + '" data-roomname="' + esc(rm.name) + '"', rm.name, rm.details, rm.status, rm.bookedByTitle);
+              // Synced rooms live in OUR list now (migration 093) —
+              // a small origin tag under the name says where they
+              // came from; imported rooms are plain ours, no tag.
+              var tag = rm.source === 'google' ? 'From Google' : (rm.source === 'microsoft' ? 'From Microsoft 365' : '');
+              var det = [rm.details, tag].filter(Boolean).join(' · ') || null;
+              html += roomRowHtml('data-roompick="app" data-roomid="' + rm.id + '" data-roomname="' + esc(rm.name) + '"', rm.name, det, rm.status, rm.bookedByTitle);
             });
             var provs = (rs[1].ok && rs[1].data.providers) || [];
             provs.forEach(function (pv) {
