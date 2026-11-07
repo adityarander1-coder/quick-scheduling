@@ -1509,6 +1509,13 @@
         #tab-schedule .shift-comment-btn { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border); background: #fff; color: var(--dim); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         #tab-schedule .shift-comment-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
         #tab-schedule .shift-comment-btn.has-comment { color: var(--accent); border-color: var(--accent); }
+        /* Shift actions button (Variant B — Deepika, 2026-11-07): a round
+           soft-grey button with a solid down triangle, at the end of the name
+           cell. It opens the shift popup, which now carries Highlight,
+           comment, publish, replace, Make calendar event and Delete. */
+        #tab-schedule .shift-menu-btn { position: absolute; top: 3px; right: 4px; width: 27px; height: 27px; border-radius: 50%; border: 1px solid #d3dae1; background: #edf0f3; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+        #tab-schedule .shift-menu-btn:hover { background: #dde4ea; }
+        #tab-schedule .shift-menu-btn svg { display: block; }
         #tab-schedule .entry-name-comment { display: flex; align-items: flex-start; gap: 4px; margin-top: 3px; font-size: 10px; line-height: 1.3; font-weight: 600; color: #0a0a0a; }
         #tab-schedule .entry-name-comment svg { flex: 0 0 auto; margin-top: 1px; }
         #tab-schedule .entry-name-comment span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
@@ -2485,41 +2492,23 @@
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
           var cBtn = '';
           var editable = s.userId && shiftEditable(s);
-          // Highlight button (🎨): highlighting is personal and changes
-          // nothing for anyone else, so it is offered on every person's
-          // box — editable or view-only (Deepika, 2026-10-31).
-          var hlBtn = '';
           if (s.userId) {
-            var hlBg = highlightColorFor(s.userId) || '#fff';
-            hlBtn = '<button type="button" class="shift-hl-btn" onclick="event.stopPropagation();window.qsHighlightShift(\'' + s.userId + '\')"' +
-              ' title="Highlight person" aria-label="Highlight ' + esc(nm) + '"' +
-              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:11px;line-height:1">🎨</button>';
-          }
-          if (editable) {
-            // ⋮ actions button — opens the shift popup (comment,
-            // publish, replace, delete, Make calendar event). The
-            // Help text documents this button; it had been lost in a
-            // restyle, leaving the popup unreachable (restored
-            // 2026-11-07 with the calendar-event convert).
-            cBtn = '<button type="button" class="shift-actions-btn" data-shift-id="' + s.id + '"' +
-              ' title="Shift actions" aria-label="Shift actions for ' + esc(nm) + '"' +
-              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;line-height:1;font-weight:700">⋮</button>';
-            cBtn += '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
-              ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
-              ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
-            cBtn += hlBtn;
-            // Replace and delete buttons (show on all shifts)
-            cBtn += '<button type="button" class="shift-replace-btn" onclick="event.stopPropagation();window.qsReplaceShift(\'' + s.id + '\')"' +
-              ' title="Replace person" aria-label="Replace ' + esc(nm) + '"' +
-              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:11px;line-height:1">🔄</button>';
-            cBtn += '<button type="button" class="shift-delete-btn" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\')"' +
-              ' title="Delete shift" aria-label="Delete shift for ' + esc(nm) + '"' +
-              ' style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;line-height:1;color:#bd3d4a">🗑️</button>';
-          } else if (s.userId) {
-            // Not editable in the current view (another department, or
-            // view-only access): the paint button stays available, with
-            // the lock hint when the viewer edits other departments.
-            cBtn = hlBtn + (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>' : '');
+            // ONE actions button (Variant B — Deepika, 2026-11-07): a
+            // round soft-grey button with a solid down triangle, at the end of
+            // the name cell. It opens the shift popup, which now carries
+            // Highlight, comment, publish, replace, Make calendar event
+            // and Delete — the old 🎨/💬/🔄/🗑 box buttons are gone.
+            // Shown on view-only boxes too: the popup then offers
+            // Highlight only, since highlighting is personal and changes
+            // nothing for anyone else (Deepika, 2026-10-31).
+            cBtn = '<button type="button" class="shift-actions-btn shift-menu-btn" data-shift-id="' + s.id + '"' +
+              ' title="Shift actions" aria-label="Shift actions for ' + esc(nm) + '">' +
+              '<svg width="13" height="13" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></button>';
+            if (!editable && sched.canEdit) {
+              // Not editable in the current view (another department, or
+              // view-only access): keep the lock hint next to the button.
+              cBtn += '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>';
+            }
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
@@ -4298,38 +4287,47 @@
         var popupShift = null;
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
-          if (!s || !shiftEditable(s)) return;
+          if (!s) return;
+          // Editable shifts get the full menu. A view-only shift opens a
+          // reduced popup — header + Highlight only — because
+          // highlighting is personal (Deepika, 2026-11-07).
+          var editable = shiftEditable(s);
           popupShift = s;
           var popup = $('shift-popup');
           var nm = displayName(s);
           $('sp-name').textContent = nm;
           $('sp-date').textContent = fmtDate(parseDate(s.date));
-          var isRot = s.id && s.id.indexOf('rot-') === 0;
           var list = $('sp-list');
           var html = '';
-          // Highlight with color dots
+          // Highlight with color dots. HIGHLIGHT_COLORS entries are
+          // {name, hue} objects — render exactly like the Highlight
+          // dialog (qsHighlightShift): background hsl(hue 85% 65%), the
+          // selected ring on the person's current hue, ✕ to clear.
           var curHl = sched.highlights[s.userId];
+          var curHue = (curHl && typeof curHl === 'object' && curHl.hue != null) ? curHl.hue : curHl;
           html += '<div style="padding:8px 10px 2px;font-size:12px;color:var(--dim);font-weight:600">Highlight</div>';
           html += '<div class="sp-colors">' + HIGHLIGHT_COLORS.map(function (c) {
-            return '<button class="sp-dot' + (curHl === c ? ' sel' : '') + '" data-color="' + c + '" style="background:' + c + '" aria-label="Highlight color"></button>';
-          }).join('') + (curHl != null ? '<button class="sp-dot" data-color="" style="background:#fff;border:1px dashed #cbdbe5" title="Clear">✕</button>' : '') + '</div>';
-          // Comment
-          var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
-          html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
-          // Replace / Delete (not for rotation shifts)
-          var isDraft = s.published === false;
-          html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
-          if (!isRot) {
+            return '<button class="sp-dot' + (curHue === c.hue ? ' sel' : '') + '" data-hue="' + c.hue + '" style="background:hsl(' + c.hue + ' 85% 65%)" title="' + c.name + '" aria-label="Highlight ' + c.name + '"></button>';
+          }).join('') + (curHue != null ? '<button class="sp-dot" data-hue="" style="background:#fff;border:1px dashed #cbdbe5" title="Clear">✕</button>' : '') + '</div>';
+          if (editable) {
+            // Comment
+            var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
+            html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
+            var isDraft = s.published === false;
+            html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+            // Replace person — the handler opens the same all-members
+            // dialog as the old box 🔄 (qsReplaceShift, Off/Working
+            // badges); it also works for rotation occurrences.
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
-            html += '<div id="sp-replace-list" class="hidden"></div>';
+            // Convert (Deepika, 2026-11-07): make a separate calendar
+            // event from this shift — the shift itself is untouched.
+            html += '<button class="sp-item" data-act="make-event"><span class="sp-ic" style="background:#e8f5f3">📅</span>Make calendar event</button>';
+            html += '<div id="sp-event-list" class="hidden"></div>';
+            // Delete LAST — the handler routes through qsDeleteShift
+            // (the old box 🗑 flow), so rotation occurrences delete
+            // through the same dialog as normal shifts.
             html += '<button class="sp-item danger" data-act="delete"><span class="sp-ic" style="background:#fde8ea">🗑️</span>Delete shift</button>';
-          } else {
-            html += '<div style="padding:8px 10px;font-size:12px;color:var(--dim)">Rotation shift — edit the rotation to change it.</div>';
           }
-          // Convert (Deepika, 2026-11-07): make a separate calendar
-          // event from this shift — the shift itself is untouched.
-          html += '<button class="sp-item" data-act="make-event"><span class="sp-ic" style="background:#e8f5f3">📅</span>Make calendar event</button>';
-          html += '<div id="sp-event-list" class="hidden"></div>';
           list.innerHTML = html;
           // Position near button
           show(popup);
@@ -4392,11 +4390,14 @@
         document.addEventListener('click', function (e) {
           var dot = e.target.closest ? e.target.closest('#shift-popup .sp-dot') : null;
           if (dot && popupShift) {
-            var color = dot.getAttribute('data-color');
-            if (color) { sched.highlights[popupShift.userId] = color; }
-            else { delete sched.highlights[popupShift.userId]; }
-            try { localStorage.setItem('qs-highlights', JSON.stringify(sched.highlights)); } catch (err) {}
+            // Apply through the same path as the Highlight dialog:
+            // qsSetHighlight stores the palette object for the hue,
+            // persists localStorage 'qs-highlights' and repaints the
+            // grids. data-hue="" is the ✕ clear dot.
+            var hueAttr = dot.getAttribute('data-hue');
+            var hlUserId = popupShift.userId;
             closeShiftPopup();
+            window.qsSetHighlight(hlUserId, (hueAttr === '' || hueAttr == null) ? null : parseInt(hueAttr, 10));
             renderView();
             return;
           }
@@ -4455,46 +4456,20 @@
                 if (r.ok) { s.published = toPublished; renderView(); }
               });
             } else if (act === 'replace') {
-              // Show candidate list inline in popup
-              var rlist = $('sp-replace-list');
-              if (!rlist.classList.contains('hidden')) { hide(rlist); return; }
-              var m = memberById(s.userId);
-              var role = m ? (m.jobRole || m.role || '') : '';
-              var candidates = sched.members.filter(function (c) {
-                if (String(c.id) === String(s.userId)) return false;
-                var cRole = c.jobRole || c.role || '';
-                if (role && cRole !== role) return false;
-                return true;
-              });
-              var rh = '';
-              if (!candidates.length) {
-                rh = '<div style="padding:8px 10px;font-size:13px;color:var(--dim)">No other team member with the same title.</div>';
-              } else {
-                candidates.forEach(function (c) {
-                  var cn = c.nickname || ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || 'Team member';
-                  rh += '<button class="sp-item" data-replace-id="' + c.id + '"><span class="sp-ic" style="background:#e3f0fa">👤</span>' + esc(cn) + '</button>';
-                });
-              }
-              rlist.innerHTML = rh;
-              show(rlist);
-              // Reposition popup (content grew)
-              var popup = $('shift-popup');
-              var ph = popup.offsetHeight;
-              var top = parseInt(popup.style.top, 10);
-              if (top + ph > window.innerHeight - 8) popup.style.top = Math.max(8, window.innerHeight - ph - 8) + 'px';
-            } else if (act === 'delete') {
+              // Same dialog as the old box 🔄: every team member with
+              // Off/Working badges (qsReplaceShift handles rotation
+              // occurrences too).
+              var repSid = s.id;
               closeShiftPopup();
-              if (confirm('Delete this shift?')) deleteShift(s.id);
+              window.qsReplaceShift(repSid);
+            } else if (act === 'delete') {
+              // Same flow as the old box 🗑: qsDeleteShift shows the
+              // confirm dialog and handles normal shifts and rotation
+              // occurrences.
+              var delSid = s.id;
+              closeShiftPopup();
+              window.qsDeleteShift(delSid);
             }
-            return;
-          }
-          // Replace candidate clicked
-          var repBtn = e.target.closest ? e.target.closest('#shift-popup [data-replace-id]') : null;
-          if (repBtn && popupShift) {
-            var newId = repBtn.getAttribute('data-replace-id');
-            var sh = popupShift;
-            closeShiftPopup();
-            replaceShift(sh, newId);
             return;
           }
           // Click outside popup closes it
@@ -13087,7 +13062,7 @@ window.qsNpOfferSend = function (btn) {
         </div></div>
         <p>The <strong>Schedule</strong> tab has three views: <strong>Day</strong>, <strong>Week</strong>, and <strong>Range</strong>.</p>
         <ul>
-          <li><strong>Day view</strong> — see everyone scheduled for one date. Tap a shift box to reassign, swap, or remove someone. The <strong>⋮</strong> button between the shift type and name opens shift actions.</li>
+          <li><strong>Day view</strong> — see everyone scheduled for one date. Tap a shift box to reassign, swap, or remove someone. The <strong>round down-arrow button</strong> at the right of a shift box opens its actions (highlight, comment, publish, replace, delete).</li>
           <li><strong>Week view</strong> — seven days at a glance with full shift names.</li>
           <li><strong>Range view</strong> — pick any date range.</li>
         </ul>
