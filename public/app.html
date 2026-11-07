@@ -2720,8 +2720,8 @@
         }
         function evISpeak(e) { return !!(sched.myId && (e.lecturerUserId === sched.myId || (e.speakers || []).some(function (sp) { return sp.userId === sched.myId; }))); }
         // One box per session, styled like a shift box: the kind (Lecture /
-        // Event) is the label box; presenter + supervisor sit together in
-        // the name box. (Deepika's simpler design, 2026-10-20.)
+        // Event) is the label box; the speakers sit in the name box.
+        // (Deepika's simpler design, 2026-10-20.)
         function dashEventBoxesHtml(ds) {
           var evs = dashEventsFor(ds);
           if (!evs.length) return '';
@@ -2732,7 +2732,6 @@
             var names = '';
             var spT = evSpeakerText(e);
             if (spT) names += esc(spT);
-            if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
             if (e.viewerInvitedOnly) names += (names ? '<br>' : '') + '<span style="color:#0e7c86;font-size:0.78rem;font-weight:700">📩 Invited</span>';
             if (!evHasSpeakers(e)) names += (names ? '<br>' : '') + '<button type="button" class="ev-claim-btn" data-evclaim="' + e.id + '" title="Pick up this session">✋ Pick it up — I\'ll present</button>';
             else if (evISpeak(e)) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
@@ -3510,7 +3509,6 @@
             var namesLine = '';
             var spT2 = evSpeakerText(e);
             if (spT2) namesLine += esc(spT2);
-            if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
             if (!namesLine) namesLine = 'Needs ' + (window.qsPersonLabelOf ? window.qsPersonLabelOf(e) : 'Speaker').toLowerCase();
             html += '<div class="month-chip" style="background:' + tint(ec, 70) + ';border-color:' + tint(ec, 55) +
               '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime12(e.startTime) : '') + (e.location ? ' · ' + e.location : '')) + '">' +
@@ -6183,7 +6181,7 @@
             var needByDash = {}, calTotal = 0;
             calSessions.forEach(function (s) {
               var hasSp = s.speakers ? s.speakers.length > 0 : !!s.lecturerUserId;
-              if (!hasSp || !s.supervisorUserId) { calTotal++; if (s.dashboardId) needByDash[s.dashboardId] = (needByDash[s.dashboardId] || 0) + 1; }
+              if (!hasSp) { calTotal++; if (s.dashboardId) needByDash[s.dashboardId] = (needByDash[s.dashboardId] || 0) + 1; }
             });
             var badgeTotal = gapCount + calTotal;
             document.querySelectorAll('[data-sc-badge]').forEach(function (b) { b.hidden = badgeTotal === 0; b.textContent = badgeTotal; });
@@ -7125,7 +7123,7 @@ window.qsScRenderCal = function (dashId) {
       if (s.speakers && s.speakers.length) return s.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
       return s.lecturerName || null;
     }
-    var needAny = sessions.filter(function (s) { return !scHasSpeakers(s) || !s.supervisorUserId; });
+    var needAny = sessions.filter(function (s) { return !scHasSpeakers(s); });
     var tomorrowDs = scDatePlus(new Date(), 1);
     function lc(x) { return x.charAt(0).toLowerCase() + x.slice(1); }
     function art(x) { return /^[aeiou]/i.test(x) ? 'an' : 'a'; }
@@ -7137,8 +7135,8 @@ window.qsScRenderCal = function (dashId) {
       var main = '<div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<span class="np-chip" style="background:' + esc(k.color) + '">' + esc(k.label) + '</span><b style="font-size:14px">' + esc(s.title) + '</b></div>' +
         (meta.length ? '<div class="np-meta">' + esc(meta.join(' · ')) + '</div>' : '') + '</div>';
-      var missing = role === 'supervisor' ? !s.supervisorUserId : !scHasSpeakers(s);
-      var who = role === 'supervisor' ? s.supervisorName : scSpeakerText(s);
+      var missing = !scHasSpeakers(s);
+      var who = scSpeakerText(s);
       if (missing) {
         var baseId = String(s.id).split('@@')[0];
         var oKey = baseId + '|' + s.date + '|' + role;
@@ -7157,7 +7155,7 @@ window.qsScRenderCal = function (dashId) {
       }
       return '<div class="np-row">' + main + '<span class="np-who" style="color:#15803d">✓ ' + esc(who || 'Assigned') + ' — ' + esc(lc(label)) + '</span></div>';
     }
-    function missingOf(s, role) { return role === 'supervisor' ? !s.supervisorUserId : !scHasSpeakers(s); }
+    function missingOf(s, role) { return !scHasSpeakers(s); }
     function sectionHtml(title, subset, role, label) {
       var h = '<div style="font-size:16px;font-weight:800;margin:20px 2px 2px">' + title + '</div>';
       var missN = subset.filter(function (s) { return missingOf(s, role); }).length;
@@ -7189,7 +7187,6 @@ window.qsScRenderCal = function (dashId) {
       if (!scHasSpeakers(s)) labelCounts[L].need++;
     });
     labels.sort(function (a, b) { if (a === 'Speaker') return -1; if (b === 'Speaker') return 1; return a < b ? -1 : 1; });
-    var supNeed = sessions.filter(function (s) { return !s.supervisorUserId; }).length;
     var staffed = sessions.length - needAny.length;
     var linkH = '<div class="sc-day" style="margin-bottom:14px">' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">🔗 ' + esc(dashName[dashId] || 'Calendar') + ' availability link</b>' +
@@ -7210,7 +7207,6 @@ window.qsScRenderCal = function (dashId) {
       var bits = labels.filter(function (L) { return labelCounts[L].need; }).map(function (L) {
         return '<b style="color:#b91c1c">' + labelCounts[L].need + '</b> need ' + art(L) + ' ' + esc(lc(L));
       });
-      if (supNeed) bits.push('<b style="color:#b91c1c">' + supNeed + '</b> need a supervisor');
       h += '<div class="sc-day" style="margin-bottom:14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">' +
         '<span style="font-size:15px">' + bits.join(' · ') + '</span>' +
         '<span style="color:var(--dim);font-size:13px">' + staffed + ' sessions fully staffed · on this calendar · next 14 days</span></div>';
@@ -7225,7 +7221,6 @@ window.qsScRenderCal = function (dashId) {
         h += sectionHtml((L === 'Speaker' ? '🎤' : '🧑‍🏫') + ' Needs ' + art(L) + ' ' + esc(lc(L)),
           sessions.filter(function (s) { return personLabelOf(s) === L; }), 'presenter', L);
       });
-      h += sectionHtml('👀 Needs a supervisor', sessions, 'supervisor', 'Supervisor');
     }
     body.innerHTML = linkH + h;
   }).catch(function () {
@@ -7598,7 +7593,6 @@ window.qsNpOfferSend = function (btn) {
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
           <strong id="ac-selcount">0 selected</strong>
           <button type="button" class="ac-selbtn" data-selact="presenter">👤 Speaker</button>
-          <button type="button" class="ac-selbtn" data-selact="supervisor">🧑‍🏫 Supervisor</button>
           <button type="button" class="ac-selbtn" data-selact="location">📍 Location</button>
           <button type="button" class="ac-selbtn ac-selbtn-ghost" data-selact="clear">Clear</button>
           <button type="button" class="ac-selbtn ac-selbtn-ghost" data-selact="done">Done</button>
@@ -7696,7 +7690,7 @@ window.qsNpOfferSend = function (btn) {
             case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
             case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
             case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
-            case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.supervisor ? ' — supervisor ' + c.supervisor : '') + (c.location ? ' — in ' + c.location : '');
+            case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.location ? ' — in ' + c.location : '');
             case 'cancel_session': return 'Cancel session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '');
             default: return c.action;
           }
@@ -14056,7 +14050,7 @@ window.qsNpOfferSend = function (btn) {
           return (dashEvents || []).filter(function (e) { return e.date === ds; });
         }
         function msEventIsMine(e) {
-          return !!(me && (e.lecturerUserId === me.id || e.supervisorUserId === me.id ||
+          return !!(me && (e.lecturerUserId === me.id ||
             (e.speakers || []).some(function (sp) { return sp.userId === me.id; })));
         }
         function msHasSpeakers(e) { return e.speakers ? e.speakers.length > 0 : !!e.lecturerUserId; }
@@ -14072,7 +14066,6 @@ window.qsNpOfferSend = function (btn) {
           var iSpeak = !!(me && (e.lecturerUserId === me.id || (e.speakers || []).some(function (sp) { return sp.userId === me.id; })));
           var spTm = msSpeakerText(e);
           if (spTm) names += esc(spTm) + (iSpeak ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px">YOU</span>' : '');
-          if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
           if (e.viewerInvitedOnly) names += (names ? '<br>' : '') + '<span style="font-size:10px;font-weight:800;color:#0f766e;background:#ccfbf1;border-radius:6px;padding:2px 6px">📩 INVITED</span>';
           if (e.viewerIsBeneficiary && !iSpeak) {
             var rBtn = function (v, label) {
@@ -14098,7 +14091,6 @@ window.qsNpOfferSend = function (btn) {
             var namesLine = '';
             var spTc = msSpeakerText(e);
             if (spTc) namesLine += esc(spTc);
-            if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
             if (!namesLine) namesLine = 'Needs ' + (window.qsPersonLabelOf ? window.qsPersonLabelOf(e) : 'Speaker').toLowerCase();
             if (e.viewerInvitedOnly) namesLine += ' · 📩 Invited';
             return '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime(e.startTime) : '')) + '">' +
@@ -16983,8 +16975,8 @@ window.qsNpOfferSend = function (btn) {
       };
 
       // ---- Bulk assign: multi-select sessions on the calendar and
-      // set a presenter, supervisor or location for all of them at
-      // once (Deepika, 2026-10-21). Enter by long-pressing a session
+      // set a speaker or location for all of them at once
+      // (Deepika, 2026-10-21). Enter by long-pressing a session
       // (phone or mouse) or with the Select button; then taps toggle.
       var acSelMode = false;
       var acSelected = new Map();
@@ -17026,6 +17018,24 @@ window.qsNpOfferSend = function (btn) {
         bar.style.display = acSelMode ? '' : 'none';
         var c = document.getElementById('ac-selcount');
         if (c) c.textContent = acSelected.size + ' selected';
+        // While the purple selection bar is up, lift the floating
+        // Email Q-Scheduler pill clear above it (Deepika, 2026-11-07:
+        // the pill covered the bar's right end). The CSS keys off
+        // body.qs-selbar-open and lifts by --fab-lift, measured from
+        // the bar itself so it clears at any width; the max-1023px
+        // rule that already parks the pill at bottom:96px over the
+        // mobile tab bar is preserved by adding the same base there.
+        var fab = document.getElementById('fab-email-ai');
+        if (acSelMode) {
+          document.body.classList.add('qs-selbar-open');
+          if (fab) {
+            var lift = (bar.offsetHeight || 96) + 26;
+            document.body.style.setProperty('--fab-lift', lift + 'px');
+          }
+        } else {
+          document.body.classList.remove('qs-selbar-open');
+          document.body.style.removeProperty('--fab-lift');
+        }
       }
       function acDoAssign(field, userId, location) {
         var items = Array.from(acSelected.values());
@@ -17035,7 +17045,7 @@ window.qsNpOfferSend = function (btn) {
         api('/api/schedule/academic-sessions/bulk-assign', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
           if (r.ok) {
             var n = (r.data && r.data.updated) || 0;
-            var word = field === 'location' ? 'Location' : (field === 'supervisor' ? 'Supervisor' : 'Speaker');
+            var word = field === 'location' ? 'Location' : 'Speaker';
             pageSuccess(word + ' set on ' + n + ' session' + (n === 1 ? '' : 's') + '.');
             if (r.data && r.data.skipped && r.data.skipped.length) pageError(r.data.skipped.length + ' session(s) could not be changed — no edit access.');
             acExitSel();
@@ -17056,7 +17066,7 @@ window.qsNpOfferSend = function (btn) {
           return '<button type="button" data-pick="' + u.id + '" style="' + BTN + '">' + esc(nm) + (u.jobRole ? ' <span style="color:var(--dim)">(' + esc(u.jobRole) + ')</span>' : '') + '</button>';
         }).join('');
         wrap.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.3rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
-          '<h3 style="margin:0 0 0.8rem">' + (field === 'supervisor' ? '🧑‍🏫 Supervisor' : '👤 Speaker') + ' for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
+          '<h3 style="margin:0 0 0.8rem">👤 Speaker for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
           '<button type="button" data-pick="" style="' + BTN + '">— Clear (nobody) —</button>' + rows +
           '<button type="button" data-pick-cancel style="' + BTN + ';text-align:center;margin-top:0.4rem">Cancel</button></div>';
         document.body.appendChild(wrap);
@@ -17293,7 +17303,7 @@ window.qsNpOfferSend = function (btn) {
         return s.lecturerName || null;
       }
       function sessMine(s) {
-        return !!acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId ||
+        return !!acMyId && (s.lecturerUserId === acMyId ||
           (s.speakers || []).some(function (sp) { return sp.userId === acMyId; }));
       }
       function chipColor(s) { return kindColor(s.kind); }
@@ -17314,7 +17324,6 @@ window.qsNpOfferSend = function (btn) {
           '<span class="ac-chip-text"><strong>' + esc(s.title) + (mine ? ' ⭐' : '') + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
           (sessHasSpeakers(s) ? '<span class="ac-chip-who">' + esc(speakerNamesText(s)) + '</span>' : '<span class="ac-chip-who ac-need">' + esc(sessNeedsText(s)) + '</span>') +
           (s.viewerInvitedOnly ? '<span class="ac-chip-who">📩 Invited</span>' : '') +
-          (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
           (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') +
           (s.meetingUrl ? '<span class="ac-chip-who">🔗 Meeting link</span>' : '') + '</span></div>';
       }
@@ -17332,8 +17341,8 @@ window.qsNpOfferSend = function (btn) {
         }
         if (acKindFilter && s.kind !== acKindFilter) return false;
         // Mine (Deepika, 2026-11-07) = everything on MY calendar: I
-        // speak at it (any speaker spot), I attend it as a
-        // beneficiary, or I supervise it (legacy). NOT "everything
+        // speak at it (any speaker spot) or I attend it as a
+        // beneficiary. NOT "everything
         // from my department" — that's the Department filter's job.
         // (A scheduler/owner addition to Mine was proposed and then
         // HELD by Deepika — not implemented.)
@@ -17570,7 +17579,7 @@ window.qsNpOfferSend = function (btn) {
             return '<div class="ac-blk" data-acedit="' + s.id + '" title="' + esc(s.title) + '" style="top:' + top + 'px;height:' + height + 'px;left:calc(' + left + '% + 2px);width:calc(' + w + '% - 4px);background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '">' +
               '<b>' + (mine ? '⭐ ' : '') + esc(s.title) + '</b>' +
               '<span>' + fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') + '</span>' +
-              '<br><span>' + who + (s.supervisorName ? ' · Sup: ' + esc(s.supervisorName) : '') + (s.viewerInvitedOnly ? ' · 📩 Invited' : '') + '</span>' +
+              '<br><span>' + who + (s.viewerInvitedOnly ? ' · 📩 Invited' : '') + '</span>' +
               (s.location ? '<br><span>📍 ' + esc(s.location) + '</span>' : '') +
               '</div>';
           }).join('');
@@ -17632,25 +17641,24 @@ window.qsNpOfferSend = function (btn) {
           var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">Repeats</span>' : '';
           var claimBtn = '';
           if (!sessHasSpeakers(s) && !window.qsArchivedViewing) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
-          else if (acMyId && sessMine(s) && s.supervisorUserId !== acMyId && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
+          else if (acMyId && sessMine(s) && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
           var mineTag = '', rowStyle = '';
           if (acMyId && (s.lecturerUserId === acMyId || (s.speakers || []).some(function (sp) { return sp.userId === acMyId; }))) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
-          else if (acMyId && s.supervisorUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re supervising</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
           else if (s.viewerInvitedOnly) { mineTag = '<span style="color:#0e7c86;font-weight:700">📩 You\'re invited</span> · '; }
           var joinLink = s.meetingUrl ? ' · <a href="' + esc(s.meetingUrl) + '" target="_blank" rel="noopener" data-acjoin style="color:#2563eb;font-weight:700">🔗 Join meeting</a>' : '';
           html += '<div class="ac-drow" data-acedit="' + s.id + '"' + rowStyle + '>' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + mineTag + esc(sessHasSpeakers(s) ? speakerNamesText(s) : sessNeedsText(s)) + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
+            '<div class="ac-meta">' + mineTag + esc(sessHasSpeakers(s) ? speakerNamesText(s) : sessNeedsText(s)) + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
         });
         return html + '</div></div>';
       }
 
       // ---------- Session details (read-only) ----------
       // What My Schedule shows when an event is tapped (Deepika,
-      // 2026-10-20): the details, plus pick-up buttons for whichever
-      // role is still open — presenter or supervisor. No editing and
-      // no "give it up" here; giving a session back lives in Admin view.
+      // 2026-10-20): the details, plus a pick-up button when the
+      // speaker spot is still open. No editing and no "give it up"
+      // here; giving a session back lives in Admin view.
       var sdMyId = null;
       window.qsShowSessionDetails = function (e, onDone) {
         function show(myId) {
@@ -17671,10 +17679,6 @@ window.qsNpOfferSend = function (btn) {
             : !hasSp
             ? '<button type="button" class="btn" data-sd-claim="presenter" style="flex:1;padding:0.7rem;border-radius:10px">✋ Pick it up — I\'ll present</button>'
             : (iSpeak ? '<div style="font-weight:700;color:#b45309">⭐ You\'re presenting</div>' : '');
-          var sup = archView ? ''
-            : !e.supervisorUserId
-            ? '<button type="button" class="btn" data-sd-claim="supervisor" style="flex:1;padding:0.7rem;border-radius:10px;background:#7c3aed">✋ Pick it up — I\'ll supervise</button>'
-            : (myId && e.supervisorUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re supervising</div>' : '');
           // RSVP (Deepika, 2026-11-07): invited attendees reply Yes /
           // No / Maybe for this date; the organizer, speakers and
           // editors see the count. Speakers don't RSVP.
@@ -17705,7 +17709,6 @@ window.qsNpOfferSend = function (btn) {
             '<div>📅 ' + esc(dateTxt) + '</div>' +
             '<div>🕐 ' + esc(timeTxt) + '</div>' +
             '<div>👤 ' + esc(sessPersonLabel(e)) + ': ' + (hasSp ? '<strong>' + esc(spText) + '</strong>' : '<strong style="color:#b91c1c">' + esc(sessNeedsText(e)) + '</strong>') + '</div>' +
-            '<div>🧑‍🏫 Supervisor: ' + (e.supervisorName ? '<strong>' + esc(e.supervisorName) + '</strong>' : '<span style="color:var(--dim)">Not assigned</span>') + '</div>' +
             (e.location ? '<div>📍 ' + esc(e.location) + '</div>' : '') +
             (e.departmentName ? '<div>🏢 Organized by: ' + esc(e.departmentName) + '</div>' : '') +
             (e.meetingUrl ? '<div><a href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700">🔗 Join meeting</a></div>' : '') +
@@ -17713,7 +17716,7 @@ window.qsNpOfferSend = function (btn) {
             tally +
             '</div>' +
             rsvpCtl +
-            ((pres || sup) ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + sup + '</div>' : '') +
+            (pres ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + '</div>' : '') +
             '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + copyHtml + ivHtml + '<button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">Close</button></div>';
           var wrap = document.createElement('div');
           wrap.id = 'sd-modal';
@@ -17743,7 +17746,7 @@ window.qsNpOfferSend = function (btn) {
               if (e.recurRule && e.recurRule !== 'none' && e.date) pbody.date = e.date;
               api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/claim', { method: 'POST', body: JSON.stringify(pbody) }).then(function (r) {
                 if (r.ok) {
-                  pageSuccess(role === 'supervisor' ? 'You are now the supervisor.' : 'You are now the ' + sessPersonLabel(e).toLowerCase() + '.');
+                  pageSuccess('You are now the ' + sessPersonLabel(e).toLowerCase() + '.');
                   close();
                   if (onDone) onDone();
                 } else {
@@ -18608,8 +18611,8 @@ window.qsNpOfferSend = function (btn) {
         m.querySelector('#acf-save').addEventListener('click', function () {
           if (isSeries && scopeVal() === 'date') {
             // One-date change: only the main speaker rides along as
-            // the date's lecturer override; the supervisor and the
-            // series' speaker list stay untouched.
+            // the date's lecturer override; the series' speaker list
+            // stays untouched.
             var firstSel = m.querySelector('.acf-sprow .acf-spuser');
             var dpayload = {
               scope: 'date', date: occDate,
@@ -18626,9 +18629,6 @@ window.qsNpOfferSend = function (btn) {
             return;
           }
           var payload = readPayload();
-          // Copy event: the form has no supervisor field, but the
-          // copy carries the source session's supervisor along.
-          if (isCopy && src && src.supervisorUserId) payload.supervisorUserId = src.supervisorUserId;
           if (!payload.title) { pageError('A title is required.'); return; }
           if (!payload.date) { pageError('Pick a start date.'); return; }
           if (payload.recurRule !== 'none') {
@@ -18699,7 +18699,6 @@ window.qsNpOfferSend = function (btn) {
         else if (act === 'clear') { acSelected.clear(); acApplySelUI(); acRenderSelBar(); }
         else if (!acSelected.size) pageError('Select at least one session first — tap the sessions to change.');
         else if (act === 'presenter') acPickPerson('lecturer');
-        else if (act === 'supervisor') acPickPerson('supervisor');
         else if (act === 'location') acPickLocation();
       });
       var dbViewEl = document.getElementById('db-view');
@@ -19469,6 +19468,7 @@ window.qsNpOfferSend = function (btn) {
       border-radius: 999px; padding: 0.72rem 1.05rem;
       font-size: 0.78rem; font-weight: 600; letter-spacing: 0.01em;
       box-shadow: 0 4px 16px rgba(0,0,0,0.28); cursor: pointer; z-index: 90;
+      transition: bottom .22s ease;
     }
     #fab-email-ai:hover { filter: brightness(1.1); }
     #fab-email-ai:active { transform: scale(0.96); }
@@ -19476,6 +19476,16 @@ window.qsNpOfferSend = function (btn) {
     @media (max-width: 700px) {
       #fab-email-ai { right: 0.9rem; bottom: 0.9rem; padding: 0.62rem 0.9rem; font-size: 0.72rem; }
       #fab-email-ai svg { width: 17px; height: 17px; }
+    }
+    /* Calendars multi-select: while the purple selection bar is open
+       it sits where the pill floats — lift the pill clear above the
+       bar (bar height measured in JS into --fab-lift). On narrow
+       screens the pill already parks at bottom:96px over the mobile
+       tab bar (rule in the main stylesheet), so the lift stacks on
+       top of that base. */
+    body.qs-selbar-open #fab-email-ai { bottom: var(--fab-lift, 128px); }
+    @media (max-width: 1023px) {
+      body.qs-selbar-open #fab-email-ai { bottom: calc(96px + var(--fab-lift, 128px)); }
     }
     /* Global (body-level) dialog for the FAB — unscoped so it works from any tab. */
     #fab-email-dialog { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -20249,7 +20259,7 @@ window.qsNpOfferSend = function (btn) {
   };
   var CAT_DESC = {
     schedule: 'Assigned, changed, removed or published shifts; open shifts; requests to you and their results.',
-    calendar: 'Sessions you present or supervise, changes, cancellations, and sessions needing a speaker.',
+    calendar: 'Sessions you present, changes, cancellations, and sessions needing a speaker.',
     approvals: 'Plans and shift requests waiting for a decision (owners & schedulers).',
     messages: 'New messages in channels, groups and DMs.'
   };
@@ -20358,7 +20368,7 @@ window.qsNpOfferSend = function (btn) {
   var CAT_LABEL = { schedule: '📅 Schedule changes', calendar: '🎓 Calendar sessions', approvals: '✅ Approvals & requests', messages: '💬 Messages' };
   var CAT_DESC = {
     schedule: 'Shifts assigned to you, changed, removed, or published.',
-    calendar: 'Sessions you present or supervise, and sessions that need a speaker.',
+    calendar: 'Sessions you present, and sessions that need a speaker.',
     approvals: 'Shift requests sent to you, decisions on your requests, and emailed plans waiting for approval.',
     messages: 'New messages in your conversations — if they sit unread 30 minutes, one summary email (never one per message).'
   };

@@ -38,6 +38,7 @@ import { sendMail, escHtml } from './mailer.js';
 import { notify, resolveSpeed, fmtDateLong } from './notify.js';
 import { getDepartmentAccess } from './departmentAccess.js';
 import { getShiftsForRange } from './shiftRange.js';
+import { loadSpeakers } from './sessionPeople.js';
 
 // ---------------------------------------------------------------------------
 // Reminder picks — shared by the prefs API (routes/notifications.ts)
@@ -345,7 +346,10 @@ async function scanSessionReminders(
   const from = new Date(now.getTime() - 2 * 86400000).toISOString().slice(0, 10);
   const to = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10);
   // Same base row shape + windowing the schedule read uses, narrowed to
-  // sessions this user presents or supervises.
+  // sessions this user SPEAKS at. (Speakers only since supervisors were
+  // retired, Deepika 2026-11-07: the lecturer mirror OR any row in the
+  // session's speakers list. A stored supervisor assignment no longer
+  // earns a reminder.)
   const { rows } = await query(
     `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
             sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
@@ -353,11 +357,13 @@ async function scanSessionReminders(
      LEFT JOIN users u ON u.id = s.lecturer_user_id
      LEFT JOIN users sup ON sup.id = s.supervisor_user_id
      LEFT JOIN departments d ON d.id = s.department_id
-     WHERE s.company_id = $1 AND (s.lecturer_user_id = $2 OR s.supervisor_user_id = $2)
+     WHERE s.company_id = $1 AND (s.lecturer_user_id = $2
+       OR EXISTS (SELECT 1 FROM session_speakers ss WHERE ss.session_id = s.id AND ss.user_id = $2))
        AND (s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $3)
        AND s.session_date <= $4`,
     [companyId, userId, from, to]);
   if (!rows.length) return;
+  const speakersBySession = await loadSpeakers(query as any, rows.map((r: any) => r.id));
   let ovMap = new Map<string, any>();
   const userName = new Map<string, string>();
   if (rows.some((r: any) => r.recur_rule && r.recur_rule !== 'none')) {
@@ -367,9 +373,25 @@ async function scanSessionReminders(
   }
   const occurrences = sched.expandAcademicSessions(rows, from, to, ovMap, userName);
   for (const occ of occurrences) {
-    const isPresenter = occ.lecturerUserId === userId;
-    const isSupervisor = occ.supervisorUserId === userId;
-    if (!isPresenter && !isSupervisor) continue; // an override moved this date to someone else
+    // Speakers in effect for THIS date: the series speakers list with
+    // the date's lecturer override adjusting only the primary spot
+    // (same rule as the calendar payload / Ask). Guest rows carry no
+    // userId and never match.
+    const baseId = String(occ.seriesId || occ.id).split('@@')[0];
+    const list = (speakersBySession.get(baseId) || []) as any[];
+    let effIds: (string | null)[];
+    if (!list.length) {
+      effIds = [occ.lecturerUserId || null];
+    } else {
+      effIds = list.map((s: any) => s.userId || null);
+      if (list[0].userId) {
+        if (occ.lecturerUserId) effIds[0] = occ.lecturerUserId;
+        else effIds = effIds.slice(1);
+      } else if (occ.lecturerUserId) {
+        effIds = [occ.lecturerUserId, ...effIds];
+      }
+    }
+    if (!effIds.includes(userId)) continue; // an override moved this date to someone else
     const dateStr = String(occ.date);
     // A session without a start time reminds as if it starts 9:00 AM.
     const hm = parseTimeToHM(occ.startTime) || { h: 9, mi: 0 };
@@ -383,7 +405,7 @@ async function scanSessionReminders(
           companyId, userId, kind: 'session', eventKey, pick,
           category: 'calendar', type: 'session_reminder',
           title: `Reminder: ${occ.title} on ${fmtDateLong(dateStr)}`,
-          body: `You ${isPresenter ? 'present' : 'supervise'} "${occ.title}" at ${fmtTime12(hm)} on ${fmtDateLong(dateStr)}.`,
+          body: `You present "${occ.title}" at ${fmtTime12(hm)} on ${fmtDateLong(dateStr)}.`,
           link: 'calendars', payload: { sessionId: occ.seriesId || occ.id, date: dateStr, pick },
         });
       }

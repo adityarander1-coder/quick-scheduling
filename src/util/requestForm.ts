@@ -631,13 +631,10 @@ export async function validateAndCompose(
         parts.push(`room to ${String(f.room).trim().slice(0, 60) || '(none)'}`);
         change.location = String(f.room).trim().slice(0, 60);
       }
-      if (f.supervisorId) {
-        const n = await memberName(q, companyId, String(f.supervisorId));
-        if (!n) return bad('That supervisor could not be found.');
-        parts.push(`supervisor to ${n}`);
-        change.supervisor = n;
-      }
-      if (!parts.length) return bad('Change the room or pick a supervisor first.');
+      // Supervisors were retired (Deepika, 2026-11-07): the form no
+      // longer offers one, and a supervisorId from a stale form is
+      // ignored — this action changes the room only now.
+      if (!parts.length) return bad('Change the room first.');
       const scope = s.recurring ? (f.scope === 'series' ? ' Apply it to the whole series.' : ' This date only.') : '';
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
       return good(S('Change session'),

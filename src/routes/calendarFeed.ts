@@ -227,7 +227,7 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
     // --- Sessions: expand the company's sessions exactly like
     // GET /academic-sessions (recurrence + per-date overrides +
     // cancellations), then keep the occurrences this user presents
-    // or supervises.
+    // or attends.
     const { rows: srows } = await query(
       `SELECT s.*, u.first_name, u.last_name, (u.is_active IS NOT FALSE) AS lecturer_active, d.name AS department_name,
               sup.first_name AS sup_first_name, sup.last_name AS sup_last_name
@@ -270,7 +270,8 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
     for (const o of occurrences) {
       const roles: string[] = [];
       if (o.lecturerUserId === userId || speakerOf.has(o.seriesId || o.id)) roles.push('presenter');
-      if (o.supervisorUserId === userId) roles.push('supervisor');
+      // A stored supervisor assignment no longer puts the session in
+      // the feed or labels it — supervisors were retired (2026-11-07).
       if (!roles.length && attends.has(o.seriesId || o.id)) roles.push('attendee');
       if (!roles.length) continue;
       const uid = `qs-session-${o.id}@quick-scheduling`;

@@ -1234,8 +1234,10 @@ export async function executePlan(
         const organizingDeptId = await resolveOrganizingDeptE(companyId, createdBy, dash.id);
         const presenter = change.presenter ? await findUser(companyId, change.presenter) : null;
         if (change.presenter && !presenter) throw new Error(`Person not found: ${change.presenter}`);
-        const supervisor = change.supervisor ? await findUser(companyId, change.supervisor) : null;
-        if (change.supervisor && !supervisor) throw new Error(`Person not found: ${change.supervisor}`);
+        // A supervisor on the change is IGNORED, never an error:
+        // supervisors were retired (Deepika, 2026-11-07), and a plan
+        // written before that (or by the AI from an old email) must
+        // still execute cleanly — it just sets no supervisor.
         if (!(await canEditSessionTarget(companyId, createdBy, dash.id, null))) {
           throw new Error(`No edit access to sessions on ${dash.name}.`);
         }
@@ -1249,7 +1251,7 @@ export async function executePlan(
         await insertSession(companyId, actorId, dash.id, {
           title: change.title, date: change.date,
           startTime: normTime(change.startTime), endTime: normTime(change.endTime),
-          presenterId: presenter?.id ?? null, supervisorId: supervisor?.id ?? null,
+          presenterId: presenter?.id ?? null,
           departmentId: organizingDeptId,
           location: change.location ? change.location.trim() : null,
           kindKey, notes: change.notes ? change.notes.trim() : null,
@@ -1277,11 +1279,9 @@ export async function executePlan(
           if (change.presenter && !p) throw new Error(`Person not found: ${change.presenter}`);
           f.presenterId = p?.id ?? null;
         }
-        if (change.supervisor !== undefined) {
-          const sv = change.supervisor ? await findUser(companyId, change.supervisor) : null;
-          if (change.supervisor && !sv) throw new Error(`Person not found: ${change.supervisor}`);
-          f.supervisorId = sv?.id ?? null;
-        }
+        // change.supervisor is deliberately NOT applied (retired
+        // 2026-11-07) — see the add_session note above. The rest of
+        // the change still applies normally.
         if (change.location !== undefined) f.location = change.location ? change.location.trim() : null;
         if (change.startTime !== undefined) f.startTime = normTime(change.startTime);
         if (change.endTime !== undefined) f.endTime = normTime(change.endTime);
@@ -1444,7 +1444,6 @@ export async function executePlan(
       } else if (change.action === 'add_session' && change.title && change.date) {
         const people: string[] = [];
         if (change.presenter) { const p = await findUser(companyId, change.presenter); if (p) people.push(p.id); }
-        if (change.supervisor) { const s = await findUser(companyId, change.supervisor); if (s) people.push(s.id); }
         if (people.length) await notify({
           companyId, userIds: people, category: 'calendar', type: 'session_assigned',
           title: `New session: "${change.title}" on ${fmtDateLong(change.date)}`,
@@ -1476,7 +1475,6 @@ export async function executePlan(
       } else if (change.action === 'update_session' && change.sessionTitle) {
         const ids = new Set<string>(sessionPeopleBefore.get(i) || []);
         if (change.presenter) { const p = await findUser(companyId, change.presenter); if (p) ids.add(p.id); }
-        if (change.supervisor) { const s = await findUser(companyId, change.supervisor); if (s) ids.add(s.id); }
         if (ids.size) await notify({
           companyId, userIds: [...ids], category: 'calendar', type: 'session_changed',
           title: `Session changed: "${change.title || change.sessionTitle}"`,

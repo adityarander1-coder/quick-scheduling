@@ -163,7 +163,6 @@ interface CalSession {
    *  all (guests count) — "needs a speaker" means NO speakers. */
   speakerIds: string[];
   hasSpeakers: boolean;
-  supervisor: string | null;
   dashboard: string | null;
   kind: string;
   /** Effective person label: the session's own Role name override,
@@ -237,7 +236,6 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
       title: r.title,
       lecturerUserId: r.lecturer_user_id || null,
       lecturerName: [r.first_name, r.last_name].filter(Boolean).join(' ') || null,
-      supervisorName: [r.sup_first_name, r.sup_last_name].filter(Boolean).join(' ') || null,
       date: ovDateStr(r.session_date),
       startTime: r.start_time || null,
       endTime: r.end_time || null,
@@ -257,13 +255,11 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
       if (ov && ov.cancelled) return null;
       let presenterId = base.lecturerUserId;
       let presenter = base.lecturerName;
-      let supervisor = base.supervisorName;
       let location = base.location;
       let startTime = base.startTime;
       let endTime = base.endTime;
       if (ov) {
         if (ov.has_lecturer) { presenterId = ov.lecturer_user_id || null; presenter = presenterId ? (userName.get(presenterId) || null) : null; }
-        if (ov.has_supervisor) { supervisor = ov.supervisor_user_id ? (userName.get(ov.supervisor_user_id) || null) : null; }
         if (ov.has_location) location = ov.location || null;
         if (ov.has_times) { startTime = ov.start_time || null; endTime = ov.end_time || null; }
       }
@@ -283,7 +279,7 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
       }
       const speakerIds = eff.map((s: any) => s.userId).filter(Boolean) as string[];
       const speakerText = eff.map((s: any) => s.guest ? `${s.name || 'Guest'} (guest)` : (s.name || null)).filter(Boolean).join(', ');
-      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter: eff.length ? (speakerText || presenter) : presenter, speakerIds, hasSpeakers: eff.length > 0, supervisor, dashboard: base.dashboard, kind: base.kind, personLabel: base.personLabel };
+      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter: eff.length ? (speakerText || presenter) : presenter, speakerIds, hasSpeakers: eff.length > 0, dashboard: base.dashboard, kind: base.kind, personLabel: base.personLabel };
     };
     if (!base.recurRule || base.recurRule === 'none') {
       const occ = pushOcc(base.date);

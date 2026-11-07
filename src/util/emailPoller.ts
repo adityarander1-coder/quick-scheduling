@@ -227,11 +227,9 @@ export async function buildSessionContext(
     const { rows: sess } = await query(
       `SELECT s.title, s.session_date::text AS sdate, s.start_time::text AS stime, s.end_time::text AS etime,
               s.recur_rule, s.recur_interval, s.recur_days, s.location, s.dashboard_id,
-              TRIM(COALESCE(l.first_name,'') || ' ' || COALESCE(l.last_name,'')) AS presenter,
-              TRIM(COALESCE(sv.first_name,'') || ' ' || COALESCE(sv.last_name,'')) AS supervisor
+              TRIM(COALESCE(l.first_name,'') || ' ' || COALESCE(l.last_name,'')) AS presenter
        FROM academic_sessions s
        LEFT JOIN users l ON l.id = s.lecturer_user_id
-       LEFT JOIN users sv ON sv.id = s.supervisor_user_id
        WHERE s.company_id = $1
        ORDER BY s.session_date
        LIMIT 300`, [companyId]);
@@ -244,16 +242,15 @@ export async function buildSessionContext(
       const dash = dashName.get(s.dashboard_id) || 'Calendar';
       const times = s.stime ? ` ${String(s.stime).slice(0, 5)}${s.etime ? '–' + String(s.etime).slice(0, 5) : ''}` : '';
       const people = s.presenter ? `, speaker ${s.presenter}` : '';
-      const sup = s.supervisor ? `, supervisor ${s.supervisor}` : '';
       const loc = s.location ? `, in ${s.location}` : '';
       if (s.recur_rule && s.recur_rule !== 'none') {
         const days = s.recur_days ? String(s.recur_days).split(',').map((x: string) => DAY[parseInt(x, 10)] + 's').join('/')
           : DAY[new Date(s.sdate + 'T00:00:00').getDay()] + 's';
         const every = (s.recur_interval || 1) > 1 ? `every ${s.recur_interval} ` : '';
         const rule = s.recur_rule === 'weekly' || s.recur_rule === 'biweekly' ? `${every}week on ${days}` : s.recur_rule;
-        lines.push(`- "${s.title}" on ${dash} — repeats ${rule}${times}${people}${sup}${loc}`);
+        lines.push(`- "${s.title}" on ${dash} — repeats ${rule}${times}${people}${loc}`);
       } else if (s.sdate >= iso(from) && s.sdate <= iso(to)) {
-        lines.push(`- "${s.title}" on ${dash} — ${s.sdate}${times}${people}${sup}${loc} (one-time)`);
+        lines.push(`- "${s.title}" on ${dash} — ${s.sdate}${times}${people}${loc} (one-time)`);
       }
     }
     out.sessions = lines.slice(0, 80);

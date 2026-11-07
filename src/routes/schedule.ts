@@ -7290,7 +7290,6 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
         recur: s.recur_rule && s.recur_rule !== 'none' ? s.recur_rule : '',
         interval: s.recur_interval || 1, location: s.location || '', kind: s.kind || 'session',
         presenterName: s.lecturer_user_id ? (memberName.get(s.lecturer_user_id) || '') : '',
-        supervisorName: s.supervisor_user_id ? (memberName.get(s.supervisor_user_id) || '') : '',
       });
     }
     const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
@@ -7333,7 +7332,6 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
     <div class="row"><div><label>Starts</label><input id="a-start" type="time"></div>
     <div><label>Ends</label><input id="a-end" type="time"></div></div>
     <label>Speaker</label><select id="a-presenter"></select>
-    <label>Supervisor</label><select id="a-supervisor"></select>
     <label>Room / location</label><input id="a-location" list="rooms" placeholder="Type or pick a room"><datalist id="rooms"></datalist>
     <div id="a-deptwrap"><label>Department</label><select id="a-dept"></select></div>
     <label>Repeats</label><select id="a-recur"><option value="none">Does not repeat</option><option value="weekly1">Weekly</option><option value="weekly2">Every 2 weeks</option></select>
@@ -7353,7 +7351,6 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
     <div class="small" style="margin-top:10px">Leave a field blank to keep it as it is.</div>
     <label>New title</label><input id="c-title" placeholder="No change">
     <label>Speaker</label><select id="c-presenter"></select>
-    <label>Supervisor</label><select id="c-supervisor"></select>
     <label>Room / location</label><input id="c-location" list="rooms" placeholder="No change">
     <div class="row"><div><label>Starts</label><input id="c-start" type="time"></div>
     <div><label>Ends</label><input id="c-end" type="time"></div></div>
@@ -7402,7 +7399,6 @@ function sessionChanged() {
   else parts.push('One-time on ' + s.sdate);
   if (s.stime) parts.push(s.stime + (s.etime ? '–' + s.etime : ''));
   if (s.presenterName) parts.push('Speaker: ' + s.presenterName);
-  if (s.supervisorName) parts.push('Supervisor: ' + s.supervisorName);
   if (s.location) parts.push('In ' + s.location);
   hint.textContent = parts.join(' · ');
   hint.style.display = '';
@@ -7425,9 +7421,7 @@ async function post(body, btn) {
 for (const d of DATA.dashboards) { const o = document.createElement('option'); o.value = d.id; o.textContent = d.name; $('dash').appendChild(o); }
 for (const name of DATA.rooms) { const o = document.createElement('option'); o.value = name; $('rooms').appendChild(o); }
 memberOpts($('a-presenter'), '— Nobody —', false);
-memberOpts($('a-supervisor'), '— Nobody —', false);
 memberOpts($('c-presenter'), '— No change —', true);
-memberOpts($('c-supervisor'), '— No change —', true);
 if (DATA.prefill.dashboardId) $('dash').value = DATA.prefill.dashboardId;
 if (DATA.prefill.date) { $('a-date').value = DATA.prefill.date; $('c-date').value = DATA.prefill.date; }
 $('a-date').value = $('a-date').value || new Date().toISOString().slice(0, 10);
@@ -7446,7 +7440,7 @@ $('a-save').addEventListener('click', () => {
   post({ mode: 'add', dashboardId: $('dash').value, title, date: $('a-date').value,
     startTime: $('a-start').value || null, endTime: $('a-end').value || null,
     kindKey: $('a-kind').value, presenterId: $('a-presenter').value || null,
-    supervisorId: $('a-supervisor').value || null, location: $('a-location').value.trim() || null,
+    location: $('a-location').value.trim() || null,
     departmentId: $('a-dept').value || null, recur: $('a-recur').value,
     recurUntil: $('a-until').value || null, notes: $('a-notes').value.trim() || null }, $('a-save'));
 });
@@ -7456,7 +7450,6 @@ $('c-save').addEventListener('click', () => {
   const fields = {};
   if ($('c-title').value.trim()) fields.title = $('c-title').value.trim();
   if ($('c-presenter').value) fields.presenterId = $('c-presenter').value === 'none' ? null : $('c-presenter').value;
-  if ($('c-supervisor').value) fields.supervisorId = $('c-supervisor').value === 'none' ? null : $('c-supervisor').value;
   if ($('c-location').value.trim()) fields.location = $('c-location').value.trim();
   if ($('c-start').value) fields.startTime = $('c-start').value;
   if ($('c-end').value) fields.endTime = $('c-end').value;
@@ -7507,7 +7500,7 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       const date = String(b.date || '');
       if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'Pick a date.' }); return; }
-      if (!(await validUser(b.presenterId)) || !(await validUser(b.supervisorId))) {
+      if (!(await validUser(b.presenterId))) {
         res.status(400).json({ error: 'That person is not an active team member.' }); return;
       }
       let kindKey = 'session';
@@ -7524,7 +7517,7 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       await insertSession(companyId, ownerId, dashboardId, {
         title, date,
         startTime: b.startTime || null, endTime: b.endTime || null,
-        presenterId: b.presenterId || null, supervisorId: b.supervisorId || null,
+        presenterId: b.presenterId || null,
         location: b.location ? String(b.location).trim() : null,
         kindKey, departmentId, notes: b.notes ? String(b.notes).trim() : null,
         recurRule, recurInterval: b.recur === 'weekly2' ? 2 : 1,
@@ -7532,7 +7525,7 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       });
       res.json({ ok: true, message: `Added "${title}" to ${dRows[0].name} on ${date}${recurRule !== 'none' ? ' (repeating weekly)' : ''}.` });
       {
-        const people = [b.presenterId, b.supervisorId].filter(Boolean).map(String);
+        const people = [b.presenterId].filter(Boolean).map(String);
         if (people.length) {
           notify({
             companyId, userIds: people, category: 'calendar', type: 'session_assigned',
@@ -7582,7 +7575,9 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       const f: any = {};
       if (typeof fIn.title === 'string' && fIn.title.trim()) f.title = fIn.title.trim();
       if ('presenterId' in fIn) { if (!(await validUser(fIn.presenterId))) { res.status(400).json({ error: 'That speaker is not an active team member.' }); return; } f.presenterId = fIn.presenterId || null; }
-      if ('supervisorId' in fIn) { if (!(await validUser(fIn.supervisorId))) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; } f.supervisorId = fIn.supervisorId || null; }
+      // A supervisorId from a stale cached page is ignored on purpose:
+      // supervisors were retired (Deepika, 2026-11-07) — sessions have
+      // speakers only now.
       if (typeof fIn.location === 'string' && fIn.location.trim()) f.location = fIn.location.trim();
       if (fIn.startTime) f.startTime = String(fIn.startTime);
       if (fIn.endTime) f.endTime = String(fIn.endTime);
@@ -10781,9 +10776,10 @@ const DEFAULT_KINDS = [
 
 // ---------- Per-date overrides for recurring sessions ----------
 // A series keeps the defaults; an override row individualizes one
-// date (own presenter / supervisor / room / link / times, or a
-// cancelled date). has_* flags separate "set (maybe to null)" from
-// "not overridden".
+// date (own presenter / room / link / times, or a cancelled date).
+// (The has_supervisor override columns remain for stored history;
+// nothing writes them since supervisors were retired, 2026-11-07.)
+// has_* flags separate "set (maybe to null)" from "not overridden".
 function ovDateStr(d: any): string {
   return d instanceof Date ? d.toISOString().slice(0, 10) : String(d);
 }
@@ -11013,7 +11009,7 @@ router.delete('/session-kinds/:id', requireRole('owner', 'scheduler'), async (re
 // Session availability links + session offers (Deepika 2026-11-04,
 // migration 081) — the calendar mirror of availability links (022)
 // and gap offers (079). A no-login link lists the sessions that still
-// need a presenter (the kind's person name) or a supervisor; people
+// need a speaker (the kind's person name); people
 // tap the ones they can cover. From the Needs people tool, a scheduler
 // offers a session to those volunteers or everyone on the calendar;
 // each recipient gets a bell + an email with a personal login-free
@@ -11130,10 +11126,9 @@ async function sessionClaimConflict(q: any, companyId: string, userId: string, o
   for (const s of day) {
     const sameOcc = baseSessionId(s.id) === baseSessionId(occ.id) && s.date === occ.date;
     if (sameOcc) {
-      // Holding the OTHER role on this same session blocks the claim;
-      // holding the claimed role is the filled case, handled earlier.
-      if (role === 'presenter' && s.supervisorUserId === userId) return 'You are already the supervisor for this session.';
-      if (role === 'supervisor' && s.lecturerUserId === userId) return 'You are already presenting this session.';
+      // Same session: holding the claimed role is the filled case,
+      // handled earlier. (Supervisors were retired on 2026-11-07, so
+      // a stored supervisor assignment no longer blocks a claim.)
       continue;
     }
     if (s.lecturerUserId === userId || s.supervisorUserId === userId) {
@@ -11287,12 +11282,11 @@ router.get('/session-avail/public', async (req: Request, res: Response) => {
     const spMapPub = await loadSpeakers(query as any, rows.map((r: any) => r.id));
     const presenterMissingPub = (s: any) => effectiveSpeakers(spMapPub.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0;
     const sessions = expanded
-      .filter((s: any) => presenterMissingPub(s) || !s.supervisorUserId)
+      .filter((s: any) => presenterMissingPub(s))
       .map((s: any) => {
         const k: any = kindOf(s);
         const missing: string[] = [];
         if (presenterMissingPub(s)) missing.push('presenter');
-        if (!s.supervisorUserId) missing.push('supervisor');
         return {
           sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
           startTime: s.startTime, endTime: s.endTime, location: s.location,
@@ -11361,7 +11355,6 @@ router.post('/session-avail/public/respond', async (req: Request, res: Response)
     const gapSet = new Set<string>();
     for (const s of expanded) {
       if (effectiveSpeakers(spMapResp.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|presenter');
-      if (!s.supervisorUserId) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|supervisor');
     }
     await query('DELETE FROM session_avail_responses WHERE link_id = $1 AND name = $2', [link.id, cleanName]);
     let saved = 0;
@@ -11477,12 +11470,11 @@ async function sessionGapsForWindow(companyId: string, dashboardId: string | nul
   const spMapGaps = await loadSpeakers(query as any, rows.map((r: any) => r.id));
   const presenterMissing = (s: any) => effectiveSpeakers(spMapGaps.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0;
   return expanded
-    .filter((s: any) => presenterMissing(s) || !s.supervisorUserId)
+    .filter((s: any) => presenterMissing(s))
     .map((s: any) => {
       const k: any = kindOf(s);
       const missing: string[] = [];
       if (presenterMissing(s)) missing.push('presenter');
-      if (!s.supervisorUserId) missing.push('supervisor');
       return {
         sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
         startTime: s.startTime, endTime: s.endTime, location: s.location,
@@ -11712,9 +11704,9 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
   if (!resolved) return { error: 'That session no longer exists on that date.', status: 404 };
   const { occ } = resolved;
   // Presenter filled = a lecturer for the date OR any speakers on the
-  // series (a guest speaker covers the spot too).
-  const filled = role === 'supervisor' ? !!occ.supervisorUserId
-    : (!!occ.lecturerUserId || (await sessionsWithSpeakers(q, [baseId])).has(baseId));
+  // series (a guest speaker covers the spot too). Speakers are the
+  // only offerable role — supervisors were retired (2026-11-07).
+  const filled = !!occ.lecturerUserId || (await sessionsWithSpeakers(q, [baseId])).has(baseId);
   if (filled) return { filled: true, occ };
   const visibleIds = await academicVisibleDeptIds(req);
   const { rows: userRows } = await q(
@@ -11762,7 +11754,7 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
     if (volIds.has(u.id)) continue;
     everyone.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });
   }
-  const roleLabel = role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(q, companyId, occ)).toLowerCase();
+  const roleLabel = (await sessionPersonLabel(q, companyId, occ)).toLowerCase();
   return { occ, roleLabel, volunteers, everyone };
 }
 
@@ -11772,7 +11764,7 @@ router.get('/session-offers/candidates', requireRole('owner', 'scheduler'), asyn
     const baseId = baseSessionId(String(req.query.sessionId || ''));
     const occDate = String(req.query.occDate || '');
     const role = String(req.query.role || '');
-    if (!baseId || !isValidDate(occDate) || !['presenter', 'supervisor'].includes(role)) {
+    if (!baseId || !isValidDate(occDate) || role !== 'presenter') {
       res.status(400).json({ error: 'sessionId, occDate and role are required.' });
       return;
     }
@@ -11818,7 +11810,7 @@ router.post('/session-offers', requireRole('owner', 'scheduler'), async (req: Re
     const occDate = String(b.occDate || '');
     const role = String(b.role || '');
     const userIds: string[] = Array.isArray(b.userIds) ? [...new Set<string>(b.userIds.map((x: any) => String(x)))] : [];
-    if (!baseId || !isValidDate(occDate) || !['presenter', 'supervisor'].includes(role) || !userIds.length) {
+    if (!baseId || !isValidDate(occDate) || role !== 'presenter' || !userIds.length) {
       res.status(400).json({ error: 'sessionId, occDate, role and at least one person are required.' });
       return;
     }
@@ -11877,19 +11869,24 @@ router.get('/session-offers/act/:token', async (req: Request, res: Response) => 
       [String(req.params.token)]);
     if (!rows.length) { res.status(404).send(actPage('Link not valid', '<p>This link is not valid.</p>')); return; }
     const rec = rows[0];
+    // Supervisors were retired (Deepika, 2026-11-07): an old offer for
+    // the supervisor spot no longer applies — it can never be claimed.
+    if (rec.role === 'supervisor') {
+      res.send(actPage('This offer has closed', '<p>This session no longer needs a supervisor — thank you for offering!</p>'));
+      return;
+    }
     const resolved = await resolveOccurrence(query, rec.companyId, rec.sessionId, rec.occDate);
     if (!resolved) { res.send(actPage('Session not found', '<p>That session no longer exists on that date.</p>')); return; }
     const { occ } = resolved;
-    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
+    const roleLabel = (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
     const when = `${fmtDateLong(rec.occDate)}${occ.startTime ? ' at ' + String(occ.startTime).slice(0, 5) : ''}`;
     const head = `<p style="font-size:16px">Hi ${escHtml(String(rec.userName).split(' ')[0])} — <b>${escHtml(occ.title)}</b> on ${escHtml(when)} needs ${/^[aeiou]/i.test(roleLabel) ? 'an' : 'a'} ${escHtml(roleLabel)}.</p>`;
     if (rec.claimedAt) { res.send(actPage('You are on this session', head + '<p>You already accepted this session. Thank you!</p>')); return; }
     // A presenter spot is filled when the occurrence has a lecturer
     // OR the series has any speakers at all (guests count).
-    const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId
-      : (!!occ.lecturerUserId || (await sessionsWithSpeakers(query as any, [rec.sessionId])).has(rec.sessionId));
+    const filledNow = !!occ.lecturerUserId || (await sessionsWithSpeakers(query as any, [rec.sessionId])).has(rec.sessionId);
     if (rec.status === 'filled' || filledNow) {
-      const who = rec.role === 'supervisor' ? occ.supervisorName : occ.lecturerName;
+      const who = occ.lecturerName;
       res.send(actPage('This session is filled', head + `<p>Someone has already taken this session${who ? ` — ${escHtml(who)}` : ''}. Thank you for offering!</p>`));
       return;
     }
@@ -11915,6 +11912,12 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       [token]);
     if (!rows.length) { res.status(404).send(actPage('Link not valid', '<p>This link is not valid.</p>')); return; }
     const rec = rows[0];
+    // Supervisors were retired (Deepika, 2026-11-07): a legacy
+    // supervisor offer can never be claimed.
+    if (rec.role === 'supervisor') {
+      res.send(actPage('This offer has closed', '<p>This session no longer needs a supervisor — thank you for offering!</p>'));
+      return;
+    }
     if (rec.claimedAt) { res.send(actPage('Already accepted', '<p>You already accepted this session. Thank you!</p>')); return; }
     const outcome = await withTransaction(async (tx: any) => {
       const q = (text: string, params?: any[]) => tx.query(text, params);
@@ -11923,8 +11926,7 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       const resolved = await resolveOccurrence(q, rec.companyId, rec.sessionId, rec.occDate);
       if (!resolved) return { kind: 'gone' } as any;
       const { base, occ } = resolved;
-      const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId
-        : (!!occ.lecturerUserId || (await sessionsWithSpeakers(q, [rec.sessionId])).has(rec.sessionId));
+      const filledNow = !!occ.lecturerUserId || (await sessionsWithSpeakers(q, [rec.sessionId])).has(rec.sessionId);
       if (filledNow) {
         await q("UPDATE session_offers SET status = 'filled' WHERE id = $1", [rec.offerId]);
         return { kind: 'filled', occ } as any;
@@ -11932,22 +11934,13 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       const conflict = await sessionClaimConflict(q, rec.companyId, rec.userId, occ, rec.role, null);
       if (conflict) return { kind: 'conflict', conflict, occ } as any;
       if (occ.date === base.date) {
-        if (rec.role === 'supervisor') await q('UPDATE academic_sessions SET supervisor_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
-        else {
-          await q('UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
-          // Keep the speakers list in step: the accepter is Speaker 1
-          // (offers only open on speaker-less gaps, so the list is
-          // expected empty — guard anyway).
-          if (!(await sessionsWithSpeakers(q, [base.id])).has(base.id)) {
-            await saveSpeakers(q, base.id, [{ userId: rec.userId }]);
-          }
+        await q('UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
+        // Keep the speakers list in step: the accepter is Speaker 1
+        // (offers only open on speaker-less gaps, so the list is
+        // expected empty — guard anyway).
+        if (!(await sessionsWithSpeakers(q, [base.id])).has(base.id)) {
+          await saveSpeakers(q, base.id, [{ userId: rec.userId }]);
         }
-      } else if (rec.role === 'supervisor') {
-        await q(
-          `INSERT INTO academic_session_overrides (company_id, session_id, date, supervisor_user_id, has_supervisor)
-           VALUES ($1, $2, $3, $4, true)
-           ON CONFLICT (session_id, date) DO UPDATE SET supervisor_user_id = EXCLUDED.supervisor_user_id, has_supervisor = true, updated_at = now()`,
-          [rec.companyId, base.id, occ.date, rec.userId]);
       } else {
         await q(
           `INSERT INTO academic_session_overrides (company_id, session_id, date, lecturer_user_id, has_lecturer)
@@ -11968,7 +11961,7 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       return;
     }
     const occ = outcome.occ;
-    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
+    const roleLabel = (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
     try {
       const approvers = await deptApproverIds(rec.companyId, occ.departmentId || null);
       const bellTo = [...new Set([...approvers, ...(rec.createdBy ? [rec.createdBy] : [])])].filter((id) => id !== rec.userId);
@@ -12443,10 +12436,9 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
       if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
       speakersIn = [{ userId: lecturerId }];
     }
-    if (b.supervisorUserId) {
-      const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.supervisorUserId, companyId]);
-      if (!rows.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
-    }
+    // A supervisorUserId in the body is ignored on purpose:
+    // supervisors were retired (Deepika, 2026-11-07) — new sessions
+    // never get one (the column stays for stored history).
     let beneficiaries: { departmentIds: string[]; userIds: string[] } | null = null;
     if (b.beneficiaryDepartmentIds !== undefined || b.beneficiaryUserIds !== undefined) {
       const cb = await cleanBeneficiaries(query as any, companyId, b.beneficiaryDepartmentIds, b.beneficiaryUserIds);
@@ -12489,18 +12481,18 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING id`,
       [crypto.randomUUID(), companyId, title, lecturerId, departmentId,
        b.date, b.startTime || null, b.endTime || null, locationVal,
-       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
+       kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, null,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url, personLabelVal,
        pair.provider, pair.externalId, roomSel.roomId, roomSel.roomSource, roomSel.roomExternalId]);
     const newSessionId = rows[0].id;
     if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
     res.json({ ok: true, id: newSessionId });
-    // Notify the team speakers/supervisor; an event with NO speakers
+    // Notify the team speakers; an event with NO speakers
     // at all (guests count as speakers) tells the calendar's
     // department members a presenter is needed.
     {
-      const people = [...(speakersIn || []).filter((s) => s.userId).map((s) => String(s.userId)), ...(b.supervisorUserId ? [String(b.supervisorUserId)] : [])];
+      const people = [...(speakersIn || []).filter((s) => s.userId).map((s) => String(s.userId))];
       const dateStr = b.date ? String(b.date).slice(0, 10) : '';
       if (people.length) {
         notify({
@@ -12550,7 +12542,7 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
 });
 
 // POST /api/schedule/academic-sessions/bulk-assign — owner or
-// scheduler. Assign a presenter, supervisor or location to many
+// scheduler. Assign a speaker or location to many
 // sessions at once (Deepika, 2026-10-21). Items are the occurrences
 // as shown on the calendar ({id, date}): a recurring session touched
 // with a date writes that date's override only; a one-off session
@@ -12559,8 +12551,11 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
   try {
     const companyId = req.session.companyId!;
     const b = req.body ?? {};
-    const field = ['lecturer', 'supervisor', 'location'].includes(String(b.field)) ? String(b.field) : null;
-    if (!field) { res.status(400).json({ error: 'Say what to assign: speaker, supervisor or location.' }); return; }
+    // Supervisors were retired (Deepika, 2026-11-07): the field list
+    // no longer accepts 'supervisor' — a stale client gets a clear
+    // error instead of silently assigning one.
+    const field = ['lecturer', 'location'].includes(String(b.field)) ? String(b.field) : null;
+    if (!field) { res.status(400).json({ error: 'Say what to assign: speaker or location.' }); return; }
     const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
     if (!items.length) { res.status(400).json({ error: 'Select at least one session.' }); return; }
     let userId: string | null = null;
@@ -12589,18 +12584,16 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
       if (field !== 'location') {
         if (recurring && date) {
           const ov = await getOverride(seriesId, date);
-          const eff = effectivePeople(cur, ov);
-          prevHolder = field === 'lecturer' ? eff.lecturer : eff.supervisor;
+          prevHolder = effectivePeople(cur, ov).lecturer;
         } else {
-          prevHolder = cur[field === 'lecturer' ? 'lecturer_user_id' : 'supervisor_user_id'];
+          prevHolder = cur.lecturer_user_id;
         }
       }
       if (recurring && date) {
         if (field === 'lecturer') await upsertOverride(companyId, seriesId, date, { has_lecturer: true, lecturer_user_id: userId });
-        else if (field === 'supervisor') await upsertOverride(companyId, seriesId, date, { has_supervisor: true, supervisor_user_id: userId });
         else await upsertOverride(companyId, seriesId, date, { has_location: true, location: locVal });
       } else {
-        const col = field === 'lecturer' ? 'lecturer_user_id' : field === 'supervisor' ? 'supervisor_user_id' : 'location';
+        const col = field === 'lecturer' ? 'lecturer_user_id' : 'location';
         const val = field === 'location' ? locVal : userId;
         await query(`UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3`, [val, seriesId, companyId]);
         if (field === 'lecturer') {
@@ -12623,7 +12616,7 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
     res.json({ ok: true, updated, skipped });
     // Notify the newly assigned person and anyone who lost sessions.
     if (field !== 'location') {
-      const roleWord = field === 'lecturer' ? 'presenter' : 'supervisor';
+      const roleWord = 'presenter';
       if (userId && assignedChanges > 0) {
         notify({
           companyId, userIds: [userId], category: 'calendar', type: 'session_assigned',
@@ -12686,11 +12679,12 @@ router.post('/academic-sessions/:id/rsvp', requireRole('owner', 'scheduler', 'em
   }
 });
 
-// POST /api/schedule/academic-sessions/:id/claim — presenter pickup
+// POST /api/schedule/academic-sessions/:id/claim — speaker pickup
 // (Deepika, 2026-10-20): any signed-in user who can see a session with no
-// presenter ("Needs presenter") picks it up. Body { role: 'supervisor' }
-// picks up the supervisor slot instead. Claiming an occurrence claims
-// the whole series. Atomic: the UPDATE lands only while the slot is open.
+// speaker ("Needs speaker") picks it up. (A body role of 'supervisor'
+// is refused — that slot was retired on 2026-11-07.) Claiming an
+// occurrence claims the whole series. Atomic: the UPDATE lands only
+// while the slot is open.
 router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -12724,14 +12718,19 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
         res.status(403).json({ error: 'You do not have access to this session.' }); return;
       }
     }
-    const col = String(req.body?.role || '') === 'supervisor' ? 'supervisor_user_id' : 'lecturer_user_id';
-    const isSup = col === 'supervisor_user_id';
+    // Supervisors were retired (Deepika, 2026-11-07): the only
+    // claimable spot is the speaker spot.
+    if (String(req.body?.role || '') === 'supervisor') {
+      res.status(400).json({ error: 'Sessions no longer have a supervisor spot — speakers only.' });
+      return;
+    }
+    const col = 'lecturer_user_id';
     // EVENT model claim rule: with NO speakers at all, claiming the
     // presenter spot makes the claimer Speaker 1 (the lecturer UPDATE
     // below + a Speaker 1 row). When speakers already exist (e.g. a
     // guest leads), the claimer joins as an ADDITIONAL speaker and
     // Speaker 1 / the lecturer mirror stay untouched.
-    if (!isSup && !(req.body?.date && cur.recur_rule && cur.recur_rule !== 'none')) {
+    if (!(req.body?.date && cur.recur_rule && cur.recur_rule !== 'none')) {
       const spMap = await loadSpeakers(query as any, [seriesId]);
       const sp = spMap.get(seriesId) || [];
       if (sp.length) {
@@ -12748,12 +12747,12 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       const ov = await getOverride(seriesId, occDate);
       if (ov && ov.cancelled) { res.status(409).json({ error: 'This date is cancelled.' }); return; }
       const eff = effectivePeople(cur, ov);
-      const holder = isSup ? eff.supervisor : eff.lecturer;
+      const holder = eff.lecturer;
       if (holder) {
         if (holder === req.session.userId) { res.json({ ok: true, already: true }); return; }
         res.status(409).json({ error: 'Someone already picked this up.' }); return;
       }
-      const flag = isSup ? 'has_supervisor' : 'has_lecturer';
+      const flag = 'has_lecturer';
       await query('INSERT INTO academic_session_overrides (company_id, session_id, date) VALUES ($1, $2, $3) ON CONFLICT (session_id, date) DO NOTHING', [companyId, seriesId, occDate]);
       const upd2 = await query(
         `UPDATE academic_session_overrides SET ${col} = $1, ${flag} = true, updated_at = now()
@@ -12761,7 +12760,7 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
         [req.session.userId!, seriesId, occDate]);
       if (!upd2.rowCount) {
         const ov2 = await getOverride(seriesId, occDate);
-        const nowHolder = ov2 ? (isSup ? ov2.supervisor_user_id : ov2.lecturer_user_id) : null;
+        const nowHolder = ov2 ? ov2.lecturer_user_id : null;
         if (nowHolder === req.session.userId) { res.json({ ok: true, already: true }); return; }
         res.status(409).json({ error: 'Someone already picked this up.' }); return;
       }
@@ -12776,7 +12775,7 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       `UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3 AND ${col} IS NULL`,
       [req.session.userId!, seriesId, companyId]);
     if (!upd.rowCount) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
-    if (!isSup) await saveSpeakers(query as any, seriesId, [{ userId: req.session.userId! }]);
+    await saveSpeakers(query as any, seriesId, [{ userId: req.session.userId! }]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session claim failed:', err);
@@ -12946,15 +12945,15 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
         }
         return;
       }
-      for (const key of ['lecturerUserId', 'supervisorUserId']) {
-        if (b[key]) {
-          const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b[key], companyId]);
-          if (!lu.length) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
-        }
+      if (b.lecturerUserId) {
+        const { rows: lu } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
+        if (!lu.length) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
       }
+      // A supervisorUserId for one date is ignored on purpose:
+      // supervisors were retired (Deepika, 2026-11-07) — a per-date
+      // override never sets one now.
       const fields: Record<string, any> = { cancelled: false };
       if (b.lecturerUserId !== undefined) { fields.has_lecturer = true; fields.lecturer_user_id = b.lecturerUserId ? String(b.lecturerUserId) : null; }
-      if (b.supervisorUserId !== undefined) { fields.has_supervisor = true; fields.supervisor_user_id = b.supervisorUserId ? String(b.supervisorUserId) : null; }
       if (b.location !== undefined) { fields.has_location = true; fields.location = b.location ? String(b.location).trim() : null; }
       if (b.meetingUrl !== undefined) {
         const cm = cleanMeetingUrl(b.meetingUrl);
@@ -12969,7 +12968,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
       await upsertOverride(companyId, seriesId, occDate, fields);
       res.json({ ok: true, scope: 'date' });
       {
-        const people = [cur.lecturer_user_id, cur.supervisor_user_id, b.lecturerUserId || null, b.supervisorUserId || null].filter(Boolean) as string[];
+        const people = [cur.lecturer_user_id, cur.supervisor_user_id, b.lecturerUserId || null].filter(Boolean) as string[];
         if (people.length) {
           notify({
             companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
@@ -12998,17 +12997,16 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     const recurRule = rec.rule;
     const recurDays = b.recurDays !== undefined ? cleanRecurDays(b.recurDays) : (cur.recur_days ? String(cur.recur_days).split(',').map(function (x: string) { return parseInt(x, 10); }) : []);
     const recurUntil = b.recurUntil !== undefined ? (recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : null) : cur.recur_until;
-    const supervisorUserId = b.supervisorUserId !== undefined ? (b.supervisorUserId || null) : cur.supervisor_user_id;
-    if (supervisorUserId) {
-      const { rows: su } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [supervisorUserId, companyId]);
-      if (!su.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
-    }
+    // Supervisors were retired (Deepika, 2026-11-07): the stored
+    // supervisor_user_id is carried through an edit unchanged (data
+    // preserved), but the body's supervisorUserId is never honoured —
+    // an edit can no longer set or clear one.
+    const supervisorUserId = cur.supervisor_user_id;
     // EVENT model: speakers + beneficiaries (series-level). A save
     // that posts `speakers` replaces the list and re-mirrors the
     // lecturer; a legacy save that posts only lecturerUserId treats
     // it as the Speaker 1 value. A save that posts neither keeps the
-    // list exactly as it is. The supervisor is preserved whenever the
-    // body does not mention it (handled above).
+    // list exactly as it is.
     let speakersIn: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[] | null = null;
     let prevSpeakers: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[] = [];
     let newLecturer: string | null = b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id;

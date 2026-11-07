@@ -144,7 +144,7 @@ const ACTIONS = [
   { id: 'session_move', grp: '🎓 Calendar', label: '↔️ Move a session', show: () => PACK.sessions.length > 0 },
   { id: 'session_cancel', grp: '🎓 Calendar', label: '✖️ Cancel a session', show: () => PACK.sessions.length > 0 },
   { id: 'session_presenter', grp: '🎓 Calendar', label: '🎤 Change speaker', show: () => PACK.sessions.length > 0 },
-  { id: 'session_room_supervisor', grp: '🎓 Calendar', label: '🚪 Change room / supervisor', show: () => PACK.sessions.length > 0 },
+  { id: 'session_room_supervisor', grp: '🎓 Calendar', label: '🚪 Change room', show: () => PACK.sessions.length > 0 },
   { id: 'session_pickup', grp: '🎓 Calendar', label: '🙋 Pick up a session', show: () => PACK.sessions.some((s) => s.needsPresenter) },
   { id: 'question', grp: '❓ Ask', label: '❓ Ask a question', show: () => true },
 ];
@@ -334,7 +334,7 @@ function renderPanel() {
     let extra = '';
     if (action === 'session_move') extra = '<div style="margin-top:12px">' + L('Move it to') + '<div id="c-new"></div><div id="pk-new"></div></div><div style="margin-top:12px">' + L('New start time (optional)') + '<input type="time" id="f-nst"></div>';
     if (action === 'session_presenter') extra = '<div style="margin-top:12px">' + L('New speaker') + '<select id="f-pres">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>';
-    if (action === 'session_room_supervisor') extra = '<div style="margin-top:12px">' + L('Room') + '<input type="text" id="f-room" list="rooms" placeholder="Leave as is, or type the new room"><datalist id="rooms">' + PACK.rooms.map((r) => '<option value="' + esc(r) + '">').join('') + '</datalist></div><div style="margin-top:12px">' + L('Supervisor (optional)') + '<select id="f-sup">' + teamOpts('<option value="">No change</option>') + '</select></div>';
+    if (action === 'session_room_supervisor') extra = '<div style="margin-top:12px">' + L('Room') + '<input type="text" id="f-room" list="rooms" placeholder="Leave as is, or type the new room"><datalist id="rooms">' + PACK.rooms.map((r) => '<option value="' + esc(r) + '">').join('') + '</datalist></div>';
     p.innerHTML = L('Pick the session — tap a marked day, then the session') + '<div id="c-sess"></div><div id="pk-sess"></div>' + extra + scopeHtml + noteHtml;
     calendar($('#c-sess'), { items: sessItems(list), onPick: (sel) => {
       S.sess = sel.length ? sel[0].sess : null;
@@ -350,7 +350,6 @@ function renderPanel() {
     if (action === 'session_presenter') $('#f-pres').addEventListener('change', (ev) => { S.presenterId = ev.target.value; schedulePreview(); });
     if (action === 'session_room_supervisor') {
       $('#f-room').addEventListener('input', schedulePreview);
-      $('#f-sup').addEventListener('change', (ev) => { S.supervisorId = ev.target.value; schedulePreview(); });
     }
     p.querySelectorAll('input[name="scope"]').forEach((r) => r.addEventListener('change', schedulePreview));
   } else if (action === 'question') {
@@ -378,7 +377,7 @@ function fields() {
     case 'session_move': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date, newDate: S.newDate, newStartTime: $('#f-nst').value || undefined, scope: scopeVal() });
     case 'session_cancel': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date, scope: scopeVal() });
     case 'session_presenter': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date, presenterId: S.presenterId, scope: scopeVal() });
-    case 'session_room_supervisor': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date, room: $('#f-room').value, supervisorId: S.supervisorId || undefined, scope: scopeVal() });
+    case 'session_room_supervisor': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date, room: $('#f-room').value, scope: scopeVal() });
     case 'session_pickup': return withNote({ sessionId: S.sess && S.sess.id, date: S.sess && S.sess.date });
     case 'question': return { text: $('#f-q').value.trim() };
     default: return {};
