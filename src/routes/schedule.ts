@@ -9196,6 +9196,167 @@ router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Reque
   }
 });
 
+// ---------- Communication groups (migration 094) ----------
+// Named circles of people for COMMUNICATIONS only — no effect on
+// shifts, schedules, or permissions. Members can come from ANY
+// department mixed together. First use: the calendar event form's
+// Beneficiaries area expands a picked group (client-side, snapshot)
+// into ordinary beneficiary people — the session stores no group
+// link, so editing a group never changes saved events.
+function commGroupName(r: any): string {
+  return ([r.first_name, r.last_name].filter(Boolean).join(' ') || r.name || '').trim();
+}
+
+async function loadCommGroups(companyId: string) {
+  const { rows: groups } = await query(
+    'SELECT * FROM comm_groups WHERE company_id = $1 ORDER BY lower(name)', [companyId]);
+  if (!groups.length) return [];
+  const ids = groups.map((g: any) => g.id);
+  const { rows: mem } = await query(
+    `SELECT m.group_id, m.user_id, u.first_name, u.last_name, u.name, u.department_id, u.is_active
+     FROM comm_group_members m JOIN users u ON u.id = m.user_id
+     WHERE m.group_id = ANY($1::uuid[])
+     ORDER BY u.first_name, u.last_name`,
+    [ids]);
+  const byGroup = new Map<string, any[]>();
+  for (const r of mem) {
+    if (!byGroup.has(r.group_id)) byGroup.set(r.group_id, []);
+    byGroup.get(r.group_id)!.push({
+      userId: r.user_id, name: commGroupName(r), departmentId: r.department_id || null,
+      isActive: r.is_active === true,
+    });
+  }
+  return groups.map((g: any) => {
+    const members = byGroup.get(g.id) || [];
+    return {
+      id: g.id, name: g.name, createdBy: g.created_by || null,
+      createdAt: g.created_at, updatedAt: g.updated_at,
+      memberCount: members.length,
+      activeMemberCount: members.filter((mm: any) => mm.isActive).length,
+      members,
+    };
+  });
+}
+
+// Members picked for a group must be ACTIVE members of the company
+// (any department). Once stored, a member who is later deactivated
+// stays on the row but is skipped when a group is expanded — so on
+// edit, ids already stored on the group (keepIds) stay valid even if
+// that person has since been deactivated.
+async function cleanGroupMemberIds(companyId: string, raw: any, keepIds: string[] = []): Promise<string[] | { error: string }> {
+  const ids = [...new Set((Array.isArray(raw) ? raw : []).map((x: any) => String(x)).filter(Boolean))];
+  if (ids.length) {
+    const { rows } = await query(
+      'SELECT id FROM users WHERE company_id = $1 AND id = ANY($2::uuid[]) AND (is_active = true OR id = ANY($3::uuid[]))',
+      [companyId, ids, keepIds]);
+    if (rows.length !== ids.length) return { error: 'A group member is not an active team member.' };
+  }
+  return ids;
+}
+
+async function saveGroupMembers(groupId: string, memberIds: string[]) {
+  await query('DELETE FROM comm_group_members WHERE group_id = $1', [groupId]);
+  for (const uid of memberIds) {
+    await query('INSERT INTO comm_group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [groupId, uid]);
+  }
+}
+
+router.get('/comm-groups', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    res.json({ groups: await loadCommGroups(req.session.companyId!) });
+  } catch (err) {
+    console.error('[schedule] list comm groups failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// The group creator's roster: every ACTIVE member of the company with
+// their department — deliberately NOT department-access scoped, since
+// a group may pull people from anywhere in the company. Managers only
+// (the creator itself is managers-only).
+router.get('/comm-groups/roster', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: depts } = await query(
+      'SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows } = await query(
+      `SELECT id, first_name, last_name, name, department_id FROM users
+       WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
+      [companyId]);
+    res.json({
+      departments: depts.map((d: any) => ({ id: d.id, name: d.name })),
+      members: rows.map((r: any) => ({ userId: r.id, name: commGroupName(r), departmentId: r.department_id || null })),
+    });
+  } catch (err) {
+    console.error('[schedule] comm group roster failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/comm-groups', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const name = b.name ? String(b.name).trim().replace(/\s+/g, ' ') : '';
+    if (!name) { res.status(400).json({ error: 'A group name is required.' }); return; }
+    if (name.length > 80) { res.status(400).json({ error: 'Group names can be up to 80 characters.' }); return; }
+    const companyId = req.session.companyId!;
+    const { rows: dupe } = await query(
+      'SELECT id FROM comm_groups WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+    if (dupe.length) { res.status(400).json({ error: 'A group with that name already exists.' }); return; }
+    const memberIds = await cleanGroupMemberIds(companyId, b.memberIds);
+    if (!Array.isArray(memberIds)) { res.status(400).json(memberIds); return; }
+    const id = crypto.randomUUID();
+    await query('INSERT INTO comm_groups (id, company_id, name, created_by) VALUES ($1,$2,$3,$4)',
+      [id, companyId, name, req.session.userId!]);
+    await saveGroupMembers(id, memberIds);
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[schedule] create comm group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.put('/comm-groups/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const companyId = req.session.companyId!;
+    const { rows } = await query('SELECT * FROM comm_groups WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Group not found.' }); return; }
+    const name = b.name !== undefined ? String(b.name).trim().replace(/\s+/g, ' ') : rows[0].name;
+    if (!name) { res.status(400).json({ error: 'A group name is required.' }); return; }
+    if (name.length > 80) { res.status(400).json({ error: 'Group names can be up to 80 characters.' }); return; }
+    if (name !== rows[0].name) {
+      const { rows: dupe } = await query(
+        'SELECT id FROM comm_groups WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
+        [companyId, name, req.params.id]);
+      if (dupe.length) { res.status(400).json({ error: 'A group with that name already exists.' }); return; }
+    }
+    let memberIds: string[] | null = null;
+    if (b.memberIds !== undefined) {
+      const { rows: cur } = await query('SELECT user_id FROM comm_group_members WHERE group_id = $1', [req.params.id]);
+      const cleaned = await cleanGroupMemberIds(companyId, b.memberIds, cur.map((r: any) => r.user_id));
+      if (!Array.isArray(cleaned)) { res.status(400).json(cleaned); return; }
+      memberIds = cleaned;
+    }
+    await query('UPDATE comm_groups SET name = $1, updated_at = now() WHERE id = $2', [name, req.params.id]);
+    if (memberIds) await saveGroupMembers(req.params.id, memberIds);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] update comm group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.delete('/comm-groups/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    await query('DELETE FROM comm_groups WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[schedule] delete comm group failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // --- ICS feed parsing (small, purpose-built) ---
 type IcsEvent = { start: Date; end: Date; summary: string; rrule: string | null; allDay: boolean };
 const icsCache = new Map<string, { at: number; events: IcsEvent[] }>();

@@ -38,6 +38,124 @@
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    // Communication groups (migration 094): the three-box group
+    // creator — ① group name ② department chooser ③ that
+    // department's people. Ticks ACCUMULATE across department
+    // switches (switching the chooser only changes who you're
+    // looking at). Shared by Settings → Communication groups and the
+    // event form's "＋ New group" (managers only — the server
+    // enforces it). opts: { group: {id, name, members} | null,
+    // onSaved: fn }.
+    window.qsOpenCommGroupEditor = function (opts) {
+      opts = opts || {};
+      var group = opts.group || null;
+      api('/api/schedule/comm-groups/roster').then(function (r) {
+        if (!r.ok) { pageError((r.data && r.data.error) || 'Could not load the team list.'); return; }
+        var depts = r.data.departments || [];
+        var members = r.data.members || [];
+        // userId -> {name, isActive}: the roster (active members)
+        // plus anyone already stored on the group being edited (a
+        // since-deactivated member still shows in the summary and
+        // can be removed there).
+        var known = {};
+        if (group && group.members) group.members.forEach(function (mm) { known[mm.userId] = { name: mm.name, isActive: mm.isActive !== false }; });
+        members.forEach(function (mm) { known[mm.userId] = { name: mm.name, isActive: true }; });
+        var hasNoDept = members.some(function (mm) { return !mm.departmentId; });
+        var deptChoices = depts.slice();
+        if (hasNoDept) deptChoices.push({ id: '__none__', name: 'No department' });
+        var picked = new Set();
+        if (group && group.members) group.members.forEach(function (mm) { picked.add(mm.userId); });
+        var curDept = deptChoices.length ? deptChoices[0].id : null;
+        var old = document.getElementById('cg-modal');
+        if (old) old.remove();
+        var m = document.createElement('div');
+        m.id = 'cg-modal';
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:90;padding:1rem';
+        var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
+        var HEAD = 'font-weight:700;letter-spacing:0.02em;font-size:0.9rem;margin-bottom:0.5rem';
+        var BOX = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem';
+        m.innerHTML = '<div style="background:var(--bg);border-radius:16px;padding:1.3rem;width:100%;max-width:520px;max-height:90vh;overflow-y:auto">' +
+          '<h3 style="margin:0 0 0.3rem">' + (group ? 'Edit communication group' : 'New communication group') + '</h3>' +
+          '<p class="muted" style="margin:0 0 0.9rem;font-size:0.88rem">A saved circle of people you can pick in one tap — for event beneficiaries, and later for messages.</p>' +
+          '<div style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
+          '<input id="cg-name" type="text" maxlength="80" placeholder="e.g. Interview Panel" value="' + (group ? esc(group.name) : '') + '" style="' + IN + ';margin-top:0"></div>' +
+          '<div style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENT</div>' +
+          '<div id="cg-depts" style="display:flex;gap:0.35rem;flex-wrap:wrap"></div>' +
+          '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Pick a department, tick its people below — then switch departments to add people from anywhere in the company. A group isn\'t tied to one department.</p></div>' +
+          '<div style="' + BOX + '"><div style="' + HEAD + '" id="cg-people-head">③ PEOPLE</div>' +
+          '<div id="cg-people"></div></div>' +
+          '<div id="cg-summary" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;padding:0.75rem 0.9rem;margin-bottom:0.7rem;font-size:0.9rem"></div>' +
+          '<div id="cg-error" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-bottom:0.7rem;font-size:0.88rem"></div>' +
+          '<button type="button" class="btn" id="cg-save" style="width:100%;padding:0.75rem;border-radius:10px">Save group</button>' +
+          '<button type="button" id="cg-cancel" style="width:100%;background:none;border:none;color:var(--dim);padding:0.6rem;cursor:pointer">Cancel</button>' +
+          '</div>';
+        document.body.appendChild(m);
+        function deptName(id) { var d = deptChoices.find(function (x) { return x.id === id; }); return d ? d.name : ''; }
+        function paintDepts() {
+          var box = m.querySelector('#cg-depts');
+          box.innerHTML = deptChoices.map(function (d) {
+            var on = d.id === curDept;
+            return '<button type="button" data-cgdept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + esc(d.name) + '</button>';
+          }).join('') || '<span class="muted">No departments yet.</span>';
+          box.querySelectorAll('[data-cgdept]').forEach(function (chip) {
+            chip.addEventListener('click', function () { curDept = chip.getAttribute('data-cgdept'); paintDepts(); paintPeople(); });
+          });
+        }
+        function paintPeople() {
+          var head = m.querySelector('#cg-people-head');
+          head.textContent = '③ PEOPLE IN ' + (curDept ? deptName(curDept).toUpperCase() : '—');
+          var box = m.querySelector('#cg-people');
+          var list = members.filter(function (mm) { return curDept === '__none__' ? !mm.departmentId : mm.departmentId === curDept; });
+          if (!list.length) { box.innerHTML = '<p class="muted" style="margin:0.2rem 0">Nobody in this department.</p>'; return; }
+          box.innerHTML = list.map(function (mm) {
+            var on = picked.has(mm.userId);
+            var ini = mm.name.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+            return '<label style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.2rem;border-bottom:1px solid var(--border);cursor:pointer">' +
+              '<span style="width:2rem;height:2rem;border-radius:999px;background:#e0f2f1;color:#0e7c86;display:inline-flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex:none">' + esc(ini) + '</span>' +
+              '<span style="flex:1">' + esc(mm.name) + '</span>' +
+              '<input type="checkbox" data-cgperson="' + mm.userId + '"' + (on ? ' checked' : '') + ' style="width:1.3rem;height:1.3rem;accent-color:#0e7c86"></label>';
+          }).join('');
+          box.querySelectorAll('[data-cgperson]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = cb.getAttribute('data-cgperson');
+              if (cb.checked) picked.add(id); else picked.delete(id);
+              paintSummary();
+            });
+          });
+        }
+        function paintSummary() {
+          var box = m.querySelector('#cg-summary');
+          var people = [];
+          picked.forEach(function (id) { if (known[id]) people.push({ userId: id, name: known[id].name, isActive: known[id].isActive }); });
+          people.sort(function (a, b) { return a.name.localeCompare(b.name); });
+          if (!people.length) { box.innerHTML = '<strong>In this group so far:</strong> <span class="muted">nobody yet — tick people above.</span>'; return; }
+          box.innerHTML = '<strong>In this group so far:</strong> ' + people.map(function (mm) {
+            return '<span style="display:inline-flex;align-items:center;gap:0.25rem;background:#fff;border:1px solid #99f6e4;border-radius:999px;padding:0.15rem 0.55rem;margin:0.15rem 0.1rem">' + esc(mm.name) + (mm.isActive ? '' : ' <span class="muted">(inactive)</span>') + '<button type="button" data-cgremove="' + mm.userId + '" style="background:none;border:none;cursor:pointer;line-height:1;font-size:0.95rem">×</button></span>';
+          }).join('');
+          box.querySelectorAll('[data-cgremove]').forEach(function (b) {
+            b.addEventListener('click', function () { picked.delete(b.getAttribute('data-cgremove')); paintPeople(); paintSummary(); });
+          });
+        }
+        paintDepts(); paintPeople(); paintSummary();
+        m.querySelector('#cg-cancel').addEventListener('click', function () { m.remove(); });
+        m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
+        m.querySelector('#cg-save').addEventListener('click', function () {
+          var name = m.querySelector('#cg-name').value.trim();
+          var err = m.querySelector('#cg-error');
+          if (!name) { err.style.display = 'block'; err.textContent = 'Give the group a name.'; return; }
+          var btn = this; btn.disabled = true;
+          var body = JSON.stringify({ name: name, memberIds: Array.from(picked) });
+          var call = group
+            ? api('/api/schedule/comm-groups/' + group.id, { method: 'PUT', body: body })
+            : api('/api/schedule/comm-groups', { method: 'POST', body: body });
+          call.then(function (r) {
+            btn.disabled = false;
+            if (r.ok) { m.remove(); pageSuccess(group ? 'Group updated.' : 'Group saved.'); if (opts.onSaved) opts.onSaved(); }
+            else { err.style.display = 'block'; err.textContent = (r.data && r.data.error) || 'Could not save the group.'; }
+          }).catch(function () { btn.disabled = false; err.style.display = 'block'; err.textContent = 'Could not save the group.'; });
+        });
+      }).catch(function () { pageError('Could not load the team list.'); });
+    };
     // Cover-available marker (Deepika 2026-11-02): a shift with an open
     // cover request shows on the schedule — a Pick up button for the
     // people who were asked, a plain marker for the requester/admins.
@@ -8205,6 +8323,10 @@ window.qsNpOfferSend = function (btn) {
               <input type="text" id="room-new-ics" placeholder="Calendar link (ICS) — optional" style="max-width:520px">
             </div>
             <button type="button" class="btn" id="room-new-save">＋ Add room</button>
+            <h3 style="margin-top:2rem">👥 Communication groups</h3>
+            <p class="muted">Saved circles of people who regularly need to be at things — members can come from any departments, mixed together. Pick a group in one tap when adding an event's beneficiaries and everyone in it gets the event. Groups are for communications only — they don't change anyone's schedule or permissions.</p>
+            <div id="cg-list"></div>
+            <button type="button" class="btn" id="cg-new">＋ New group</button>
           </div>
           <div id="subtab-rotations" class="sub-panel">
             <div class="set-head-row">
@@ -16655,6 +16777,57 @@ window.qsNpOfferSend = function (btn) {
           });
         }).catch(function () {});
       }
+      // --- Communication groups manager (same sub-tab, migration 094) ---
+      // The create/edit form itself is the shared three-box editor
+      // (window.qsOpenCommGroupEditor); this section lists the groups.
+      var cgCanManage = window.currentRole !== 'employee';
+      function loadCommGroups() {
+        api('/api/schedule/comm-groups').then(function (r) {
+          var groups = (r.ok && r.data.groups) || [];
+          var wrap = el('cg-list');
+          if (!wrap) return;
+          var newBtn = el('cg-new');
+          if (newBtn) newBtn.style.display = cgCanManage ? '' : 'none';
+          if (!groups.length) { wrap.innerHTML = '<p class="muted">No groups yet — make the first one below.</p>'; return; }
+          wrap.innerHTML = groups.map(function (g) {
+            var names = g.members.map(function (mm) { return esc(mm.name) + (mm.isActive ? '' : ' (inactive)'); }).join(', ');
+            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(g.name) + '</strong>' +
+              '<span style="background:#f0fdfa;color:#0e7c86;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">' + g.memberCount + (g.memberCount === 1 ? ' person' : ' people') + '</span>' +
+              (cgCanManage ? '<span style="margin-left:auto;display:flex;gap:0.45rem">' +
+              '<button type="button" class="btn-secondary" data-cg-edit="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px">Edit</button>' +
+              '<button type="button" data-cg-del="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></span>' : '') + '</div>' +
+              (names ? '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">' + names + '</div>' : '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">No members yet.</div>') +
+              '</div>';
+          }).join('');
+          wrap.querySelectorAll('[data-cg-edit]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-edit'); });
+              if (g && window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ group: g, onSaved: loadCommGroups });
+            });
+          });
+          wrap.querySelectorAll('[data-cg-del]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-del'); });
+              var doDel = function () {
+                api('/api/schedule/comm-groups/' + b.getAttribute('data-cg-del'), { method: 'DELETE' }).then(function (r) {
+                  if (r.ok) { pageSuccess('Group deleted.'); loadCommGroups(); } else pageError((r.data && r.data.error) || 'Could not delete.');
+                });
+              };
+              if (window.qsShowDialog) {
+                window.qsShowDialog('Delete this group?',
+                  '<p>“' + esc(g ? g.name : '') + '” will be removed. Events that already used it keep their people — this only stops future picks.</p>',
+                  [{ label: 'Cancel' }, { label: 'Delete group', onClick: doDel }]);
+              } else if (confirm('Delete this group? Events that already used it keep their people.')) doDel();
+            });
+          });
+        }).catch(function () {});
+      }
+      var cgNewBtn = el('cg-new');
+      if (cgNewBtn) cgNewBtn.addEventListener('click', function () {
+        if (window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ onSaved: loadCommGroups });
+      });
+
       var roomSave = el('room-new-save');
       if (roomSave) roomSave.addEventListener('click', function () {
         var name = el('room-new-name').value.trim();
@@ -16693,6 +16866,7 @@ window.qsNpOfferSend = function (btn) {
         dashSettingsAt = now;
         load();
         loadRooms();
+        loadCommGroups();
       }
       window.qsLoadDashboardsSettings = loadDashboardsSettings;
       document.querySelector('[data-subtab="dashboards"]').addEventListener('click', loadDashboardsSettings);
@@ -17721,6 +17895,12 @@ window.qsNpOfferSend = function (btn) {
           })() + '</select></label>' +
           '<div id="acf-ben-wrap" style="margin-bottom:0.7rem"><div style="font-weight:600">Beneficiaries — who is this event for?</div>' +
           '<div style="font-size:0.82rem;color:var(--dim);margin:0.25rem 0 0.45rem">They\'ll have this event on their calendar to attend.</div>' +
+          '<div id="acf-bengroups-wrap" style="margin-bottom:0.6rem">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;font-size:0.9rem">Groups</span>' +
+          ((acMyRole === 'owner' || acMyRole === 'scheduler') ? '<button type="button" id="acf-cgnew" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.86rem;cursor:pointer;padding:0">＋ New group</button>' : '') + '</div>' +
+          '<div id="acf-bengroups" style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.4rem"><span style="font-size:0.84rem;color:var(--dim)">Loading groups…</span></div>' +
+          '<div id="acf-bengroup-note" style="display:none;background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;padding:0.6rem 0.75rem;margin-top:0.5rem;font-size:0.88rem"></div></div>' +
+          '<div style="font-weight:600;font-size:0.9rem;margin-bottom:0.35rem">Departments</div>' +
           '<div style="display:flex;gap:0.35rem;flex-wrap:wrap" id="acf-bendepts">' + acDepts.map(function (d) {
             var on = benDeptSel.has(d.id);
             return '<button type="button" data-bendept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.3rem 0.7rem;font-size:0.83rem;cursor:pointer">' + esc(d.name) + '</button>';
@@ -18020,6 +18200,60 @@ window.qsNpOfferSend = function (btn) {
           var v = this.value;
           if (v && benUserIds.indexOf(v) < 0) { benUserIds.push(v); renderBenUsers(); }
           this.value = '';
+        });
+        // Communication groups (migration 094): picking a group chip
+        // EXPANDS the group into beneficiary people — its CURRENT
+        // members, active only — as a snapshot in benUserIds (the
+        // session stores no link back to the group, so editing the
+        // group later never changes this event). Chips only ADD:
+        // a person is removed with the × on their own chip above,
+        // which keeps un-picking exact and unambiguous.
+        var cgFormGroups = [];
+        var cgUsedGroups = new Set();
+        function paintBenGroups() {
+          var box = m.querySelector('#acf-bengroups');
+          if (!box) return;
+          if (!cgFormGroups.length) {
+            box.innerHTML = '<span style="font-size:0.84rem;color:var(--dim)">No groups yet' + ((acMyRole === 'owner' || acMyRole === 'scheduler') ? ' — make one with ＋ New group.' : '.') + '</span>';
+            return;
+          }
+          box.innerHTML = cgFormGroups.map(function (g) {
+            var used = cgUsedGroups.has(g.id);
+            return '<button type="button" data-bengroup="' + g.id + '" style="border:1px solid ' + (used ? '#0e7c86' : 'var(--border)') + ';background:' + (used ? '#f0fdfa' : '#fff') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + (used ? '✓ ' : '') + esc(g.name) + ' <span style="color:var(--dim)">· ' + g.activeMemberCount + (g.activeMemberCount === 1 ? ' person' : ' people') + '</span></button>';
+          }).join('');
+          box.querySelectorAll('[data-bengroup]').forEach(function (chip) {
+            chip.addEventListener('click', function () { expandBenGroup(chip.getAttribute('data-bengroup')); });
+          });
+        }
+        function expandBenGroup(gid) {
+          var g = cgFormGroups.find(function (x) { return x.id === gid; });
+          if (!g) return;
+          var note = m.querySelector('#acf-bengroup-note');
+          var actives = (g.members || []).filter(function (mm) { return mm.isActive; });
+          var added = [];
+          actives.forEach(function (mm) { if (benUserIds.indexOf(mm.userId) < 0) { benUserIds.push(mm.userId); added.push(mm); } });
+          if (actives.length) { benTouched = true; cgUsedGroups.add(gid); }
+          renderBenUsers();
+          paintBenGroups();
+          note.style.display = 'block';
+          if (!actives.length) note.innerHTML = '<strong>' + esc(g.name) + '</strong> has no active members right now — nobody to add.';
+          else if (!added.length) note.innerHTML = '<strong>' + esc(g.name) + '</strong> — everyone in it is already a beneficiary.';
+          else {
+            var names = added.slice(0, 3).map(function (mm) { return esc(mm.name); }).join(', ');
+            var more = added.length > 3 ? ' + ' + (added.length - 3) + ' more' : '';
+            note.innerHTML = '<strong>' + esc(g.name) + '</strong> will add: ' + names + more + ' — they get the event and can RSVP.';
+          }
+        }
+        function loadBenGroups() {
+          api('/api/schedule/comm-groups').then(function (r) {
+            cgFormGroups = (r.ok && r.data.groups) || [];
+            paintBenGroups();
+          }).catch(function () { cgFormGroups = []; paintBenGroups(); });
+        }
+        loadBenGroups();
+        var cgNewBtn2 = m.querySelector('#acf-cgnew');
+        if (cgNewBtn2) cgNewBtn2.addEventListener('click', function () {
+          if (window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ onSaved: loadBenGroups });
         });
         function paintBenChip(chip) {
           var on = benDeptSel.has(chip.getAttribute('data-bendept'));
