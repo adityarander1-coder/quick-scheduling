@@ -247,11 +247,30 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
       const { rows: us } = await query('SELECT id, first_name, last_name FROM users WHERE company_id = $1', [companyId]);
       for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
     }
+    // EVENT model (2026-11-07): the feed also carries events where
+    // the user is ANY team speaker (not just Speaker 1) and events
+    // they ATTEND as a beneficiary (named personally, or through a
+    // beneficiary department they belong to).
+    const speakerOf = new Set<string>();
+    const attends = new Set<string>();
+    if (srows.length) {
+      const sids = srows.map((r: any) => r.id);
+      const { rows: sp } = await query('SELECT session_id FROM session_speakers WHERE user_id = $1 AND session_id = ANY($2::uuid[])', [userId, sids]);
+      for (const r of sp) speakerOf.add(r.session_id);
+      const { rows: bu } = await query('SELECT session_id FROM session_beneficiary_users WHERE user_id = $1 AND session_id = ANY($2::uuid[])', [userId, sids]);
+      for (const r of bu) attends.add(r.session_id);
+      const { rows: me } = await query('SELECT department_id FROM users WHERE id = $1', [userId]);
+      if (me[0]?.department_id) {
+        const { rows: bd } = await query('SELECT session_id FROM session_beneficiary_departments WHERE department_id = $1 AND session_id = ANY($2::uuid[])', [me[0].department_id, sids]);
+        for (const r of bd) attends.add(r.session_id);
+      }
+    }
     const occurrences = expandAcademicSessions(srows, from, to, ovMap, userName);
     for (const o of occurrences) {
       const roles: string[] = [];
-      if (o.lecturerUserId === userId) roles.push('presenter');
+      if (o.lecturerUserId === userId || speakerOf.has(o.seriesId || o.id)) roles.push('presenter');
       if (o.supervisorUserId === userId) roles.push('supervisor');
+      if (!roles.length && attends.has(o.seriesId || o.id)) roles.push('attendee');
       if (!roles.length) continue;
       const uid = `qs-session-${o.id}@quick-scheduling`;
       const summary = `${o.title} (${roles.join(' & ')})`;

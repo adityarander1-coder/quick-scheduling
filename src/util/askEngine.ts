@@ -4,6 +4,7 @@
 
 import { query } from '../db.js';
 import { isGeminiConfigured, answerAskWithData } from './gemini.js';
+import { loadSpeakers } from './sessionPeople.js';
 
 interface ShiftType { id: string; name: string; }
 interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; email?: string | null; phone?: string | null; departmentId?: string | null; }
@@ -158,6 +159,10 @@ interface CalSession {
   location: string | null;
   presenterId: string | null;
   presenter: string | null;
+  /** EVENT model: every team speaker's id / whether anyone speaks at
+   *  all (guests count) — "needs a presenter" means NO speakers. */
+  speakerIds: string[];
+  hasSpeakers: boolean;
   supervisor: string | null;
   dashboard: string | null;
   kind: string;
@@ -170,13 +175,18 @@ interface CalSession {
 async function loadCalendarSessions(ctx: AskContext, from: string, to: string): Promise<CalSession[]> {
   const clauses = ['s.company_id = $1'];
   const params: any[] = [ctx.companyId];
-  if (ctx.visibleDeptIds !== null) {
-    params.push(ctx.visibleDeptIds);
-    // Inherit model (2026-11-07): a session's own department, else its
-    // calendar's departments; an unrestricted calendar shows to all.
-    clauses.push(`(s.department_id = ANY($${params.length})
-      OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id AND dd.department_id = ANY($${params.length}))
-      OR (s.dashboard_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id)))`);
+  {
+    // VISIBILITY RULE (Deepika, 2026-11-07, final form): for EVERY
+    // role, Ask only surfaces the asker's own events — ones they
+    // organized (created_by), speak at, are invited to (beneficiary),
+    // or supervise. Ask must not leak a private meeting's existence
+    // to anyone, owner included.
+    params.push(ctx.userId);
+    const meParam = params.length;
+    clauses.push(`(s.created_by = $${meParam} OR s.lecturer_user_id = $${meParam} OR s.supervisor_user_id = $${meParam}
+      OR EXISTS (SELECT 1 FROM session_speakers sp WHERE sp.session_id = s.id AND sp.user_id = $${meParam})
+      OR EXISTS (SELECT 1 FROM session_beneficiary_users bu WHERE bu.session_id = s.id AND bu.user_id = $${meParam})
+      OR EXISTS (SELECT 1 FROM session_beneficiary_departments bd JOIN users me ON me.department_id = bd.department_id WHERE bd.session_id = s.id AND me.id = $${meParam}))`);
   }
   params.push(from, to);
   clauses.push(`s.session_date <= $${params.length}`);
@@ -205,6 +215,7 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
     'SELECT id, first_name, last_name FROM users WHERE company_id = $1', [ctx.companyId]);
   const userName = new Map<string, string>();
   for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
+  const speakersBySession = ids.length ? await loadSpeakers(query as any, ids) : new Map<string, any[]>();
 
   const out: CalSession[] = [];
   for (const r of rows) {
@@ -241,7 +252,23 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
         if (ov.has_location) location = ov.location || null;
         if (ov.has_times) { startTime = ov.start_time || null; endTime = ov.end_time || null; }
       }
-      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter, supervisor, dashboard: base.dashboard, kind: base.kind };
+      // EVENT model: speakers in effect for this date — the series
+      // list with the date's lecturer override adjusting only the
+      // primary spot (same rule as the calendar payload).
+      const spList = speakersBySession.get(r.id) || [];
+      let eff = spList.map((s: any) => ({ ...s }));
+      if (!eff.length) {
+        eff = presenterId ? [{ userId: presenterId, name: presenter, guest: false, guestEmail: null }] : [];
+      } else if (eff[0].userId) {
+        if (presenterId === eff[0].userId) { /* unchanged */ }
+        else if (presenterId) eff[0] = { userId: presenterId, name: presenter, guest: false, guestEmail: null };
+        else eff = eff.slice(1);
+      } else if (presenterId) {
+        eff = [{ userId: presenterId, name: presenter, guest: false, guestEmail: null }, ...eff];
+      }
+      const speakerIds = eff.map((s: any) => s.userId).filter(Boolean) as string[];
+      const speakerText = eff.map((s: any) => s.guest ? `${s.name || 'Guest'} (guest)` : (s.name || null)).filter(Boolean).join(', ');
+      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter: eff.length ? (speakerText || presenter) : presenter, speakerIds, hasSpeakers: eff.length > 0, supervisor, dashboard: base.dashboard, kind: base.kind };
     };
     if (!base.recurRule || base.recurRule === 'none') {
       const occ = pushOcc(base.date);
@@ -667,9 +694,9 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     let to = date || week?.to || '';
     if (!to) { const d = new Date(today); d.setDate(d.getDate() + (needsPresenter ? 30 : 7)); to = fmtDate(d); }
     let sessions = await loadCalendarSessions(ctx, from, to);
-    if (needsPresenter) sessions = sessions.filter(s => !s.presenterId);
-    if (mySessions) sessions = sessions.filter(s => s.presenterId === ctx.userId);
-    else if (member) sessions = sessions.filter(s => s.presenterId === member.id);
+    if (needsPresenter) sessions = sessions.filter(s => !s.hasSpeakers);
+    if (mySessions) sessions = sessions.filter(s => s.speakerIds.includes(ctx.userId));
+    else if (member) sessions = sessions.filter(s => s.speakerIds.includes(member.id));
     if (/\bevents?\b/.test(lower)) sessions = sessions.filter(s => s.kind === 'event');
     const { rows: dashRows } = await query('SELECT name FROM dashboards WHERE company_id = $1', [ctx.companyId]);
     const namedDash = dashRows.map((r: any) => r.name).find((n: string) => n && lower.includes(n.toLowerCase()));
@@ -717,7 +744,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
       [ctx.companyId, member.id, from, to]
     );
     const name = memberDisplay(member);
-    const memberSessions = (await loadCalendarSessions(ctx, from, to)).filter(s => s.presenterId === member.id);
+    const memberSessions = (await loadCalendarSessions(ctx, from, to)).filter(s => s.speakerIds.includes(member.id));
     if (!shifts.length && !memberSessions.length) return `${name} has no shifts ${date ? 'on ' + prettyDate(date) : `from ${prettyDate(from)} to ${prettyDate(to)}`}.`;
     if (isCount) {
       return `${name} has ${shifts.length} shift${shifts.length === 1 ? '' : 's'} ${date ? 'on ' + prettyDate(date) : `from ${prettyDate(from)} to ${prettyDate(to)}`}.`;

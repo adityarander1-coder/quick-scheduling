@@ -42,6 +42,17 @@ interface ResendError {
 
 /** Send an email via Resend. Throws when not configured — callers decide how to degrade. */
 export async function sendMail(opts: MailOptions): Promise<void> {
+  // DEV_MODE mail capture: on the local fixture (never in production,
+  // which never sets DEV_MODE), mail is written to a JSONL outbox file
+  // instead of Resend so tests can assert what would have been sent.
+  if (process.env.DEV_MODE === 'true' && process.env.DEV_MAIL_OUTBOX) {
+    const fs = await import('node:fs');
+    fs.appendFileSync(process.env.DEV_MAIL_OUTBOX, JSON.stringify({
+      at: new Date().toISOString(), from: opts.from || mailFrom(), to: opts.to,
+      cc: opts.cc || [], subject: opts.subject, text: opts.text, html: opts.html,
+    }) + '\n');
+    return;
+  }
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) throw new Error('Email sending is not set up yet.');
   const res = await fetch('https://api.resend.com/emails', {

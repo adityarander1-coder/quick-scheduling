@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import { query } from '../db.js';
 import { getDepartmentAccess } from './departmentAccess.js';
+import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 
 interface PlanChange {
   action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
@@ -472,7 +473,33 @@ export async function insertSession(
      rule === 'weekly' && f.recurDays && f.recurDays.length ? f.recurDays.join(',') : null,
      f.recurInterval || 1, f.recurCount ?? null, f.meetingUrl ?? null]
   );
+  // EVENT model: the presenter is Speaker 1 in the speakers list too.
+  if (f.presenterId) await saveSpeakers(query as any, id, [{ userId: f.presenterId }]);
   return id;
+}
+
+/** Organizing department for a plan/form-created session (Deepika,
+ *  2026-11-07): the creator's manageable departments on the calendar
+ *  (Edit access ∩ the calendar's; owner → the calendar's). Exactly
+ *  one → it; several → the calendar's first matching; none or an
+ *  unknown/token creator → NULL (the piece-1 inherit behaviour)
+ *  rather than guessing. */
+export async function resolveOrganizingDeptE(companyId: string, createdBy: string | null, dashboardId: string): Promise<string | null> {
+  const dIds = await dashboardDeptIdsE(dashboardId);
+  if (!createdBy) return null;
+  const { rows } = await query('SELECT role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [createdBy, companyId]);
+  const role = rows[0]?.role;
+  if (role === 'owner') return dIds.length ? dIds[0] : null;
+  if (role !== 'scheduler') return null;
+  const { rows: ed } = await query('SELECT user_id FROM dashboard_editors WHERE dashboard_id = $1', [dashboardId]);
+  if (ed.length) return ed.some((r: any) => r.user_id === createdBy) && dIds.length ? dIds[0] : null;
+  const access = await getDepartmentAccess(createdBy, companyId);
+  const edit = access.edit || [];
+  if (dIds.length) {
+    for (const d of dIds) if (edit.includes(d)) return d;
+    return null;
+  }
+  return edit[0] || null;
 }
 
 /** Series-level update: only the provided fields change. */
@@ -494,6 +521,15 @@ export async function updateSessionSeries(companyId: string, s: any, f: SessionF
   if (!sets.length) return;
   vals.push(s.id, companyId);
   await query(`UPDATE academic_sessions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND company_id = $${vals.length}`, vals);
+  if (f.presenterId !== undefined) {
+    // Keep Speaker 1 in step with the lecturer mirror (other
+    // speakers and guest rows keep their spots).
+    const spMap = await loadSpeakers(query as any, [s.id]);
+    const sp = (spMap.get(s.id) || []).map((x: any) => x.userId ? { userId: x.userId } : { guestName: x.name, guestEmail: x.guestEmail });
+    const rest = sp.length && sp[0].userId ? sp.slice(1) : sp;
+    const next = f.presenterId ? [{ userId: f.presenterId }, ...rest.filter((x: any) => x.userId !== f.presenterId)] : rest;
+    await saveSpeakers(query as any, s.id, next as any);
+  }
 }
 
 /** One-date update via override. Returns names of fields a one-date
@@ -546,7 +582,27 @@ export async function moveSessionDate(
     recurRule: 'none',
   };
   await cancelSessionDate(companyId, s.id, fromDate);
-  await insertSession(companyId, createdBy, s.dashboard_id, eff);
+  const newId = await insertSession(companyId, createdBy, s.dashboard_id, eff);
+  // The one-off copy carries the series' speakers + beneficiaries;
+  // insertSession already wrote Speaker 1 from the effective
+  // presenter — replace that with the full list, adjusted when the
+  // moved date's own presenter differs.
+  const spMap = await loadSpeakers(query as any, [s.id]);
+  const sp = (spMap.get(s.id) || []).map((x: any) => x.userId ? { userId: x.userId } : { guestName: x.name, guestEmail: x.guestEmail });
+  if (sp.length) {
+    let list = sp;
+    const seriesFirst = s.lecturer_user_id || null;
+    if ((eff.presenterId ?? null) !== seriesFirst) {
+      const rest = sp.length && sp[0].userId ? sp.slice(1) : sp;
+      list = eff.presenterId ? [{ userId: eff.presenterId }, ...rest.filter((x: any) => x.userId !== eff.presenterId)] : rest;
+    }
+    await saveSpeakers(query as any, newId, list as any);
+  }
+  const benMap = await loadBeneficiaries(query as any, [s.id]);
+  const ben = benMap.get(s.id);
+  if (ben && (ben.departmentIds.length || ben.userIds.length)) {
+    await saveBeneficiaries(query as any, newId, ben.departmentIds, ben.userIds);
+  }
 }
 
 function normTime(v?: string): string | null {
@@ -1164,9 +1220,12 @@ export async function executePlan(
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {
         const dash = await findDashboard(companyId, change.dashboard);
         if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
-        // Inherit model (2026-11-07): a session takes its calendar's
-        // department(s) — department_id stays NULL; a department named
-        // on the change no longer stamps the session.
+        // EVENT model (2026-11-07): the organizing department
+        // resolves from the creator's manageable departments on the
+        // calendar; when that is ambiguous or empty it stays NULL
+        // (inherit) rather than guessing. The presenter pick becomes
+        // Speaker 1 via insertSession.
+        const organizingDeptId = await resolveOrganizingDeptE(companyId, createdBy, dash.id);
         const presenter = change.presenter ? await findUser(companyId, change.presenter) : null;
         if (change.presenter && !presenter) throw new Error(`Person not found: ${change.presenter}`);
         const supervisor = change.supervisor ? await findUser(companyId, change.supervisor) : null;
@@ -1185,6 +1244,7 @@ export async function executePlan(
           title: change.title, date: change.date,
           startTime: normTime(change.startTime), endTime: normTime(change.endTime),
           presenterId: presenter?.id ?? null, supervisorId: supervisor?.id ?? null,
+          departmentId: organizingDeptId,
           location: change.location ? change.location.trim() : null,
           kindKey, notes: change.notes ? change.notes.trim() : null,
           recurRule: rec.recurRule, recurInterval: rec.recurInterval, recurUntil: rec.recurUntil,

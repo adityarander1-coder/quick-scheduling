@@ -2496,7 +2496,15 @@
               ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:' + hlBg + ';cursor:pointer;font-size:11px;line-height:1">🎨</button>';
           }
           if (editable) {
-            cBtn = '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
+            // ⋮ actions button — opens the shift popup (comment,
+            // publish, replace, delete, Make calendar event). The
+            // Help text documents this button; it had been lost in a
+            // restyle, leaving the popup unreachable (restored
+            // 2026-11-07 with the calendar-event convert).
+            cBtn = '<button type="button" class="shift-actions-btn" data-shift-id="' + s.id + '"' +
+              ' title="Shift actions" aria-label="Shift actions for ' + esc(nm) + '"' +
+              ' style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px;line-height:1;font-weight:700">⋮</button>';
+            cBtn += '<button type="button" class="shift-comment-btn' + (dc.length ? ' has-comment' : '') + '" data-user-id="' + s.userId + '" data-date="' + s.date + '"' +
               ' title="' + (dc.length ? 'Edit daily comment' : 'Add daily comment') + '"' +
               ' aria-label="' + (dc.length ? 'Edit daily comment for ' : 'Add daily comment for ') + esc(nm) + '">' + BUBBLE_SVG + '</button>';
             cBtn += hlBtn;
@@ -2589,6 +2597,15 @@
             return true;
           });
         }
+        // EVENT model helpers: every speaker name (guests tagged),
+        // has-speakers, and "I speak here" — falling back to the
+        // lecturer mirror when a payload has no speakers array.
+        function evHasSpeakers(e) { return e.speakers ? e.speakers.length > 0 : !!e.lecturerUserId; }
+        function evSpeakerText(e) {
+          if (e.speakers && e.speakers.length) return e.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
+          return e.lecturerName || null;
+        }
+        function evISpeak(e) { return !!(sched.myId && (e.lecturerUserId === sched.myId || (e.speakers || []).some(function (sp) { return sp.userId === sched.myId; }))); }
         // One box per session, styled like a shift box: the kind (Lecture /
         // Event) is the label box; presenter + supervisor sit together in
         // the name box. (Deepika's simpler design, 2026-10-20.)
@@ -2600,10 +2617,12 @@
             var kindLabel = window.qsKindLabel ? window.qsKindLabel(e.kind, e.dashboardId) : (e.kind === 'event' ? 'Event' : 'Lecture');
             var sub = '<span style="display:block;font-size:0.7rem;font-weight:700;color:#475569">' + esc(e.title) + (e.startTime ? ' · ' + esc(fmtTime12(e.startTime)) : '') + '</span>';
             var names = '';
-            if (e.lecturerName) names += esc(e.lecturerName);
+            var spT = evSpeakerText(e);
+            if (spT) names += esc(spT);
             if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
-            if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="ev-claim-btn" data-evclaim="' + e.id + '" title="Pick up this session">✋ Pick it up — I\'ll present</button>';
-            else if (sched.myId && e.lecturerUserId === sched.myId) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
+            if (e.viewerInvitedOnly) names += (names ? '<br>' : '') + '<span style="color:#0e7c86;font-size:0.78rem;font-weight:700">📩 Invited</span>';
+            if (!evHasSpeakers(e)) names += (names ? '<br>' : '') + '<button type="button" class="ev-claim-btn" data-evclaim="' + e.id + '" title="Pick up this session">✋ Pick it up — I\'ll present</button>';
+            else if (evISpeak(e)) names += '<br><button type="button" class="ev-unclaim-btn" data-evunclaim="' + e.id + '">You\'re presenting — give it up</button>';
             if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
             if (e.meetingUrl) names += '<br><a class="qs-join" href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700;font-size:0.8rem">🔗 Join meeting</a>';
             return '<div class="shift-grid dash-ev-box" data-evopen="' + (e.dashboardId || '') + '|' + e.date + '" title="Open in its dashboard" style="cursor:pointer">' +
@@ -3376,7 +3395,8 @@
             var ec = window.qsKindColor ? window.qsKindColor(e.kind, e.dashboardId) : (e.kind === 'event' ? '#7c3aed' : '#00796b');
             var kindLabel = window.qsKindLabel ? window.qsKindLabel(e.kind, e.dashboardId) : (e.kind === 'event' ? 'Event' : 'Lecture');
             var namesLine = '';
-            if (e.lecturerName) namesLine += esc(e.lecturerName);
+            var spT2 = evSpeakerText(e);
+            if (spT2) namesLine += esc(spT2);
             if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
             if (!namesLine) namesLine = 'Needs presenter';
             html += '<div class="month-chip" style="background:' + tint(ec, 70) + ';border-color:' + tint(ec, 55) +
@@ -4283,7 +4303,7 @@
           var popup = $('shift-popup');
           var nm = displayName(s);
           $('sp-name').textContent = nm;
-          $('sp-date').textContent = fmtDate(s.date);
+          $('sp-date').textContent = fmtDate(parseDate(s.date));
           var isRot = s.id && s.id.indexOf('rot-') === 0;
           var list = $('sp-list');
           var html = '';
@@ -4306,6 +4326,10 @@
           } else {
             html += '<div style="padding:8px 10px;font-size:12px;color:var(--dim)">Rotation shift — edit the rotation to change it.</div>';
           }
+          // Convert (Deepika, 2026-11-07): make a separate calendar
+          // event from this shift — the shift itself is untouched.
+          html += '<button class="sp-item" data-act="make-event"><span class="sp-ic" style="background:#e8f5f3">📅</span>Make calendar event</button>';
+          html += '<div id="sp-event-list" class="hidden"></div>';
           list.innerHTML = html;
           // Position near button
           show(popup);
@@ -4380,6 +4404,38 @@
           if (item && popupShift) {
             var act = item.getAttribute('data-act');
             var s = popupShift;
+            var dashPick = item.getAttribute('data-dash-event');
+            if (dashPick) {
+              // Convert: open the event form on the chosen calendar,
+              // prefilled from this shift. The shift is not changed.
+              var stC = shiftTypeById(s.shiftTypeId);
+              var prefillC = {
+                date: s.date,
+                startTime: stC && stC.startTime ? String(stC.startTime).slice(0, 5) : null,
+                endTime: stC && stC.endTime ? String(stC.endTime).slice(0, 5) : null,
+                title: stC ? stC.name : '',
+                speakerUserIds: s.userId ? [s.userId] : [],
+                organizingDeptId: stC ? ((stC.departmentIds && stC.departmentIds[0]) || stC.departmentId || null) : null,
+              };
+              closeShiftPopup();
+              if (window.qsOpenEventForm) window.qsOpenEventForm(dashPick, prefillC);
+              else if (window.qsOpenDashboard) window.qsOpenDashboard(dashPick);
+              return;
+            }
+            if (act === 'make-event') {
+              var elist = $('sp-event-list');
+              if (!elist.classList.contains('hidden')) { hide(elist); return; }
+              elist.innerHTML = '<div style="padding:6px 10px;font-size:12px;color:var(--dim)">Loading calendars…</div>';
+              show(elist);
+              api('/api/schedule/dashboards').then(function (r) {
+                var ds = ((r.ok && r.data.dashboards) || []).filter(function (d) { return d.canEdit !== false; });
+                if (!ds.length) { elist.innerHTML = '<div style="padding:6px 10px;font-size:12px;color:var(--dim)">No calendars you can add events to.</div>'; return; }
+                elist.innerHTML = '<div style="padding:6px 10px 2px;font-size:12px;color:var(--dim);font-weight:600">Pick a calendar</div>' + ds.map(function (d) {
+                  return '<button class="sp-item" data-dash-event="' + d.id + '"><span class="sp-ic" style="background:#e8f5f3">📅</span>' + esc(d.name) + '</button>';
+                }).join('');
+              }).catch(function () { elist.innerHTML = '<div style="padding:6px 10px;font-size:12px;color:var(--dim)">Could not load calendars.</div>'; });
+              return;
+            }
             if (act === 'comment') {
               closeShiftPopup();
               openEmployeeCommentModal(s.userId, s.date);
@@ -6016,7 +6072,8 @@
             var dashboards = (rs[2].ok && rs[2].data.dashboards) || [];
             var needByDash = {}, calTotal = 0;
             calSessions.forEach(function (s) {
-              if (!s.lecturerUserId || !s.supervisorUserId) { calTotal++; if (s.dashboardId) needByDash[s.dashboardId] = (needByDash[s.dashboardId] || 0) + 1; }
+              var hasSp = s.speakers ? s.speakers.length > 0 : !!s.lecturerUserId;
+              if (!hasSp || !s.supervisorUserId) { calTotal++; if (s.dashboardId) needByDash[s.dashboardId] = (needByDash[s.dashboardId] || 0) + 1; }
             });
             var badgeTotal = gapCount + calTotal;
             document.querySelectorAll('[data-sc-badge]').forEach(function (b) { b.hidden = badgeTotal === 0; b.textContent = badgeTotal; });
@@ -6953,7 +7010,12 @@ window.qsScRenderCal = function (dashId) {
     ((rs[4].ok && rs[4].data.offers) || []).forEach(function (o) { npOffersMap[o.sessionId + '|' + o.occDate + '|' + o.role] = o; });
     var npUserNames = {};
     ((rs[5].ok && rs[5].data.users) || []).forEach(function (u) { npUserNames[u.id] = (u.firstName + ' ' + u.lastName).trim(); });
-    var needAny = sessions.filter(function (s) { return !s.lecturerUserId || !s.supervisorUserId; });
+    function scHasSpeakers(s) { return s.speakers ? s.speakers.length > 0 : !!s.lecturerUserId; }
+    function scSpeakerText(s) {
+      if (s.speakers && s.speakers.length) return s.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
+      return s.lecturerName || null;
+    }
+    var needAny = sessions.filter(function (s) { return !scHasSpeakers(s) || !s.supervisorUserId; });
     var tomorrowDs = scDatePlus(new Date(), 1);
     function lc(x) { return x.charAt(0).toLowerCase() + x.slice(1); }
     function art(x) { return /^[aeiou]/i.test(x) ? 'an' : 'a'; }
@@ -6965,8 +7027,8 @@ window.qsScRenderCal = function (dashId) {
       var main = '<div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<span class="np-chip" style="background:' + esc(k.color) + '">' + esc(k.label) + '</span><b style="font-size:14px">' + esc(s.title) + '</b></div>' +
         (meta.length ? '<div class="np-meta">' + esc(meta.join(' · ')) + '</div>' : '') + '</div>';
-      var missing = role === 'supervisor' ? !s.supervisorUserId : !s.lecturerUserId;
-      var who = role === 'supervisor' ? s.supervisorName : s.lecturerName;
+      var missing = role === 'supervisor' ? !s.supervisorUserId : !scHasSpeakers(s);
+      var who = role === 'supervisor' ? s.supervisorName : scSpeakerText(s);
       if (missing) {
         var baseId = String(s.id).split('@@')[0];
         var oKey = baseId + '|' + s.date + '|' + role;
@@ -6985,7 +7047,7 @@ window.qsScRenderCal = function (dashId) {
       }
       return '<div class="np-row">' + main + '<span class="np-who" style="color:#15803d">✓ ' + esc(who || 'Assigned') + ' — ' + esc(lc(label)) + '</span></div>';
     }
-    function missingOf(s, role) { return role === 'supervisor' ? !s.supervisorUserId : !s.lecturerUserId; }
+    function missingOf(s, role) { return role === 'supervisor' ? !s.supervisorUserId : !scHasSpeakers(s); }
     function sectionHtml(title, subset, role, label) {
       var h = '<div style="font-size:16px;font-weight:800;margin:20px 2px 2px">' + title + '</div>';
       var missN = subset.filter(function (s) { return missingOf(s, role); }).length;
@@ -7014,7 +7076,7 @@ window.qsScRenderCal = function (dashId) {
     sessions.forEach(function (s) {
       var L = personLabelOf(s);
       if (!labelCounts[L]) { labelCounts[L] = { need: 0 }; labels.push(L); }
-      if (!s.lecturerUserId) labelCounts[L].need++;
+      if (!scHasSpeakers(s)) labelCounts[L].need++;
     });
     labels.sort(function (a, b) { if (a === 'Presenter') return -1; if (b === 'Presenter') return 1; return a < b ? -1 : 1; });
     var supNeed = sessions.filter(function (s) { return !s.supervisorUserId; }).length;
@@ -13793,16 +13855,32 @@ window.qsNpOfferSend = function (btn) {
           return (dashEvents || []).filter(function (e) { return e.date === ds; });
         }
         function msEventIsMine(e) {
-          return !!(me && (e.lecturerUserId === me.id || e.supervisorUserId === me.id));
+          return !!(me && (e.lecturerUserId === me.id || e.supervisorUserId === me.id ||
+            (e.speakers || []).some(function (sp) { return sp.userId === me.id; })));
+        }
+        function msHasSpeakers(e) { return e.speakers ? e.speakers.length > 0 : !!e.lecturerUserId; }
+        function msSpeakerText(e) {
+          if (e.speakers && e.speakers.length) return e.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
+          return e.lecturerName || null;
         }
         function msEventBoxHtml(e) {
           var color = window.qsKindColor ? window.qsKindColor(e.kind, e.dashboardId) : (e.kind === 'event' ? '#7c3aed' : '#00796b');
           var kindLabel = window.qsKindLabel ? window.qsKindLabel(e.kind, e.dashboardId) : (e.kind === 'event' ? 'Event' : 'Lecture');
           var sub = '<span style="display:block;font-size:0.7rem;font-weight:700;color:#475569">' + esc(e.title) + (e.startTime ? ' · ' + esc(fmtTime(e.startTime)) : '') + '</span>';
           var names = '';
-          if (e.lecturerName) names += esc(e.lecturerName) + (me && e.lecturerUserId === me.id ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px">YOU</span>' : '');
+          var iSpeak = !!(me && (e.lecturerUserId === me.id || (e.speakers || []).some(function (sp) { return sp.userId === me.id; })));
+          var spTm = msSpeakerText(e);
+          if (spTm) names += esc(spTm) + (iSpeak ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px">YOU</span>' : '');
           if (e.supervisorName) names += (names ? '<br>' : '') + '<span style="color:#475569;font-size:0.78rem">Sup: ' + esc(e.supervisorName) + '</span>';
-          if (!e.lecturerUserId) names += (names ? '<br>' : '') + '<button type="button" class="btn" data-ms-evclaim="' + e.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">✋ Pick it up — I\'ll present</button>';
+          if (e.viewerInvitedOnly) names += (names ? '<br>' : '') + '<span style="font-size:10px;font-weight:800;color:#0f766e;background:#ccfbf1;border-radius:6px;padding:2px 6px">📩 INVITED</span>';
+          if (e.viewerIsBeneficiary && !iSpeak) {
+            var rBtn = function (v, label) {
+              var on = e.myRsvp === v;
+              return '<button type="button" data-ms-rsvp="' + v + '" data-sid="' + e.id + '" data-date="' + e.date + '" style="padding:0.3rem 0.7rem;font-size:0.8rem;border-radius:8px;font-weight:700;cursor:pointer;' + (on ? 'background:var(--accent);color:#fff;border:1px solid var(--accent)' : 'background:var(--surface);border:1px solid var(--border)') + '">' + label + '</button>';
+            };
+            names += '<br><span style="display:inline-flex;gap:0.35rem;align-items:center;font-size:0.82rem">Going? ' + rBtn('yes', 'Yes') + rBtn('maybe', 'Maybe') + rBtn('no', 'No') + '</span>';
+          }
+          if (!msHasSpeakers(e)) names += (names ? '<br>' : '') + '<button type="button" class="btn" data-ms-evclaim="' + e.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">✋ Pick it up — I\'ll present</button>';
           if (e.location) names += '<br><span style="color:#475569;font-size:0.78rem">📍 ' + esc(e.location) + '</span>';
           if (e.meetingUrl) names += '<br><a class="qs-join" href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700;font-size:0.8rem">🔗 Join meeting</a>';
           return '<div class="shift-grid" data-ms-evopen="' + e.id + '" title="See details" style="cursor:pointer' + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '">' +
@@ -13817,9 +13895,11 @@ window.qsNpOfferSend = function (btn) {
             var color = window.qsKindColor ? window.qsKindColor(e.kind, e.dashboardId) : (e.kind === 'event' ? '#7c3aed' : '#00796b');
             var kindLabel = window.qsKindLabel ? window.qsKindLabel(e.kind, e.dashboardId) : (e.kind === 'event' ? 'Event' : 'Lecture');
             var namesLine = '';
-            if (e.lecturerName) namesLine += esc(e.lecturerName);
+            var spTc = msSpeakerText(e);
+            if (spTc) namesLine += esc(spTc);
             if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
             if (!namesLine) namesLine = 'Needs presenter';
+            if (e.viewerInvitedOnly) namesLine += ' · 📩 Invited';
             return '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime(e.startTime) : '')) + '">' +
               '<span class="dot" style="background:' + color + '"></span>' +
               '<span class="ms-chip-text"><strong>' + kindLabel + '</strong> — ' + esc(e.title) + '<span class="ms-chip-who">' + namesLine + '</span></span></div>';
@@ -14316,9 +14396,12 @@ window.qsNpOfferSend = function (btn) {
           el.querySelectorAll('[data-ms-evunclaim]').forEach(function (b) {
             b.addEventListener('click', function (ev) { ev.stopPropagation(); claimSession(b.getAttribute('data-ms-evunclaim'), false); });
           });
+          el.querySelectorAll('[data-ms-rsvp]').forEach(function (b) {
+            b.addEventListener('click', function (ev) { ev.stopPropagation(); msRsvp(b.getAttribute('data-sid'), b.getAttribute('data-date'), b.getAttribute('data-ms-rsvp')); });
+          });
           el.querySelectorAll('[data-ms-evopen]').forEach(function (box) {
             box.addEventListener('click', function (ev) {
-              if (ev.target.closest('[data-ms-evclaim],[data-ms-evunclaim]')) return;
+              if (ev.target.closest('[data-ms-evclaim],[data-ms-evunclaim],[data-ms-rsvp]')) return;
               // My Schedule shows details only (Deepika, 2026-10-20) —
               // never the edit form, never a trip to the dashboard.
               var id = box.getAttribute('data-ms-evopen');
@@ -14335,6 +14418,19 @@ window.qsNpOfferSend = function (btn) {
         }
 
         document.addEventListener('qs-cover-claimed', function () { msRefreshShifts(); });
+        // RSVP from My Schedule (Yes / No / Maybe for one date).
+        function msRsvp(id, date, status) {
+          api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + '/rsvp', { method: 'POST', body: JSON.stringify({ date: date, status: status }) }).then(function (r) {
+            if (r.ok) {
+              msSuccess('RSVP saved: ' + status.charAt(0).toUpperCase() + status.slice(1) + '.');
+              var modalDate = msDayModalDate;
+              loadData();
+              if (modalDate) setTimeout(function () { if (msDayModalDate === modalDate) openMsDayModal(modalDate); }, 700);
+            } else {
+              msError(r.data && r.data.error ? r.data.error : 'Could not save your RSVP.');
+            }
+          });
+        }
         // Presenter pickup for dashboard sessions, from My Schedule.
         function claimSession(id, isClaim) {
           var evx = (dashEvents || []).find(function (x) { return x.id === id; });
@@ -16303,6 +16399,12 @@ window.qsNpOfferSend = function (btn) {
       var acView = 'month';
       var acTitle = '';
       var acAnchor = new Date();
+      var acBlockRange = null; // {startH, H} of the last Block render — slot clicks read it
+      var acLoadedDashId = null; // set when a dashboard's data has loaded (convert handoff polls it)
+      var acMyRole = null; // the signed-in user's role on this page (Mine filter)
+      var acMyDeptId = null; // the signed-in user's home department
+      // Per-event edit right: full editors, or the event's organizer.
+      function acCanEditEvent(s) { return acCanEdit || !!(s && acMyId && s.createdBy === acMyId); }
 
       function fmtD(d) {
         var m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
@@ -16498,6 +16600,32 @@ window.qsNpOfferSend = function (btn) {
         window.qsOpenDashboard(id);
       };
 
+      // Convert-a-shift handoff (Deepika, 2026-11-07): the Schedule
+      // page's "Make calendar event" opens the event form on the
+      // chosen calendar, prefilled from the shift. Cross-tab: park
+      // the prefill, navigate, and open once that calendar has loaded.
+      var acPendingPrefill = null;
+      window.qsOpenEventForm = function (dashId, prefill) {
+        window.qsDashReadOnly = false;
+        if (prefill && prefill.date) { var p = String(prefill.date).split('-'); if (p.length === 3) acAnchor = new Date(+p[0], +p[1] - 1, +p[2]); }
+        if (curDash && curDash.id === dashId && acLoadedDashId === dashId && (acCanEdit || acMyRole === 'employee')) {
+          openForm(null, prefill && prefill.date, { prefill: prefill });
+          return;
+        }
+        acPendingPrefill = prefill || null;
+        window.qsOpenDashboard(dashId);
+        try { location.hash = '#dash/' + dashId; } catch (e) {}
+        var tries = 0;
+        var iv = setInterval(function () {
+          tries++;
+          if (curDash && curDash.id === dashId && acLoadedDashId === dashId) {
+            clearInterval(iv);
+            var pf = acPendingPrefill; acPendingPrefill = null;
+            if (pf && (acCanEdit || acMyRole === 'employee')) openForm(null, pf.date, { prefill: pf });
+          } else if (tries > 40) clearInterval(iv);
+        }, 250);
+      };
+
       function load() {
         if (!curDash) return;
         if (acSelDashId !== curDash.id) { if (acSelMode) acExitSel(); acSelDashId = curDash.id; }
@@ -16513,6 +16641,7 @@ window.qsNpOfferSend = function (btn) {
         ]).then(function (rs) {
           if (!rs[0].ok) { pageError('Could not load this dashboard.'); return; }
           acSessions = rs[0].data.sessions || [];
+          acLoadedDashId = curDash.id;
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
           // Fill the Department filter from the dashboard's departments
@@ -16529,13 +16658,16 @@ window.qsNpOfferSend = function (btn) {
           }
           if (rs[3] && rs[3].ok && rs[3].data.user) {
             acMyId = rs[3].data.user.id;
-            // Employees get a view-only dashboard calendar (Deepika,
-            // 2026-10-20): no Add session button, no edit form. Pickup
-            // buttons and the your-session highlight still work.
+            acMyRole = rs[3].data.user.role;
+            acMyDeptId = rs[3].data.user.departmentId || null;
+            // Employees CAN add events (Deepika, 2026-11-07 — e.g. a
+            // meeting they organize), but edit/delete only their own.
+            // Editor rights (owner/scheduler, department-scoped) live
+            // in acCanEdit; per-event rights come from createdBy.
             acReadOnly = !!window.qsDashReadOnly;
             acCanEdit = (rs[3].data.user.role === 'owner' || rs[3].data.user.role === 'scheduler') && (!curDash || curDash.canEdit !== false) && !acReadOnly;
             var ab = document.getElementById('db-add');
-            if (ab) ab.style.display = acCanEdit ? '' : 'none';
+            if (ab) ab.style.display = (acCanEdit || acMyRole === 'employee') && !acReadOnly ? '' : 'none';
             var kb2 = document.getElementById('db-kinds');
             if (kb2) kb2.style.display = acCanEdit ? '' : 'none';
             var sb2 = document.getElementById('db-select');
@@ -16551,6 +16683,19 @@ window.qsNpOfferSend = function (btn) {
         }).catch(function () { pageError('Could not load this dashboard.'); });
       }
 
+      // EVENT model display helpers (2026-11-07): the full speakers
+      // list — EVERY name, guests tagged "(guest)" — plus the
+      // has-speakers / is-mine checks. Older payloads without a
+      // speakers array fall back to the lecturer mirror.
+      function sessHasSpeakers(s) { return s.speakers ? s.speakers.length > 0 : !!s.lecturerUserId; }
+      function speakerNamesText(s) {
+        if (s.speakers && s.speakers.length) return s.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
+        return s.lecturerName || null;
+      }
+      function sessMine(s) {
+        return !!acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId ||
+          (s.speakers || []).some(function (sp) { return sp.userId === acMyId; }));
+      }
       function chipColor(s) { return kindColor(s.kind); }
       function tint(hex, pct) {
         var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
@@ -16562,12 +16707,13 @@ window.qsNpOfferSend = function (btn) {
         var t = s.startTime ? fmtTime(s.startTime) : '';
         var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">↻</span>' : '';
         var conflict = acConflicts[s.id] ? ' box-shadow:0 0 0 2px #dc2626 inset;' : '';
-        var mine = acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId);
+        var mine = sessMine(s);
         var mineStyle = mine ? ' outline:2px solid #f59e0b; outline-offset:-2px;' : '';
         return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '" title="' + esc(s.title) + (mine ? ' — ⭐ your session' : '') + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
           '<span class="ac-dot" style="background:' + color + '"></span>' +
           '<span class="ac-chip-text"><strong>' + esc(s.title) + (mine ? ' ⭐' : '') + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
-          (s.lecturerName ? '<span class="ac-chip-who">' + esc(s.lecturerName) + '</span>' : '<span class="ac-chip-who ac-need">Needs presenter</span>') +
+          (sessHasSpeakers(s) ? '<span class="ac-chip-who">' + esc(speakerNamesText(s)) + '</span>' : '<span class="ac-chip-who ac-need">Needs presenter</span>') +
+          (s.viewerInvitedOnly ? '<span class="ac-chip-who">📩 Invited</span>' : '') +
           (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
           (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') +
           (s.meetingUrl ? '<span class="ac-chip-who">🔗 Meeting link</span>' : '') + '</span></div>';
@@ -16585,8 +16731,14 @@ window.qsNpOfferSend = function (btn) {
           if (sDepts && sDepts.indexOf(acDeptFilter) < 0) return false;
         }
         if (acKindFilter && s.kind !== acKindFilter) return false;
-        if (acShowFilter === 'mine' && !(acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId))) return false;
-        if (acShowFilter === 'open' && s.lecturerUserId) return false;
+        // Mine (Deepika, 2026-11-07) = everything on MY calendar: I
+        // speak at it (any speaker spot), I attend it as a
+        // beneficiary, or I supervise it (legacy). NOT "everything
+        // from my department" — that's the Department filter's job.
+        // (A scheduler/owner addition to Mine was proposed and then
+        // HELD by Deepika — not implemented.)
+        if (acShowFilter === 'mine' && !(sessMine(s) || (acMyId && s.viewerIsBeneficiary))) return false;
+        if (acShowFilter === 'open' && sessHasSpeakers(s)) return false;
         return true;
       }
       function byDate(d) {
@@ -16650,10 +16802,19 @@ window.qsNpOfferSend = function (btn) {
           });
         });
         el.querySelectorAll('[data-acday]').forEach(function (c) {
-          c.addEventListener('click', function () {
+          c.addEventListener('click', function (ev) {
             if (acReadOnly) {
               var p = (c.getAttribute('data-acday') || '').split('-');
               if (p.length === 3) { acAnchor = new Date(+p[0], +p[1] - 1, +p[2]); acView = 'day'; load(); }
+            } else if (acView === 'block' && c.classList.contains('ac-bday') && ev.target === c && acBlockRange) {
+              // Block view: a click on empty column space opens Add
+              // event at the clicked time (snapped to 30 minutes,
+              // one hour long). Session blocks stopPropagation, so
+              // they never reach this.
+              var totalMin = acBlockRange.startH * 60 + Math.floor((ev.offsetY / acBlockRange.H) * 60 / 30) * 30;
+              var pad2 = function (n) { return String(n).padStart(2, '0'); };
+              var sh = Math.floor(totalMin / 60), sm = totalMin % 60;
+              openForm(null, c.getAttribute('data-acday'), { startTime: pad2(sh % 24) + ':' + pad2(sm), endTime: pad2((sh + 1) % 24) + ':' + pad2(sm), fromSlot: true });
             } else openForm(null, c.getAttribute('data-acday'));
           });
         });
@@ -16747,6 +16908,7 @@ window.qsNpOfferSend = function (btn) {
           endH = Math.max(endH, Math.ceil(en / 60));
         }); });
         startH = Math.max(0, startH); endH = Math.min(24, endH);
+        acBlockRange = { startH: startH, H: H };
         var todayS = fmtD(new Date());
         var dows = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         var html = '<div class="ac-blockwrap"><div class="ac-blockgrid">';
@@ -16801,14 +16963,14 @@ window.qsNpOfferSend = function (btn) {
             var height = Math.max(22, (it.en - it.st) / 60 * H - 3);
             var w = 100 / (it.lanes || 1);
             var left = (it.lane || 0) * w;
-            var mine = !!acMyId && s.lecturerUserId === acMyId;
-            var who = s.lecturerName ? esc(s.lecturerName) : '<span style="color:#c62828;font-weight:700">Needs presenter</span>';
+            var mine = sessMine(s);
+            var who = sessHasSpeakers(s) ? esc(speakerNamesText(s)) : '<span style="color:#c62828;font-weight:700">Needs presenter</span>';
             var conflict = acConflicts[s.id] ? 'box-shadow:0 0 0 2px #dc2626 inset;' : '';
             var mineStyle = mine ? 'box-shadow:0 0 0 2px #b45309 inset;' : '';
             return '<div class="ac-blk" data-acedit="' + s.id + '" title="' + esc(s.title) + '" style="top:' + top + 'px;height:' + height + 'px;left:calc(' + left + '% + 2px);width:calc(' + w + '% - 4px);background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '">' +
               '<b>' + (mine ? '⭐ ' : '') + esc(s.title) + '</b>' +
               '<span>' + fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') + '</span>' +
-              '<br><span>' + who + (s.supervisorName ? ' · Sup: ' + esc(s.supervisorName) : '') + '</span>' +
+              '<br><span>' + who + (s.supervisorName ? ' · Sup: ' + esc(s.supervisorName) : '') + (s.viewerInvitedOnly ? ' · 📩 Invited' : '') + '</span>' +
               (s.location ? '<br><span>📍 ' + esc(s.location) + '</span>' : '') +
               '</div>';
           }).join('');
@@ -16869,16 +17031,17 @@ window.qsNpOfferSend = function (btn) {
           var color = chipColor(s);
           var recur = (s.recurRule && s.recurRule !== 'none') || s.isOccurrence ? ' <span class="ac-recur-badge">Repeats</span>' : '';
           var claimBtn = '';
-          if (!s.lecturerUserId) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
-          else if (acMyId && s.lecturerUserId === acMyId && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
+          if (!sessHasSpeakers(s)) claimBtn = ' <button type="button" data-acclaim="' + s.id + '" title="Pick up this session" style="background:#00796b;color:#fff;border:none;border-radius:8px;padding:3px 10px;font-size:0.76rem;font-weight:700;cursor:pointer">✋ Pick it up — I\'ll present</button>';
+          else if (acMyId && sessMine(s) && s.supervisorUserId !== acMyId && !acReadOnly) claimBtn = ' <button type="button" data-acunclaim="' + s.id + '" style="background:none;border:1px solid var(--border);border-radius:8px;padding:2px 9px;font-size:0.74rem;cursor:pointer">You\'re presenting — give it up</button>';
           var mineTag = '', rowStyle = '';
-          if (acMyId && s.lecturerUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
+          if (acMyId && (s.lecturerUserId === acMyId || (s.speakers || []).some(function (sp) { return sp.userId === acMyId; }))) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re presenting</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
           else if (acMyId && s.supervisorUserId === acMyId) { mineTag = '<span style="color:#b45309;font-weight:700">⭐ You\'re supervising</span> · '; rowStyle = ' style="background:#fffbeb;border-left:3px solid #f59e0b"'; }
+          else if (s.viewerInvitedOnly) { mineTag = '<span style="color:#0e7c86;font-weight:700">📩 You\'re invited</span> · '; }
           var joinLink = s.meetingUrl ? ' · <a href="' + esc(s.meetingUrl) + '" target="_blank" rel="noopener" data-acjoin style="color:#2563eb;font-weight:700">🔗 Join meeting</a>' : '';
           html += '<div class="ac-drow" data-acedit="' + s.id + '"' + rowStyle + '>' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + mineTag + esc(s.lecturerName || 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
+            '<div class="ac-meta">' + mineTag + esc(sessHasSpeakers(s) ? speakerNamesText(s) : 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
         });
         return html + '</div></div>';
       }
@@ -16898,27 +17061,45 @@ window.qsNpOfferSend = function (btn) {
           var p = String(e.date || '').split('-');
           var dateTxt = p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : (e.date || '');
           var timeTxt = e.startTime ? fmtTime(e.startTime) + (e.endTime ? ' – ' + fmtTime(e.endTime) : '') : 'All day';
-          var pres = !e.lecturerUserId
+          var hasSp = e.speakers ? e.speakers.length > 0 : !!e.lecturerUserId;
+          var spText = e.speakers && e.speakers.length ? e.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ') : (e.lecturerName || null);
+          var iSpeak = !!(myId && (e.lecturerUserId === myId || (e.speakers || []).some(function (sp) { return sp.userId === myId; })));
+          var pres = !hasSp
             ? '<button type="button" class="btn" data-sd-claim="presenter" style="flex:1;padding:0.7rem;border-radius:10px">✋ Pick it up — I\'ll present</button>'
-            : (myId && e.lecturerUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re presenting</div>' : '');
+            : (iSpeak ? '<div style="font-weight:700;color:#b45309">⭐ You\'re presenting</div>' : '');
           var sup = !e.supervisorUserId
             ? '<button type="button" class="btn" data-sd-claim="supervisor" style="flex:1;padding:0.7rem;border-radius:10px;background:#7c3aed">✋ Pick it up — I\'ll supervise</button>'
             : (myId && e.supervisorUserId === myId ? '<div style="font-weight:700;color:#b45309">⭐ You\'re supervising</div>' : '');
+          // RSVP (Deepika, 2026-11-07): invited attendees reply Yes /
+          // No / Maybe for this date; the organizer, speakers and
+          // editors see the count. Speakers don't RSVP.
+          var tally = e.rsvpSummary ? '<div>👥 <strong>' + e.rsvpSummary.yes + '</strong> yes · <strong>' + e.rsvpSummary.maybe + '</strong> maybe · <strong>' + e.rsvpSummary.no + '</strong> no · <strong>' + e.rsvpSummary.notReplied + '</strong> not replied</div>' : '';
+          var rsvpCtl = '';
+          if (e.viewerIsBeneficiary && !iSpeak) {
+            var rb = function (v, label) {
+              var on = e.myRsvp === v;
+              return '<button type="button" data-sd-rsvp="' + v + '" style="flex:1;padding:0.6rem;border-radius:10px;font-weight:700;cursor:pointer;' + (on ? 'background:var(--accent);color:#fff;border:1px solid var(--accent)' : 'background:var(--surface);color:inherit;border:1px solid var(--border)') + '">' + label + '</button>';
+            };
+            rsvpCtl = '<div style="margin-top:1rem"><div style="font-weight:700;margin-bottom:0.4rem">Are you going?</div><div style="display:flex;gap:0.5rem">' + rb('yes', 'Yes') + rb('maybe', 'Maybe') + rb('no', 'No') + '</div></div>';
+          }
           var rows = '' +
             '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem"><span style="width:12px;height:12px;border-radius:50%;background:' + color + ';flex:none"></span><strong>' + esc(kindLabel) + '</strong>' +
             ((e.recurRule && e.recurRule !== 'none') || e.isOccurrence ? '<span class="ac-recur-badge">Repeats</span>' : '') + '</div>' +
             (e.hasOverride ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.4rem 0.6rem;font-size:0.85rem;color:#6d28d9;margin-bottom:0.5rem">✏️ This date has its own details — it does not follow the series.</div>' : '') +
+            (e.viewerInvitedOnly ? '<div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:0.4rem 0.6rem;font-size:0.85rem;color:#0f766e;margin-bottom:0.5rem">📩 You\'re invited to attend this event — it\'s on your calendar.</div>' : '') +
             '<h2 style="margin:0 0 0.6rem;font-size:1.25rem">' + esc(e.title) + '</h2>' +
             '<div style="display:grid;gap:0.45rem;font-size:0.95rem">' +
             '<div>📅 ' + esc(dateTxt) + '</div>' +
             '<div>🕐 ' + esc(timeTxt) + '</div>' +
-            '<div>👤 Presenter: ' + (e.lecturerName ? '<strong>' + esc(e.lecturerName) + '</strong>' : '<strong style="color:#b91c1c">Needs presenter</strong>') + '</div>' +
+            '<div>👤 Speakers: ' + (hasSp ? '<strong>' + esc(spText) + '</strong>' : '<strong style="color:#b91c1c">Needs presenter</strong>') + '</div>' +
             '<div>🧑‍🏫 Supervisor: ' + (e.supervisorName ? '<strong>' + esc(e.supervisorName) + '</strong>' : '<span style="color:var(--dim)">Not assigned</span>') + '</div>' +
             (e.location ? '<div>📍 ' + esc(e.location) + '</div>' : '') +
-            (e.departmentName ? '<div>🏥 ' + esc(e.departmentName) + '</div>' : '') +
+            (e.departmentName ? '<div>🏢 Organized by: ' + esc(e.departmentName) + '</div>' : '') +
             (e.meetingUrl ? '<div><a href="' + esc(e.meetingUrl) + '" target="_blank" rel="noopener" style="color:#2563eb;font-weight:700">🔗 Join meeting</a></div>' : '') +
             (e.notes ? '<div style="color:var(--dim)">📝 ' + esc(e.notes) + '</div>' : '') +
+            tally +
             '</div>' +
+            rsvpCtl +
             ((pres || sup) ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + sup + '</div>' : '') +
             '<div style="display:flex;gap:0.6rem;margin-top:1rem"><button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px">Close</button></div>';
           var wrap = document.createElement('div');
@@ -16929,6 +17110,16 @@ window.qsNpOfferSend = function (btn) {
           function close() { wrap.remove(); }
           wrap.addEventListener('click', function (ev) { if (ev.target === wrap) close(); });
           wrap.querySelector('[data-sd-close]').addEventListener('click', close);
+          wrap.querySelectorAll('[data-sd-rsvp]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var v = b.getAttribute('data-sd-rsvp');
+              b.disabled = true;
+              api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/rsvp', { method: 'POST', body: JSON.stringify({ date: e.date, status: v }) }).then(function (r) {
+                if (r.ok) { pageSuccess('RSVP saved: ' + v.charAt(0).toUpperCase() + v.slice(1) + '.'); close(); if (onDone) onDone(); }
+                else { pageError((r.data && r.data.error) || 'Could not save your RSVP.'); b.disabled = false; }
+              }).catch(function () { pageError('Could not save your RSVP.'); b.disabled = false; });
+            });
+          });
           wrap.querySelectorAll('[data-sd-claim]').forEach(function (b) {
             b.addEventListener('click', function () {
               var role = b.getAttribute('data-sd-claim');
@@ -16954,8 +17145,19 @@ window.qsNpOfferSend = function (btn) {
 
       // ---------- Add / edit form ----------
       var acShiftTypes = null;
-      function openForm(id, presetDate) {
-        if (!acCanEdit) return; // view-only for employees
+      function openForm(id, presetDate, opts) {
+        // Edit gate: full editors, or the event's organizer (an
+        // employee edits only their own events — others open as
+        // read-only details). Create gate: editors + any employee.
+        if (id) {
+          var gateTgt = acSessions.find(function (x) { return x.id === id; });
+          if (!acCanEditEvent(gateTgt)) {
+            if (gateTgt) window.qsShowSessionDetails(gateTgt, function () { load(); });
+            return;
+          }
+        } else if (!acCanEdit && acMyRole !== 'employee') return;
+        opts = opts || {};
+        var prefill = opts.prefill || null;
         var s = null;
         if (id) {
           var found = acSessions.find(function (x) { return x.id === id; });
@@ -16982,15 +17184,66 @@ window.qsNpOfferSend = function (btn) {
         }
         var roleNames = [];
         people.forEach(function (u) { if (u.jobRole && roleNames.indexOf(u.jobRole) === -1) roleNames.push(u.jobRole); });
+        // --- EVENT model state (2026-11-07) ---
+        // Organizing department: the departments this user may
+        // organize for on THIS calendar (Edit access ∩ the calendar's
+        // departments; dashboard editors and full-access users get the
+        // calendar's departments; an unrestricted calendar widens the
+        // scope to every department).
+        var calDeptIds = (curDash && curDash.departmentIds) || [];
+        var orgScope = calDeptIds.length ? acDepts.filter(function (d) { return calDeptIds.indexOf(d.id) >= 0; }) : acDepts.slice();
+        var isDashEditor = !!(curDash && (curDash.editorIds || []).indexOf(acMyId) >= 0);
+        var manageable = (!window.qsDeptAccess || isDashEditor)
+          ? orgScope.slice()
+          : orgScope.filter(function (d) { return (window.qsDeptAccess.edit || []).indexOf(d.id) >= 0; });
+        var orgSelected = null;
+        if (s && s.departmentId) orgSelected = s.departmentId;
+        else if (prefill && prefill.organizingDeptId && manageable.some(function (d) { return d.id === prefill.organizingDeptId; })) orgSelected = prefill.organizingDeptId;
+        else if (manageable.length === 1) orgSelected = manageable[0].id;
+        // Employee organizers (Deepika, 2026-11-07): no picker — the
+        // organizing department is their own department (or none).
+        var empOrg = (acMyRole === 'employee' && !acCanEdit);
+        if (empOrg && !s) orgSelected = acMyDeptId || null;
+        var canSaveOrg = manageable.length > 0 || empOrg;
+        // Beneficiaries: departments default to the organizing
+        // department on a new event; people start from the saved list.
+        var benDeptSel = new Set(s ? (s.beneficiaryDepartmentIds || []) : (orgSelected ? [orgSelected] : []));
+        var benUserIds = s ? (s.beneficiaryUserIds || []).slice() : [];
+        var benTouched = false;
+        // Speakers: the saved list, else the lecturer as Speaker 1,
+        // else a convert prefill, else one blank row.
+        var speakerState = [];
+        if (s && s.speakers && s.speakers.length) speakerState = s.speakers.map(function (sp) { return sp.guest ? { guest: true, name: sp.name || '', email: sp.guestEmail || '' } : { userId: sp.userId }; });
+        else if (s && s.lecturerUserId) speakerState = [{ userId: s.lecturerUserId }];
+        else if (prefill && prefill.speakerUserIds && prefill.speakerUserIds.length) speakerState = prefill.speakerUserIds.map(function (u) { return { userId: u }; });
+        if (!speakerState.length) speakerState = [{ userId: '' }];
+        var initDate = s ? s.date : (presetDate || (prefill && prefill.date) || fmtD(new Date()));
+        var initStart = s ? (s.startTime || '') : (opts.startTime || (prefill && prefill.startTime) || '');
+        var initEnd = s ? (s.endTime || '') : (opts.endTime || (prefill && prefill.endTime) || '');
+        var initTitle = s ? s.title : (prefill && prefill.title) || '';
         var m = document.createElement('div');
         m.id = 'ac-modal';
         m.className = 'modal-back';
         m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem';
         var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
         m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">' +
-          '<h2 style="margin-top:0">' + (s ? 'Edit session' : 'Add session') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
+          '<h2 style="margin-top:0">' + (s ? 'Edit event' : 'Add event') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
           (s && rule !== 'none' ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.6rem 0.7rem;font-size:0.88rem;margin-bottom:0.7rem"><div style="font-weight:700;margin-bottom:0.35rem">↻ This session repeats — what are you changing?</div><label style="display:block;cursor:pointer;margin-bottom:0.25rem"><input type="radio" name="acf-scope" value="date" checked> Just this date (<span id="acf-scope-dlabel"></span>)</label><label style="display:block;cursor:pointer"><input type="radio" name="acf-scope" value="series"> The whole series — every date</label><div id="acf-scope-note" style="margin-top:0.35rem;color:#6d28d9"></div></div>' : '') +
-          '<label style="display:block;margin-bottom:0.7rem">Title<br><input id="acf-title" type="text" value="' + (s ? esc(s.title) : '') + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
+          '<div id="acf-org-wrap" style="margin-bottom:0.7rem">' + (function () {
+            if (empOrg) {
+              var ed = orgSelected ? acDepts.find(function (d) { return d.id === orgSelected; }) : null;
+              return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + (ed ? esc(ed.name) : 'No department') + '</div>' + (orgSelected ? '<input type="hidden" id="acf-orgdept" value="' + orgSelected + '">' : '');
+            }
+            if (!manageable.length) return '<div style="font-weight:600">Organizing department</div><div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-top:0.3rem">You don\'t manage a department on this calendar.</div>';
+            if (manageable.length === 1) return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + esc(manageable[0].name) + '</div><input type="hidden" id="acf-orgdept" value="' + manageable[0].id + '">';
+            var extra = '';
+            if (orgSelected && !manageable.some(function (d) { return d.id === orgSelected; })) {
+              var curD = acDepts.find(function (d) { return d.id === orgSelected; });
+              extra = '<option value="' + orgSelected + '" selected>' + esc(curD ? curD.name : (s && s.departmentName) || 'Current department') + '</option>';
+            }
+            return '<label style="display:block">Organizing department<br><select id="acf-orgdept" style="' + IN + '">' + extra + manageable.map(function (d) { return '<option value="' + d.id + '"' + (d.id === orgSelected ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select><div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">You can organize events for the departments you manage. With one department, this fills in by itself.</div></label>';
+          })() + '</div>' +
+          '<label style="display:block;margin-bottom:0.7rem">Event name<br><input id="acf-title" type="text" value="' + esc(initTitle) + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
           '<label style="display:block;margin-bottom:0.7rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
             var list = acKinds.length ? acKinds : [{ key: 'session', label: 'Lecture' }, { key: 'event', label: 'Event' }];
             var cur = s ? s.kind : 'session';
@@ -16999,21 +17252,39 @@ window.qsNpOfferSend = function (btn) {
             if (!has) opts += '<option value="' + esc(cur) + '" selected>' + esc(kindLabel(cur)) + '</option>';
             return opts;
           })() + '</select></label>' +
-          '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
-            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the lists below</div>' +
-            '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '"' + (s && s.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
+          '<div id="acf-ben-wrap" style="margin-bottom:0.7rem"><div style="font-weight:600">Beneficiaries — who is this event for?</div>' +
+          '<div style="font-size:0.82rem;color:var(--dim);margin:0.25rem 0 0.45rem">They\'ll have this event on their calendar to attend.</div>' +
+          '<div style="display:flex;gap:0.35rem;flex-wrap:wrap" id="acf-bendepts">' + acDepts.map(function (d) {
+            var on = benDeptSel.has(d.id);
+            return '<button type="button" data-bendept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.3rem 0.7rem;font-size:0.83rem;cursor:pointer">' + esc(d.name) + '</button>';
+          }).join('') + '</div>' +
+          '<label style="display:block;margin-top:0.55rem">People (optional)<br><select id="acf-benadd" style="' + IN + '"><option value="">Add a person…</option>' + people.map(function (u) { var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; return '<option value="' + u.id + '">' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>'; }).join('') + '</select></label>' +
+          '<div id="acf-benusers" style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.45rem"></div></div>' +
+          '<div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.2rem"><label style="flex:1;min-width:140px">Date<br><input id="acf-date" type="date" value="' + esc(initDate) + '" style="' + IN + '"></label>' +
+          '<label style="flex:1;min-width:105px">Start time<br><input id="acf-start" type="time" value="' + esc(initStart) + '" style="' + IN + '"></label>' +
+          '<label style="flex:1;min-width:105px">End time<br><input id="acf-end" type="time" value="' + esc(initEnd) + '" style="' + IN + '"></label></div>' +
+          ((opts.fromSlot || prefill) ? '<div style="font-size:0.82rem;color:var(--dim);margin-bottom:0.7rem">Picked from the calendar block you tapped — adjust if needed.</div>' : '<div style="margin-bottom:0.5rem"></div>') +
+          '<div id="acf-sched-wrap" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 From the schedule</div>' +
+            '<div style="display:flex;gap:0.6rem;align-items:flex-end;flex-wrap:wrap"><label style="flex:1;min-width:180px">That day\'s shifts<br><select id="acf-dshift" style="' + IN + '"><option value="">Loading…</option></select></label>' +
+            '<button type="button" class="btn-secondary" id="acf-useshift" style="padding:0.6rem 1rem;border-radius:8px">Use its times &amp; people</button></div>' +
+            '<div id="acf-dshift-note" style="margin-top:0.4rem;font-size:0.85rem;color:#15803d"></div>' +
+          '</div>' +
+          '<div id="acf-speakers-wrap" style="margin-bottom:0.7rem"><div style="font-weight:600;margin-bottom:0.4rem">Speakers</div>' +
+          '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.55rem">' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the speaker list</div>' +
+            '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
             '<label style="flex:1;min-width:150px">By job role<br><select id="acf-frole" style="' + IN + '"><option value="">All job roles</option>' + roleNames.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label></div>' +
           '</div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Presenter (from team members)<br><select id="acf-lecturer" style="' + IN + '">' + personOpts(s ? s.lecturerUserId : null, '— Needs a presenter —') + '</select></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Supervisor (from team members)<br><select id="acf-supervisor" style="' + IN + '">' + personOpts(s ? s.supervisorUserId : null, '— No supervisor —') + '</select></label>' +
-          '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
-            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 Auto-assign — who is working that day?</div>' +
-            '<div style="display:flex;gap:0.6rem;align-items:flex-end;flex-wrap:wrap"><label style="flex:1;min-width:160px">Shift (optional)<br><select id="acf-wshift" style="' + IN + '"><option value="">Any shift</option></select></label>' +
-            '<button type="button" class="btn-secondary" id="acf-find" style="padding:0.6rem 1rem;border-radius:8px">Find working team</button></div>' +
-            '<div id="acf-cands" style="margin-top:0.6rem"></div>' +
-          '</div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Start date<br><input id="acf-date" type="date" value="' + (s ? esc(s.date) : (presetDate || fmtD(new Date()))) + '" style="' + IN + '"></label>' +
-          '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Rotation</div>' +
+          '<div id="acf-speakers"></div>' +
+          '<button type="button" id="acf-spadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.88rem;cursor:pointer;padding:0.2rem 0">+ Add another speaker</button>' +
+          '<div id="acf-spnote" style="display:none;font-size:0.82rem;color:#6d28d9;margin-top:0.3rem">For one date you can change only the main speaker — the full list of speakers belongs to the series.</div></div>' +
+          '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
+          '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
+          '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
+          '<label style="display:block;margin-bottom:0.7rem">🔗 Meeting link (Zoom / Teams)<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom or Teams meeting link" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
+          '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Repeats</div>' +
           '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
           '<div id="acf-everyrow" style="display:none;margin-bottom:0.6rem"><label>Every <input id="acf-interval" type="number" min="1" max="52" value="' + interval0 + '" style="width:4.5rem;padding:0.45rem;border:1px solid var(--border);border-radius:8px"> <span id="acf-unit">weeks</span></label></div>' +
           '<div id="acf-daysrow" style="display:none;margin-bottom:0.6rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
@@ -17029,44 +17300,168 @@ window.qsNpOfferSend = function (btn) {
             '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="date"' + (ends0 === 'date' ? ' checked' : '') + '> On date <input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(String(s.recurUntil).slice(0, 10)) : '') + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"></label>' +
             '<label style="display:block;cursor:pointer"><input type="radio" name="acf-ends" value="count"' + (ends0 === 'count' ? ' checked' : '') + '> After <input id="acf-count" type="number" min="1" max="500" value="' + (s && s.recurCount ? s.recurCount : 10) + '" style="width:4.5rem;padding:0.4rem;border:1px solid var(--border);border-radius:8px"> times</label></div>' +
           '</div>' +
-          '<div style="display:flex;gap:0.6rem;margin-bottom:0.7rem"><label style="flex:1">Start time<br><input id="acf-start" type="time" value="' + (s && s.startTime ? esc(s.startTime) : '') + '" style="' + IN + '"></label>' +
-          '<label style="flex:1">End time<br><input id="acf-end" type="time" value="' + (s && s.endTime ? esc(s.endTime) : '') + '" style="' + IN + '"></label></div>' +
-          '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
-          '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
-          '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
-          '<label style="display:block;margin-bottom:1rem">🔗 Meeting link (Zoom / Teams)<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom or Teams meeting link" style="' + IN + '"></label>' +
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
-          '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-save">Save</button></div>' +
+          '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px' + (canSaveOrg ? '' : ';opacity:0.5') + '" id="acf-save"' + (canSaveOrg ? '' : ' disabled') + '>Save event</button></div>' +
           (s && rule !== 'none' ? '<div id="acf-daterow" style="display:none;margin-top:0.7rem"><button type="button" id="acf-canceldate" style="width:100%;padding:0.6rem;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;cursor:pointer">🚫 Cancel just this date</button><button type="button" id="acf-resetdate" style="display:none;width:100%;margin-top:0.5rem;padding:0.6rem;border-radius:10px;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;cursor:pointer">↩ Reset this date to the series defaults</button></div>' : '') +
           (s ? '<button type="button" id="acf-dup" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer">⧉ Duplicate on the same day</button>' : '') +
           (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
         document.body.appendChild(m);
 
-        var lecSel = m.querySelector('#acf-lecturer');
-        var supSel = m.querySelector('#acf-supervisor');
-        function applyFilters() {
+        // --- EVENT model wiring: speakers, beneficiaries, organizing
+        // department, and the From-the-schedule pull. ---
+        var inDateScope = false;
+        var savedSpeakerState = null;
+        function userNameOf(u) { return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; }
+        function speakerOptions(selectedId) {
           var fd = m.querySelector('#acf-fdept').value;
           var fr = m.querySelector('#acf-frole').value;
-          [lecSel, supSel].forEach(function (sel) {
-            var cur = sel.value;
-            var filtered = people.filter(function (u) {
-              if (fd && u.departmentId !== fd && u.id !== cur) return false;
-              if (fr && u.jobRole !== fr && u.id !== cur) return false;
-              return true;
-            });
-            var emptyLabel = sel === lecSel ? '— Needs a presenter —' : '— No supervisor —';
-            sel.innerHTML = '<option value="">' + emptyLabel + '</option>' + filtered.map(function (u) {
-              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email;
-              return '<option value="' + u.id + '">' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
-            }).join('');
-            sel.value = cur;
+          var list = people.filter(function (u) {
+            if (selectedId && u.id === selectedId) return true;
+            if (fd && u.departmentId !== fd) return false;
+            if (fr && u.jobRole !== fr) return false;
+            return true;
           });
+          return '<option value="">— No speaker —</option>' + list.map(function (u) {
+            return '<option value="' + u.id + '"' + (selectedId === u.id ? ' selected' : '') + '>' + esc(userNameOf(u)) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
+          }).join('') + '<option value="__guest__">Guest speaker (not on the team)</option>';
         }
+        function harvestSpeakers() {
+          var rows = m.querySelectorAll('.acf-sprow');
+          if (!rows.length) return;
+          var next = [];
+          rows.forEach(function (row) {
+            var gn = row.querySelector('.acf-gname');
+            if (gn) { next.push({ guest: true, name: gn.value, email: (row.querySelector('.acf-gemail') || {}).value || '' }); return; }
+            var sel = row.querySelector('.acf-spuser');
+            next.push({ userId: sel ? sel.value : '' });
+          });
+          speakerState = next;
+        }
+        function renderSpeakers() {
+          var box = m.querySelector('#acf-speakers');
+          box.innerHTML = speakerState.map(function (sp, idx) {
+            var del = inDateScope ? '' : '<button type="button" class="acf-spdel" data-spdel="' + idx + '" title="Remove speaker" style="background:none;border:1px solid var(--border);border-radius:8px;width:2rem;height:2rem;cursor:pointer;flex:none">×</button>';
+            if (sp.guest) {
+              return '<div class="acf-sprow" style="display:flex;gap:0.45rem;align-items:flex-start;margin-bottom:0.45rem">' +
+                '<div style="flex:1"><input type="text" class="acf-gname" placeholder="Guest name" value="' + esc(sp.name || '') + '" style="' + IN + ';margin-top:0">' +
+                '<input type="email" class="acf-gemail" placeholder="Guest email (optional — we\'ll send them the event details)" value="' + esc(sp.email || '') + '" style="' + IN + ';margin-top:0.35rem">' +
+                '<button type="button" class="acf-spteam" data-spteam="' + idx + '" style="background:none;border:none;color:#0e7c86;font-size:0.8rem;cursor:pointer;padding:0.25rem 0">Use a team member instead</button></div>' + del + '</div>';
+            }
+            return '<div class="acf-sprow" style="display:flex;gap:0.45rem;align-items:center;margin-bottom:0.45rem">' +
+              '<select class="acf-spuser" data-spuser="' + idx + '" style="flex:1;' + IN + ';margin-top:0">' + speakerOptions(sp.userId || '') + '</select>' + del + '</div>';
+          }).join('');
+          box.querySelectorAll('.acf-spuser').forEach(function (sel) {
+            sel.addEventListener('change', function () {
+              var idx = parseInt(sel.getAttribute('data-spuser'), 10);
+              harvestSpeakers();
+              if (sel.value === '__guest__') { speakerState[idx] = { guest: true, name: '', email: '' }; renderSpeakers(); }
+            });
+          });
+          box.querySelectorAll('.acf-spdel').forEach(function (b) {
+            b.addEventListener('click', function () { harvestSpeakers(); speakerState.splice(parseInt(b.getAttribute('data-spdel'), 10), 1); renderSpeakers(); });
+          });
+          box.querySelectorAll('.acf-spteam').forEach(function (b) {
+            b.addEventListener('click', function () { harvestSpeakers(); speakerState[parseInt(b.getAttribute('data-spteam'), 10)] = { userId: '' }; renderSpeakers(); });
+          });
+          var add = m.querySelector('#acf-spadd');
+          if (add) add.style.display = inDateScope ? 'none' : '';
+          var note = m.querySelector('#acf-spnote');
+          if (note) note.style.display = inDateScope ? '' : 'none';
+        }
+        m.querySelector('#acf-spadd').addEventListener('click', function () { harvestSpeakers(); speakerState.push({ userId: '' }); renderSpeakers(); });
+        function applyFilters() { harvestSpeakers(); renderSpeakers(); }
         m.querySelector('#acf-fdept').addEventListener('change', applyFilters);
         m.querySelector('#acf-frole').addEventListener('change', applyFilters);
-        applyFilters();
+        renderSpeakers();
+        function readSpeakers() {
+          harvestSpeakers();
+          var out = [];
+          speakerState.forEach(function (sp) {
+            if (sp.guest) {
+              var nm = (sp.name || '').trim(); var em = (sp.email || '').trim();
+              if (nm || em) out.push({ guestName: nm, guestEmail: em || null });
+            } else if (sp.userId) out.push({ userId: sp.userId });
+          });
+          return out;
+        }
+        function addSpeakerUser(uid) {
+          harvestSpeakers();
+          if (speakerState.some(function (sp) { return !sp.guest && sp.userId === uid; })) return false;
+          var blank = -1;
+          for (var i = 0; i < speakerState.length; i++) { if (!speakerState[i].guest && !speakerState[i].userId) { blank = i; break; } }
+          if (blank >= 0) speakerState[blank] = { userId: uid };
+          else speakerState.push({ userId: uid });
+          renderSpeakers();
+          return true;
+        }
+        // Beneficiaries: chips for departments, removable chips for people.
+        function renderBenUsers() {
+          var box = m.querySelector('#acf-benusers');
+          box.innerHTML = benUserIds.map(function (uid) {
+            var u = acUsers.find(function (x) { return x.id === uid; });
+            return '<span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0fdfa;border:1px solid #99f6e4;border-radius:999px;padding:0.25rem 0.6rem;font-size:0.83rem">' + esc(u ? userNameOf(u) : '—') + '<button type="button" data-bendel="' + uid + '" style="background:none;border:none;cursor:pointer;font-size:0.9rem;line-height:1">×</button></span>';
+          }).join('');
+          box.querySelectorAll('[data-bendel]').forEach(function (b) {
+            b.addEventListener('click', function () { benUserIds = benUserIds.filter(function (x) { return x !== b.getAttribute('data-bendel'); }); renderBenUsers(); });
+          });
+        }
+        renderBenUsers();
+        m.querySelector('#acf-benadd').addEventListener('change', function () {
+          var v = this.value;
+          if (v && benUserIds.indexOf(v) < 0) { benUserIds.push(v); renderBenUsers(); }
+          this.value = '';
+        });
+        function paintBenChip(chip) {
+          var on = benDeptSel.has(chip.getAttribute('data-bendept'));
+          chip.style.background = on ? '#0e7c86' : '#fff';
+          chip.style.color = on ? '#fff' : 'inherit';
+          chip.style.borderColor = on ? '#0e7c86' : 'var(--border)';
+        }
+        m.querySelectorAll('[data-bendept]').forEach(function (chip) {
+          chip.addEventListener('click', function () {
+            benTouched = true;
+            var id = chip.getAttribute('data-bendept');
+            if (benDeptSel.has(id)) benDeptSel.delete(id); else benDeptSel.add(id);
+            paintBenChip(chip);
+          });
+        });
+        var orgSelEl = m.querySelector('#acf-orgdept');
+        if (orgSelEl && orgSelEl.tagName === 'SELECT') orgSelEl.addEventListener('change', function () {
+          if (s || benTouched) return;
+          benDeptSel = new Set([orgSelEl.value]);
+          m.querySelectorAll('[data-bendept]').forEach(paintBenChip);
+        });
+        function orgDeptVal() { var el = m.querySelector('#acf-orgdept'); return el ? (el.value || null) : orgSelected; }
+        // From the schedule: that date's shifts (the day-shifts endpoint).
+        var dayShiftsCache = [];
+        function fillDayShifts() {
+          var sel = m.querySelector('#acf-dshift');
+          var date = m.querySelector('#acf-date').value;
+          if (!date) { sel.innerHTML = '<option value="">Pick a date first</option>'; return; }
+          sel.innerHTML = '<option value="">Loading…</option>';
+          api('/api/schedule/day-shifts?date=' + date).then(function (r) {
+            dayShiftsCache = (r.ok && r.data.shifts) || [];
+            if (!dayShiftsCache.length) { sel.innerHTML = '<option value="">No shifts that day</option>'; return; }
+            sel.innerHTML = dayShiftsCache.map(function (sh, i) {
+              var lbl = sh.shiftTypeName + ' — ' + (sh.personName || 'OPEN') + (sh.startTime ? ' · ' + fmtTime(sh.startTime) + (sh.endTime ? '–' + fmtTime(sh.endTime) : '') : '');
+              return '<option value="' + i + '">' + esc(lbl) + '</option>';
+            }).join('');
+          }).catch(function () { sel.innerHTML = '<option value="">Could not load shifts</option>'; });
+        }
+        fillDayShifts();
+        m.querySelector('#acf-date').addEventListener('change', fillDayShifts);
+        m.querySelector('#acf-useshift').addEventListener('click', function () {
+          var sel = m.querySelector('#acf-dshift');
+          var sh = dayShiftsCache[parseInt(sel.value, 10)];
+          var note = m.querySelector('#acf-dshift-note');
+          if (!sh) { note.textContent = 'Pick a shift first.'; note.style.color = '#b91c1c'; return; }
+          if (sh.startTime) m.querySelector('#acf-start').value = sh.startTime;
+          if (sh.endTime) m.querySelector('#acf-end').value = sh.endTime;
+          var added = sh.userId ? addSpeakerUser(sh.userId) : false;
+          note.style.color = '#15803d';
+          note.textContent = '✓ Times set from ' + sh.shiftTypeName + (sh.userId ? (added ? ' — ' + (sh.personName || 'they') + ' added as a speaker.' : ' — ' + (sh.personName || 'that person') + ' is already a speaker.') : ' (open shift — nobody to add).');
+        });
 
         // Per-date scope for recurring series (Deepika, 2026-10-20):
         // "this date only" writes an override — the series keeps its
@@ -17076,8 +17471,6 @@ window.qsNpOfferSend = function (btn) {
           if (!isSeries) return;
           var dateScope = scopeVal() === 'date';
           var src = dateScope ? (occ || s) : s;
-          lecSel.value = (src && src.lecturerUserId) || '';
-          supSel.value = (src && src.supervisorUserId) || '';
           var st = m.querySelector('#acf-start'); if (st) st.value = (src && src.startTime) || '';
           var en = m.querySelector('#acf-end'); if (en) en.value = (src && src.endTime) || '';
           var lc = m.querySelector('#acf-loc'); if (lc) lc.value = (src && src.location) || '';
@@ -17090,6 +17483,22 @@ window.qsNpOfferSend = function (btn) {
           var note = m.querySelector('#acf-scope-note');
           if (note) note.textContent = dateScope && occ && occ.hasOverride ? 'This date has its own changes saved — they stay even if the series changes.' : '';
           var rs = m.querySelector('#acf-resetdate'); if (rs) rs.style.display = dateScope && occ && occ.hasOverride ? '' : 'none';
+          // EVENT model: organizing department, beneficiaries and the
+          // schedule pull are series-level — hidden for a one-date
+          // change. Speakers narrow to the date's main speaker only.
+          var orgW = m.querySelector('#acf-org-wrap'); if (orgW) orgW.style.display = dateScope ? 'none' : '';
+          var benW = m.querySelector('#acf-ben-wrap'); if (benW) benW.style.display = dateScope ? 'none' : '';
+          var schW = m.querySelector('#acf-sched-wrap'); if (schW) schW.style.display = dateScope ? 'none' : '';
+          if (dateScope && !inDateScope) {
+            inDateScope = true;
+            savedSpeakerState = speakerState;
+            speakerState = occ && occ.lecturerUserId ? [{ userId: occ.lecturerUserId }] : [{ userId: '' }];
+            renderSpeakers();
+          } else if (!dateScope && inDateScope) {
+            inDateScope = false;
+            speakerState = savedSpeakerState || speakerState;
+            renderSpeakers();
+          }
         }
         if (isSeries) {
           var dlbl = m.querySelector('#acf-scope-dlabel');
@@ -17116,128 +17525,6 @@ window.qsNpOfferSend = function (btn) {
             }).catch(function () { pageError('Could not reset that date.'); });
           });
         }
-
-        // The calendar's department(s) — sessions inherit them, so the
-        // auto-assign tools key off the calendar (and the By-department
-        // filter when one is picked), never a per-session choice.
-        var dashDeptIds = (curDash && curDash.departmentIds) || [];
-        // Shift types for the auto-assign picker (lazy, cached).
-        function fillShifts() {
-          var sel = m.querySelector('#acf-wshift');
-          var fd = m.querySelector('#acf-fdept').value;
-          var list = (acShiftTypes || []).filter(function (st) {
-            if (!st.departmentId) return true;
-            if (fd) return st.departmentId === fd;
-            if (dashDeptIds.length) return dashDeptIds.indexOf(st.departmentId) >= 0;
-            return true;
-          });
-          sel.innerHTML = '<option value="">Any shift</option>' + list.map(function (st) {
-            return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
-          }).join('');
-        }
-        if (acShiftTypes) fillShifts();
-        else api('/api/schedule/shift-types').then(function (r) {
-          acShiftTypes = (r.ok && (r.data.shiftTypes || r.data || [])) || [];
-          if (Array.isArray(acShiftTypes)) fillShifts();
-        }).catch(function () {});
-        m.querySelector('#acf-fdept').addEventListener('change', fillShifts);
-
-        m.querySelector('#acf-find').addEventListener('click', function () {
-          var date = m.querySelector('#acf-date').value;
-          // Rank the calendar's department first when it has exactly
-          // one; a multi-department calendar looks across all of them
-          // (working-on only ranks by department — it returns everyone
-          // working either way).
-          var dept = m.querySelector('#acf-fdept').value || (dashDeptIds.length === 1 ? dashDeptIds[0] : '');
-          var shift = m.querySelector('#acf-wshift').value;
-          var box = m.querySelector('#acf-cands');
-          if (!date) { box.innerHTML = '<span style="color:#b91c1c">Pick a start date first.</span>'; return; }
-          box.innerHTML = 'Looking…';
-          var q = '/api/schedule/working-on?date=' + date + (dept ? '&departmentId=' + dept : '') + (shift ? '&shiftTypeId=' + shift : '');
-          api(q).then(function (r) {
-            var cands = (r.ok && r.data.candidates) || [];
-            if (!cands.length) { box.innerHTML = '<span style="color:var(--dim)">Nobody from the team is scheduled to work that day.</span>'; return; }
-            function setPerson(sel, cand) {
-              var exists = Array.prototype.some.call(sel.options, function (o) { return o.value === cand.userId; });
-              if (!exists) {
-                var o = document.createElement('option');
-                o.value = cand.userId;
-                o.textContent = cand.name + (cand.jobRole ? ' (' + cand.jobRole + ')' : '');
-                sel.appendChild(o);
-              }
-              sel.value = cand.userId;
-            }
-            var byId = {};
-            cands.forEach(function (c) { byId[c.userId] = c; });
-            function markBtn(attr, uid) {
-              box.querySelectorAll('[' + attr + ']').forEach(function (x) {
-                var on = x.getAttribute(attr) === uid;
-                x.style.background = on ? '#2563eb' : '';
-                x.style.color = on ? '#fff' : '';
-              });
-            }
-            function wireBtns() {
-              box.querySelectorAll('[data-cand-p]').forEach(function (b) {
-                b.addEventListener('click', function () {
-                  var c = byId[b.getAttribute('data-cand-p')];
-                  setPerson(lecSel, c);
-                  markBtn('data-cand-p', c.userId);
-                  var n = box.querySelector('#acf-picked');
-                  if (n) n.innerHTML = '✓ ' + esc(c.name) + ' set as <strong>presenter</strong>.';
-                });
-              });
-              box.querySelectorAll('[data-cand-s]').forEach(function (b) {
-                b.addEventListener('click', function () {
-                  var c = byId[b.getAttribute('data-cand-s')];
-                  setPerson(supSel, c);
-                  markBtn('data-cand-s', c.userId);
-                  var n = box.querySelector('#acf-picked');
-                  if (n) n.innerHTML = '✓ ' + esc(c.name) + ' set as <strong>supervisor</strong>.';
-                });
-              });
-            }
-            function candRow(c) {
-              var badges = c.shifts.map(function (x) {
-                return '<span style="background:#dbeafe;color:#1e40af;border-radius:999px;padding:0.12rem 0.55rem;font-size:0.76rem;font-weight:600">' + esc(x.shiftName) + '</span>';
-              }).join(' ');
-              var btn = 'type="button" class="btn-secondary" style="padding:0.35rem 0.7rem;border-radius:999px;font-size:0.8rem"';
-              return '<div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.45rem;background:#fff;border:1px solid var(--border);border-radius:10px;padding:0.45rem 0.6rem">' +
-                '<span style="font-size:0.9rem;font-weight:600">' + esc(c.name) + '</span>' + badges +
-                (c.jobRole ? '<span style="font-size:0.8rem;color:var(--dim)">' + esc(c.jobRole) + '</span>' : '') +
-                '<span style="margin-left:auto;display:flex;gap:0.35rem">' +
-                '<button ' + btn + ' data-cand-p="' + c.userId + '">Presenter</button>' +
-                '<button ' + btn + ' data-cand-s="' + c.userId + '">Supervisor</button></span></div>';
-            }
-            var note = '';
-            if (cands.length === 1) {
-              setPerson(lecSel, cands[0]);
-              note = '<div style="color:#15803d;font-weight:600;font-size:0.88rem;margin-bottom:0.45rem">✓ Only one person working — ' + esc(cands[0].name) + ' set as presenter.</div>';
-            }
-            // Group people under their department; the session's department first.
-            var groups = new Map();
-            cands.forEach(function (c) {
-              var dn = (c.shifts[0] && c.shifts[0].departmentName) || 'No department';
-              if (!groups.has(dn)) groups.set(dn, []);
-              groups.get(dn).push(c);
-            });
-            var deptNameOf = function (id) {
-              var d = acDepts.find(function (x) { return x.id === id; });
-              return d ? d.name : null;
-            };
-            var wantName = dept ? deptNameOf(dept) : null;
-            var keys = Array.from(groups.keys()).sort(function (a, b) {
-              if (wantName) { if (a === wantName) return -1; if (b === wantName) return 1; }
-              if (a === 'No department') return 1;
-              if (b === 'No department') return -1;
-              return a.localeCompare(b);
-            });
-            box.innerHTML = note + '<div id="acf-picked" style="color:#15803d;font-weight:600;font-size:0.88rem;margin-bottom:0.3rem"></div>' + keys.map(function (k) {
-              return '<div style="font-size:0.85rem;font-weight:700;margin:0.55rem 0 0.4rem">🏥 ' + esc(k) + '</div>' + groups.get(k).map(candRow).join('');
-            }).join('');
-            wireBtns();
-            if (cands.length === 1) markBtn('data-cand-p', cands[0].userId);
-          }).catch(function () { box.innerHTML = '<span style="color:#b91c1c">Could not check the schedule.</span>'; });
-        });
 
         // Rotation UI: frequency + every-N + weekday/monthly options + ends.
         var recurSel = m.querySelector('#acf-recur');
@@ -17346,8 +17633,10 @@ window.qsNpOfferSend = function (btn) {
           return {
             title: m.querySelector('#acf-title').value.trim(),
             kind: m.querySelector('#acf-kind').value,
-            lecturerUserId: lecSel.value || null,
-            supervisorUserId: supSel.value || null,
+            departmentId: orgDeptVal(),
+            beneficiaryDepartmentIds: Array.from(benDeptSel),
+            beneficiaryUserIds: benUserIds.slice(),
+            speakers: readSpeakers(),
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
             endTime: m.querySelector('#acf-end').value || null,
@@ -17368,10 +17657,13 @@ window.qsNpOfferSend = function (btn) {
         }
         m.querySelector('#acf-save').addEventListener('click', function () {
           if (isSeries && scopeVal() === 'date') {
+            // One-date change: only the main speaker rides along as
+            // the date's lecturer override; the supervisor and the
+            // series' speaker list stay untouched.
+            var firstSel = m.querySelector('.acf-sprow .acf-spuser');
             var dpayload = {
               scope: 'date', date: occDate,
-              lecturerUserId: lecSel.value || null,
-              supervisorUserId: supSel.value || null,
+              lecturerUserId: firstSel && firstSel.value && firstSel.value !== '__guest__' ? firstSel.value : null,
               location: m.querySelector('#acf-loc').value.trim() || null,
               meetingUrl: m.querySelector('#acf-meeting').value.trim() || null,
               startTime: m.querySelector('#acf-start').value || null,
@@ -17396,7 +17688,7 @@ window.qsNpOfferSend = function (btn) {
             ? api('/api/schedule/academic-sessions/' + (s.seriesId || s.id), { method: 'PUT', body: JSON.stringify(payload) })
             : api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) });
           req.then(function (r) {
-            if (r.ok) { m.remove(); pageSuccess(s ? 'Session updated.' : 'Session added.'); load(); }
+            if (r.ok) { m.remove(); pageSuccess(s ? 'Event updated.' : 'Event added.'); load(); }
             else pageError((r.data && r.data.error) || 'Could not save.');
           }).catch(function () { pageError('Could not save.'); });
         });

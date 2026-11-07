@@ -26,6 +26,11 @@ import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '..
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
+import {
+  cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
+  cleanBeneficiaries, saveBeneficiaries, loadBeneficiaries, loadInvitedUserIds,
+  emailGuests, newlyAddedGuests, describeRecur,
+} from '../util/sessionPeople.js';
 
 const router = Router();
 
@@ -9388,6 +9393,63 @@ async function canEditSessionQuiet(req: Request, dashboardId: string | null, dep
   return false;
 }
 
+// EVENT model (Deepika, 2026-11-07): the departments this user may
+// ORGANIZE events for on a calendar = their Edit-access departments ∩
+// the calendar's departments (an unrestricted calendar → their Edit
+// departments; owner → the calendar's departments, or every company
+// department when unrestricted). When the dashboard has an editors
+// list and the user is on it, they may organize for any of the
+// calendar's departments — the editors list already overrides the
+// department-edit check for session saves.
+async function manageableOrgDeptIds(req: Request, dashboardId: string): Promise<string[]> {
+  const companyId = req.session.companyId!;
+  const dIds = await dashboardDeptIds(dashboardId);
+  const allDepts = async (): Promise<string[]> => {
+    const { rows } = await query('SELECT id FROM departments WHERE company_id = $1', [companyId]);
+    return rows.map((r: any) => r.id);
+  };
+  if (req.session.role === 'owner') return dIds.length ? dIds : allDepts();
+  if (req.session.role !== 'scheduler') return [];
+  const editors = await dashboardEditorIds(dashboardId);
+  if (editors.length) {
+    if (!editors.includes(req.session.userId!)) return [];
+    return dIds.length ? dIds : allDepts();
+  }
+  const access = await getDepartmentAccess(req.session.userId!, companyId);
+  const editDepts = access.edit || [];
+  if (!dIds.length) return editDepts;
+  return editDepts.filter((d) => dIds.includes(d));
+}
+
+// Context for the guest-speaker details email (names resolved once).
+async function guestMailCtx(req: Request, s: {
+  dashboardId: string | null; departmentId: string | null; title: string;
+  date: string; startTime: string | null; endTime: string | null;
+  location: string | null; meetingUrl: string | null; recurText: string | null;
+}) {
+  const companyId = req.session.companyId!;
+  const { rows: cRows } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
+  const { rows: meRows } = await query('SELECT first_name, last_name FROM users WHERE id = $1', [req.session.userId]);
+  let dashboardName: string | null = null;
+  if (s.dashboardId) {
+    const { rows } = await query('SELECT name FROM dashboards WHERE id = $1', [s.dashboardId]);
+    dashboardName = rows[0]?.name || null;
+  }
+  let departmentName: string | null = null;
+  if (s.departmentId) {
+    const { rows } = await query('SELECT name FROM departments WHERE id = $1', [s.departmentId]);
+    departmentName = rows[0]?.name || null;
+  }
+  return {
+    companyId,
+    companyName: cRows[0]?.name || 'your team',
+    saverName: meRows[0] ? [meRows[0].first_name, meRows[0].last_name].filter(Boolean).join(' ') : 'A teammate',
+    dashboardName, departmentName,
+    title: s.title, date: s.date, startTime: s.startTime, endTime: s.endTime,
+    location: s.location, meetingUrl: s.meetingUrl, recurText: s.recurText,
+  };
+}
+
 async function validateDashboardEditors(companyId: string, ids: any): Promise<string[] | null> {
   if (!ids || !Array.isArray(ids) || ids.length === 0) return [];
   const want = ids.map((x: any) => String(x));
@@ -9525,6 +9587,84 @@ router.delete('/dashboards/:id', requireRole('owner'), async (req: Request, res:
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] dashboard delete failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/day-shifts?date=YYYY-MM-DD — that date's shifts
+// (stored + rotation-generated, like GET /shifts) with shift-type
+// times, plus unfilled extra open slots as OPEN rows. Feeds the
+// event form's "From the schedule" pull (Deepika, 2026-11-07).
+// Employees use the pull too, scoped to their OWN shifts.
+router.get('/day-shifts', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const date = String(req.query.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { res.status(400).json({ error: 'A date is required.' }); return; }
+    const range = await getShiftsForRange(query as any, companyId, date, date);
+    const times = await getShiftTypeTimes(query as any, companyId);
+    const hm = (min: number | null | undefined) => (min === null || min === undefined) ? null
+      : String(Math.floor(min / 60) % 24).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0');
+    const typeIds = [...new Set(range.map((s: any) => s.shiftTypeId).filter(Boolean))] as string[];
+    const deptOfType = new Map<string, string[]>();
+    if (typeIds.length) {
+      const { rows: td } = await query(
+        'SELECT shift_type_id, department_id FROM shift_type_departments WHERE shift_type_id = ANY($1::uuid[])', [typeIds]);
+      for (const r of td) {
+        if (!deptOfType.has(r.shift_type_id)) deptOfType.set(r.shift_type_id, []);
+        deptOfType.get(r.shift_type_id)!.push(r.department_id);
+      }
+    }
+    // Scheduler scope: their view ∪ edit departments (owners: all).
+    let scope: string[] | null = null;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      scope = [...new Set([...(access.view || []), ...(access.edit || [])])];
+    }
+    const inScope = (typeId: string | null) => {
+      if (!scope) return true;
+      if (!typeId) return true;
+      const ds = deptOfType.get(typeId) || [];
+      return !ds.length || ds.some((d) => scope!.includes(d));
+    };
+    const out: any[] = [];
+    for (const s of range as any[]) {
+      if (req.session.role === 'employee' && s.userId !== req.session.userId) continue;
+      if (!inScope(s.shiftTypeId || null)) continue;
+      const tt = s.shiftTypeId ? times.get(s.shiftTypeId) : undefined;
+      out.push({
+        shiftTypeId: s.shiftTypeId || null,
+        shiftTypeName: s.shiftTypeName || 'Shift',
+        userId: s.userId || null,
+        personName: s.personName || null,
+        startTime: tt && tt.timed ? hm(tt.startMin) : null,
+        endTime: tt && tt.timed ? hm(tt.endMin) : null,
+        departmentId: (s.shiftTypeId && (deptOfType.get(s.shiftTypeId) || [])[0]) || null,
+      });
+    }
+    const { rows: open } = await query(
+      `SELECT e.shift_type_id AS "shiftTypeId", e.count, st.name AS "shiftTypeName"
+       FROM extra_open_slots e JOIN shift_types st ON st.id = e.shift_type_id
+       WHERE e.company_id = $1 AND e.date = $2 AND e.count > 0`,
+      [companyId, date]);
+    for (const o of open) {
+      if (req.session.role === 'employee') continue; // open slots aren't the employee's own shifts
+      if (!inScope(o.shiftTypeId)) continue;
+      const tt = times.get(o.shiftTypeId);
+      for (let i = 0; i < (o.count || 0); i++) {
+        out.push({
+          shiftTypeId: o.shiftTypeId, shiftTypeName: o.shiftTypeName,
+          userId: null, personName: null,
+          startTime: tt && tt.timed ? hm(tt.startMin) : null,
+          endTime: tt && tt.timed ? hm(tt.endMin) : null,
+          departmentId: (deptOfType.get(o.shiftTypeId) || [])[0] || null,
+        });
+      }
+    }
+    out.sort((a, b) => String(a.startTime || '99') < String(b.startTime || '99') ? -1 : 1);
+    res.json({ shifts: out });
+  } catch (err) {
+    console.error('[schedule] day-shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -9691,6 +9831,7 @@ function academicRow(r: any) {
     recurUntil: r.recur_until instanceof Date ? r.recur_until.toISOString().slice(0, 10) : (r.recur_until || null),
     seriesId: r.series_id || null,
     isOccurrence: !!r.is_occurrence,
+    createdBy: r.created_by || null,
     createdAt: r.created_at,
   };
 }
@@ -9757,6 +9898,31 @@ function applyOverride(base: any, ov: any, userName: Map<string, string>): any {
   if (ov.has_meeting_url) out.meetingUrl = ov.meeting_url;
   if (ov.has_times) { out.startTime = ov.start_time; out.endTime = ov.end_time; }
   return out;
+}
+
+// EVENT model: the speakers in effect for ONE occurrence. The series
+// list is authoritative; a per-date lecturer override adjusts only the
+// primary (first) spot: a team Speaker 1 is replaced by the override
+// lecturer (or dropped when the override clears it); when Speaker 1
+// is a guest, an override lecturer is added in front for that date.
+export function effectiveSpeakers(seriesSpeakers: any[], occLecturerUserId: string | null, occLecturerName: string | null): any[] {
+  const sp = (seriesSpeakers || []).map((s: any) => ({ ...s }));
+  if (!sp.length) {
+    return occLecturerUserId ? [{ userId: occLecturerUserId, name: occLecturerName, guest: false, guestEmail: null }] : [];
+  }
+  const first = sp[0];
+  if (first.userId) {
+    if (occLecturerUserId === first.userId) return sp;
+    if (occLecturerUserId) { sp[0] = { userId: occLecturerUserId, name: occLecturerName, guest: false, guestEmail: null }; return sp; }
+    return sp.slice(1);
+  }
+  if (occLecturerUserId) return [{ userId: occLecturerUserId, name: occLecturerName, guest: false, guestEmail: null }, ...sp];
+  return sp;
+}
+
+// A loaded speaker row back into saveSpeakers input shape.
+export function speakerRowToInput(s: any): { userId?: string | null; guestName?: string | null; guestEmail?: string | null } {
+  return s.userId ? { userId: s.userId } : { guestName: s.name, guestEmail: s.guestEmail };
 }
 
 // Upsert the override row for one date, touching only the given
@@ -10185,12 +10351,14 @@ router.get('/session-avail/public', async (req: Request, res: Response) => {
     const kindOf = (s: any) => kinds.find((k: any) => k.key === s.kind && k.dashboardId === s.dashboardId) || kinds.find((k: any) => k.key === s.kind) || null;
     const { rows: dashRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [link.companyId]);
     const dashName = new Map(dashRows.map((d: any) => [d.id, d.name]));
+    const spMapPub = await loadSpeakers(query as any, rows.map((r: any) => r.id));
+    const presenterMissingPub = (s: any) => effectiveSpeakers(spMapPub.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0;
     const sessions = expanded
-      .filter((s: any) => !s.lecturerUserId || !s.supervisorUserId)
+      .filter((s: any) => presenterMissingPub(s) || !s.supervisorUserId)
       .map((s: any) => {
         const k: any = kindOf(s);
         const missing: string[] = [];
-        if (!s.lecturerUserId) missing.push('presenter');
+        if (presenterMissingPub(s)) missing.push('presenter');
         if (!s.supervisorUserId) missing.push('supervisor');
         return {
           sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
@@ -10255,9 +10423,10 @@ router.post('/session-avail/public/respond', async (req: Request, res: Response)
       for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
     }
     const expanded = expandAcademicSessions(rows, link.fromDate, link.toDate, ovMap, userName);
+    const spMapResp = await loadSpeakers(query as any, rows.map((r: any) => r.id));
     const gapSet = new Set<string>();
     for (const s of expanded) {
-      if (!s.lecturerUserId) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|presenter');
+      if (effectiveSpeakers(spMapResp.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|presenter');
       if (!s.supervisorUserId) gapSet.add(baseSessionId(s.id) + '|' + s.date + '|supervisor');
     }
     await query('DELETE FROM session_avail_responses WHERE link_id = $1 AND name = $2', [link.id, cleanName]);
@@ -10367,12 +10536,17 @@ async function sessionGapsForWindow(companyId: string, dashboardId: string | nul
   const kindOf = (s: any) => kinds.find((k: any) => k.key === s.kind && k.dashboardId === s.dashboardId) || kinds.find((k: any) => k.key === s.kind) || null;
   const { rows: dashRows } = await query('SELECT id, name FROM dashboards WHERE company_id = $1', [companyId]);
   const dashName = new Map(dashRows.map((d: any) => [d.id, d.name]));
+  // Presenter gap = the occurrence has NO speakers at all (a guest
+  // speaker covers the spot; the lecturer mirror alone no longer
+  // decides).
+  const spMapGaps = await loadSpeakers(query as any, rows.map((r: any) => r.id));
+  const presenterMissing = (s: any) => effectiveSpeakers(spMapGaps.get(baseSessionId(s.id)) || [], s.lecturerUserId || null, s.lecturerName || null).length === 0;
   return expanded
-    .filter((s: any) => !s.lecturerUserId || !s.supervisorUserId)
+    .filter((s: any) => presenterMissing(s) || !s.supervisorUserId)
     .map((s: any) => {
       const k: any = kindOf(s);
       const missing: string[] = [];
-      if (!s.lecturerUserId) missing.push('presenter');
+      if (presenterMissing(s)) missing.push('presenter');
       if (!s.supervisorUserId) missing.push('supervisor');
       return {
         sessionId: baseSessionId(s.id), occDate: s.date, title: s.title,
@@ -10602,7 +10776,10 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
   const resolved = await resolveOccurrence(q, companyId, baseId, occDate);
   if (!resolved) return { error: 'That session no longer exists on that date.', status: 404 };
   const { occ } = resolved;
-  const filled = role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+  // Presenter filled = a lecturer for the date OR any speakers on the
+  // series (a guest speaker covers the spot too).
+  const filled = role === 'supervisor' ? !!occ.supervisorUserId
+    : (!!occ.lecturerUserId || (await sessionsWithSpeakers(q, [baseId])).has(baseId));
   if (filled) return { filled: true, occ };
   const visibleIds = await academicVisibleDeptIds(req);
   const { rows: userRows } = await q(
@@ -10772,7 +10949,10 @@ router.get('/session-offers/act/:token', async (req: Request, res: Response) => 
     const when = `${fmtDateLong(rec.occDate)}${occ.startTime ? ' at ' + String(occ.startTime).slice(0, 5) : ''}`;
     const head = `<p style="font-size:16px">Hi ${escHtml(String(rec.userName).split(' ')[0])} — <b>${escHtml(occ.title)}</b> on ${escHtml(when)} needs ${/^[aeiou]/i.test(roleLabel) ? 'an' : 'a'} ${escHtml(roleLabel)}.</p>`;
     if (rec.claimedAt) { res.send(actPage('You are on this session', head + '<p>You already accepted this session. Thank you!</p>')); return; }
-    const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+    // A presenter spot is filled when the occurrence has a lecturer
+    // OR the series has any speakers at all (guests count).
+    const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId
+      : (!!occ.lecturerUserId || (await sessionsWithSpeakers(query as any, [rec.sessionId])).has(rec.sessionId));
     if (rec.status === 'filled' || filledNow) {
       const who = rec.role === 'supervisor' ? occ.supervisorName : occ.lecturerName;
       res.send(actPage('This session is filled', head + `<p>Someone has already taken this session${who ? ` — ${escHtml(who)}` : ''}. Thank you for offering!</p>`));
@@ -10808,7 +10988,8 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       const resolved = await resolveOccurrence(q, rec.companyId, rec.sessionId, rec.occDate);
       if (!resolved) return { kind: 'gone' } as any;
       const { base, occ } = resolved;
-      const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId : !!occ.lecturerUserId;
+      const filledNow = rec.role === 'supervisor' ? !!occ.supervisorUserId
+        : (!!occ.lecturerUserId || (await sessionsWithSpeakers(q, [rec.sessionId])).has(rec.sessionId));
       if (filledNow) {
         await q("UPDATE session_offers SET status = 'filled' WHERE id = $1", [rec.offerId]);
         return { kind: 'filled', occ } as any;
@@ -10817,7 +10998,15 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       if (conflict) return { kind: 'conflict', conflict, occ } as any;
       if (occ.date === base.date) {
         if (rec.role === 'supervisor') await q('UPDATE academic_sessions SET supervisor_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
-        else await q('UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
+        else {
+          await q('UPDATE academic_sessions SET lecturer_user_id = $1 WHERE id = $2', [rec.userId, base.id]);
+          // Keep the speakers list in step: the accepter is Speaker 1
+          // (offers only open on speaker-less gaps, so the list is
+          // expected empty — guard anyway).
+          if (!(await sessionsWithSpeakers(q, [base.id])).has(base.id)) {
+            await saveSpeakers(q, base.id, [{ userId: rec.userId }]);
+          }
+        }
       } else if (rec.role === 'supervisor') {
         await q(
           `INSERT INTO academic_session_overrides (company_id, session_id, date, supervisor_user_id, has_supervisor)
@@ -10980,9 +11169,43 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
     const to = req.query.to ? String(req.query.to) : null;
     const clauses = ['s.company_id = $1'];
     const params: any[] = [companyId];
-    if (ids) {
+    const { rows: meRows } = await query('SELECT department_id FROM users WHERE id = $1', [req.session.userId!]);
+    const myHomeDept: string | null = meRows[0]?.department_id || null;
+    // VISIBILITY RULE (Deepika, 2026-11-07, final form): on a
+    // CALENDAR, every user — owner included — sees only their OWN
+    // events: ones they organized (created_by), speak at (any
+    // speaker spot), are invited to (beneficiary, personally or via
+    // a beneficiary department), or supervise (legacy). No owner
+    // bypass. The dashboard-scoped fetch (calendar pages) always
+    // uses this rule. The unscoped fetch (My Schedule, the Schedule
+    // page's session boxes, Short cover) keeps department-scoped
+    // visibility for owner/scheduler — Short cover's speaker-gap
+    // queue for calendar managers is a deliberate exception — while
+    // employees get the same own-events rule there too.
+    const ownEventsSql = (): string => {
+      params.push(req.session.userId!);
+      const meP = params.length;
+      let sql = `(s.created_by = $${meP} OR s.lecturer_user_id = $${meP} OR s.supervisor_user_id = $${meP}
+        OR EXISTS (SELECT 1 FROM session_speakers sp WHERE sp.session_id = s.id AND sp.user_id = $${meP})
+        OR EXISTS (SELECT 1 FROM session_beneficiary_users bu WHERE bu.session_id = s.id AND bu.user_id = $${meP})`;
+      if (myHomeDept) {
+        params.push(myHomeDept);
+        sql += ` OR EXISTS (SELECT 1 FROM session_beneficiary_departments bd WHERE bd.session_id = s.id AND bd.department_id = $${params.length})`;
+      }
+      return sql + ')';
+    };
+    if (req.query.dashboardId || req.session.role === 'employee') {
+      clauses.push(ownEventsSql());
+    } else if (ids) {
       params.push(ids);
-      clauses.push(sessionVisibleSql(params.length));
+      const visSql = sessionVisibleSql(params.length);
+      params.push(req.session.userId!);
+      let benSql = `EXISTS (SELECT 1 FROM session_beneficiary_users bu WHERE bu.session_id = s.id AND bu.user_id = $${params.length})`;
+      if (myHomeDept) {
+        params.push(myHomeDept);
+        benSql += ` OR EXISTS (SELECT 1 FROM session_beneficiary_departments bd WHERE bd.session_id = s.id AND bd.department_id = $${params.length})`;
+      }
+      clauses.push(`(${visSql} OR ${benSql})`);
     }
     if (from && to) {
       params.push(from, to);
@@ -11015,6 +11238,94 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       return (a.startTime || '99') < (b.startTime || '99') ? -1 : 1;
     });
+    // EVENT model payload: speakers in effect per occurrence,
+    // beneficiaries, and this viewer's relationship to the event.
+    {
+      const seriesIds = [...new Set(out.map((o: any) => o.seriesId || o.id))];
+      const [spMap, benMap] = await Promise.all([
+        loadSpeakers(query as any, seriesIds),
+        loadBeneficiaries(query as any, seriesIds),
+      ]);
+      const dashDepts = new Map<string, string[]>();
+      if (ids) {
+        const dashIds = [...new Set(out.map((o: any) => o.dashboardId).filter(Boolean))] as string[];
+        if (dashIds.length) {
+          const { rows: dd } = await query('SELECT dashboard_id, department_id FROM dashboard_departments WHERE dashboard_id = ANY($1::uuid[])', [dashIds]);
+          for (const r of dd) {
+            if (!dashDepts.has(r.dashboard_id)) dashDepts.set(r.dashboard_id, []);
+            dashDepts.get(r.dashboard_id)!.push(r.department_id);
+          }
+        }
+      }
+      const canSeeEmails = req.session.role === 'owner' || req.session.role === 'scheduler';
+      // RSVPs (Deepika, 2026-11-07): per-occurrence replies from
+      // invited attendees. myRsvp goes to invited viewers; the tally
+      // (yes/maybe/no/not-replied) only to the organizer, speakers,
+      // and editors who can see the event.
+      const invitedMap = await loadInvitedUserIds(query as any, companyId, seriesIds);
+      const rsvpMap = new Map<string, Map<string, { userId: string; status: string }[]>>();
+      if (seriesIds.length) {
+        const { rows: rr } = await query(
+          'SELECT session_id, session_date::text AS d, user_id, status FROM session_rsvps WHERE session_id = ANY($1::uuid[])',
+          [seriesIds]);
+        for (const r of rr) {
+          if (!rsvpMap.has(r.session_id)) rsvpMap.set(r.session_id, new Map());
+          const byDate = rsvpMap.get(r.session_id)!;
+          if (!byDate.has(r.d)) byDate.set(r.d, []);
+          byDate.get(r.d)!.push({ userId: r.user_id, status: r.status });
+        }
+      }
+      const tallyOk = new Map<string, boolean>();
+      for (const o of out) {
+        const sid = o.seriesId || o.id;
+        if (!tallyOk.has(sid)) {
+          let ok = o.createdBy === req.session.userId;
+          if (!ok) ok = await canEditSessionQuiet(req, o.dashboardId || null, o.departmentId || null);
+          tallyOk.set(sid, ok);
+        }
+      }
+      for (const o of out) {
+        const sid = o.seriesId || o.id;
+        const eff = effectiveSpeakers(spMap.get(sid) || [], o.lecturerUserId || null, o.lecturerName || null);
+        o.speakers = eff.map((s: any) => ({
+          userId: s.userId || null, name: s.name || null, guest: !!s.guest,
+          ...(canSeeEmails && s.guest ? { guestEmail: s.guestEmail || null } : {}),
+        }));
+        o.hasSpeakers = eff.length > 0;
+        const ben = benMap.get(sid) || { departmentIds: [], userIds: [] };
+        o.beneficiaryDepartmentIds = ben.departmentIds;
+        o.beneficiaryUserIds = ben.userIds;
+        o.viewerIsSpeaker = eff.some((s: any) => s.userId && s.userId === req.session.userId);
+        o.viewerIsBeneficiary = ben.userIds.includes(req.session.userId!) || (!!myHomeDept && ben.departmentIds.includes(myHomeDept));
+        if (req.query.dashboardId || req.session.role === 'employee' || !ids) {
+          // Own-events viewers (and owners, who have no department
+          // set): "invited only" = they attend as a beneficiary and
+          // do not speak or supervise.
+          const involved = o.lecturerUserId === req.session.userId || o.supervisorUserId === req.session.userId || o.viewerIsSpeaker;
+          o.viewerInvitedOnly = !!o.viewerIsBeneficiary && !involved;
+        } else {
+          const dd = o.dashboardId ? (dashDepts.get(o.dashboardId) || []) : null;
+          const viaCalendar = (!!o.departmentId && ids.includes(o.departmentId))
+            || (dd ? (dd.some((d) => ids.includes(d)) || dd.length === 0) : false);
+          o.viewerInvitedOnly = !viaCalendar && o.viewerIsBeneficiary;
+        }
+        // RSVP attach: this occurrence's own reply + tally.
+        const rsvpsHere = (rsvpMap.get(sid) || new Map()).get(o.date) || [];
+        const mine = rsvpsHere.find((r: any) => r.userId === req.session.userId);
+        o.myRsvp = mine ? mine.status : null;
+        o.rsvpSummary = null;
+        const invitedIds = invitedMap.get(sid) || [];
+        if (invitedIds.length && (tallyOk.get(sid) || o.viewerIsSpeaker)) {
+          const yes = rsvpsHere.filter((r: any) => r.status === 'yes').length;
+          const maybe = rsvpsHere.filter((r: any) => r.status === 'maybe').length;
+          const no = rsvpsHere.filter((r: any) => r.status === 'no').length;
+          o.rsvpSummary = {
+            invited: invitedIds.length, yes, maybe, no,
+            notReplied: Math.max(0, invitedIds.length - yes - maybe - no),
+          };
+        }
+      }
+    }
     res.json({ sessions: out });
   } catch (err) {
     console.error('[schedule] academic sessions list failed:', err);
@@ -11035,8 +11346,9 @@ async function academicDeptCheck(req: Request, res: Response, departmentId: stri
   return true;
 }
 
-// POST /api/schedule/academic-sessions — owner or scheduler (edit-scoped).
-router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// POST /api/schedule/academic-sessions — edit-scoped for
+// owner/scheduler; employees may create events they organize.
+router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const b = req.body ?? {};
@@ -11048,19 +11360,70 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
       if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
       dashboardId = String(b.dashboardId);
     }
-    // Inherit model (2026-11-07): a session on a calendar takes the
-    // calendar's department(s) — department_id stays NULL and any
-    // department in the body is ignored. Only a dashboard-less create
-    // (legacy API callers) still carries its own department.
-    const departmentId = dashboardId ? null : (b.departmentId ? String(b.departmentId) : null);
-    if (!(await sessionEditCheck(req, res, dashboardId, departmentId))) return;
-    if (b.lecturerUserId) {
-      const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
+    // EVENT model (2026-11-07): on a calendar, department_id is the
+    // event's ORGANIZING department. It must be one the caller may
+    // organize for on this calendar; with exactly one manageable
+    // department it fills in by itself; with none the create is
+    // refused. Dashboard-less creates (legacy API callers) keep the
+    // old department path.
+    let departmentId: string | null = null;
+    if (dashboardId) {
+      // Employee create (Deepika, 2026-11-07): any team member may
+      // add an event on a calendar they can open (e.g. a meeting).
+      // They organize under their own department (or none) and can
+      // later edit/delete only their own events. Dashboard-editor
+      // lists don't block a create; edit rights are separate.
+      const isEmployeeCreator = req.session.role === 'employee';
+      if (!isEmployeeCreator && !(await sessionEditCheck(req, res, dashboardId, null))) return;
+      if (isEmployeeCreator) {
+        const { rows: meR } = await query('SELECT department_id FROM users WHERE id = $1', [req.session.userId!]);
+        departmentId = meR[0]?.department_id || null;
+      } else {
+        const manageable = await manageableOrgDeptIds(req, dashboardId);
+        if (b.departmentId) {
+          departmentId = String(b.departmentId);
+          if (!manageable.includes(departmentId)) {
+            res.status(403).json({ error: 'You can only organize events for a department you manage on this calendar.' });
+            return;
+          }
+        } else if (manageable.length === 1) {
+          departmentId = manageable[0];
+        } else if (manageable.length === 0) {
+          res.status(403).json({ error: "You don't manage a department on this calendar." });
+          return;
+        } else {
+          res.status(400).json({ error: 'Choose the organizing department for this event.' });
+          return;
+        }
+      }
+    } else {
+      departmentId = b.departmentId ? String(b.departmentId) : null;
+      if (!(await sessionEditCheck(req, res, null, departmentId))) return;
+    }
+    // Speakers: the new form posts the full list; older callers post
+    // lecturerUserId, which becomes Speaker 1. The lecturer column
+    // mirrors Speaker 1 when Speaker 1 is a team member.
+    let speakersIn: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[] | null = null;
+    let lecturerId: string | null = b.lecturerUserId ? String(b.lecturerUserId) : null;
+    if (b.speakers !== undefined) {
+      const cleaned = await cleanSpeakers(query as any, companyId, b.speakers);
+      if ('error' in cleaned) { res.status(400).json({ error: cleaned.error }); return; }
+      speakersIn = cleaned.speakers;
+      lecturerId = speakerMirror(speakersIn);
+    } else if (lecturerId) {
+      const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [lecturerId, companyId]);
       if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
+      speakersIn = [{ userId: lecturerId }];
     }
     if (b.supervisorUserId) {
       const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.supervisorUserId, companyId]);
       if (!rows.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
+    }
+    let beneficiaries: { departmentIds: string[]; userIds: string[] } | null = null;
+    if (b.beneficiaryDepartmentIds !== undefined || b.beneficiaryUserIds !== undefined) {
+      const cb = await cleanBeneficiaries(query as any, companyId, b.beneficiaryDepartmentIds, b.beneficiaryUserIds);
+      if ('error' in cb) { res.status(400).json({ error: cb.error }); return; }
+      beneficiaries = cb;
     }
     const mu = cleanMeetingUrl(b.meetingUrl);
     if ('error' in mu) { res.status(400).json({ error: mu.error }); return; }
@@ -11072,15 +11435,19 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     const { rows } = await query(
       `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
-      [crypto.randomUUID(), companyId, title, b.lecturerUserId || null, departmentId,
+      [crypto.randomUUID(), companyId, title, lecturerId, departmentId,
        b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
        kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url]);
-    res.json({ ok: true, id: rows[0].id });
-    // Notify the presenter/supervisor; if there is no presenter, tell
-    // the dashboard's department members a presenter is needed.
+    const newSessionId = rows[0].id;
+    if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
+    if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
+    res.json({ ok: true, id: newSessionId });
+    // Notify the team speakers/supervisor; an event with NO speakers
+    // at all (guests count as speakers) tells the calendar's
+    // department members a presenter is needed.
     {
-      const people = [b.lecturerUserId, b.supervisorUserId].filter(Boolean).map(String);
+      const people = [...(speakersIn || []).filter((s) => s.userId).map((s) => String(s.userId)), ...(b.supervisorUserId ? [String(b.supervisorUserId)] : [])];
       const dateStr = b.date ? String(b.date).slice(0, 10) : '';
       if (people.length) {
         notify({
@@ -11090,7 +11457,7 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
           link: 'calendars', bundleKey: 'session_assigned',
           excludeUserId: req.session.userId!,
         });
-      } else {
+      } else if (!speakersIn || !speakersIn.length) {
         let memberIds: string[] = [];
         if (dashboardId) {
           const { rows: dd } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
@@ -11108,6 +11475,18 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
           });
         }
       }
+    }
+    // Guest speakers with an email get ONE details email (best
+    // effort — failures are logged inside emailGuests, never thrown).
+    if (speakersIn && speakersIn.some((g) => !g.userId && g.guestEmail)) {
+      const ctx = await guestMailCtx(req, {
+        dashboardId, departmentId, title,
+        date: b.date ? String(b.date).slice(0, 10) : '',
+        startTime: b.startTime || null, endTime: b.endTime || null,
+        location: b.location ? String(b.location).trim() : null, meetingUrl: mu.url,
+        recurText: describeRecur({ recurRule, recurInterval: rec.interval, recurDays, recurUntil, recurCount: rec.count }),
+      });
+      await emailGuests(speakersIn, ctx);
     }
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
@@ -11168,6 +11547,16 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
         const col = field === 'lecturer' ? 'lecturer_user_id' : field === 'supervisor' ? 'supervisor_user_id' : 'location';
         const val = field === 'location' ? locVal : userId;
         await query(`UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3`, [val, seriesId, companyId]);
+        if (field === 'lecturer') {
+          // Keep the speakers list in step: the assigned person
+          // becomes Speaker 1; clearing drops a team Speaker 1.
+          // Guest rows keep their spots either way.
+          const spMap = await loadSpeakers(query as any, [seriesId]);
+          const sp = (spMap.get(seriesId) || []).map((s: any) => s.userId ? { userId: s.userId } : { guestName: s.name, guestEmail: s.guestEmail });
+          const rest = sp.length && sp[0].userId ? sp.slice(1) : sp;
+          const next = userId ? [{ userId }, ...rest.filter((s: any) => s.userId !== userId)] : rest;
+          await saveSpeakers(query as any, seriesId, next as any);
+        }
       }
       updated++;
       if (field !== 'location') {
@@ -11206,6 +11595,40 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
   }
 });
 
+// POST /api/schedule/academic-sessions/:id/rsvp — an invited
+// attendee (beneficiary) replies Yes / No / Maybe for ONE date of
+// the event (Deepika, 2026-11-07). Speakers host and don't RSVP.
+// No notifications — the organizer just gets the count.
+router.post('/academic-sessions/:id/rsvp', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const seriesId = String(req.params.id).split('@@')[0];
+    const b = req.body ?? {};
+    const status = String(b.status || '');
+    if (!['yes', 'no', 'maybe'].includes(status)) { res.status(400).json({ error: 'Reply must be Yes, No or Maybe.' }); return; }
+    const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
+    const s = rows[0];
+    const date = b.date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.date)) ? String(b.date) : (s.session_date instanceof Date ? s.session_date.toISOString().slice(0, 10) : String(s.session_date));
+    const me = req.session.userId!;
+    // Speakers (incl. the lecturer mirror) host — no RSVP.
+    const spMap = await loadSpeakers(query as any, [seriesId]);
+    const isSpeaker = s.lecturer_user_id === me || (spMap.get(seriesId) || []).some((sp: any) => sp.userId === me);
+    if (isSpeaker) { res.status(400).json({ error: "You're a speaker on this event — speakers don't RSVP." }); return; }
+    const invited = (await loadInvitedUserIds(query as any, companyId, [seriesId])).get(seriesId) || [];
+    if (!invited.includes(me)) { res.status(403).json({ error: 'RSVP is for invited attendees.' }); return; }
+    await query(
+      `INSERT INTO session_rsvps (session_id, session_date, user_id, status, updated_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (session_id, session_date, user_id) DO UPDATE SET status = EXCLUDED.status, updated_at = now()`,
+      [seriesId, date, me, status]);
+    res.json({ ok: true, status });
+  } catch (err) {
+    console.error('[schedule] session rsvp failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/academic-sessions/:id/claim — presenter pickup
 // (Deepika, 2026-10-20): any signed-in user who can see a session with no
 // presenter ("Needs presenter") picks it up. Body { role: 'supervisor' }
@@ -11228,11 +11651,38 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
         vis = !!(vDash && vDash.includes(cur.dashboard_id));
       }
       if (!vis) {
+        // Beneficiaries (attendees) can see — and so can pick up — the event.
+        const benMap = await loadBeneficiaries(query as any, [seriesId]);
+        const ben = benMap.get(seriesId);
+        if (ben) {
+          if (ben.userIds.includes(req.session.userId!)) vis = true;
+          else if (ben.departmentIds.length) {
+            const { rows: meRows } = await query('SELECT department_id FROM users WHERE id = $1', [req.session.userId!]);
+            vis = !!(meRows[0]?.department_id && ben.departmentIds.includes(meRows[0].department_id));
+          }
+        }
+      }
+      if (!vis) {
         res.status(403).json({ error: 'You do not have access to this session.' }); return;
       }
     }
     const col = String(req.body?.role || '') === 'supervisor' ? 'supervisor_user_id' : 'lecturer_user_id';
     const isSup = col === 'supervisor_user_id';
+    // EVENT model claim rule: with NO speakers at all, claiming the
+    // presenter spot makes the claimer Speaker 1 (the lecturer UPDATE
+    // below + a Speaker 1 row). When speakers already exist (e.g. a
+    // guest leads), the claimer joins as an ADDITIONAL speaker and
+    // Speaker 1 / the lecturer mirror stay untouched.
+    if (!isSup && !(req.body?.date && cur.recur_rule && cur.recur_rule !== 'none')) {
+      const spMap = await loadSpeakers(query as any, [seriesId]);
+      const sp = spMap.get(seriesId) || [];
+      if (sp.length) {
+        if (sp.some((s: any) => s.userId === req.session.userId)) { res.json({ ok: true, already: true }); return; }
+        await saveSpeakers(query as any, seriesId, [...sp.map(speakerRowToInput), { userId: req.session.userId! }]);
+        res.json({ ok: true });
+        return;
+      }
+    }
     // Per-date pickup: a recurring session claimed WITH a date
     // claims only that date (override row), never the whole series.
     const occDate = req.body?.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date)) ? String(req.body.date) : null;
@@ -11268,6 +11718,7 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       `UPDATE academic_sessions SET ${col} = $1 WHERE id = $2 AND company_id = $3 AND ${col} IS NULL`,
       [req.session.userId!, seriesId, companyId]);
     if (!upd.rowCount) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
+    if (!isSup) await saveSpeakers(query as any, seriesId, [{ userId: req.session.userId! }]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session claim failed:', err);
@@ -11298,12 +11749,32 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
       res.json({ ok: true });
       return;
     }
+    // A team speaker who is NOT the primary (Speaker 1) giving up
+    // simply leaves the speakers list.
+    if (cur.lecturer_user_id !== req.session.userId) {
+      const spMap0 = await loadSpeakers(query as any, [seriesId]);
+      const sp0 = spMap0.get(seriesId) || [];
+      if (sp0.some((s: any) => s.userId === req.session.userId) && !(sp0.length && sp0[0].userId === req.session.userId)) {
+        await saveSpeakers(query as any, seriesId, sp0.filter((s: any) => s.userId !== req.session.userId).map(speakerRowToInput));
+        res.json({ ok: true });
+        return;
+      }
+    }
     if (!cur.lecturer_user_id) { res.json({ ok: true }); return; }
     if (cur.lecturer_user_id !== req.session.userId) {
       if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
       if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
     }
     await query('UPDATE academic_sessions SET lecturer_user_id = NULL WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    // Keep the speakers list in step: drop the Speaker 1 row when it
+    // was this presenter.
+    {
+      const spMap = await loadSpeakers(query as any, [seriesId]);
+      const sp = spMap.get(seriesId) || [];
+      if (sp.length && sp[0].userId === cur.lecturer_user_id) {
+        await saveSpeakers(query as any, seriesId, sp.slice(1).map(speakerRowToInput));
+      }
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session unclaim failed:', err);
@@ -11312,8 +11783,9 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
 });
 
 // DELETE /api/schedule/academic-sessions/:id/overrides/:date —
-// reset one date back to the series defaults (owner or scheduler).
-router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// reset one date back to the series defaults (edit-scoped; an
+// employee organizer may reset dates on their own events).
+router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
@@ -11322,7 +11794,9 @@ router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'sc
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
-    if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
+    if (req.session.role === 'employee') {
+      if (cur.created_by !== req.session.userId) { res.status(403).json({ error: 'You can only edit events you organized.' }); return; }
+    } else if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
     const ovBefore = await getOverride(seriesId, date);
     await query('DELETE FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [seriesId, date]);
     res.json({ ok: true });
@@ -11345,8 +11819,10 @@ router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'sc
   }
 });
 
-// PUT /api/schedule/academic-sessions/:id — owner or scheduler (edit-scoped).
-router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// PUT /api/schedule/academic-sessions/:id — edit-scoped: owner /
+// scheduler by department + dashboard rights; an EMPLOYEE may edit
+// only events they organized (created_by), per Deepika 2026-11-07.
+router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
@@ -11354,11 +11830,34 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
     const b = req.body ?? {};
-    // Inherit model (2026-11-07): an edit never rewrites the session's
-    // department — inherit sessions stay NULL, older sessions keep theirs.
-    const departmentId = cur.department_id;
+    const isEmployeeOrganizer = req.session.role === 'employee' && cur.created_by === req.session.userId;
+    if (req.session.role === 'employee' && !isEmployeeOrganizer) {
+      res.status(403).json({ error: 'You can only edit events you organized.' });
+      return;
+    }
+    // EVENT model (2026-11-07): department_id is the event's
+    // ORGANIZING department. An edit keeps it unless the body names
+    // another department the editor manages on this calendar. An
+    // employee organizer's department stays as saved.
+    let departmentId = cur.department_id;
     const targetDashboardId = b.dashboardId !== undefined ? (b.dashboardId ? String(b.dashboardId) : null) : cur.dashboard_id;
-    if (!(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
+    if (!isEmployeeOrganizer && !(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
+    if (!isEmployeeOrganizer && b.departmentId !== undefined && (b.departmentId ? String(b.departmentId) : null) !== cur.department_id) {
+      const dashForOrg = targetDashboardId || cur.dashboard_id;
+      if (dashForOrg) {
+        const manageable = await manageableOrgDeptIds(req, dashForOrg);
+        if (!b.departmentId || !manageable.includes(String(b.departmentId))) {
+          res.status(403).json({ error: 'You can only move this event to a department you manage on this calendar.' });
+          return;
+        }
+        departmentId = String(b.departmentId);
+      } else if (b.departmentId) {
+        if (!(await sessionEditCheck(req, res, null, String(b.departmentId)))) return;
+        departmentId = String(b.departmentId);
+      } else {
+        departmentId = null;
+      }
+    }
     // One-date change: write an override for a single date of a
     // recurring series instead of touching the series itself.
     if (String(b.scope || '') === 'date') {
@@ -11441,6 +11940,34 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
       const { rows: su } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [supervisorUserId, companyId]);
       if (!su.length) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; }
     }
+    // EVENT model: speakers + beneficiaries (series-level). A save
+    // that posts `speakers` replaces the list and re-mirrors the
+    // lecturer; a legacy save that posts only lecturerUserId treats
+    // it as the Speaker 1 value. A save that posts neither keeps the
+    // list exactly as it is. The supervisor is preserved whenever the
+    // body does not mention it (handled above).
+    let speakersIn: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[] | null = null;
+    let prevSpeakers: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[] = [];
+    let newLecturer: string | null = b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id;
+    {
+      const pm = await loadSpeakers(query as any, [seriesId]);
+      prevSpeakers = (pm.get(seriesId) || []).map(speakerRowToInput);
+    }
+    if (b.speakers !== undefined) {
+      const cleaned = await cleanSpeakers(query as any, companyId, b.speakers);
+      if ('error' in cleaned) { res.status(400).json({ error: cleaned.error }); return; }
+      speakersIn = cleaned.speakers;
+      newLecturer = speakerMirror(speakersIn);
+    } else if (b.lecturerUserId !== undefined) {
+      const rest = prevSpeakers.length && prevSpeakers[0].userId ? prevSpeakers.slice(1) : prevSpeakers;
+      speakersIn = newLecturer ? [{ userId: newLecturer }, ...rest.filter((s) => s.userId !== newLecturer)] : rest;
+    }
+    let beneficiaries: { departmentIds: string[]; userIds: string[] } | null = null;
+    if (b.beneficiaryDepartmentIds !== undefined || b.beneficiaryUserIds !== undefined) {
+      const cb = await cleanBeneficiaries(query as any, companyId, b.beneficiaryDepartmentIds, b.beneficiaryUserIds);
+      if ('error' in cb) { res.status(400).json({ error: cb.error }); return; }
+      beneficiaries = cb;
+    }
     let dashboardId = cur.dashboard_id;
     if (b.dashboardId !== undefined) {
       if (b.dashboardId) {
@@ -11453,7 +11980,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
         start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17 WHERE id=$18`,
-      [title, b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id,
+      [title, newLecturer,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
        b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
@@ -11461,22 +11988,46 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
        dashboardId, recurRule, recurUntil, supervisorUserId,
        recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, seriesId]);
+    if (speakersIn) await saveSpeakers(query as any, seriesId, speakersIn);
+    if (beneficiaries) await saveBeneficiaries(query as any, seriesId, beneficiaries.departmentIds, beneficiaries.userIds);
     res.json({ ok: true });
-    // Notify old + new presenter/supervisor about meaningful changes.
+    // Newly added guest speakers get their ONE details email (guests
+    // already on the event are not re-emailed on every edit).
+    if (speakersIn) {
+      const freshGuests = newlyAddedGuests(prevSpeakers as any, speakersIn as any);
+      if (freshGuests.length) {
+        const dateStrOf = (v: any) => !v ? '' : (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+        const ctx = await guestMailCtx(req, {
+          dashboardId, departmentId, title,
+          date: dateStrOf(b.date || cur.session_date),
+          startTime: b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
+          endTime: b.endTime !== undefined ? (b.endTime || null) : cur.end_time,
+          location: b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
+          meetingUrl,
+          recurText: describeRecur({ recurRule, recurInterval: rec.interval, recurDays, recurUntil, recurCount: rec.count }),
+        });
+        await emailGuests(freshGuests as any, ctx);
+      }
+    }
+    // Notify old + new speakers/supervisor about meaningful changes.
     {
-      const newLecturer = b.lecturerUserId !== undefined ? (b.lecturerUserId || null) : cur.lecturer_user_id;
       const newSupervisor = supervisorUserId;
       const newDate = b.date || cur.session_date;
       const dstr = (v: any) => !v ? '' : (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
+      const speakerKey = (list: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }[]) =>
+        list.map((s) => s.userId || ('guest:' + (s.guestEmail || s.guestName || ''))).join('|');
       const changed =
         String(newLecturer || '') !== String(cur.lecturer_user_id || '') ||
         String(newSupervisor || '') !== String(cur.supervisor_user_id || '') ||
+        (speakersIn ? speakerKey(speakersIn) !== speakerKey(prevSpeakers) : false) ||
         title !== cur.title ||
         dstr(newDate) !== dstr(cur.session_date) ||
         (b.startTime !== undefined && (b.startTime || null) !== cur.start_time) ||
         (b.endTime !== undefined && (b.endTime || null) !== cur.end_time) ||
         (b.location !== undefined && (b.location ? String(b.location).trim() : null) !== cur.location);
-      const people = [cur.lecturer_user_id, cur.supervisor_user_id, newLecturer, newSupervisor].filter(Boolean) as string[];
+      const people = [cur.lecturer_user_id, cur.supervisor_user_id, newLecturer, newSupervisor,
+        ...prevSpeakers.filter((s) => s.userId).map((s) => String(s.userId)),
+        ...(speakersIn || []).filter((s) => s.userId).map((s) => String(s.userId))].filter(Boolean) as string[];
       if (changed && people.length) {
         notify({
           companyId, userIds: [...new Set(people)], category: 'calendar', type: 'session_changed',
@@ -11486,7 +12037,11 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
           excludeUserId: req.session.userId!,
         });
       }
-      if (!newLecturer && cur.lecturer_user_id) {
+      // "Needs a presenter" fires only when the event ends up with
+      // NO speakers at all (a guest speaker counts as covered).
+      const endsSpeakerless = speakersIn ? speakersIn.length === 0 : !newLecturer;
+      const hadSpeaker = !!cur.lecturer_user_id || prevSpeakers.length > 0;
+      if (endsSpeakerless && hadSpeaker) {
         let memberIds: string[] = [];
         if (dashboardId) {
           const { rows: dd } = await query('SELECT department_id FROM dashboard_departments WHERE dashboard_id = $1', [dashboardId]);
@@ -11511,14 +12066,20 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
   }
 });
 
-// DELETE /api/schedule/academic-sessions/:id — owner or scheduler (edit-scoped).
-router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// DELETE /api/schedule/academic-sessions/:id — edit-scoped; an
+// employee may delete only events they organized.
+router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
-    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id, created_by FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
-    if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
+    if (req.session.role === 'employee') {
+      if (rows[0].created_by !== req.session.userId) {
+        res.status(403).json({ error: 'You can only delete events you organized.' });
+        return;
+      }
+    } else if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
     await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
     res.json({ ok: true });
     {
