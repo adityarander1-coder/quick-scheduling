@@ -361,9 +361,19 @@ async function canEditSessionTarget(
     const { rows: ed } = await query('SELECT user_id FROM dashboard_editors WHERE dashboard_id = $1', [dashboardId]);
     if (ed.length) return ed.some((r: any) => r.user_id === createdBy);
   }
-  if (!departmentId) return false;
   const access = await getDepartmentAccess(createdBy, companyId);
-  return access.edit.includes(departmentId);
+  if (departmentId) return access.edit.includes(departmentId);
+  // Inherit model (2026-11-07): no department of its own — Edit access
+  // to any of the calendar's departments (any Edit department when the
+  // calendar is unrestricted).
+  if (dashboardId) {
+    const edit = access.edit || [];
+    if (!edit.length) return false;
+    const dd = await dashboardDeptIdsE(dashboardId);
+    if (!dd.length) return true;
+    return dd.some((d) => edit.includes(d));
+  }
+  return false;
 }
 
 function toDateStr(v: any): string {
@@ -1154,20 +1164,14 @@ export async function executePlan(
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {
         const dash = await findDashboard(companyId, change.dashboard);
         if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
-        let deptId: string | null = null;
-        if (change.department) {
-          const dept = await findDepartment(companyId, change.department);
-          if (!dept) throw new Error(`Department not found: ${change.department}`);
-          deptId = dept.id;
-        } else {
-          const dd = await dashboardDeptIdsE(dash.id);
-          if (dd.length === 1) deptId = dd[0];
-        }
+        // Inherit model (2026-11-07): a session takes its calendar's
+        // department(s) — department_id stays NULL; a department named
+        // on the change no longer stamps the session.
         const presenter = change.presenter ? await findUser(companyId, change.presenter) : null;
         if (change.presenter && !presenter) throw new Error(`Person not found: ${change.presenter}`);
         const supervisor = change.supervisor ? await findUser(companyId, change.supervisor) : null;
         if (change.supervisor && !supervisor) throw new Error(`Person not found: ${change.supervisor}`);
-        if (!(await canEditSessionTarget(companyId, createdBy, dash.id, deptId))) {
+        if (!(await canEditSessionTarget(companyId, createdBy, dash.id, null))) {
           throw new Error(`No edit access to sessions on ${dash.name}.`);
         }
         const kindKey = await resolveKindKey(companyId, dash.id, change.sessionType);
@@ -1182,7 +1186,7 @@ export async function executePlan(
           startTime: normTime(change.startTime), endTime: normTime(change.endTime),
           presenterId: presenter?.id ?? null, supervisorId: supervisor?.id ?? null,
           location: change.location ? change.location.trim() : null,
-          kindKey, departmentId: deptId, notes: change.notes ? change.notes.trim() : null,
+          kindKey, notes: change.notes ? change.notes.trim() : null,
           recurRule: rec.recurRule, recurInterval: rec.recurInterval, recurUntil: rec.recurUntil,
         });
         results.push({

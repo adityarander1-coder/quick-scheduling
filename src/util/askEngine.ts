@@ -172,7 +172,11 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
   const params: any[] = [ctx.companyId];
   if (ctx.visibleDeptIds !== null) {
     params.push(ctx.visibleDeptIds);
-    clauses.push(`s.department_id = ANY($${params.length})`);
+    // Inherit model (2026-11-07): a session's own department, else its
+    // calendar's departments; an unrestricted calendar shows to all.
+    clauses.push(`(s.department_id = ANY($${params.length})
+      OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id AND dd.department_id = ANY($${params.length}))
+      OR (s.dashboard_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id)))`);
   }
   params.push(from, to);
   clauses.push(`s.session_date <= $${params.length}`);

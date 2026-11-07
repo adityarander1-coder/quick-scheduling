@@ -16576,7 +16576,14 @@ window.qsNpOfferSend = function (btn) {
       // view's Department/Shift filters): narrow by department and by
       // All / Mine / Needs presenter. Client-side over loaded sessions.
       function acVisible(s) {
-        if (acDeptFilter && s.departmentId !== acDeptFilter) return false;
+        if (acDeptFilter) {
+          // A session's own department decides when it has one; an
+          // inherit-model session answers to its calendar's
+          // departments (an unrestricted calendar matches any filter).
+          var sDepts = s.departmentId ? [s.departmentId]
+            : ((curDash && curDash.departmentIds && curDash.departmentIds.length) ? curDash.departmentIds : null);
+          if (sDepts && sDepts.indexOf(acDeptFilter) < 0) return false;
+        }
         if (acKindFilter && s.kind !== acKindFilter) return false;
         if (acShowFilter === 'mine' && !(acMyId && (s.lecturerUserId === acMyId || s.supervisorUserId === acMyId))) return false;
         if (acShowFilter === 'open' && s.lecturerUserId) return false;
@@ -16961,11 +16968,6 @@ window.qsNpOfferSend = function (btn) {
         var occDate = isSeries && occ ? occ.date : (s ? s.date : null);
         var old = document.getElementById('ac-modal');
         if (old) old.remove();
-        var dashDepts = curDash && curDash.departmentIds && curDash.departmentIds.length ? acDepts.filter(function (d) { return curDash.departmentIds.includes(d.id); }) : acDepts;
-        var deptOpts = '<option value="">No department</option>' + dashDepts.map(function (d) {
-          var sel = s ? (s.departmentId === d.id) : (dashDepts.length === 1);
-          return '<option value="' + d.id + '"' + (sel ? ' selected' : '') + '>' + esc(d.name) + '</option>';
-        }).join('');
         var rule = s && s.recurRule ? s.recurRule : 'none';
         var freq0 = rule === 'monthly-weekday' ? 'monthly' : rule;
         var mkind0 = rule === 'monthly-weekday' ? 'monthly-weekday' : 'monthly';
@@ -16997,7 +16999,6 @@ window.qsNpOfferSend = function (btn) {
             if (!has) opts += '<option value="' + esc(cur) + '" selected>' + esc(kindLabel(cur)) + '</option>';
             return opts;
           })() + '</select></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Department<br><select id="acf-dept" style="' + IN + '">' + deptOpts + '</select></label>' +
           '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
             '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the lists below</div>' +
             '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '"' + (s && s.departmentId === d.id ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
@@ -17081,7 +17082,7 @@ window.qsNpOfferSend = function (btn) {
           var en = m.querySelector('#acf-end'); if (en) en.value = (src && src.endTime) || '';
           var lc = m.querySelector('#acf-loc'); if (lc) lc.value = (src && src.location) || '';
           var mt = m.querySelector('#acf-meeting'); if (mt) mt.value = (src && src.meetingUrl) || '';
-          ['#acf-title', '#acf-kind', '#acf-dept', '#acf-date', '#acf-notes'].forEach(function (sel) { var el = m.querySelector(sel); if (el) el.disabled = dateScope; });
+          ['#acf-title', '#acf-kind', '#acf-date', '#acf-notes'].forEach(function (sel) { var el = m.querySelector(sel); if (el) el.disabled = dateScope; });
           var rot = m.querySelector('#acf-rotation'); if (rot) rot.style.display = dateScope ? 'none' : '';
           var dp2 = m.querySelector('#acf-dup'); if (dp2) dp2.style.display = dateScope ? 'none' : '';
           var dl2 = m.querySelector('#acf-del'); if (dl2) dl2.style.display = dateScope ? 'none' : '';
@@ -17116,11 +17117,20 @@ window.qsNpOfferSend = function (btn) {
           });
         }
 
+        // The calendar's department(s) — sessions inherit them, so the
+        // auto-assign tools key off the calendar (and the By-department
+        // filter when one is picked), never a per-session choice.
+        var dashDeptIds = (curDash && curDash.departmentIds) || [];
         // Shift types for the auto-assign picker (lazy, cached).
         function fillShifts() {
           var sel = m.querySelector('#acf-wshift');
-          var fd = m.querySelector('#acf-fdept').value || m.querySelector('#acf-dept').value;
-          var list = (acShiftTypes || []).filter(function (st) { return !fd || !st.departmentId || st.departmentId === fd; });
+          var fd = m.querySelector('#acf-fdept').value;
+          var list = (acShiftTypes || []).filter(function (st) {
+            if (!st.departmentId) return true;
+            if (fd) return st.departmentId === fd;
+            if (dashDeptIds.length) return dashDeptIds.indexOf(st.departmentId) >= 0;
+            return true;
+          });
           sel.innerHTML = '<option value="">Any shift</option>' + list.map(function (st) {
             return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
           }).join('');
@@ -17131,11 +17141,14 @@ window.qsNpOfferSend = function (btn) {
           if (Array.isArray(acShiftTypes)) fillShifts();
         }).catch(function () {});
         m.querySelector('#acf-fdept').addEventListener('change', fillShifts);
-        m.querySelector('#acf-dept').addEventListener('change', fillShifts);
 
         m.querySelector('#acf-find').addEventListener('click', function () {
           var date = m.querySelector('#acf-date').value;
-          var dept = m.querySelector('#acf-fdept').value || m.querySelector('#acf-dept').value;
+          // Rank the calendar's department first when it has exactly
+          // one; a multi-department calendar looks across all of them
+          // (working-on only ranks by department — it returns everyone
+          // working either way).
+          var dept = m.querySelector('#acf-fdept').value || (dashDeptIds.length === 1 ? dashDeptIds[0] : '');
           var shift = m.querySelector('#acf-wshift').value;
           var box = m.querySelector('#acf-cands');
           if (!date) { box.innerHTML = '<span style="color:#b91c1c">Pick a start date first.</span>'; return; }
@@ -17208,8 +17221,8 @@ window.qsNpOfferSend = function (btn) {
               groups.get(dn).push(c);
             });
             var deptNameOf = function (id) {
-              var o = m.querySelector('#acf-dept option[value="' + id + '"]');
-              return o ? o.textContent : null;
+              var d = acDepts.find(function (x) { return x.id === id; });
+              return d ? d.name : null;
             };
             var wantName = dept ? deptNameOf(dept) : null;
             var keys = Array.from(groups.keys()).sort(function (a, b) {
@@ -17335,7 +17348,6 @@ window.qsNpOfferSend = function (btn) {
             kind: m.querySelector('#acf-kind').value,
             lecturerUserId: lecSel.value || null,
             supervisorUserId: supSel.value || null,
-            departmentId: m.querySelector('#acf-dept').value || null,
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
             endTime: m.querySelector('#acf-end').value || null,

@@ -9320,6 +9320,37 @@ async function dashboardEditAllowed(req: Request, dashboardId: string): Promise<
   return dIds.some((d) => editDepts.includes(d));
 }
 
+// Sessions inherit their calendar's department(s) (Deepika, 2026-11-07):
+// a session saved on a dashboard carries department_id NULL and every
+// department-scoped rule falls back to the dashboard's departments —
+// the same "session's department, else its calendar's" pattern the
+// offer audience already used. Sessions saved before this change keep
+// their own department_id and follow it.
+
+// Edit gate via the calendar's departments (used when the session has
+// no department of its own): Edit access to ANY of the dashboard's
+// departments; an unrestricted dashboard needs any Edit department.
+async function dashboardDeptEditCheck(req: Request, res: Response, dashboardId: string): Promise<boolean> {
+  if (req.session.role !== 'scheduler') { res.status(403).json({ error: 'You do not have permission to do that.' }); return false; }
+  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+  const editDepts = access.edit || [];
+  const dIds = await dashboardDeptIds(dashboardId);
+  if (!editDepts.length || (dIds.length && !dIds.some((d) => editDepts.includes(d)))) {
+    res.status(403).json({ error: 'You do not have Edit access to this calendar\'s departments.' });
+    return false;
+  }
+  return true;
+}
+
+async function canEditDashboardDeptsQuiet(req: Request, dashboardId: string): Promise<boolean> {
+  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+  const editDepts = access.edit || [];
+  if (!editDepts.length) return false;
+  const dIds = await dashboardDeptIds(dashboardId);
+  if (!dIds.length) return true;
+  return dIds.some((d) => editDepts.includes(d));
+}
+
 // Gate for saving a session: an editors list (when set) replaces the
 // department-edit check for that dashboard's sessions.
 async function sessionEditCheck(req: Request, res: Response, dashboardId: string | null, departmentId: string | null): Promise<boolean> {
@@ -9332,12 +9363,15 @@ async function sessionEditCheck(req: Request, res: Response, dashboardId: string
       return false;
     }
   }
+  if (departmentId) return academicDeptCheck(req, res, departmentId);
+  if (dashboardId) return dashboardDeptEditCheck(req, res, dashboardId);
   return academicDeptCheck(req, res, departmentId);
 }
 
 // Quiet version of sessionEditCheck for loops (no response writes):
 // owner yes; editors list (when set) decides; otherwise the
-// scheduler needs Edit access to the session's department.
+// scheduler needs Edit access to the session's department — or, for
+// inherit-model sessions, to any of the calendar's departments.
 async function canEditSessionQuiet(req: Request, dashboardId: string | null, departmentId: string | null): Promise<boolean> {
   const role = req.session.role!;
   if (role === 'owner') return true;
@@ -9346,9 +9380,12 @@ async function canEditSessionQuiet(req: Request, dashboardId: string | null, dep
     const editors = await dashboardEditorIds(dashboardId);
     if (editors.length) return editors.includes(req.session.userId!);
   }
-  if (!departmentId) return false;
-  const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
-  return (access.edit || []).includes(departmentId);
+  if (departmentId) {
+    const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
+    return (access.edit || []).includes(departmentId);
+  }
+  if (dashboardId) return canEditDashboardDeptsQuiet(req, dashboardId);
+  return false;
 }
 
 async function validateDashboardEditors(companyId: string, ids: any): Promise<string[] | null> {
@@ -9658,6 +9695,16 @@ function academicRow(r: any) {
   };
 }
 
+// SQL fragment (alias `s` = academic_sessions): a session is visible
+// to a non-owner when its own department is in the visible set, or its
+// calendar carries a visible department, or its calendar has no
+// department restriction at all (inherit model, 2026-11-07).
+export function sessionVisibleSql(idsParam: number): string {
+  return `(s.department_id = ANY($${idsParam})
+    OR EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id AND dd.department_id = ANY($${idsParam}))
+    OR (s.dashboard_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dashboard_departments dd WHERE dd.dashboard_id = s.dashboard_id)))`;
+}
+
 async function academicVisibleDeptIds(req: Request): Promise<string[] | null> {
   const companyId = req.session.companyId!;
   const role = req.session.role!;
@@ -9962,7 +10009,7 @@ function timesOverlap(aS: string | null, aE: string | null, bS: string | null, b
 async function sessionClaimConflict(q: any, companyId: string, userId: string, occ: any, role: string, visibleDeptIds: string[] | null): Promise<string | null> {
   const clauses = ['s.company_id = $1'];
   const params: any[] = [companyId];
-  if (visibleDeptIds) { params.push(visibleDeptIds); clauses.push('s.department_id = ANY($' + params.length + ')'); }
+  if (visibleDeptIds) { params.push(visibleDeptIds); clauses.push(sessionVisibleSql(params.length)); }
   params.push(occ.date, occ.date);
   clauses.push(`(s.recur_rule IS NULL OR s.recur_rule = 'none' OR s.recur_until IS NULL OR s.recur_until >= $${params.length - 1})`);
   clauses.push(`s.session_date <= $${params.length}`);
@@ -10935,7 +10982,7 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
     const params: any[] = [companyId];
     if (ids) {
       params.push(ids);
-      clauses.push(`(s.department_id = ANY($${params.length}) )`);
+      clauses.push(sessionVisibleSql(params.length));
     }
     if (from && to) {
       params.push(from, to);
@@ -10995,13 +11042,17 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler'), async (req:
     const b = req.body ?? {};
     const title = String(b.title || '').trim();
     if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
-    const departmentId = b.departmentId ? String(b.departmentId) : null;
     let dashboardId: string | null = null;
     if (b.dashboardId) {
       const { rows: dRows } = await query('SELECT id FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
       if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
       dashboardId = String(b.dashboardId);
     }
+    // Inherit model (2026-11-07): a session on a calendar takes the
+    // calendar's department(s) — department_id stays NULL and any
+    // department in the body is ignored. Only a dashboard-less create
+    // (legacy API callers) still carries its own department.
+    const departmentId = dashboardId ? null : (b.departmentId ? String(b.departmentId) : null);
     if (!(await sessionEditCheck(req, res, dashboardId, departmentId))) return;
     if (b.lecturerUserId) {
       const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [b.lecturerUserId, companyId]);
@@ -11168,8 +11219,17 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
     const ids = await academicVisibleDeptIds(req);
-    if (ids && (!cur.department_id || !ids.includes(cur.department_id))) {
-      res.status(403).json({ error: 'You do not have access to this session.' }); return;
+    if (ids) {
+      // Own department first; inherit-model sessions (no department of
+      // their own) are visible through their calendar instead.
+      let vis = !!(cur.department_id && ids.includes(cur.department_id));
+      if (!vis && cur.dashboard_id) {
+        const vDash = await visibleDashboardIds(req);
+        vis = !!(vDash && vDash.includes(cur.dashboard_id));
+      }
+      if (!vis) {
+        res.status(403).json({ error: 'You do not have access to this session.' }); return;
+      }
     }
     const col = String(req.body?.role || '') === 'supervisor' ? 'supervisor_user_id' : 'lecturer_user_id';
     const isSup = col === 'supervisor_user_id';
@@ -11232,7 +11292,7 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
       if (!eff.lecturer) { res.json({ ok: true }); return; }
       if (eff.lecturer !== req.session.userId) {
         if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
-        if (!(await academicDeptCheck(req, res, cur.department_id))) return;
+        if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
       }
       await upsertOverride(companyId, seriesId, occDateU, { has_lecturer: true, lecturer_user_id: null });
       res.json({ ok: true });
@@ -11241,7 +11301,7 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     if (!cur.lecturer_user_id) { res.json({ ok: true }); return; }
     if (cur.lecturer_user_id !== req.session.userId) {
       if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
-      if (!(await academicDeptCheck(req, res, cur.department_id))) return;
+      if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
     }
     await query('UPDATE academic_sessions SET lecturer_user_id = NULL WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     res.json({ ok: true });
@@ -11294,7 +11354,9 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler'), async (r
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
     const b = req.body ?? {};
-    const departmentId = b.departmentId !== undefined ? (b.departmentId ? String(b.departmentId) : null) : cur.department_id;
+    // Inherit model (2026-11-07): an edit never rewrites the session's
+    // department — inherit sessions stay NULL, older sessions keep theirs.
+    const departmentId = cur.department_id;
     const targetDashboardId = b.dashboardId !== undefined ? (b.dashboardId ? String(b.dashboardId) : null) : cur.dashboard_id;
     if (!(await sessionEditCheck(req, res, targetDashboardId, departmentId))) return;
     // One-date change: write an override for a single date of a
