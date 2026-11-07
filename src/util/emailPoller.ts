@@ -243,7 +243,7 @@ export async function buildSessionContext(
     for (const s of sess) {
       const dash = dashName.get(s.dashboard_id) || 'Calendar';
       const times = s.stime ? ` ${String(s.stime).slice(0, 5)}${s.etime ? '–' + String(s.etime).slice(0, 5) : ''}` : '';
-      const people = s.presenter ? `, presenter ${s.presenter}` : '';
+      const people = s.presenter ? `, speaker ${s.presenter}` : '';
       const sup = s.supervisor ? `, supervisor ${s.supervisor}` : '';
       const loc = s.location ? `, in ${s.location}` : '';
       if (s.recur_rule && s.recur_rule !== 'none') {

@@ -1446,8 +1446,10 @@ export async function executePlan(
           link: 'calendars', bundleKey: 'session_assigned', excludeUserId: createdBy,
         });
         if (!change.presenter) {
-          // Session needs a presenter: tell the dashboard's department
+          // Session needs a speaker: tell the dashboard's department
           // members (digest-speed type — records in-app by default).
+          // (Generic wording: the plan path doesn't resolve the
+          // session type's person label.)
           const dash = await findDashboard(companyId, change.dashboard || '');
           if (dash) {
             const deptIds = await dashboardDeptIdsE(dash.id);
@@ -1458,8 +1460,8 @@ export async function executePlan(
               );
               if (mem.length) await notify({
                 companyId, userIds: mem.map((r: any) => r.id), category: 'calendar', type: 'session_needs_presenter',
-                title: `A session needs a presenter: "${change.title}" on ${fmtDateLong(change.date)}`,
-                body: `"${change.title}" (${change.dashboard}) on ${fmtDateLong(change.date)} has no presenter yet.`,
+                title: `A session needs a speaker: "${change.title}" on ${fmtDateLong(change.date)}`,
+                body: `"${change.title}" (${change.dashboard}) on ${fmtDateLong(change.date)} has no speaker yet.`,
                 link: 'calendars', bundleKey: 'session_needs_presenter', excludeUserId: createdBy,
               });
             }

@@ -3387,7 +3387,7 @@
             var spT2 = evSpeakerText(e);
             if (spT2) namesLine += esc(spT2);
             if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
-            if (!namesLine) namesLine = 'Needs presenter';
+            if (!namesLine) namesLine = 'Needs ' + (window.qsPersonLabelOf ? window.qsPersonLabelOf(e) : 'Speaker').toLowerCase();
             html += '<div class="month-chip" style="background:' + tint(ec, 70) + ';border-color:' + tint(ec, 55) +
               '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime12(e.startTime) : '') + (e.location ? ' · ' + e.location : '')) + '">' +
               '<span class="dot" style="background:' + ec + '"></span>' +
@@ -4778,7 +4778,7 @@
           var id = (c || u).getAttribute(c ? 'data-evclaim' : 'data-evunclaim');
           api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST' }).then(function (r) {
             if (r.ok) loadAll();
-            else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+            else pageError(r.data && r.data.error ? r.data.error : 'Could not update the speaker.');
           });
         }, true);
         // Clicking a session box (not its pickup button) jumps to that
@@ -6977,7 +6977,7 @@ window.qsScRenderCal = function (dashId) {
     function kindOf(s) {
       return (s.dashboardId && kindByDash[s.dashboardId + '|' + s.kind]) || kindByKey[s.kind] || NP_BUILTIN[s.kind] || { label: s.kind || 'Session', color: '#475569', personLabel: null };
     }
-    function personLabelOf(s) { return kindOf(s).personLabel || 'Presenter'; }
+    function personLabelOf(s) { return s.personLabel || s.personLabelOverride || kindOf(s).personLabel || 'Speaker'; }
     var dashName = {};
     ((rs[2].ok && rs[2].data.dashboards) || []).forEach(function (d) { dashName[d.id] = d.name; });
     var npLinks = ((rs[3].ok && rs[3].data.links) || []).filter(function (l) { return !l.dashboardId || l.dashboardId === dashId; });
@@ -7053,7 +7053,7 @@ window.qsScRenderCal = function (dashId) {
       if (!labelCounts[L]) { labelCounts[L] = { need: 0 }; labels.push(L); }
       if (!scHasSpeakers(s)) labelCounts[L].need++;
     });
-    labels.sort(function (a, b) { if (a === 'Presenter') return -1; if (b === 'Presenter') return 1; return a < b ? -1 : 1; });
+    labels.sort(function (a, b) { if (a === 'Speaker') return -1; if (b === 'Speaker') return 1; return a < b ? -1 : 1; });
     var supNeed = sessions.filter(function (s) { return !s.supervisorUserId; }).length;
     var staffed = sessions.length - needAny.length;
     var linkH = '<div class="sc-day" style="margin-bottom:14px">' +
@@ -7087,7 +7087,7 @@ window.qsScRenderCal = function (dashId) {
       h += '<div class="sc-day" style="color:var(--dim)">No sessions scheduled in the next 14 days.</div>';
     } else {
       labels.forEach(function (L) {
-        h += sectionHtml((L === 'Presenter' ? '🎤' : '🧑‍🏫') + ' Needs ' + art(L) + ' ' + esc(lc(L)),
+        h += sectionHtml((L === 'Speaker' ? '🎤' : '🧑‍🏫') + ' Needs ' + art(L) + ' ' + esc(lc(L)),
           sessions.filter(function (s) { return personLabelOf(s) === L; }), 'presenter', L);
       });
       h += sectionHtml('👀 Needs a supervisor', sessions, 'supervisor', 'Supervisor');
@@ -7448,7 +7448,7 @@ window.qsNpOfferSend = function (btn) {
           <select id="db-show-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:190px;background:var(--surface);color:var(--text)">
             <option value="all">All sessions</option>
             <option value="mine">⭐ Mine</option>
-            <option value="open">Needs presenter</option>
+            <option value="open">Needs speaker</option>
           </select>
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Session type
@@ -7460,7 +7460,7 @@ window.qsNpOfferSend = function (btn) {
       <div id="ac-selbar" style="display:none;position:sticky;bottom:12px;z-index:40;background:#312e81;color:#fff;border-radius:14px;padding:0.7rem 0.9rem;margin-top:0.8rem;box-shadow:0 8px 24px rgba(0,0,0,0.35)">
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
           <strong id="ac-selcount">0 selected</strong>
-          <button type="button" class="ac-selbtn" data-selact="presenter">👤 Presenter</button>
+          <button type="button" class="ac-selbtn" data-selact="presenter">👤 Speaker</button>
           <button type="button" class="ac-selbtn" data-selact="supervisor">🧑‍🏫 Supervisor</button>
           <button type="button" class="ac-selbtn" data-selact="location">📍 Location</button>
           <button type="button" class="ac-selbtn ac-selbtn-ghost" data-selact="clear">Clear</button>
@@ -7558,8 +7558,8 @@ window.qsNpOfferSend = function (btn) {
             case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
             case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
             case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
-            case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
-            case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — presenter ' + c.presenter : '') + (c.supervisor ? ' — supervisor ' + c.supervisor : '') + (c.location ? ' — in ' + c.location : '');
+            case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
+            case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.supervisor ? ' — supervisor ' + c.supervisor : '') + (c.location ? ' — in ' + c.location : '');
             case 'cancel_session': return 'Cancel session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '');
             default: return c.action;
           }
@@ -13873,7 +13873,7 @@ window.qsNpOfferSend = function (btn) {
             var spTc = msSpeakerText(e);
             if (spTc) namesLine += esc(spTc);
             if (e.supervisorName) namesLine += (namesLine ? ' · ' : '') + 'Sup: ' + esc(e.supervisorName);
-            if (!namesLine) namesLine = 'Needs presenter';
+            if (!namesLine) namesLine = 'Needs ' + (window.qsPersonLabelOf ? window.qsPersonLabelOf(e) : 'Speaker').toLowerCase();
             if (e.viewerInvitedOnly) namesLine += ' · 📩 Invited';
             return '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + (msEventIsMine(e) ? ';outline:2px solid #f59e0b;outline-offset:-2px' : '') + '" title="' + esc(e.title + (e.startTime ? ' ' + fmtTime(e.startTime) : '')) + '">' +
               '<span class="dot" style="background:' + color + '"></span>' +
@@ -14412,12 +14412,13 @@ window.qsNpOfferSend = function (btn) {
           var cbody = (evx && evx.recurRule && evx.recurRule !== 'none' && evx.date) ? JSON.stringify({ date: evx.date }) : undefined;
           api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (isClaim ? '/claim' : '/unclaim'), { method: 'POST', body: cbody }).then(function (r) {
             if (r.ok) {
-              msSuccess(isClaim ? 'You are now the presenter.' : 'Presenter slot released.');
+              var pLbl = window.qsPersonLabelOf ? window.qsPersonLabelOf(evx) : 'Speaker';
+              msSuccess(isClaim ? 'You are now the ' + pLbl.toLowerCase() + '.' : pLbl + ' slot released.');
               var modalDate = msDayModalDate;
               loadData();
               if (modalDate) setTimeout(function () { if (msDayModalDate === modalDate) openMsDayModal(modalDate); }, 700);
             } else {
-              msError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+              msError(r.data && r.data.error ? r.data.error : 'Could not update the speaker.');
             }
           });
         }
@@ -16371,6 +16372,24 @@ window.qsNpOfferSend = function (btn) {
       }
       window.qsKindLabel = function (key, dashId) { return qsKindLookup(key, dashId, 'label'); };
       window.qsKindColor = function (key, dashId) { return qsKindLookup(key, dashId, 'color'); };
+      // Effective person label for a session (Deepika, 2026-11-07):
+      // the payload's stamped personLabel wins; else the session's
+      // own Role name override; else its kind's label (via the
+      // company-wide kinds list); else 'Speaker'.
+      window.qsPersonLabelOf = function (s) {
+        if (!s) return 'Speaker';
+        if (s.personLabel) return s.personLabel;
+        if (s.personLabelOverride) return s.personLabelOverride;
+        var list = window.qsKinds || [];
+        var any = null;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].key !== s.kind) continue;
+          if (s.dashboardId && list[i].dashboardId === s.dashboardId) return list[i].personLabel || 'Speaker';
+          if (!s.dashboardId) return list[i].personLabel || 'Speaker';
+          any = any || list[i];
+        }
+        return (any && any.personLabel) || 'Speaker';
+      };
       var acView = 'month';
       var acTitle = '';
       var acAnchor = new Date();
@@ -16481,7 +16500,7 @@ window.qsNpOfferSend = function (btn) {
         api('/api/schedule/academic-sessions/bulk-assign', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
           if (r.ok) {
             var n = (r.data && r.data.updated) || 0;
-            var word = field === 'location' ? 'Location' : (field === 'supervisor' ? 'Supervisor' : 'Presenter');
+            var word = field === 'location' ? 'Location' : (field === 'supervisor' ? 'Supervisor' : 'Speaker');
             pageSuccess(word + ' set on ' + n + ' session' + (n === 1 ? '' : 's') + '.');
             if (r.data && r.data.skipped && r.data.skipped.length) pageError(r.data.skipped.length + ' session(s) could not be changed — no edit access.');
             acExitSel();
@@ -16502,7 +16521,7 @@ window.qsNpOfferSend = function (btn) {
           return '<button type="button" data-pick="' + u.id + '" style="' + BTN + '">' + esc(nm) + (u.jobRole ? ' <span style="color:var(--dim)">(' + esc(u.jobRole) + ')</span>' : '') + '</button>';
         }).join('');
         wrap.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.3rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
-          '<h3 style="margin:0 0 0.8rem">' + (field === 'supervisor' ? '🧑‍🏫 Supervisor' : '👤 Presenter') + ' for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
+          '<h3 style="margin:0 0 0.8rem">' + (field === 'supervisor' ? '🧑‍🏫 Supervisor' : '👤 Speaker') + ' for ' + acSelected.size + ' session' + (acSelected.size === 1 ? '' : 's') + '</h3>' +
           '<button type="button" data-pick="" style="' + BTN + '">— Clear (nobody) —</button>' + rows +
           '<button type="button" data-pick-cancel style="' + BTN + ';text-align:center;margin-top:0.4rem">Cancel</button></div>';
         document.body.appendChild(wrap);
@@ -16663,6 +16682,8 @@ window.qsNpOfferSend = function (btn) {
       // has-speakers / is-mine checks. Older payloads without a
       // speakers array fall back to the lecturer mirror.
       function sessHasSpeakers(s) { return s.speakers ? s.speakers.length > 0 : !!s.lecturerUserId; }
+      function sessPersonLabel(s) { return window.qsPersonLabelOf ? window.qsPersonLabelOf(s) : ((s && s.personLabelOverride) || 'Speaker'); }
+      function sessNeedsText(s) { return 'Needs ' + sessPersonLabel(s).toLowerCase(); }
       function speakerNamesText(s) {
         if (s.speakers && s.speakers.length) return s.speakers.map(function (sp) { return (sp.name || '—') + (sp.guest ? ' (guest)' : ''); }).join(', ');
         return s.lecturerName || null;
@@ -16687,7 +16708,7 @@ window.qsNpOfferSend = function (btn) {
         return '<div class="ac-chip" data-acedit="' + s.id + '" style="background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '" title="' + esc(s.title) + (mine ? ' — ⭐ your session' : '') + (acConflicts[s.id] ? ' — scheduling conflict' : '') + '">' +
           '<span class="ac-dot" style="background:' + color + '"></span>' +
           '<span class="ac-chip-text"><strong>' + esc(s.title) + (mine ? ' ⭐' : '') + '</strong>' + (t ? ' · ' + esc(t) : '') + recur +
-          (sessHasSpeakers(s) ? '<span class="ac-chip-who">' + esc(speakerNamesText(s)) + '</span>' : '<span class="ac-chip-who ac-need">Needs presenter</span>') +
+          (sessHasSpeakers(s) ? '<span class="ac-chip-who">' + esc(speakerNamesText(s)) + '</span>' : '<span class="ac-chip-who ac-need">' + esc(sessNeedsText(s)) + '</span>') +
           (s.viewerInvitedOnly ? '<span class="ac-chip-who">📩 Invited</span>' : '') +
           (s.supervisorName ? '<span class="ac-chip-who">Sup: ' + esc(s.supervisorName) + '</span>' : '') +
           (s.location ? '<span class="ac-chip-who">📍 ' + esc(s.location) + '</span>' : '') +
@@ -16742,7 +16763,7 @@ window.qsNpOfferSend = function (btn) {
             }
             if (a.lecturerUserId && a.lecturerUserId === b.lecturerUserId) {
               acConflicts[a.id] = true; acConflicts[b.id] = true;
-              list.push('Presenter conflict: ' + (a.lecturerName || 'A presenter') + ' has both "' + a.title + '" and "' + b.title + '" on ' + a.date + ' at overlapping times.');
+              list.push('Speaker conflict: ' + (a.lecturerName || 'A speaker') + ' has both "' + a.title + '" and "' + b.title + '" on ' + a.date + ' at overlapping times.');
             }
           }
         }
@@ -16939,7 +16960,7 @@ window.qsNpOfferSend = function (btn) {
             var w = 100 / (it.lanes || 1);
             var left = (it.lane || 0) * w;
             var mine = sessMine(s);
-            var who = sessHasSpeakers(s) ? esc(speakerNamesText(s)) : '<span style="color:#c62828;font-weight:700">Needs presenter</span>';
+            var who = sessHasSpeakers(s) ? esc(speakerNamesText(s)) : '<span style="color:#c62828;font-weight:700">' + esc(sessNeedsText(s)) + '</span>';
             var conflict = acConflicts[s.id] ? 'box-shadow:0 0 0 2px #dc2626 inset;' : '';
             var mineStyle = mine ? 'box-shadow:0 0 0 2px #b45309 inset;' : '';
             return '<div class="ac-blk" data-acedit="' + s.id + '" title="' + esc(s.title) + '" style="top:' + top + 'px;height:' + height + 'px;left:calc(' + left + '% + 2px);width:calc(' + w + '% - 4px);background:' + tint(color, 85) + ';border-color:' + tint(color, 55) + ';' + conflict + mineStyle + '">' +
@@ -17016,7 +17037,7 @@ window.qsNpOfferSend = function (btn) {
           html += '<div class="ac-drow" data-acedit="' + s.id + '"' + rowStyle + '>' +
             '<div class="ac-time">' + (s.startTime ? fmtTime(s.startTime) + (s.endTime ? ' – ' + fmtTime(s.endTime) : '') : 'All day') + '</div>' +
             '<div><div class="ac-nm"><span class="ac-dot" style="background:' + color + '"></span> ' + esc(s.title) + recur + '</div>' +
-            '<div class="ac-meta">' + mineTag + esc(sessHasSpeakers(s) ? speakerNamesText(s) : 'Needs presenter') + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
+            '<div class="ac-meta">' + mineTag + esc(sessHasSpeakers(s) ? speakerNamesText(s) : sessNeedsText(s)) + (s.supervisorName ? ' · Supervisor: ' + esc(s.supervisorName) : '') + (s.location ? ' · 📍 ' + esc(s.location) : '') + (s.departmentName ? ' · ' + esc(s.departmentName) : '') + (acConflicts[s.id] ? ' · <span style="color:#dc2626;font-weight:700">⚠ Conflict</span>' : '') + joinLink + claimBtn + '</div></div></div>';
         });
         return html + '</div></div>';
       }
@@ -17066,7 +17087,7 @@ window.qsNpOfferSend = function (btn) {
             '<div style="display:grid;gap:0.45rem;font-size:0.95rem">' +
             '<div>📅 ' + esc(dateTxt) + '</div>' +
             '<div>🕐 ' + esc(timeTxt) + '</div>' +
-            '<div>👤 Speakers: ' + (hasSp ? '<strong>' + esc(spText) + '</strong>' : '<strong style="color:#b91c1c">Needs presenter</strong>') + '</div>' +
+            '<div>👤 ' + esc(sessPersonLabel(e)) + ': ' + (hasSp ? '<strong>' + esc(spText) + '</strong>' : '<strong style="color:#b91c1c">' + esc(sessNeedsText(e)) + '</strong>') + '</div>' +
             '<div>🧑‍🏫 Supervisor: ' + (e.supervisorName ? '<strong>' + esc(e.supervisorName) + '</strong>' : '<span style="color:var(--dim)">Not assigned</span>') + '</div>' +
             (e.location ? '<div>📍 ' + esc(e.location) + '</div>' : '') +
             (e.departmentName ? '<div>🏢 Organized by: ' + esc(e.departmentName) + '</div>' : '') +
@@ -17103,7 +17124,7 @@ window.qsNpOfferSend = function (btn) {
               if (e.recurRule && e.recurRule !== 'none' && e.date) pbody.date = e.date;
               api('/api/schedule/academic-sessions/' + encodeURIComponent(e.id) + '/claim', { method: 'POST', body: JSON.stringify(pbody) }).then(function (r) {
                 if (r.ok) {
-                  pageSuccess(role === 'supervisor' ? 'You are now the supervisor.' : 'You are now the presenter.');
+                  pageSuccess(role === 'supervisor' ? 'You are now the supervisor.' : 'You are now the ' + sessPersonLabel(e).toLowerCase() + '.');
                   close();
                   if (onDone) onDone();
                 } else {
@@ -17196,6 +17217,13 @@ window.qsNpOfferSend = function (btn) {
         var initStart = s ? (s.startTime || '') : (opts.startTime || (prefill && prefill.startTime) || '');
         var initEnd = s ? (s.endTime || '') : (opts.endTime || (prefill && prefill.endTime) || '');
         var initTitle = s ? s.title : (prefill && prefill.title) || '';
+        // Role name (Deepika, 2026-11-07): the people slot follows
+        // the session TYPE — an "Interview" type's slot is called
+        // "Interviewer" — and the form's Role name box can rename it
+        // for THIS session only. The type's label comes from the
+        // kind (kinds manager "needs a ___"); default 'Speaker'.
+        function typeLabelFor(key) { var k = kindOf(key); return (k && k.personLabel) || 'Speaker'; }
+        var roleInit = s ? (s.personLabelOverride || typeLabelFor(s.kind)) : typeLabelFor('session');
         var m = document.createElement('div');
         m.id = 'ac-modal';
         m.className = 'modal-back';
@@ -17245,14 +17273,17 @@ window.qsNpOfferSend = function (btn) {
             '<button type="button" class="btn-secondary" id="acf-useshift" style="padding:0.6rem 1rem;border-radius:8px">Use its times &amp; people</button></div>' +
             '<div id="acf-dshift-note" style="margin-top:0.4rem;font-size:0.85rem;color:#15803d"></div>' +
           '</div>' +
-          '<div id="acf-speakers-wrap" style="margin-bottom:0.7rem"><div style="font-weight:600;margin-bottom:0.4rem">Speakers</div>' +
+          '<div id="acf-speakers-wrap" style="margin-bottom:0.7rem"><div id="acf-sphead" style="font-weight:600;margin-bottom:0.4rem">' + esc(roleInit) + '</div>' +
+          '<label id="acf-role-label" style="display:block;margin-bottom:0.7rem">Role name:' +
+          '<input id="acf-role" type="text" maxlength="40" value="' + esc(roleInit) + '" style="width:220px;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-left:0.45rem">' +
+          '<div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">This is what the slot is called for this session.</div></label>' +
           '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.55rem">' +
-            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the speaker list</div>' +
+            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the <span id="acf-filterword">' + esc(roleInit.toLowerCase()) + '</span> list</div>' +
             '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
             '<label style="flex:1;min-width:150px">By job role<br><select id="acf-frole" style="' + IN + '"><option value="">All job roles</option>' + roleNames.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label></div>' +
           '</div>' +
           '<div id="acf-speakers"></div>' +
-          '<button type="button" id="acf-spadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.88rem;cursor:pointer;padding:0.2rem 0">+ Add another speaker</button>' +
+          '<button type="button" id="acf-spadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.88rem;cursor:pointer;padding:0.2rem 0">+ Add another ' + esc(roleInit.toLowerCase()) + '</button>' +
           '<div id="acf-spnote" style="display:none;font-size:0.82rem;color:#6d28d9;margin-top:0.3rem">For one date you can change only the main speaker — the full list of speakers belongs to the series.</div></div>' +
           '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
           '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
@@ -17288,6 +17319,13 @@ window.qsNpOfferSend = function (btn) {
         var inDateScope = false;
         var savedSpeakerState = null;
         function userNameOf(u) { return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; }
+        // The Role name box's current value (what the slot is called
+        // right now in this form) — drives the rows' wording live.
+        function roleLabelNow() {
+          var el = m.querySelector('#acf-role');
+          var v = el ? el.value.trim().replace(/\s+/g, ' ') : '';
+          return v || 'Speaker';
+        }
         function speakerOptions(selectedId) {
           var fd = m.querySelector('#acf-fdept').value;
           var fr = m.querySelector('#acf-frole').value;
@@ -17297,9 +17335,10 @@ window.qsNpOfferSend = function (btn) {
             if (fr && u.jobRole !== fr) return false;
             return true;
           });
-          return '<option value="">— No speaker —</option>' + list.map(function (u) {
+          var low = roleLabelNow().toLowerCase();
+          return '<option value="">— No ' + esc(low) + ' —</option>' + list.map(function (u) {
             return '<option value="' + u.id + '"' + (selectedId === u.id ? ' selected' : '') + '>' + esc(userNameOf(u)) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
-          }).join('') + '<option value="__guest__">Guest speaker (not on the team)</option>';
+          }).join('') + '<option value="__guest__">Guest ' + esc(low) + ' (not on the team)</option>';
         }
         function harvestSpeakers() {
           var rows = m.querySelectorAll('.acf-sprow');
@@ -17316,7 +17355,7 @@ window.qsNpOfferSend = function (btn) {
         function renderSpeakers() {
           var box = m.querySelector('#acf-speakers');
           box.innerHTML = speakerState.map(function (sp, idx) {
-            var del = inDateScope ? '' : '<button type="button" class="acf-spdel" data-spdel="' + idx + '" title="Remove speaker" style="background:none;border:1px solid var(--border);border-radius:8px;width:2rem;height:2rem;cursor:pointer;flex:none">×</button>';
+            var del = inDateScope ? '' : '<button type="button" class="acf-spdel" data-spdel="' + idx + '" title="Remove ' + esc(roleLabelNow().toLowerCase()) + '" style="background:none;border:1px solid var(--border);border-radius:8px;width:2rem;height:2rem;cursor:pointer;flex:none">×</button>';
             if (sp.guest) {
               return '<div class="acf-sprow" style="display:flex;gap:0.45rem;align-items:flex-start;margin-bottom:0.45rem">' +
                 '<div style="flex:1"><input type="text" class="acf-gname" placeholder="Guest name" value="' + esc(sp.name || '') + '" style="' + IN + ';margin-top:0">' +
@@ -17349,6 +17388,27 @@ window.qsNpOfferSend = function (btn) {
         m.querySelector('#acf-fdept').addEventListener('change', applyFilters);
         m.querySelector('#acf-frole').addEventListener('change', applyFilters);
         renderSpeakers();
+        // Role name wiring (Deepika, 2026-11-07): the box refills
+        // from the Type whenever the type changes — UNLESS the user
+        // has typed in the box during this form-open (manual edits
+        // stick). The section heading, the filter caption and the
+        // add-link follow the box value live.
+        var roleEdited = false;
+        var roleInput = m.querySelector('#acf-role');
+        function syncRoleTexts() {
+          var lbl = roleLabelNow();
+          var low = lbl.toLowerCase();
+          var head = m.querySelector('#acf-sphead'); if (head) head.textContent = lbl;
+          var fw = m.querySelector('#acf-filterword'); if (fw) fw.textContent = low;
+          var add = m.querySelector('#acf-spadd'); if (add) add.textContent = '+ Add another ' + low;
+          var note = m.querySelector('#acf-spnote'); if (note) note.textContent = 'For one date you can change only the main ' + low + ' — the full list of ' + low + 's belongs to the series.';
+        }
+        roleInput.addEventListener('input', function () { roleEdited = true; harvestSpeakers(); syncRoleTexts(); renderSpeakers(); });
+        m.querySelector('#acf-kind').addEventListener('change', function () {
+          if (!roleEdited) roleInput.value = typeLabelFor(this.value);
+          harvestSpeakers(); syncRoleTexts(); renderSpeakers();
+        });
+        syncRoleTexts();
         function readSpeakers() {
           harvestSpeakers();
           var out = [];
@@ -17435,7 +17495,9 @@ window.qsNpOfferSend = function (btn) {
           if (sh.endTime) m.querySelector('#acf-end').value = sh.endTime;
           var added = sh.userId ? addSpeakerUser(sh.userId) : false;
           note.style.color = '#15803d';
-          note.textContent = '✓ Times set from ' + sh.shiftTypeName + (sh.userId ? (added ? ' — ' + (sh.personName || 'they') + ' added as a speaker.' : ' — ' + (sh.personName || 'that person') + ' is already a speaker.') : ' (open shift — nobody to add).');
+          var rlLow = roleLabelNow().toLowerCase();
+          var rlArt = /^[aeiou]/i.test(rlLow) ? 'an' : 'a';
+          note.textContent = '✓ Times set from ' + sh.shiftTypeName + (sh.userId ? (added ? ' — ' + (sh.personName || 'they') + ' added as ' + rlArt + ' ' + rlLow + '.' : ' — ' + (sh.personName || 'that person') + ' is already ' + rlArt + ' ' + rlLow + '.') : ' (open shift — nobody to add).');
         });
 
         // Per-date scope for recurring series (Deepika, 2026-10-20):
@@ -17464,6 +17526,7 @@ window.qsNpOfferSend = function (btn) {
           var orgW = m.querySelector('#acf-org-wrap'); if (orgW) orgW.style.display = dateScope ? 'none' : '';
           var benW = m.querySelector('#acf-ben-wrap'); if (benW) benW.style.display = dateScope ? 'none' : '';
           var schW = m.querySelector('#acf-sched-wrap'); if (schW) schW.style.display = dateScope ? 'none' : '';
+          var roleW = m.querySelector('#acf-role-label'); if (roleW) roleW.style.display = dateScope ? 'none' : '';
           if (dateScope && !inDateScope) {
             inDateScope = true;
             savedSpeakerState = speakerState;
@@ -17612,6 +17675,13 @@ window.qsNpOfferSend = function (btn) {
             beneficiaryDepartmentIds: Array.from(benDeptSel),
             beneficiaryUserIds: benUserIds.slice(),
             speakers: readSpeakers(),
+            // Role name: posted only when it differs from the type's
+            // label (an override for this session); equal → null, so
+            // the session keeps following its type.
+            personLabel: (function () {
+              var v = (roleInput.value || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+              return v && v !== typeLabelFor(m.querySelector('#acf-kind').value) ? v : null;
+            })(),
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
             endTime: m.querySelector('#acf-end').value || null,
@@ -17792,12 +17862,12 @@ window.qsNpOfferSend = function (btn) {
             '<p style="color:var(--dim);font-size:0.9rem;margin-top:0">Session types for this dashboard only. They appear in its Add session form and Session type filter.</p>' +
             (acKinds.length ? acKinds.map(function (k) {
               return '<div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;border:1px solid var(--border);border-radius:10px;padding:0.55rem 0.8rem;margin-bottom:0.5rem"><span style="width:14px;height:14px;border-radius:50%;background:' + esc(k.color) + ';flex:none"></span><strong>' + esc(k.label) + '</strong>' +
-                '<span style="display:flex;align-items:center;gap:0.35rem;margin-left:auto;font-size:0.85rem;color:var(--dim)">needs a <input type="text" data-km-person="' + k.id + '" value="' + esc(k.personLabel || '') + '" placeholder="Presenter" style="width:120px;padding:0.35rem 0.5rem;border-radius:7px;border:1px solid var(--border)"><button type="button" data-km-psave="' + k.id + '" style="padding:0.35rem 0.7rem;border-radius:8px;cursor:pointer">Save</button></span>' +
+                '<span style="display:flex;align-items:center;gap:0.35rem;margin-left:auto;font-size:0.85rem;color:var(--dim)">needs a <input type="text" data-km-person="' + k.id + '" value="' + esc(k.personLabel || '') + '" placeholder="Speaker" style="width:120px;padding:0.35rem 0.5rem;border-radius:7px;border:1px solid var(--border)"><button type="button" data-km-psave="' + k.id + '" style="padding:0.35rem 0.7rem;border-radius:8px;cursor:pointer">Save</button></span>' +
                 '<button type="button" data-km-del="' + k.id + '" style="padding:0.35rem 0.75rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></div>';
             }).join('') : '<p style="color:var(--dim)">No session types yet.</p>') +
             '<div style="font-weight:700;margin:1rem 0 0.4rem">Add a type</div>' +
             '<input id="km-name" type="text" value="' + esc(nameVal) + '" placeholder="Type name (e.g. Interviews)" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border)">' +
-            '<input id="km-person" type="text" value="' + esc(personVal) + '" placeholder="Person needed (optional) — e.g. Interviewer; blank = Presenter" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.5rem">' +
+            '<input id="km-person" type="text" value="' + esc(personVal) + '" placeholder="Person needed (optional) — e.g. Interviewer; blank = Speaker" style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.5rem">' +
             '<div style="display:flex;gap:0.4rem;margin:0.7rem 0;flex-wrap:wrap;align-items:center"><span style="font-weight:600;font-size:0.9rem">Color</span>' + AC_KIND_PALETTE.map(function (c) {
               return '<button type="button" data-km-color="' + c + '" title="' + c + '" style="width:28px;height:28px;border-radius:50%;background:' + c + ';border:' + (c === selColor ? '3px solid #0f172a' : '2px solid #fff') + ';box-shadow:0 0 0 1px #cbd5e1;cursor:pointer"></button>';
             }).join('') + '</div>' +
@@ -17868,7 +17938,7 @@ window.qsNpOfferSend = function (btn) {
         var dbody = (sref && sref.recurRule && sref.recurRule !== 'none' && sref.date) ? JSON.stringify({ date: sref.date }) : undefined;
         api('/api/schedule/academic-sessions/' + encodeURIComponent(id) + (c ? '/claim' : '/unclaim'), { method: 'POST', body: dbody }).then(function (r) {
           if (r.ok) load();
-          else pageError(r.data && r.data.error ? r.data.error : 'Could not update the presenter.');
+          else pageError(r.data && r.data.error ? r.data.error : 'Could not update the speaker.');
         });
       }, true);
 
@@ -19260,7 +19330,7 @@ window.qsNpOfferSend = function (btn) {
   };
   var CAT_DESC = {
     schedule: 'Assigned, changed, removed or published shifts; open shifts; requests to you and their results.',
-    calendar: 'Sessions you present or supervise, changes, cancellations, and sessions needing a presenter.',
+    calendar: 'Sessions you present or supervise, changes, cancellations, and sessions needing a speaker.',
     approvals: 'Plans and shift requests waiting for a decision (owners & schedulers).',
     messages: 'New messages in channels, groups and DMs.'
   };
@@ -19369,7 +19439,7 @@ window.qsNpOfferSend = function (btn) {
   var CAT_LABEL = { schedule: '📅 Schedule changes', calendar: '🎓 Calendar sessions', approvals: '✅ Approvals & requests', messages: '💬 Messages' };
   var CAT_DESC = {
     schedule: 'Shifts assigned to you, changed, removed, or published.',
-    calendar: 'Sessions you present or supervise, and sessions that need a presenter.',
+    calendar: 'Sessions you present or supervise, and sessions that need a speaker.',
     approvals: 'Shift requests sent to you, decisions on your requests, and emailed plans waiting for approval.',
     messages: 'New messages in your conversations — if they sit unread 30 minutes, one summary email (never one per message).'
   };

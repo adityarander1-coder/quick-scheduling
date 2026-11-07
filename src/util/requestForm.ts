@@ -64,6 +64,8 @@ export interface FormPack {
     id: string; dashboardId: string; date: string; title: string;
     startTime: string; endTime: string; presenterId: string | null; presenterName: string;
     supervisorName: string; location: string; recurring: boolean; needsPresenter: boolean;
+    /** Effective person label for this session (override ?? type ?? 'Speaker'). */
+    personLabel: string;
   }>;
   rooms: string[];
   prefill: any;
@@ -149,9 +151,18 @@ export async function buildFormPack(
   // Sessions: expand occurrences in the window, overrides applied.
   const { rows: dashes } = await q('SELECT id, name FROM dashboards WHERE company_id = $1 ORDER BY name', [companyId]);
   const { rows: roomRows } = await q('SELECT name FROM rooms WHERE company_id = $1 ORDER BY name', [companyId]);
+  const { rows: kindRows } = await q(
+    'SELECT key, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1',
+    [companyId]);
+  const effPersonLabel = (s: any): string => {
+    if (s.person_label) return String(s.person_label);
+    const k = kindRows.find((x: any) => x.key === (s.kind || 'session') && x.dashboardId === s.dashboard_id)
+      || kindRows.find((x: any) => x.key === (s.kind || 'session') && x.personLabel);
+    return (k && k.personLabel) || 'Speaker';
+  };
   const { rows: sess } = await q(
     `SELECT s.id, s.dashboard_id, s.title, s.session_date::text AS sdate, s.start_time::text AS stime, s.end_time::text AS etime,
-            s.recur_rule, s.recur_interval, s.recur_days, s.recur_until::text AS runtil, s.location,
+            s.recur_rule, s.recur_interval, s.recur_days, s.recur_until::text AS runtil, s.location, s.kind, s.person_label,
             s.lecturer_user_id, s.supervisor_user_id,
             TRIM(COALESCE(l.first_name,'') || ' ' || COALESCE(l.last_name,'')) AS pname,
             TRIM(COALESCE(sv.first_name,'') || ' ' || COALESCE(sv.last_name,'')) AS sname
@@ -200,6 +211,7 @@ export async function buildFormPack(
         location: (o && o.has_location ? o.location : s.location) || '',
         recurring,
         needsPresenter: !presenterId,
+        personLabel: effPersonLabel(s),
       });
       if (sessions.length > 400) break;
     }
@@ -262,7 +274,7 @@ async function shiftExists(q: QueryFn, companyId: string, userId: string, shiftT
 async function sessionOn(q: QueryFn, companyId: string, sessionId: string, date: string): Promise<any | null> {
   const { rows } = await q(
     `SELECT s.id, s.dashboard_id, s.title, s.session_date::text AS sdate, s.start_time::text AS stime, s.end_time::text AS etime,
-            s.recur_rule, s.recur_interval, s.recur_days, s.recur_until::text AS runtil, s.location,
+            s.recur_rule, s.recur_interval, s.recur_days, s.recur_until::text AS runtil, s.location, s.kind, s.person_label,
             s.lecturer_user_id, s.supervisor_user_id, d.name AS dash_name,
             TRIM(COALESCE(l.first_name,'') || ' ' || COALESCE(l.last_name,'')) AS pname,
             TRIM(COALESCE(sv.first_name,'') || ' ' || COALESCE(sv.last_name,'')) AS sname
@@ -303,8 +315,18 @@ async function sessionOn(q: QueryFn, companyId: string, sessionId: string, date:
     [companyId]);
   const nameOf = new Map(team.map((t: any) => [t.id, t.name]));
   const presenterId = o && o.has_lecturer ? o.lecturer_user_id : s.lecturer_user_id;
+  // Effective person label for this session (override ?? type ?? 'Speaker').
+  let personLabel = s.person_label ? String(s.person_label) : '';
+  if (!personLabel) {
+    const { rows: kindRows } = await q(
+      'SELECT key, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1 AND key = $2',
+      [companyId, s.kind || 'session']);
+    const k = kindRows.find((x: any) => x.dashboardId === s.dashboard_id) || kindRows.find((x: any) => x.personLabel);
+    personLabel = (k && k.personLabel) || 'Speaker';
+  }
   return {
     ...s,
+    personLabel,
     recurring,
     date,
     startTime: o && o.has_times && o.stime ? String(o.stime).slice(0, 5) : (s.stime ? String(s.stime).slice(0, 5) : ''),
@@ -591,12 +613,13 @@ export async function validateAndCompose(
       const s = await sessionOn(q, companyId, String(f.sessionId || ''), String(f.date || ''));
       if (!s) return bad('That session could not be found — pick it again.');
       const n = await memberName(q, companyId, String(f.presenterId || ''));
-      if (!n) return bad('Pick the new presenter.');
+      const pLbl = (s.personLabel || 'Speaker').toLowerCase();
+      if (!n) return bad(`Pick the new ${pLbl}.`);
       const scope = s.recurring ? (f.scope === 'series' ? ' Apply it to the whole series.' : ' This date only.') : '';
       const change: any = { action: 'update_session', dashboard: s.dash_name, sessionTitle: s.title, date: s.date, presenter: n };
       if (s.recurring) change.scope = f.scope === 'series' ? 'series' : 'date';
-      return good(S('Change presenter'),
-        `Hi — could you change the presenter of the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} from ${s.presenterName || '(no presenter)'} to ${n}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
+      return good(S(`Change ${pLbl}`),
+        `Hi — could you change the ${pLbl} of the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} from ${s.presenterName || `(no ${pLbl})`} to ${n}?${scope} Thank you!${note}${sig(user.name, fromEmail)}`,
         [change]);
     }
     case 'session_room_supervisor': {
@@ -624,9 +647,10 @@ export async function validateAndCompose(
     case 'session_pickup': {
       const s = await sessionOn(q, companyId, String(f.sessionId || ''), String(f.date || ''));
       if (!s) return bad('That session could not be found — pick it again.');
-      if (s.presenterId) return bad('That session already has a presenter.');
+      const pLbl = (s.personLabel || 'Speaker').toLowerCase();
+      if (s.presenterId) return bad(`That session already has ${/^[aeiou]/i.test(pLbl) ? 'an' : 'a'} ${pLbl}.`);
       return good(S('Pick up session'),
-        `Hi — I'd like to present the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} — it needs a presenter. Thank you!${note}${sig(user.name, fromEmail)}`,
+        `Hi — I'd like to present the ${s.title} session on the ${s.dash_name} calendar on ${fmtLong(s.date)}${timeRange(s.startTime, s.endTime)} — it needs ${/^[aeiou]/i.test(pLbl) ? 'an' : 'a'} ${pLbl}. Thank you!${note}${sig(user.name, fromEmail)}`,
         [{ action: 'update_session', dashboard: s.dash_name, sessionTitle: s.title, date: s.date, scope: 'date', presenter: user.name }]);
     }
     case 'question': {

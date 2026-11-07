@@ -7322,7 +7322,7 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
     <div><label>Session type</label><select id="a-kind"></select></div></div>
     <div class="row"><div><label>Starts</label><input id="a-start" type="time"></div>
     <div><label>Ends</label><input id="a-end" type="time"></div></div>
-    <label>Presenter</label><select id="a-presenter"></select>
+    <label>Speaker</label><select id="a-presenter"></select>
     <label>Supervisor</label><select id="a-supervisor"></select>
     <label>Room / location</label><input id="a-location" list="rooms" placeholder="Type or pick a room"><datalist id="rooms"></datalist>
     <div id="a-deptwrap"><label>Department</label><select id="a-dept"></select></div>
@@ -7342,7 +7342,7 @@ router.get('/quick-session/:token', async (req: Request, res: Response) => {
     </div></div>
     <div class="small" style="margin-top:10px">Leave a field blank to keep it as it is.</div>
     <label>New title</label><input id="c-title" placeholder="No change">
-    <label>Presenter</label><select id="c-presenter"></select>
+    <label>Speaker</label><select id="c-presenter"></select>
     <label>Supervisor</label><select id="c-supervisor"></select>
     <label>Room / location</label><input id="c-location" list="rooms" placeholder="No change">
     <div class="row"><div><label>Starts</label><input id="c-start" type="time"></div>
@@ -7391,7 +7391,7 @@ function sessionChanged() {
   if (s.recur) parts.push('Repeats ' + s.recur + (s.interval > 1 ? ' every ' + s.interval : ''));
   else parts.push('One-time on ' + s.sdate);
   if (s.stime) parts.push(s.stime + (s.etime ? '–' + s.etime : ''));
-  if (s.presenterName) parts.push('Presenter: ' + s.presenterName);
+  if (s.presenterName) parts.push('Speaker: ' + s.presenterName);
   if (s.supervisorName) parts.push('Supervisor: ' + s.supervisorName);
   if (s.location) parts.push('In ' + s.location);
   hint.textContent = parts.join(' · ');
@@ -7571,7 +7571,7 @@ router.post('/quick-session/:token', async (req: Request, res: Response) => {
       const fIn = (b.fields && typeof b.fields === 'object') ? b.fields : {};
       const f: any = {};
       if (typeof fIn.title === 'string' && fIn.title.trim()) f.title = fIn.title.trim();
-      if ('presenterId' in fIn) { if (!(await validUser(fIn.presenterId))) { res.status(400).json({ error: 'That presenter is not an active team member.' }); return; } f.presenterId = fIn.presenterId || null; }
+      if ('presenterId' in fIn) { if (!(await validUser(fIn.presenterId))) { res.status(400).json({ error: 'That speaker is not an active team member.' }); return; } f.presenterId = fIn.presenterId || null; }
       if ('supervisorId' in fIn) { if (!(await validUser(fIn.supervisorId))) { res.status(400).json({ error: 'That supervisor is not an active team member.' }); return; } f.supervisorId = fIn.supervisorId || null; }
       if (typeof fIn.location === 'string' && fIn.location.trim()) f.location = fIn.location.trim();
       if (fIn.startTime) f.startTime = String(fIn.startTime);
@@ -9821,6 +9821,10 @@ function academicRow(r: any) {
     endTime: r.end_time,
     location: r.location,
     kind: r.kind,
+    // Per-session person-label override (migration 089): the raw
+    // override only — the EFFECTIVE label is override ?? the kind's
+    // person_label ?? 'Speaker', resolved where kinds are at hand.
+    personLabelOverride: r.person_label || null,
     meetingUrl: r.meeting_url || null,
     notes: r.notes,
     dashboardId: r.dashboard_id || null,
@@ -10057,7 +10061,7 @@ router.post('/session-kinds', requireRole('owner', 'scheduler'), async (req: Req
 
 // PUT /api/schedule/session-kinds/:id — owner or scheduler sets the
 // kind's person label (the "needs a ___" name; empty clears it back to
-// the Presenter default).
+// the Speaker default).
 router.put('/session-kinds/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -10150,7 +10154,24 @@ async function personLabelFor(q: any, companyId: string, dashboardId: string | n
     if (rows.length && rows[0].person_label) return String(rows[0].person_label);
   }
   const { rows: any } = await q('SELECT person_label FROM session_kinds WHERE company_id = $1 AND key = $2 AND person_label IS NOT NULL LIMIT 1', [companyId, kind]);
-  return any.length ? String(any[0].person_label) : 'Presenter';
+  return any.length ? String(any[0].person_label) : 'Speaker';
+}
+
+// The EFFECTIVE person label for one session (Deepika, 2026-11-07):
+// the session's own Role name override (migration 089) wins, then
+// its kind's label, then 'Speaker'. Accepts either an academicRow
+// payload (personLabelOverride / dashboardId) or a raw DB row
+// (person_label / dashboard_id).
+async function sessionPersonLabel(q: any, companyId: string, sess: any): Promise<string> {
+  const ov = sess ? (sess.personLabelOverride ?? sess.person_label) : null;
+  if (ov) return String(ov);
+  const dashId = sess ? (sess.dashboardId ?? sess.dashboard_id ?? null) : null;
+  return personLabelFor(q, companyId, dashId, String((sess && sess.kind) || 'session'));
+}
+
+// a/an for a person label ("an interviewer", "a speaker").
+function labelArticle(label: string): string {
+  return /^[aeiou]/i.test(label) ? 'an' : 'a';
 }
 
 function timeToMin(t: string | null): number | null {
@@ -10365,7 +10386,7 @@ router.get('/session-avail/public', async (req: Request, res: Response) => {
           startTime: s.startTime, endTime: s.endTime, location: s.location,
           kindLabel: k ? k.label : (s.kind === 'event' ? 'Event' : 'Lecture'),
           kindColor: k ? k.color : '#475569',
-          personLabel: (k && k.personLabel) || 'Presenter',
+          personLabel: s.personLabelOverride || (k && k.personLabel) || 'Speaker',
           dashboardName: s.dashboardId ? (dashName.get(s.dashboardId) || null) : null,
           missing,
         };
@@ -10553,7 +10574,7 @@ async function sessionGapsForWindow(companyId: string, dashboardId: string | nul
         startTime: s.startTime, endTime: s.endTime, location: s.location,
         kindLabel: k ? k.label : (s.kind === 'event' ? 'Event' : 'Lecture'),
         kindColor: k ? k.color : '#475569',
-        personLabel: (k && k.personLabel) || 'Presenter',
+        personLabel: s.personLabelOverride || (k && k.personLabel) || 'Speaker',
         dashboardId: s.dashboardId || null, dashboardName: s.dashboardId ? (dashName.get(s.dashboardId) || null) : null,
         departmentId: (s as any).departmentId || null,
         missing,
@@ -10827,7 +10848,7 @@ async function sessionOfferCandidates(q: any, req: Request, baseId: string, occD
     if (volIds.has(u.id)) continue;
     everyone.push({ userId: u.id, name: u.name, busy: await busyOf(u.id), offered: offered.has(u.id) });
   }
-  const roleLabel = role === 'supervisor' ? 'supervisor' : (await personLabelFor(q, companyId, occ.dashboardId, occ.kind)).toLowerCase();
+  const roleLabel = role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(q, companyId, occ)).toLowerCase();
   return { occ, roleLabel, volunteers, everyone };
 }
 
@@ -10945,7 +10966,7 @@ router.get('/session-offers/act/:token', async (req: Request, res: Response) => 
     const resolved = await resolveOccurrence(query, rec.companyId, rec.sessionId, rec.occDate);
     if (!resolved) { res.send(actPage('Session not found', '<p>That session no longer exists on that date.</p>')); return; }
     const { occ } = resolved;
-    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await personLabelFor(query, rec.companyId, occ.dashboardId, occ.kind)).toLowerCase();
+    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
     const when = `${fmtDateLong(rec.occDate)}${occ.startTime ? ' at ' + String(occ.startTime).slice(0, 5) : ''}`;
     const head = `<p style="font-size:16px">Hi ${escHtml(String(rec.userName).split(' ')[0])} — <b>${escHtml(occ.title)}</b> on ${escHtml(when)} needs ${/^[aeiou]/i.test(roleLabel) ? 'an' : 'a'} ${escHtml(roleLabel)}.</p>`;
     if (rec.claimedAt) { res.send(actPage('You are on this session', head + '<p>You already accepted this session. Thank you!</p>')); return; }
@@ -11033,7 +11054,7 @@ router.post('/session-offers/act/:token', async (req: Request, res: Response) =>
       return;
     }
     const occ = outcome.occ;
-    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await personLabelFor(query, rec.companyId, occ.dashboardId, occ.kind)).toLowerCase();
+    const roleLabel = rec.role === 'supervisor' ? 'supervisor' : (await sessionPersonLabel(query, rec.companyId, occ)).toLowerCase();
     try {
       const approvers = await deptApproverIds(rec.companyId, occ.departmentId || null);
       const bellTo = [...new Set([...approvers, ...(rec.createdBy ? [rec.createdBy] : [])])].filter((id) => id !== rec.userId);
@@ -11246,6 +11267,18 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
         loadSpeakers(query as any, seriesIds),
         loadBeneficiaries(query as any, seriesIds),
       ]);
+      // Effective person label per occurrence (Deepika, 2026-11-07):
+      // the session's own override, else its kind's label, else
+      // 'Speaker'. The raw override also rides along as
+      // personLabelOverride (from academicRow) so the edit form can
+      // tell "renamed for this session" from "follows the type".
+      const { rows: kindRows } = await query('SELECT key, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1', [companyId]);
+      const effPersonLabel = (o: any): string => {
+        if (o.personLabelOverride) return o.personLabelOverride;
+        const k = kindRows.find((x: any) => x.key === o.kind && x.dashboardId === o.dashboardId)
+          || kindRows.find((x: any) => x.key === o.kind && x.personLabel);
+        return (k && k.personLabel) || 'Speaker';
+      };
       const dashDepts = new Map<string, string[]>();
       if (ids) {
         const dashIds = [...new Set(out.map((o: any) => o.dashboardId).filter(Boolean))] as string[];
@@ -11286,6 +11319,7 @@ router.get('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), 
       }
       for (const o of out) {
         const sid = o.seriesId || o.id;
+        o.personLabel = effPersonLabel(o);
         const eff = effectiveSpeakers(spMap.get(sid) || [], o.lecturerUserId || null, o.lecturerName || null);
         o.speakers = eff.map((s: any) => ({
           userId: s.userId || null, name: s.name || null, guest: !!s.guest,
@@ -11432,13 +11466,18 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     const recurDays = cleanRecurDays(b.recurDays);
     const recurUntil = recurRule !== 'none' && b.recurUntil ? String(b.recurUntil) : (recurRule !== 'none' ? null : null);
     const kind = await cleanKind(companyId, dashboardId, b.kind);
+    // Role name for THIS session only (migration 089): the form
+    // posts the override when it differs from the type's label, or
+    // null to follow the type. Callers that don't post it (the Email
+    // Q-Scheduler plan path) leave it NULL — the type label applies.
+    const personLabelVal = b.personLabel !== undefined ? cleanPersonLabel(b.personLabel) : null;
     const { rows } = await query(
-      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+      `INSERT INTO academic_sessions (id, company_id, title, lecturer_user_id, department_id, session_date, start_time, end_time, location, kind, notes, created_by, dashboard_id, recur_rule, recur_until, supervisor_user_id, recur_days, recur_interval, recur_count, meeting_url, person_label)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
       [crypto.randomUUID(), companyId, title, lecturerId, departmentId,
        b.date, b.startTime || null, b.endTime || null, b.location ? String(b.location).trim() : null,
        kind, b.notes ? String(b.notes).trim() : null, req.session.userId!, dashboardId, recurRule, recurUntil, b.supervisorUserId || null,
-       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url]);
+       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, mu.url, personLabelVal]);
     const newSessionId = rows[0].id;
     if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
@@ -11466,10 +11505,12 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
           memberIds = await deptMemberIds(companyId, departmentId);
         }
         if (memberIds.length) {
+          const effLabel = personLabelVal || await personLabelFor(query, companyId, dashboardId, kind);
+          const effLower = effLabel.toLowerCase();
           notify({
             companyId, userIds: memberIds, category: 'calendar', type: 'session_needs_presenter',
-            title: `A session needs a presenter: "${title}"${dateStr ? ` on ${fmtDateLong(dateStr)}` : ''}`,
-            body: `"${title}" has no presenter yet.`,
+            title: `A session needs ${labelArticle(effLabel)} ${effLower}: "${title}"${dateStr ? ` on ${fmtDateLong(dateStr)}` : ''}`,
+            body: `"${title}" has no ${effLower} yet.`,
             link: 'calendars', bundleKey: 'session_needs_presenter',
             excludeUserId: req.session.userId!,
           });
@@ -11505,7 +11546,7 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
     const companyId = req.session.companyId!;
     const b = req.body ?? {};
     const field = ['lecturer', 'supervisor', 'location'].includes(String(b.field)) ? String(b.field) : null;
-    if (!field) { res.status(400).json({ error: 'Say what to assign: presenter, supervisor or location.' }); return; }
+    if (!field) { res.status(400).json({ error: 'Say what to assign: speaker, supervisor or location.' }); return; }
     const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
     if (!items.length) { res.status(400).json({ error: 'Select at least one session.' }); return; }
     let userId: string | null = null;
@@ -11736,13 +11777,14 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     const { rows } = await query('SELECT * FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     const cur = rows[0];
+    const effPerson = (await sessionPersonLabel(query, companyId, cur)).toLowerCase();
     const occDateU = req.body?.date && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date)) ? String(req.body.date) : null;
     if (occDateU && cur.recur_rule && cur.recur_rule !== 'none') {
       const ov = await getOverride(seriesId, occDateU);
       const eff = effectivePeople(cur, ov);
       if (!eff.lecturer) { res.json({ ok: true }); return; }
       if (eff.lecturer !== req.session.userId) {
-        if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
+        if (req.session.role === 'employee') { res.status(403).json({ error: `Only the ${effPerson} can give this up.` }); return; }
         if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
       }
       await upsertOverride(companyId, seriesId, occDateU, { has_lecturer: true, lecturer_user_id: null });
@@ -11762,7 +11804,7 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
     }
     if (!cur.lecturer_user_id) { res.json({ ok: true }); return; }
     if (cur.lecturer_user_id !== req.session.userId) {
-      if (req.session.role === 'employee') { res.status(403).json({ error: 'Only the presenter can give this up.' }); return; }
+      if (req.session.role === 'employee') { res.status(403).json({ error: `Only the ${effPerson} can give this up.` }); return; }
       if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
     }
     await query('UPDATE academic_sessions SET lecturer_user_id = NULL WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
@@ -11977,9 +12019,15 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
       } else dashboardId = null;
     }
     const kind = b.kind !== undefined ? await cleanKind(companyId, dashboardId, b.kind) : cur.kind;
+    // Role name override (migration 089): a save that posts
+    // personLabel sets it (null/empty = follow the type); a save
+    // that doesn't mention it keeps the session's saved override.
+    // (The one-date scope returned earlier and never reaches here,
+    // so per-date overrides can't carry it — series-level only.)
+    const personLabelVal = b.personLabel !== undefined ? cleanPersonLabel(b.personLabel) : (cur.person_label || null);
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
-        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17 WHERE id=$18`,
+        start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18 WHERE id=$19`,
       [title, newLecturer,
        departmentId, b.date || cur.session_date,
        b.startTime !== undefined ? (b.startTime || null) : cur.start_time,
@@ -11987,7 +12035,7 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
        b.location !== undefined ? (b.location ? String(b.location).trim() : null) : cur.location,
        kind, b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes,
        dashboardId, recurRule, recurUntil, supervisorUserId,
-       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, seriesId]);
+       recurRule === 'weekly' ? (recurDays.length ? recurDays.join(',') : null) : null, rec.interval, rec.count, meetingUrl, personLabelVal, seriesId]);
     if (speakersIn) await saveSpeakers(query as any, seriesId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, seriesId, beneficiaries.departmentIds, beneficiaries.userIds);
     res.json({ ok: true });
@@ -12050,10 +12098,12 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
           memberIds = await deptMemberIds(companyId, departmentId);
         }
         if (memberIds.length) {
+          const effLabel = personLabelVal || await personLabelFor(query, companyId, dashboardId, kind);
+          const effLower = effLabel.toLowerCase();
           notify({
             companyId, userIds: memberIds, category: 'calendar', type: 'session_needs_presenter',
-            title: `A session needs a presenter: "${title}"`,
-            body: `"${title}" no longer has a presenter.`,
+            title: `A session needs ${labelArticle(effLabel)} ${effLower}: "${title}"`,
+            body: `"${title}" no longer has ${labelArticle(effLabel)} ${effLower}.`,
             link: 'calendars', bundleKey: 'session_needs_presenter',
             excludeUserId: req.session.userId!,
           });

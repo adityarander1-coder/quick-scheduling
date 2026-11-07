@@ -143,7 +143,7 @@ const ACTIONS = [
   { id: 'session_add', grp: '🎓 Calendar', label: '➕ Add a session', show: () => PACK.dashboards.length > 0 },
   { id: 'session_move', grp: '🎓 Calendar', label: '↔️ Move a session', show: () => PACK.sessions.length > 0 },
   { id: 'session_cancel', grp: '🎓 Calendar', label: '✖️ Cancel a session', show: () => PACK.sessions.length > 0 },
-  { id: 'session_presenter', grp: '🎓 Calendar', label: '🎤 Change presenter', show: () => PACK.sessions.length > 0 },
+  { id: 'session_presenter', grp: '🎓 Calendar', label: '🎤 Change speaker', show: () => PACK.sessions.length > 0 },
   { id: 'session_room_supervisor', grp: '🎓 Calendar', label: '🚪 Change room / supervisor', show: () => PACK.sessions.length > 0 },
   { id: 'session_pickup', grp: '🎓 Calendar', label: '🙋 Pick up a session', show: () => PACK.sessions.some((s) => s.needsPresenter) },
   { id: 'question', grp: '❓ Ask', label: '❓ Ask a question', show: () => true },
@@ -239,7 +239,7 @@ function calendar(mount, cfg) {
 const myItems = () => PACK.myShifts.map((s) => ({ date: s.date, key: s.date + '|' + s.shiftTypeId, label: s.shiftTypeName, sub: fmtD(s.date), shiftTypeId: s.shiftTypeId }));
 const theirItems = (uid) => PACK.teamShifts.filter((s) => s.userId === uid).map((s) => ({ date: s.date, key: s.date + '|' + s.shiftTypeId, label: s.shiftTypeName, sub: fmtD(s.date), shiftTypeId: s.shiftTypeId }));
 const openItems = () => PACK.openShifts.map((s) => ({ date: s.date, key: s.date + '|' + s.shiftTypeId, label: s.shiftTypeName + ' — ' + s.open + ' open', sub: fmtD(s.date), shiftTypeId: s.shiftTypeId }));
-const sessItems = (list) => list.map((s) => ({ date: s.date, key: s.id + '|' + s.date, label: s.title, sub: fmtD(s.date) + (s.startTime ? ' · ' + s.startTime + (s.endTime ? '–' + s.endTime : '') : '') + (s.presenterName ? ' · ' + s.presenterName : ' · needs a presenter') + (s.location ? ' · ' + s.location : ''), sess: s }));
+const sessItems = (list) => list.map((s) => { const lbl = (s.personLabel || 'Speaker').toLowerCase(); return { date: s.date, key: s.id + '|' + s.date, label: s.title, sub: fmtD(s.date) + (s.startTime ? ' · ' + s.startTime + (s.endTime ? '–' + s.endTime : '') : '') + (s.presenterName ? ' · ' + s.presenterName : ' · needs ' + (/^[aeiou]/i.test(lbl) ? 'an ' : 'a ') + lbl) + (s.location ? ' · ' + s.location : ''), sess: s }; });
 const teamOpts = (extra) => (extra || '') + PACK.team.map((t) => '<option value="' + t.id + '">' + esc(t.name) + '</option>').join('');
 const noteHtml = '<div style="margin-top:12px"><label class="lbl" for="f-note">Note (optional)</label><textarea id="f-note" placeholder="Anything the approvers should know"></textarea></div>';
 const scopeHtml = '<div class="scope" id="f-scope" style="display:none"><label><input type="radio" name="scope" value="date" checked>Just this date</label><label><input type="radio" name="scope" value="series">Whole series</label></div>';
@@ -320,7 +320,7 @@ function renderPanel() {
       '<div style="margin-top:12px">' + L('Session title') + '<input type="text" id="f-title" placeholder="e.g. Morning rounds"></div>' +
       '<div style="margin-top:12px">' + L('Date') + '<div id="c-day"></div><div id="pk-day"></div></div>' +
       '<div class="row2" style="margin-top:12px"><div>' + L('Starts') + '<input type="time" id="f-start"></div><div>' + L('Ends') + '<input type="time" id="f-end"></div></div>' +
-      '<div style="margin-top:12px">' + L('Presenter (optional)') + '<select id="f-pres">' + teamOpts('<option value="">No presenter yet</option>') + '</select></div>' +
+      '<div style="margin-top:12px">' + L('Speaker (optional)') + '<select id="f-pres">' + teamOpts('<option value="">No speaker yet</option>') + '</select></div>' +
       '<div style="margin-top:12px">' + L('Room (optional)') + '<input type="text" id="f-room" list="rooms" placeholder="Room or location"><datalist id="rooms">' + PACK.rooms.map((r) => '<option value="' + esc(r) + '">').join('') + '</datalist></div>' +
       '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14.5px"><input type="checkbox" id="f-weekly" style="width:auto"> Repeats weekly</label>' + noteHtml;
     S.dashboardId = PACK.dashboards.length ? PACK.dashboards[0].id : null;
@@ -333,7 +333,7 @@ function renderPanel() {
     const list = action === 'session_pickup' ? PACK.sessions.filter((s) => s.needsPresenter) : PACK.sessions;
     let extra = '';
     if (action === 'session_move') extra = '<div style="margin-top:12px">' + L('Move it to') + '<div id="c-new"></div><div id="pk-new"></div></div><div style="margin-top:12px">' + L('New start time (optional)') + '<input type="time" id="f-nst"></div>';
-    if (action === 'session_presenter') extra = '<div style="margin-top:12px">' + L('New presenter') + '<select id="f-pres">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>';
+    if (action === 'session_presenter') extra = '<div style="margin-top:12px">' + L('New speaker') + '<select id="f-pres">' + teamOpts('<option value="">Choose a person…</option>') + '</select></div>';
     if (action === 'session_room_supervisor') extra = '<div style="margin-top:12px">' + L('Room') + '<input type="text" id="f-room" list="rooms" placeholder="Leave as is, or type the new room"><datalist id="rooms">' + PACK.rooms.map((r) => '<option value="' + esc(r) + '">').join('') + '</datalist></div><div style="margin-top:12px">' + L('Supervisor (optional)') + '<select id="f-sup">' + teamOpts('<option value="">No change</option>') + '</select></div>';
     p.innerHTML = L('Pick the session — tap a marked day, then the session') + '<div id="c-sess"></div><div id="pk-sess"></div>' + extra + scopeHtml + noteHtml;
     calendar($('#c-sess'), { items: sessItems(list), onPick: (sel) => {

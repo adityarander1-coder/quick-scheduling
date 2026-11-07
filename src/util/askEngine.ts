@@ -160,12 +160,15 @@ interface CalSession {
   presenterId: string | null;
   presenter: string | null;
   /** EVENT model: every team speaker's id / whether anyone speaks at
-   *  all (guests count) — "needs a presenter" means NO speakers. */
+   *  all (guests count) — "needs a speaker" means NO speakers. */
   speakerIds: string[];
   hasSpeakers: boolean;
   supervisor: string | null;
   dashboard: string | null;
   kind: string;
+  /** Effective person label: the session's own Role name override,
+   *  else its type's label, else 'Speaker' (Deepika, 2026-11-07). */
+  personLabel: string;
 }
 
 /** Load calendar sessions (dashboard sessions/events) in a window, expanding
@@ -216,6 +219,15 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
   const userName = new Map<string, string>();
   for (const u of us) userName.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(' '));
   const speakersBySession = ids.length ? await loadSpeakers(query as any, ids) : new Map<string, any[]>();
+  const { rows: kindRows } = await query(
+    'SELECT key, dashboard_id AS "dashboardId", person_label AS "personLabel" FROM session_kinds WHERE company_id = $1',
+    [ctx.companyId]);
+  const effLabelOf = (r: any): string => {
+    if (r.person_label) return String(r.person_label);
+    const k = kindRows.find((x: any) => x.key === (r.kind || 'session') && x.dashboardId === r.dashboard_id)
+      || kindRows.find((x: any) => x.key === (r.kind || 'session') && x.personLabel);
+    return (k && k.personLabel) || 'Speaker';
+  };
 
   const out: CalSession[] = [];
   for (const r of rows) {
@@ -229,6 +241,7 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
       endTime: r.end_time || null,
       location: r.location || null,
       kind: r.kind || 'session',
+      personLabel: effLabelOf(r),
       dashboard: r.dashboard_name || null,
       recurRule: r.recur_rule === 'biweekly' ? 'weekly' : (r.recur_rule || 'none'),
       recurInterval: r.recur_rule === 'biweekly' ? 2 : (r.recur_interval || 1),
@@ -268,7 +281,7 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
       }
       const speakerIds = eff.map((s: any) => s.userId).filter(Boolean) as string[];
       const speakerText = eff.map((s: any) => s.guest ? `${s.name || 'Guest'} (guest)` : (s.name || null)).filter(Boolean).join(', ');
-      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter: eff.length ? (speakerText || presenter) : presenter, speakerIds, hasSpeakers: eff.length > 0, supervisor, dashboard: base.dashboard, kind: base.kind };
+      return { date: ds, title: base.title, startTime, endTime, location, presenterId, presenter: eff.length ? (speakerText || presenter) : presenter, speakerIds, hasSpeakers: eff.length > 0, supervisor, dashboard: base.dashboard, kind: base.kind, personLabel: base.personLabel };
     };
     if (!base.recurRule || base.recurRule === 'none') {
       const occ = pushOcc(base.date);
@@ -357,7 +370,7 @@ async function loadCalendarSessions(ctx: AskContext, from: string, to: string): 
 
 function formatCalSession(s: CalSession): string {
   const time = s.startTime ? fmtTime(s.startTime) + (s.endTime ? '–' + fmtTime(s.endTime) : '') : '';
-  const who = s.presenter || 'Needs presenter';
+  const who = s.presenter || ('Needs ' + (s.personLabel || 'Speaker').toLowerCase());
   const where = s.location ? `, ${s.location}` : '';
   const dash = s.dashboard ? ` (${s.dashboard})` : '';
   return `${s.title}${time ? ' — ' + time : ''}, ${who}${where}${dash}`;
@@ -658,7 +671,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   // --- Account lists: departments, shift types, calendars (dashboards). ---
   // Guarded so "what department is John in" still reaches the member branch.
   const calWords = /\b(sessions?|events?|calendars?|dashboards?|lectures?|classes?)\b/.test(lower);
-  const presentingWords = /\bpresent(ing|er|ers)?\b/.test(lower);
+  const presentingWords = /\bpresent(ing|er|ers)?\b|\bspeak(ing|er|ers)?\b/.test(lower);
   if ((/\bwhat\b|\blist\b|\bshow\b/.test(lower)) && !member) {
     if (/\bdepartments?\b/.test(lower)) {
       const clauses = ['company_id = $1']; const params: any[] = [ctx.companyId];
@@ -687,7 +700,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   }
 
   // --- Calendar sessions / events across ALL calendars in this account. ---
-  const needsPresenter = /\bneeds? (a )?presenter\b|\bno presenter\b|\bunassigned\b/.test(lower);
+  const needsPresenter = /\bneeds? (a )?(presenter|speaker)\b|\bno (presenter|speaker)\b|\bunassigned\b/.test(lower);
   const mySessions = /\bmy\b/.test(lower) && (calWords || presentingWords);
   if (calWords || presentingWords || needsPresenter || mySessions) {
     const from = date || week?.from || fmtDate(today);
@@ -705,10 +718,10 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     if (!sessions.length) {
       if (member) return `${memberDisplay(member)} presents no sessions ${when}.`;
       if (mySessions) return `You present no sessions ${when}.`;
-      if (needsPresenter) return `No sessions need a presenter ${when}.`;
+      if (needsPresenter) return `No sessions need a speaker ${when}.`;
       return `No calendar sessions ${when}${namedDash ? ' on ' + namedDash : ''}.`;
     }
-    const head = member ? `${memberDisplay(member)}'s sessions` : mySessions ? 'Your sessions' : needsPresenter ? 'Sessions needing a presenter' : 'Calendar sessions';
+    const head = member ? `${memberDisplay(member)}'s sessions` : mySessions ? 'Your sessions' : needsPresenter ? 'Sessions needing a speaker' : 'Calendar sessions';
     return `${head} ${when}:\n${formatCalendarBlock(sessions)}`;
   }
 
@@ -818,7 +831,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     }
   }
   // --- Fallback ---
-  return `${FALLBACK_INTRO}\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a presenter?"\n• "Tell me my settings" / "What's my name?"\n• "How many shifts are open Sunday?"`;
+  return `${FALLBACK_INTRO}\n• "Who's on Friday night?"\n• "Who's working tomorrow?"\n• "Are we short next week?"\n• "What's John's schedule this week?"\n• "How many shifts does Jane have?"\n• "What sessions are on Friday?" / "What events are on the Calendars dashboard this week?"\n• "Which sessions need a speaker?"\n• "Tell me my settings" / "What's my name?"\n• "How many shifts are open Sunday?"`;
 }
 
 /** Same as answerQuestion, plus whether it fell through to the examples list. */
