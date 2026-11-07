@@ -7454,6 +7454,7 @@ window.qsNpOfferSend = function (btn) {
           <span class="db-date" id="db-date"></span>
           <button type="button" class="btn-secondary" id="db-select" style="padding:0.6rem 1rem;border-radius:10px;display:none">☑ Select sessions</button>
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
+          <a id="db-interview" href="#" target="_blank" rel="noopener" class="btn-secondary" style="display:none;padding:0.6rem 1rem;border-radius:10px;text-decoration:none"></a>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
         </div>
       </div>
@@ -8173,6 +8174,7 @@ window.qsNpOfferSend = function (btn) {
           <div id="subtab-dashboards" class="sub-panel">
             <h3>🎓 Dashboards</h3>
             <p class="muted">Each dashboard becomes its own tab — a calendar for sessions and events. People are picked from the team roster.</p>
+            <div id="dash-residency" class="dash-owner-only"></div>
             <div id="dash-list"></div>
             <div id="dash-archived"></div>
             <h4 class="dash-owner-only">Add a dashboard</h4>
@@ -8189,11 +8191,14 @@ window.qsNpOfferSend = function (btn) {
             </div>
             <button type="button" class="btn dash-owner-only" id="dash-new-save">＋ Add dashboard</button>
             <h3 style="margin-top:2rem">🏢 Conference rooms</h3>
-            <p class="muted">Rooms you can book sessions into. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and the session form will warn you when the room is already booked at that time.</p>
+            <p class="muted">Rooms you can book sessions into. The session form's Room picker shows each room as Available or Booked for the picked time — booking a room that's already taken is refused. Paste a room's calendar link (ICS — Outlook and Google room calendars can publish one) and its bookings there count too.</p>
             <div id="room-list"></div>
             <h4>Add a room</h4>
             <div class="form-row">
               <input type="text" id="room-new-name" placeholder="Room name (e.g. Lecture Hall A)" style="max-width:340px">
+            </div>
+            <div class="form-row">
+              <input type="text" id="room-new-details" placeholder="Details — seats, floor… (optional)" style="max-width:340px">
             </div>
             <div class="form-row">
               <input type="text" id="room-new-ics" placeholder="Calendar link (ICS) — optional" style="max-width:520px">
@@ -16289,10 +16294,30 @@ window.qsNpOfferSend = function (btn) {
       });
 
       var archived = [];
+      // Interview platform link (migration 092): only hospitals with
+      // residency programs see any of it. The switch is owner-only;
+      // while it's on, each dashboard row below gets link fields.
+      var residencyOn = false;
+      function renderResidency() {
+        var wrap = el('dash-residency');
+        if (!wrap) return;
+        wrap.innerHTML = '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.9rem;background:var(--surface)">' +
+          '<label style="display:flex;gap:0.6rem;align-items:center;cursor:pointer;font-weight:600"><input type="checkbox" id="dash-residency-toggle"' + (residencyOn ? ' checked' : '') + '> We run a residency program</label>' +
+          '<p class="muted" style="margin:0.45rem 0 0">Turn this on to give each calendar an interview platform link (your Thalamus page, say) — a button on that calendar and in its sessions that jumps straight there.</p></div>';
+        var t = el('dash-residency-toggle');
+        if (t) t.addEventListener('change', function () {
+          api('/api/schedule/company-residency', { method: 'PUT', body: JSON.stringify({ on: t.checked }) }).then(function (r) {
+            if (r.ok) { residencyOn = !!r.data.residencyProgram; pageSuccess(residencyOn ? 'Residency program on — set each calendar\u2019s interview link below.' : 'Residency program off — interview links are hidden everywhere.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
+            else { pageError((r.data && r.data.error) || 'Could not save.'); t.checked = !t.checked; }
+          }).catch(function () { pageError('Could not save.'); t.checked = !t.checked; });
+        });
+      }
       function load() {
         var panel = el('subtab-dashboards');
         if (panel) panel.classList.toggle('dash-nonowner', !window.isOwner);
         Promise.all([api('/api/schedule/dashboards?includeArchived=1'), api('/api/departments'), api('/api/users')]).then(function (rs) {
+          residencyOn = !!(rs[0].ok && rs[0].data.residencyProgram);
+          renderResidency();
           var all = (rs[0].ok && rs[0].data.dashboards) || [];
           dashes = all.filter(function (d) { return !d.archivedAt; });
           archived = all.filter(function (d) { return !!d.archivedAt; });
@@ -16393,7 +16418,12 @@ window.qsNpOfferSend = function (btn) {
             '</div><div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-top:0.8rem">' +
             '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Departments</label>' + msDropdown(boxes, 'All departments', 'departments selected', '<span class="muted">none</span>') + '<div class="dash-ms-hint">Leave all unchecked = all departments</div></div>' +
             '<div style="flex:1;min-width:240px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Who can adjust it</label>' + msDropdown(editorBoxes, 'All schedulers who can edit', 'schedulers selected', '<span class="muted">No schedulers yet</span>') + '<div class="dash-ms-hint">Leave all unchecked = any scheduler who can edit its departments can adjust this dashboard. Check people to limit adjusting to just them. You (the owner) can always adjust.</div></div>' +
-            '</div>' + requestHtml(d) + '</div>';
+            '</div>' +
+            (residencyOn ? '<div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-top:0.8rem">' +
+              '<div style="flex:2;min-width:260px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Interview platform link</label><input type="url" value="' + esc(d.interviewLinkUrl || '') + '" data-dash-iv-url="' + d.id + '" placeholder="https://… (your Thalamus page)" style="width:100%;padding:0.5rem;border-radius:8px;border:1px solid var(--border)"></div>' +
+              '<div style="flex:1;min-width:160px"><label style="font-weight:600;font-size:0.85rem;display:block;margin-bottom:4px">Button label</label><input type="text" value="' + esc(d.interviewLinkLabel || '') + '" data-dash-iv-label="' + d.id + '" placeholder="Interviews" style="width:100%;padding:0.5rem;border-radius:8px;border:1px solid var(--border)"></div>' +
+              '</div><div class="dash-ms-hint">Shows as a button on this calendar and in its sessions. Leave the link empty for no button.</div>' : '') +
+            requestHtml(d) + '</div>';
         }).join('');
         refreshMsLabels(wrap);
         wrap.querySelectorAll('[data-dash-save]').forEach(function (b) {
@@ -16404,7 +16434,14 @@ window.qsNpOfferSend = function (btn) {
               wrap.querySelectorAll('[data-dash-edit-dept="' + id + '"]:checked'), function (c) { return c.value; });
             var editorIds = Array.prototype.map.call(
               wrap.querySelectorAll('[data-dash-edit-editor="' + id + '"]:checked'), function (c) { return c.value; });
-            api('/api/schedule/dashboards/' + id, { method: 'PUT', body: JSON.stringify({ name: name, departmentIds: deptIds, editorIds: editorIds }) }).then(function (r) {
+            var dashBody = { name: name, departmentIds: deptIds, editorIds: editorIds };
+            if (residencyOn) {
+              var ivUrl = wrap.querySelector('[data-dash-iv-url="' + id + '"]');
+              var ivLabel = wrap.querySelector('[data-dash-iv-label="' + id + '"]');
+              if (ivUrl) dashBody.interviewLinkUrl = ivUrl.value.trim() || null;
+              if (ivLabel) dashBody.interviewLinkLabel = ivLabel.value.trim() || null;
+            }
+            api('/api/schedule/dashboards/' + id, { method: 'PUT', body: JSON.stringify(dashBody) }).then(function (r) {
               if (r.ok) { pageSuccess('Dashboard updated.'); load(); if (window.qsRefreshDashboardNav) window.qsRefreshDashboardNav(); }
               else pageError((r.data && r.data.error) || 'Could not save.');
             });
@@ -16506,12 +16543,18 @@ window.qsNpOfferSend = function (btn) {
           if (!wrap) return;
           if (!rooms.length) { wrap.innerHTML = '<p class="muted">No rooms yet.</p>'; return; }
           wrap.innerHTML = rooms.map(function (rm) {
-            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+            var inactive = rm.active === false;
+            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem' + (inactive ? ';opacity:0.65' : '') + '">' +
               '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(rm.name) + '</strong>' +
               (rm.hasFeed ? '<span style="background:#dcfce7;color:#166534;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">📅 Calendar linked</span>' : '<span style="background:#f1f5f9;color:#64748b;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">No calendar link</span>') +
-              '<button type="button" data-room-del="' + rm.id + '" style="margin-left:auto;padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></div>' +
-              '<div style="margin-top:0.55rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.icsUrl || '') + '" data-room-ics="' + rm.id + '" placeholder="Calendar link (ICS) — optional" style="flex:1;min-width:280px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
-              '<button type="button" class="btn-secondary" data-room-save="' + rm.id + '" style="padding:0.5rem 0.9rem;border-radius:8px">Save link</button></div></div>';
+              (inactive ? '<span style="background:#fef3c7;color:#92400e;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">Not in use</span>' : '') +
+              '<span style="margin-left:auto;display:flex;gap:0.45rem">' +
+              '<button type="button" class="btn-secondary" data-room-toggle="' + rm.id + '" data-room-on="' + (inactive ? '1' : '0') + '" style="padding:0.45rem 0.85rem;border-radius:8px">' + (inactive ? 'Use again' : 'Stop using') + '</button>' +
+              '<button type="button" data-room-del="' + rm.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></span></div>' +
+              '<div style="margin-top:0.55rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.name) + '" data-room-name="' + rm.id + '" placeholder="Room name" style="min-width:180px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
+              '<input type="text" value="' + esc(rm.details || '') + '" data-room-details="' + rm.id + '" placeholder="Details — seats, floor… (optional)" style="flex:1;min-width:200px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)"></div>' +
+              '<div style="margin-top:0.5rem;display:flex;gap:0.5rem;flex-wrap:wrap"><input type="text" value="' + esc(rm.icsUrl || '') + '" data-room-ics="' + rm.id + '" placeholder="Calendar link (ICS) — optional" style="flex:1;min-width:280px;padding:0.5rem;border-radius:8px;border:1px solid var(--border)">' +
+              '<button type="button" class="btn-secondary" data-room-save="' + rm.id + '" style="padding:0.5rem 0.9rem;border-radius:8px">Save</button></div></div>';
           }).join('');
           wrap.querySelectorAll('[data-room-del]').forEach(function (b) {
             b.addEventListener('click', function () {
@@ -16521,11 +16564,22 @@ window.qsNpOfferSend = function (btn) {
               });
             });
           });
+          wrap.querySelectorAll('[data-room-toggle]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              var on = b.getAttribute('data-room-on') === '1';
+              api('/api/schedule/rooms/' + b.getAttribute('data-room-toggle'), { method: 'PUT', body: JSON.stringify({ active: on }) }).then(function (r) {
+                if (r.ok) { pageSuccess(on ? 'Room is back in use.' : 'Room stopped — it no longer shows in the picker.'); loadRooms(); } else pageError((r.data && r.data.error) || 'Could not save.');
+              });
+            });
+          });
           wrap.querySelectorAll('[data-room-save]').forEach(function (b) {
             b.addEventListener('click', function () {
               var id = b.getAttribute('data-room-save');
               var url = wrap.querySelector('[data-room-ics="' + id + '"]').value.trim();
-              api('/api/schedule/rooms/' + id, { method: 'PUT', body: JSON.stringify({ icsUrl: url || null }) }).then(function (r) {
+              var nm = wrap.querySelector('[data-room-name="' + id + '"]').value.trim();
+              var dt = wrap.querySelector('[data-room-details="' + id + '"]').value.trim();
+              if (!nm) { pageError('Give the room a name.'); return; }
+              api('/api/schedule/rooms/' + id, { method: 'PUT', body: JSON.stringify({ name: nm, details: dt || null, icsUrl: url || null }) }).then(function (r) {
                 if (r.ok) { pageSuccess('Room updated.'); loadRooms(); } else pageError((r.data && r.data.error) || 'Could not save.');
               });
             });
@@ -16537,8 +16591,9 @@ window.qsNpOfferSend = function (btn) {
         var name = el('room-new-name').value.trim();
         if (!name) { pageError('Give the room a name.'); return; }
         var url = el('room-new-ics').value.trim();
-        api('/api/schedule/rooms', { method: 'POST', body: JSON.stringify({ name: name, icsUrl: url || null }) }).then(function (r) {
-          if (r.ok) { pageSuccess('Room added.'); el('room-new-name').value = ''; el('room-new-ics').value = ''; loadRooms(); }
+        var details = el('room-new-details').value.trim();
+        api('/api/schedule/rooms', { method: 'POST', body: JSON.stringify({ name: name, details: details || null, icsUrl: url || null }) }).then(function (r) {
+          if (r.ok) { pageSuccess('Room added.'); el('room-new-name').value = ''; el('room-new-details').value = ''; el('room-new-ics').value = ''; loadRooms(); }
           else pageError((r.data && r.data.error) || 'Could not add.');
         });
       });
@@ -16867,6 +16922,41 @@ window.qsNpOfferSend = function (btn) {
         }, 250);
       };
 
+      // Copy event (Deepika, 2026-11-07; migration 092): the session
+      // details' "Copy event" opens the form in CREATE mode seeded
+      // from the series' settings (openForm's copyFrom) with the
+      // CLICKED occurrence's date — room and meeting link start
+      // empty there, RSVPs don't exist yet, and saving makes a
+      // brand-new independent session.
+      var acPendingCopy = null;
+      window.qsCopySession = function (e) {
+        if (!e || !e.dashboardId) return;
+        window.qsDashReadOnly = false;
+        var clickedDate = e.date || null;
+        if (curDash && curDash.id === e.dashboardId && acLoadedDashId === e.dashboardId) {
+          var row0 = acSessions.find(function (x) { return x.id === e.id; });
+          var base0 = row0 && row0.seriesId ? (acSessions.find(function (x) { return x.id === row0.seriesId; }) || row0) : (row0 || e);
+          openForm(null, clickedDate || base0.date, { copyFrom: Object.assign({}, base0, { date: clickedDate || base0.date }) });
+          return;
+        }
+        acPendingCopy = { sessionId: e.id, date: clickedDate };
+        window.qsOpenDashboard(e.dashboardId);
+        try { location.hash = '#dash/' + e.dashboardId; } catch (err) {}
+        var tries = 0;
+        var iv2 = setInterval(function () {
+          tries++;
+          if (curDash && curDash.id === e.dashboardId && acLoadedDashId === e.dashboardId) {
+            clearInterval(iv2);
+            var pc = acPendingCopy; acPendingCopy = null;
+            if (!pc) return;
+            var row = acSessions.find(function (x) { return x.id === pc.sessionId; });
+            var base = row && row.seriesId ? (acSessions.find(function (x) { return x.id === row.seriesId; }) || row) : row;
+            if (!base) { pageError('Could not find that event to copy.'); return; }
+            openForm(null, pc.date || base.date, { copyFrom: Object.assign({}, base, { date: pc.date || base.date }) });
+          } else if (tries > 40) { clearInterval(iv2); acPendingCopy = null; }
+        }, 250);
+      };
+
       function load() {
         if (!curDash) return;
         if (acSelDashId !== curDash.id) { if (acSelMode) acExitSel(); acSelDashId = curDash.id; }
@@ -16882,6 +16972,17 @@ window.qsNpOfferSend = function (btn) {
             bn.textContent = '🗄 Archived — read-only' + (aw ? ' · archived ' + aw : '') + (curDash.archivedByName ? ' by ' + curDash.archivedByName : '') + '. Restore it from Settings → Dashboards to make changes.';
             bn.style.display = '';
           } else bn.style.display = 'none';
+        }
+        // Interview platform link (migration 092): shown only when
+        // the company's residency switch is on AND this calendar has
+        // a link — the server already nulls both fields otherwise.
+        var ivBtn = document.getElementById('db-interview');
+        if (ivBtn) {
+          if (curDash.interviewLinkUrl) {
+            ivBtn.href = curDash.interviewLinkUrl;
+            ivBtn.textContent = (curDash.interviewLinkLabel || 'Interviews') + ' ↗';
+            ivBtn.style.display = '';
+          } else ivBtn.style.display = 'none';
         }
         var r = viewRange();
         document.getElementById('db-date').textContent = '📅 ' + acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
@@ -17335,6 +17436,14 @@ window.qsNpOfferSend = function (btn) {
           // No / Maybe for this date; the organizer, speakers and
           // editors see the count. Speakers don't RSVP.
           var tally = e.rsvpSummary ? '<div>👥 <strong>' + e.rsvpSummary.yes + '</strong> yes · <strong>' + e.rsvpSummary.maybe + '</strong> maybe · <strong>' + e.rsvpSummary.no + '</strong> no · <strong>' + e.rsvpSummary.notReplied + '</strong> not replied</div>' : '';
+          // Copy event + interview platform link (migration 092).
+          // The interview button exists only when this session's
+          // calendar carries a link — the server nulls the fields
+          // unless the company's residency switch is on.
+          var dashForIv = dashList.find(function (d) { return d.id === e.dashboardId; }) || (curDash && curDash.id === e.dashboardId ? curDash : null);
+          var ivHtml = (dashForIv && dashForIv.interviewLinkUrl)
+            ? '<a href="' + esc(dashForIv.interviewLinkUrl) + '" target="_blank" rel="noopener" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px;text-align:center;text-decoration:none;min-width:120px">' + esc(dashForIv.interviewLinkLabel || 'Interviews') + ' ↗</a>' : '';
+          var copyHtml = archView ? '' : '<button type="button" class="btn-secondary" data-sd-copy style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">⧉ Copy event</button>';
           var rsvpCtl = '';
           if (e.viewerIsBeneficiary && !iSpeak && !archView) {
             var rb = function (v, label) {
@@ -17362,7 +17471,7 @@ window.qsNpOfferSend = function (btn) {
             '</div>' +
             rsvpCtl +
             ((pres || sup) ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + sup + '</div>' : '') +
-            '<div style="display:flex;gap:0.6rem;margin-top:1rem"><button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px">Close</button></div>';
+            '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + copyHtml + ivHtml + '<button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">Close</button></div>';
           var wrap = document.createElement('div');
           wrap.id = 'sd-modal';
           wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:230;padding:1rem');
@@ -17371,6 +17480,8 @@ window.qsNpOfferSend = function (btn) {
           function close() { wrap.remove(); }
           wrap.addEventListener('click', function (ev) { if (ev.target === wrap) close(); });
           wrap.querySelector('[data-sd-close]').addEventListener('click', close);
+          var cpBtn = wrap.querySelector('[data-sd-copy]');
+          if (cpBtn) cpBtn.addEventListener('click', function () { close(); if (window.qsCopySession) window.qsCopySession(e); });
           wrap.querySelectorAll('[data-sd-rsvp]').forEach(function (b) {
             b.addEventListener('click', function () {
               var v = b.getAttribute('data-sd-rsvp');
@@ -17438,13 +17549,22 @@ window.qsNpOfferSend = function (btn) {
         var occ = (typeof found !== 'undefined' && found) ? found : null;
         var isSeries = !!(s && s.recurRule && s.recurRule !== 'none');
         var occDate = isSeries && occ ? occ.date : (s ? s.date : null);
+        // Copy event (migration 092): CREATE mode seeded from a
+        // template session. The init reads below use `src` (the
+        // session being edited, or the copy source); `s` itself
+        // stays null for a copy, so Save POSTs a brand-new session,
+        // no scope/delete UI appears, and the generated-meeting pair
+        // starts unset. Room + meeting link start EMPTY (their
+        // markup reads `s`, which is null here).
+        var isCopy = !!(opts && opts.copyFrom);
+        var src = s || (isCopy ? opts.copyFrom : null);
         var old = document.getElementById('ac-modal');
         if (old) old.remove();
-        var rule = s && s.recurRule ? s.recurRule : 'none';
+        var rule = src && src.recurRule ? src.recurRule : 'none';
         var freq0 = rule === 'monthly-weekday' ? 'monthly' : rule;
         var mkind0 = rule === 'monthly-weekday' ? 'monthly-weekday' : 'monthly';
-        var interval0 = s && s.recurInterval ? s.recurInterval : 1;
-        var ends0 = s && s.recurCount ? 'count' : (s && s.recurUntil ? 'date' : 'never');
+        var interval0 = src && src.recurInterval ? src.recurInterval : 1;
+        var ends0 = src && src.recurCount ? 'count' : (src && src.recurUntil ? 'date' : 'never');
         var people = acUsers.filter(function (u) { return u.role !== 'owner'; });
         function personOpts(selectedId, emptyLabel) {
           return '<option value="">' + emptyLabel + '</option>' + people.map(function (u) {
@@ -17467,7 +17587,7 @@ window.qsNpOfferSend = function (btn) {
           ? orgScope.slice()
           : orgScope.filter(function (d) { return (window.qsDeptAccess.edit || []).indexOf(d.id) >= 0; });
         var orgSelected = null;
-        if (s && s.departmentId) orgSelected = s.departmentId;
+        if (src && src.departmentId) orgSelected = src.departmentId;
         else if (prefill && prefill.organizingDeptId && manageable.some(function (d) { return d.id === prefill.organizingDeptId; })) orgSelected = prefill.organizingDeptId;
         else if (manageable.length === 1) orgSelected = manageable[0].id;
         // Employee organizers (Deepika, 2026-11-07): no picker — the
@@ -17477,34 +17597,35 @@ window.qsNpOfferSend = function (btn) {
         var canSaveOrg = manageable.length > 0 || empOrg;
         // Beneficiaries: departments default to the organizing
         // department on a new event; people start from the saved list.
-        var benDeptSel = new Set(s ? (s.beneficiaryDepartmentIds || []) : (orgSelected ? [orgSelected] : []));
-        var benUserIds = s ? (s.beneficiaryUserIds || []).slice() : [];
+        var benDeptSel = new Set(src ? (src.beneficiaryDepartmentIds || []) : (orgSelected ? [orgSelected] : []));
+        var benUserIds = src ? (src.beneficiaryUserIds || []).slice() : [];
         var benTouched = false;
         // Speakers: the saved list, else the lecturer as Speaker 1,
         // else a convert prefill, else one blank row.
         var speakerState = [];
-        if (s && s.speakers && s.speakers.length) speakerState = s.speakers.map(function (sp) { return sp.guest ? { guest: true, name: sp.name || '', email: sp.guestEmail || '' } : { userId: sp.userId }; });
-        else if (s && s.lecturerUserId) speakerState = [{ userId: s.lecturerUserId }];
+        if (src && src.speakers && src.speakers.length) speakerState = src.speakers.map(function (sp) { return sp.guest ? { guest: true, name: sp.name || '', email: sp.guestEmail || '' } : { userId: sp.userId }; });
+        else if (src && src.lecturerUserId) speakerState = [{ userId: src.lecturerUserId }];
         else if (prefill && prefill.speakerUserIds && prefill.speakerUserIds.length) speakerState = prefill.speakerUserIds.map(function (u) { return { userId: u }; });
         if (!speakerState.length) speakerState = [{ userId: '' }];
-        var initDate = s ? s.date : (presetDate || (prefill && prefill.date) || fmtD(new Date()));
-        var initStart = s ? (s.startTime || '') : (opts.startTime || (prefill && prefill.startTime) || '');
-        var initEnd = s ? (s.endTime || '') : (opts.endTime || (prefill && prefill.endTime) || '');
-        var initTitle = s ? s.title : (prefill && prefill.title) || '';
+        var initDate = src ? src.date : (presetDate || (prefill && prefill.date) || fmtD(new Date()));
+        var initStart = src ? (src.startTime || '') : (opts.startTime || (prefill && prefill.startTime) || '');
+        var initEnd = src ? (src.endTime || '') : (opts.endTime || (prefill && prefill.endTime) || '');
+        var initTitle = src ? src.title : (prefill && prefill.title) || '';
         // Role name (Deepika, 2026-11-07): the people slot follows
         // the session TYPE — an "Interview" type's slot is called
         // "Interviewer" — and the form's Role name box can rename it
         // for THIS session only. The type's label comes from the
         // kind (kinds manager "needs a ___"); default 'Speaker'.
         function typeLabelFor(key) { var k = kindOf(key); return (k && k.personLabel) || 'Speaker'; }
-        var roleInit = s ? (s.personLabelOverride || typeLabelFor(s.kind)) : typeLabelFor('session');
+        var roleInit = src ? (src.personLabelOverride || typeLabelFor(src.kind)) : typeLabelFor('session');
         var m = document.createElement('div');
         m.id = 'ac-modal';
         m.className = 'modal-back';
         m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem';
         var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
         m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">' +
-          '<h2 style="margin-top:0">' + (s ? 'Edit event' : 'Add event') + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
+          '<h2 style="margin-top:0">' + (s ? 'Edit event' : (isCopy ? 'Copy event' : 'Add event')) + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
+          (isCopy ? '<div style="font-size:0.85rem;color:var(--dim);margin-bottom:0.7rem">A fresh copy of “' + esc(src ? src.title : '') + '” — room and meeting link start empty; change the date or time and save.</div>' : '') +
           (s && rule !== 'none' ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.6rem 0.7rem;font-size:0.88rem;margin-bottom:0.7rem"><div style="font-weight:700;margin-bottom:0.35rem">↻ This session repeats — what are you changing?</div><label style="display:block;cursor:pointer;margin-bottom:0.25rem"><input type="radio" name="acf-scope" value="date" checked> Just this date (<span id="acf-scope-dlabel"></span>)</label><label style="display:block;cursor:pointer"><input type="radio" name="acf-scope" value="series"> The whole series — every date</label><div id="acf-scope-note" style="margin-top:0.35rem;color:#6d28d9"></div></div>' : '') +
           '<div id="acf-org-wrap" style="margin-bottom:0.7rem">' + (function () {
             if (empOrg) {
@@ -17516,14 +17637,14 @@ window.qsNpOfferSend = function (btn) {
             var extra = '';
             if (orgSelected && !manageable.some(function (d) { return d.id === orgSelected; })) {
               var curD = acDepts.find(function (d) { return d.id === orgSelected; });
-              extra = '<option value="' + orgSelected + '" selected>' + esc(curD ? curD.name : (s && s.departmentName) || 'Current department') + '</option>';
+              extra = '<option value="' + orgSelected + '" selected>' + esc(curD ? curD.name : (src && src.departmentName) || 'Current department') + '</option>';
             }
             return '<label style="display:block">Organizing department<br><select id="acf-orgdept" style="' + IN + '">' + extra + manageable.map(function (d) { return '<option value="' + d.id + '"' + (d.id === orgSelected ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select><div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">You can organize events for the departments you manage. With one department, this fills in by itself.</div></label>';
           })() + '</div>' +
           '<label style="display:block;margin-bottom:0.7rem">Event name<br><input id="acf-title" type="text" value="' + esc(initTitle) + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
           '<label style="display:block;margin-bottom:0.7rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
             var list = acKinds.length ? acKinds : [{ key: 'session', label: 'Lecture' }, { key: 'event', label: 'Event' }];
-            var cur = s ? s.kind : 'session';
+            var cur = src ? src.kind : 'session';
             var has = list.some(function (k) { return k.key === cur; });
             var opts = list.map(function (k) { return '<option value="' + esc(k.key) + '"' + (k.key === cur ? ' selected' : '') + '>' + esc(k.label) + '</option>'; }).join('');
             if (!has) opts += '<option value="' + esc(cur) + '" selected>' + esc(kindLabel(cur)) + '</option>';
@@ -17559,7 +17680,11 @@ window.qsNpOfferSend = function (btn) {
           '<div id="acf-speakers"></div>' +
           '<button type="button" id="acf-spadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.88rem;cursor:pointer;padding:0.2rem 0">+ Add another ' + esc(roleInit.toLowerCase()) + '</button>' +
           '<div id="acf-spnote" style="display:none;font-size:0.82rem;color:#6d28d9;margin-top:0.3rem">For one date you can change only the main speaker — the full list of speakers belongs to the series.</div></div>' +
-          '<label style="display:block;margin-bottom:0.4rem">Room / location<br><select id="acf-room" style="' + IN + '"><option value="">— Type a location below —</option></select></label>' +
+          '<label style="display:block;margin-bottom:0.4rem">Room / location</label>' +
+          '<div id="acf-room" style="position:relative;margin-bottom:0.4rem">' +
+            '<button type="button" id="acf-roombtn" style="' + IN + ';margin-top:0;text-align:left;cursor:pointer;background:var(--surface);display:flex;justify-content:space-between;align-items:center;gap:0.5rem"><span id="acf-roomlabel">— Type a location below —</span><span aria-hidden="true">▾</span></button>' +
+            '<div id="acf-roomlist" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:40;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.18);max-height:320px;overflow-y:auto;padding:0.35rem"></div>' +
+          '</div>' +
           '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
           '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
           '<label style="display:block;margin-bottom:0.35rem">🔗 Meeting link<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom, Teams or Google Meet link" style="' + IN + '"></label>' +
@@ -17570,13 +17695,13 @@ window.qsNpOfferSend = function (btn) {
           '</div>' +
           '<div id="acf-meetnote" style="display:none;font-size:0.82rem;color:var(--dim);margin-bottom:0.7rem"></div>' +
           '<div id="acf-meetspacer" style="margin-bottom:0.35rem"></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (s && s.notes ? esc(s.notes) : '') + '" style="' + IN + '"></label>' +
+          '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (src && src.notes ? esc(src.notes) : '') + '" style="' + IN + '"></label>' +
           '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Repeats</div>' +
           '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
           '<div id="acf-everyrow" style="display:none;margin-bottom:0.6rem"><label>Every <input id="acf-interval" type="number" min="1" max="52" value="' + interval0 + '" style="width:4.5rem;padding:0.45rem;border:1px solid var(--border);border-radius:8px"> <span id="acf-unit">weeks</span></label></div>' +
           '<div id="acf-daysrow" style="display:none;margin-bottom:0.6rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
           ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function (dn, di) {
-            var on = s && s.recurDays && s.recurDays.includes(di);
+            var on = src && src.recurDays && src.recurDays.includes(di);
             return '<label style="border:1px solid var(--border);border-radius:8px;padding:0.35rem 0.6rem;font-size:0.85rem;cursor:pointer"><input type="checkbox" class="acf-day" value="' + di + '"' + (on ? ' checked' : '') + '> ' + dn + '</label>';
           }).join('') + '</div></div>' +
           '<div id="acf-monthopts" style="display:none;margin-bottom:0.6rem">' +
@@ -17584,8 +17709,8 @@ window.qsNpOfferSend = function (btn) {
             '<label style="display:block;cursor:pointer"><input type="radio" name="acf-mkind" value="monthly-weekday"' + (mkind0 === 'monthly-weekday' ? ' checked' : '') + '> <span id="acf-mo-wd">On the same weekday</span></label></div>' +
           '<div id="acf-endsrow" style="display:none"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">Ends</div>' +
             '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="never"' + (ends0 === 'never' ? ' checked' : '') + '> Never</label>' +
-            '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="date"' + (ends0 === 'date' ? ' checked' : '') + '> On date <input id="acf-until" type="date" value="' + (s && s.recurUntil ? esc(String(s.recurUntil).slice(0, 10)) : '') + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"></label>' +
-            '<label style="display:block;cursor:pointer"><input type="radio" name="acf-ends" value="count"' + (ends0 === 'count' ? ' checked' : '') + '> After <input id="acf-count" type="number" min="1" max="500" value="' + (s && s.recurCount ? s.recurCount : 10) + '" style="width:4.5rem;padding:0.4rem;border:1px solid var(--border);border-radius:8px"> times</label></div>' +
+            '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="date"' + (ends0 === 'date' ? ' checked' : '') + '> On date <input id="acf-until" type="date" value="' + (src && src.recurUntil ? esc(String(src.recurUntil).slice(0, 10)) : '') + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"></label>' +
+            '<label style="display:block;cursor:pointer"><input type="radio" name="acf-ends" value="count"' + (ends0 === 'count' ? ' checked' : '') + '> After <input id="acf-count" type="number" min="1" max="500" value="' + (src && src.recurCount ? src.recurCount : 10) + '" style="width:4.5rem;padding:0.4rem;border:1px solid var(--border);border-radius:8px"> times</label></div>' +
           '</div>' +
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
           '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px' + (canSaveOrg ? '' : ';opacity:0.5') + '" id="acf-save"' + (canSaveOrg ? '' : ' disabled') + '>Save event</button></div>' +
@@ -17653,6 +17778,10 @@ window.qsNpOfferSend = function (btn) {
                 provider: p, title: title, date: date,
                 startTime: start, endTime: end || null,
                 timezone: (window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC',
+                // A picked Google room rides along as a resource
+                // attendee, booking the room on Google's side too
+                // (roomState is declared with the Room picker below).
+                roomResourceId: (p === 'google' && typeof roomState !== 'undefined' && roomState.roomSource === 'google') ? roomState.roomExternalId : null,
               }),
             }).then(function (r) {
               btn.disabled = false;
@@ -17984,21 +18113,38 @@ window.qsNpOfferSend = function (btn) {
         dateInput.addEventListener('change', syncRotationUI);
         syncRotationUI();
 
-        // Room picker + availability (linked calendar + our sessions).
-        var roomSel = m.querySelector('#acf-room');
+        // Room picker (migration 092): one picker, two sources —
+        // "Our rooms" (availability computed from our own sessions;
+        // saving into a booked one is refused by the server) and,
+        // when the company connected Google/Microsoft for meeting
+        // links, that account's rooms with live free/busy. Typing a
+        // one-off room stays exactly as before: roomState stays
+        // empty and only the location text is saved.
+        var roomBtn = m.querySelector('#acf-roombtn');
+        var roomLabel = m.querySelector('#acf-roomlabel');
+        var roomList = m.querySelector('#acf-roomlist');
         var locInput = m.querySelector('#acf-loc');
         var roomInfo = m.querySelector('#acf-roominfo');
+        var roomState = { roomId: null, roomSource: null, roomExternalId: null, roomName: null };
+        if (s) {
+          if (s.roomId) roomState = { roomId: s.roomId, roomSource: 'app', roomExternalId: null, roomName: s.location || null };
+          else if (s.roomSource && s.roomExternalId) roomState = { roomId: null, roomSource: s.roomSource, roomExternalId: s.roomExternalId, roomName: s.location || null };
+        }
+        function roomLabelSync() { roomLabel.textContent = roomState.roomName || '— Type a location below —'; }
+        roomLabelSync();
         function fmtBlockTime(iso) {
           var d = new Date(iso);
           return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
         }
+        // The picked app room's day list (its linked calendar + our
+        // sessions) — the heads-up under the field, as before.
         function checkRoom() {
-          var roomId = roomSel.value;
+          var roomId = roomState.roomId;
           var date = dateInput.value;
           if (!roomId || !date) { roomInfo.innerHTML = ''; return; }
           roomInfo.innerHTML = '<span style="color:var(--dim);font-size:0.85rem">Checking room calendar…</span>';
           api('/api/schedule/room-availability?roomId=' + roomId + '&date=' + date).then(function (r) {
-            if (!r.ok) { roomInfo.innerHTML = ''; return; }
+            if (!r.ok || roomState.roomId !== roomId) { roomInfo.innerHTML = ''; return; }
             var d = r.data;
             var st = m.querySelector('#acf-start').value, et = m.querySelector('#acf-end').value;
             var overlap = null;
@@ -18020,26 +18166,88 @@ window.qsNpOfferSend = function (btn) {
             roomInfo.innerHTML = warn + (lines.length ? '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:0.5rem 0.7rem"><div style="font-weight:600;font-size:0.85rem;margin-bottom:0.2rem">Booked in ' + esc(d.room.name) + ' that day:</div>' + lines.join('') + '</div>' : '<div style="font-size:0.85rem;color:#15803d">✓ ' + esc(d.room.name) + ' looks free that day.</div>') + err;
           }).catch(function () { roomInfo.innerHTML = ''; });
         }
+        var roomListOpen = false;
+        function chipHtml(status, bookedByTitle) {
+          if (status === 'booked') return '<span style="flex:none;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:999px;padding:0.12rem 0.55rem;font-size:0.78rem;font-weight:700">Booked' + (bookedByTitle ? ' — ' + esc(bookedByTitle) : '') + '</span>';
+          return '<span style="flex:none;background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;border-radius:999px;padding:0.12rem 0.55rem;font-size:0.78rem;font-weight:700">Available</span>';
+        }
+        function roomRowHtml(attrs, name, details, status, bookedByTitle) {
+          return '<button type="button" ' + attrs + ' style="display:flex;align-items:center;gap:0.6rem;width:100%;text-align:left;background:none;border:none;border-radius:8px;padding:0.5rem 0.6rem;cursor:pointer">' +
+            '<span style="flex:1;min-width:0"><span style="font-weight:600">' + esc(name) + '</span>' +
+            (details ? '<span style="display:block;font-size:0.8rem;color:var(--dim)">' + esc(details) + '</span>' : '') + '</span>' + chipHtml(status, bookedByTitle) + '</button>';
+        }
+        function loadRoomList() {
+          var date = dateInput.value;
+          var st = m.querySelector('#acf-start').value, et = m.querySelector('#acf-end').value;
+          roomList.innerHTML = '<div style="padding:0.5rem 0.6rem;color:var(--dim);font-size:0.88rem">Loading rooms…</div>';
+          var ex = s ? ('&excludeSessionId=' + encodeURIComponent(s.seriesId || s.id)) : '';
+          var tz = (window.Intl && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+          var q = '?date=' + encodeURIComponent(date || '') + (st ? '&start=' + encodeURIComponent(st) : '') + (et ? '&end=' + encodeURIComponent(et) : '');
+          Promise.all([
+            api('/api/schedule/rooms/availability' + q + ex).catch(function () { return { ok: false }; }),
+            api('/api/schedule/rooms/connected' + q + '&timezone=' + encodeURIComponent(tz)).catch(function () { return { ok: false }; })
+          ]).then(function (rs) {
+            if (!roomListOpen) return;
+            var html = '<div style="font-weight:700;font-size:0.8rem;color:var(--dim);padding:0.4rem 0.6rem 0.2rem">OUR ROOMS</div>';
+            var appRooms = (rs[0].ok && rs[0].data.rooms) || [];
+            if (!appRooms.length) html += '<div style="padding:0.3rem 0.6rem;font-size:0.86rem;color:var(--dim)">No rooms yet — add them in Settings → Conference rooms.</div>';
+            appRooms.forEach(function (rm) {
+              html += roomRowHtml('data-roompick="app" data-roomid="' + rm.id + '" data-roomname="' + esc(rm.name) + '"', rm.name, rm.details, rm.status, rm.bookedByTitle);
+            });
+            var provs = (rs[1].ok && rs[1].data.providers) || [];
+            provs.forEach(function (pv) {
+              var pname = pv.provider === 'google' ? 'Google' : 'Microsoft';
+              html += '<div style="font-weight:700;font-size:0.8rem;color:var(--dim);padding:0.5rem 0.6rem 0.2rem">FROM ' + pname.toUpperCase() + '</div>';
+              (pv.rooms || []).forEach(function (rm) {
+                html += roomRowHtml('data-roompick="' + pv.provider + '" data-roomext="' + esc(rm.externalId) + '" data-roomname="' + esc(rm.name) + '"', rm.name, null, rm.status, null);
+              });
+              if (pv.note) html += '<div style="padding:0.3rem 0.6rem;font-size:0.82rem;color:var(--dim)">' + esc(pv.note) + '</div>';
+            });
+            html += '<button type="button" data-roompick="custom" style="display:block;width:100%;text-align:left;background:none;border:none;border-top:1px solid var(--border);padding:0.55rem 0.6rem;cursor:pointer;color:#0e7c86;font-weight:600">Type a different room</button>';
+            roomList.innerHTML = html;
+          });
+        }
+        function closeRoomList() { roomListOpen = false; roomList.style.display = 'none'; }
+        roomBtn.addEventListener('click', function () {
+          if (roomListOpen) { closeRoomList(); return; }
+          roomListOpen = true; roomList.style.display = ''; loadRoomList();
+        });
+        roomList.addEventListener('click', function (ev) {
+          var b = ev.target.closest ? ev.target.closest('[data-roompick]') : null;
+          if (!b) return;
+          var kind = b.getAttribute('data-roompick');
+          if (kind === 'custom') { roomState = { roomId: null, roomSource: null, roomExternalId: null, roomName: null }; locInput.value = ''; }
+          else if (kind === 'app') roomState = { roomId: b.getAttribute('data-roomid'), roomSource: 'app', roomExternalId: null, roomName: b.getAttribute('data-roomname') };
+          else roomState = { roomId: null, roomSource: kind, roomExternalId: b.getAttribute('data-roomext'), roomName: b.getAttribute('data-roomname') };
+          if (kind !== 'custom') locInput.value = roomState.roomName || '';
+          roomLabelSync(); closeRoomList(); checkRoom();
+          locInput.focus();
+        });
+        m.addEventListener('click', function (ev) {
+          var pick = m.querySelector('#acf-room');
+          if (roomListOpen && pick && ev.target !== m && !pick.contains(ev.target)) closeRoomList();
+        });
+        locInput.addEventListener('input', function () {
+          // Typing over a picked room turns it back into a one-off.
+          if (roomState.roomName && locInput.value !== roomState.roomName) {
+            roomState = { roomId: null, roomSource: null, roomExternalId: null, roomName: null };
+            roomLabelSync(); roomInfo.innerHTML = '';
+          }
+        });
+        // Legacy sessions (location text only): preselect the room
+        // whose name matches, as the old picker did.
         api('/api/schedule/rooms').then(function (r) {
           var rooms = (r.ok && r.data.rooms) || [];
-          rooms.forEach(function (rm) {
-            var o = document.createElement('option');
-            o.value = rm.id; o.textContent = rm.name + (rm.hasFeed ? ' 📅' : '');
-            roomSel.appendChild(o);
-          });
-          if (s && s.location) {
-            var match = rooms.filter(function (rm) { return rm.name.toLowerCase() === String(s.location).toLowerCase(); })[0];
-            if (match) { roomSel.value = match.id; checkRoom(); }
+          if (s && !roomState.roomId && !roomState.roomExternalId && s.location) {
+            var match = rooms.filter(function (rm) { return rm.active !== false && rm.name.toLowerCase() === String(s.location).toLowerCase(); })[0];
+            if (match) { roomState = { roomId: match.id, roomSource: 'app', roomExternalId: null, roomName: match.name }; roomLabelSync(); }
           }
+          if (roomState.roomId) checkRoom();
         }).catch(function () {});
-        roomSel.addEventListener('change', function () {
-          var opt = roomSel.options[roomSel.selectedIndex];
-          if (roomSel.value) locInput.value = opt.textContent.replace(' 📅', '');
-          checkRoom();
-        });
-        dateInput.addEventListener('change', checkRoom);
-        m.querySelector('#acf-start').addEventListener('change', checkRoom);
-        m.querySelector('#acf-end').addEventListener('change', checkRoom);
+        function roomWhenChanged() { checkRoom(); if (roomListOpen) loadRoomList(); }
+        dateInput.addEventListener('change', roomWhenChanged);
+        m.querySelector('#acf-start').addEventListener('change', roomWhenChanged);
+        m.querySelector('#acf-end').addEventListener('change', roomWhenChanged);
 
         m.querySelector('#acf-cancel').addEventListener('click', function () { m.remove(); });
         m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
@@ -18071,6 +18279,12 @@ window.qsNpOfferSend = function (btn) {
             recurDays: Array.prototype.map.call(m.querySelectorAll('.acf-day:checked'), function (c) { return parseInt(c.value, 10); }),
             recurUntil: (function () { var e = m.querySelector('input[name="acf-ends"]:checked'); return e && e.value === 'date' ? (m.querySelector('#acf-until').value || null) : null; })(),
             location: m.querySelector('#acf-loc').value.trim() || null,
+            // Room booking (migration 092): the picker's selection —
+            // an app room (double-book guarded server-side), a
+            // connected room, or all nulls for a typed one-off.
+            roomId: roomState.roomId,
+            roomSource: roomState.roomSource,
+            roomExternalId: roomState.roomExternalId,
             notes: m.querySelector('#acf-notes').value.trim() || null,
             meetingUrl: m.querySelector('#acf-meeting').value.trim() || null,
             // Generated meeting pair staged by the ＋ buttons above
@@ -18104,6 +18318,9 @@ window.qsNpOfferSend = function (btn) {
             return;
           }
           var payload = readPayload();
+          // Copy event: the form has no supervisor field, but the
+          // copy carries the source session's supervisor along.
+          if (isCopy && src && src.supervisorUserId) payload.supervisorUserId = src.supervisorUserId;
           if (!payload.title) { pageError('A title is required.'); return; }
           if (!payload.date) { pageError('Pick a start date.'); return; }
           if (payload.recurRule !== 'none') {
