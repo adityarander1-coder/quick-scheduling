@@ -341,6 +341,19 @@ function importColKind(header: string): ImportCol | null {
   return null;
 }
 
+/** Matching key for department / job-role names coming from a file:
+ * trimmed, internal whitespace collapsed, lowercased — so " cardiology ",
+ * "Cardiology" and "CARDIOLOGY" are the same name. */
+function importNameKey(name: unknown): string {
+  return String(name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** Display form of a name from a file: trimmed + whitespace collapsed,
+ * original case kept. */
+function importNameDisplay(name: unknown): string {
+  return String(name ?? '').trim().replace(/\s+/g, ' ');
+}
+
 // POST /api/users/import/preview — parse the uploaded file and check
 // every row. Writes NOTHING; the client shows the result and sends the
 // clean rows back to POST /api/users/import.
@@ -386,13 +399,33 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
       return;
     }
     const { rows: deptRows } = await query('SELECT id, name FROM departments WHERE company_id = $1', [companyId]);
-    const deptByName = new Map<string, any>(deptRows.map((d: any) => [String(d.name).toLowerCase(), d]));
+    const deptByKey = new Map<string, any>(deptRows.map((d: any) => [importNameKey(d.name), d]));
+    const deptNameById = new Map<string, string>(deptRows.map((d: any) => [String(d.id), String(d.name)]));
     const { rows: roleRows } = await query('SELECT id, name, department_id AS "departmentId" FROM job_roles WHERE company_id = $1', [companyId]);
     const { rows: ex } = await query('SELECT lower(email) AS e, company_id AS c FROM users');
     const existingAll = new Set<string>(ex.map((r: any) => r.e));
-    const existingMine = new Set<string>(ex.filter((r: any) => r.c === companyId).map((r: any) => r.e));
+    // This company's members by email key, WITH name + active flag, so a
+    // duplicate row can be flagged by name ("…belongs to Pat Memorial")
+    // and a deactivated member is called out as deactivated — the old
+    // bare "Already on your team" was too easy to miss (Deepika,
+    // 2026-11-08: "i have added same email id as one more it did not
+    // catch it").
+    const { rows: myUsers } = await query(
+      'SELECT email, lower(email) AS e, name, is_active AS "isActive" FROM users WHERE company_id = $1', [companyId]);
+    const existingMemberByKey = new Map<string, { name: string; isActive: boolean }>(
+      myUsers.map((u: any) => [u.e, { name: String(u.name || ''), isActive: !!u.isActive }]));
     const myAccess = req.session.role === 'scheduler' ? await getDepartmentAccess(req.session.userId!, companyId) : null;
+    // Unknown department / job-role names from the file are grouped (by
+    // normalized name) for the preview's resolution panel; rows with a
+    // blank department or job role join the blank groups (key '').
+    const unknownDeptGroups = new Map<string, { key: string; name: string; rowCount: number }>();
+    const unknownRoleGroups = new Map<string, { key: string; name: string; rowCount: number }>();
+    let blankDeptRows = 0;
+    let blankRoleRows = 0;
     const seen = new Set<string>();
+    // First row number (as displayed) using each email, so a duplicate
+    // can be flagged "Same email as row N in this file".
+    const seenRowByKey = new Map<string, number>();
     const out: any[] = [];
     let truncated = false;
     for (let i = headerIdx + 1; i < grid.length; i++) {
@@ -413,20 +446,44 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
       const emailKey = email.toLowerCase();
       if (!email) problems.push('Missing email');
       else if (!EMAIL_RE.test(email)) problems.push('Email looks invalid');
-      else if (seen.has(emailKey)) problems.push('Same email appears twice in this file');
-      else if (existingMine.has(emailKey)) problems.push('Already on your team');
+      else if (seen.has(emailKey)) problems.push(`Same email as row ${seenRowByKey.get(emailKey)} in this file`);
+      else if (existingMemberByKey.has(emailKey)) {
+        const mem = existingMemberByKey.get(emailKey)!;
+        problems.push(`Already on the team — ${email} belongs to ${mem.name}${mem.isActive ? '' : ' (deactivated)'}`);
+      }
       else if (existingAll.has(emailKey)) problems.push('This email already has an account');
-      if (email) seen.add(emailKey);
+      if (email) {
+        seen.add(emailKey);
+        if (!seenRowByKey.has(emailKey)) seenRowByKey.set(emailKey, out.length + 1);
+      }
       const deptName = get('department');
       let departmentId: string | null = null;
       let departmentName: string | null = null;
+      let deptGroupKey: string | null = null;
+      let deptIssue: { key: string; name: string; problem: string } | null = null;
       if (deptName) {
-        const d = deptByName.get(deptName.toLowerCase());
-        if (!d) problems.push(`Department "${deptName}" not found`);
-        else {
+        const d = deptByKey.get(importNameKey(deptName));
+        if (!d) {
+          // Unknown department: the row is blocked until the preview's
+          // resolution panel places this group (create or map).
+          const key = importNameKey(deptName);
+          const problem = `Department "${deptName}" not found`;
+          problems.push(problem);
+          deptGroupKey = key;
+          const g = unknownDeptGroups.get(key);
+          if (g) g.rowCount++;
+          else unknownDeptGroups.set(key, { key, name: importNameDisplay(deptName), rowCount: 1 });
+          deptIssue = { key, name: unknownDeptGroups.get(key)!.name, problem };
+        } else {
           departmentId = d.id; departmentName = d.name;
           if (myAccess && !myAccess.edit.includes(d.id)) problems.push('Outside the departments you can edit');
         }
+      } else {
+        // No department in the file: the row joins the blank group; the
+        // panel may assign one, but the row imports without one either
+        // way (today's behaviour).
+        deptGroupKey = '';
+        blankDeptRows++;
       }
       // A "role" column value that names a system role (owner / scheduler
       // / employee) IS the system role; anything else is the job role.
@@ -442,8 +499,25 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
       if (systemRole === 'owner' && req.session.role !== 'owner') problems.push('Only an owner can add an owner account');
       let jobRoleId: string | null = null;
       if (jobRoleText && departmentId) {
-        const jr = roleRows.find((x: any) => x.departmentId === departmentId && String(x.name).toLowerCase() === jobRoleText.toLowerCase());
+        const jr = roleRows.find((x: any) => x.departmentId === departmentId && importNameKey(x.name) === importNameKey(jobRoleText));
         if (jr) { jobRoleId = jr.id; jobRoleText = jr.name; }
+      }
+      // A job-role name that didn't link to a role in the row's department
+      // joins the unknown-role group for the resolution panel (keyed by
+      // normalized name); no role text at all joins the blank group.
+      // Neither blocks the row — unresolved, the name imports as free
+      // text (or no role), exactly as today.
+      let roleGroupKey: string | null = null;
+      if (jobRoleText) {
+        if (!jobRoleId) {
+          roleGroupKey = importNameKey(jobRoleText);
+          const g = unknownRoleGroups.get(roleGroupKey);
+          if (g) g.rowCount++;
+          else unknownRoleGroups.set(roleGroupKey, { key: roleGroupKey, name: importNameDisplay(jobRoleText), rowCount: 1 });
+        }
+      } else {
+        roleGroupKey = '';
+        blankRoleRows++;
       }
       let endDate: string | null = null;
       const endRaw = get('endDate');
@@ -455,10 +529,33 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
         row: out.length + 1, firstName: first, lastName: last, name: joinName(first, last),
         email, phone: get('phone') || null, departmentId, departmentName,
         jobRoleId, jobRole: jobRoleText || null, systemRole, endDate,
+        deptGroupKey, deptIssue, roleGroupKey,
         ok: problems.length === 0, problems,
       });
     }
-    res.json({ rows: out, total: out.length, ready: out.filter((r) => r.ok).length, truncated });
+    res.json({
+      rows: out, total: out.length, ready: out.filter((r) => r.ok).length, truncated,
+      unknownDepartments: [...unknownDeptGroups.values()],
+      blankDepartmentRows: blankDeptRows,
+      unknownJobRoles: [...unknownRoleGroups.values()],
+      blankJobRoleRows: blankRoleRows,
+      departments: deptRows.map((d: any) => ({ id: d.id, name: d.name })),
+      jobRoles: roleRows.map((r: any) => ({
+        id: r.id, name: r.name, departmentId: r.departmentId,
+        departmentName: deptNameById.get(String(r.departmentId)) || '',
+      })),
+      // Department creation in the import panel is owners-only (the
+      // product rule the panel mirrors); job-role creation mirrors
+      // POST /api/job-roles: owner/scheduler (department-scoped for
+      // schedulers, enforced again at import).
+      canCreateDepartments: req.session.role === 'owner',
+      canCreateJobRoles: req.session.role === 'owner' || req.session.role === 'scheduler',
+      myEditDepartmentIds: myAccess ? myAccess.edit : null,
+      // The company's current members, so the preview can re-run the
+      // duplicate-email check immediately when a flagged row's email is
+      // edited in place (the import endpoint re-checks regardless).
+      existingMembers: myUsers.map((u: any) => ({ email: u.email, name: u.name, isActive: !!u.isActive })),
+    });
   } catch (err) {
     console.error('[users] import preview failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -476,10 +573,119 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
     if (members.length > IMPORT_MAX_ROWS) { res.status(400).json({ error: `An import is limited to ${IMPORT_MAX_ROWS} people at a time.` }); return; }
     const today = await companyTodayStr(companyId);
     const myAccess = req.session.role === 'scheduler' ? await getDepartmentAccess(req.session.userId!, companyId) : null;
+
+    // ---- Resolution decisions from the preview panel -----------------
+    // The preview writes nothing; the decisions it collected arrive here
+    // and are re-validated before anything is created.
+    type ImportDecision = { key: string; action: string; name: string; targetId: string };
+    const parseDecisions = (raw: unknown, targetField: 'departmentId' | 'jobRoleId'): Map<string, ImportDecision> => {
+      const map = new Map<string, ImportDecision>();
+      for (const d of Array.isArray(raw) ? raw : []) {
+        if (!d || typeof d !== 'object') continue;
+        const action = String((d as any).action || '');
+        if (action !== 'create' && action !== 'map') continue;
+        const key = String((d as any).key ?? '');
+        map.set(key, {
+          key, action,
+          name: importNameDisplay((d as any).name ?? (d as any).newName ?? ''),
+          targetId: String((d as any)[targetField] || ''),
+        });
+      }
+      return map;
+    };
+    const deptDecisionByKey = parseDecisions(req.body?.departmentDecisions, 'departmentId');
+    const roleDecisionByKey = parseDecisions(req.body?.jobRoleDecisions, 'jobRoleId');
+    // Department creation during an import is owners-only; a forged
+    // create decision is refused up front, before any writes.
+    if ([...deptDecisionByKey.values()].some((d) => d.action === 'create') && req.session.role !== 'owner') {
+      res.status(403).json({ error: 'Only an owner can create departments during an import. Choose an existing department instead, or ask an owner to add the department first.' });
+      return;
+    }
+    const { rows: companyDepts } = await query('SELECT id, name FROM departments WHERE company_id = $1', [companyId]);
+    const companyDeptByKey = new Map<string, any>(companyDepts.map((d: any) => [importNameKey(d.name), d]));
+    const { rows: companyRoles } = await query(
+      'SELECT id, name, department_id AS "departmentId" FROM job_roles WHERE company_id = $1', [companyId]);
+    const companyRoleById = new Map<string, any>(companyRoles.map((r: any) => [String(r.id), r]));
+    for (const d of deptDecisionByKey.values()) {
+      if (d.action === 'map' && !companyDepts.some((x: any) => String(x.id) === d.targetId)) {
+        res.status(400).json({ error: 'One of the chosen departments is not available in your company.' });
+        return;
+      }
+    }
+    for (const d of roleDecisionByKey.values()) {
+      if (d.action === 'map' && !companyRoleById.has(d.targetId)) {
+        res.status(400).json({ error: 'One of the chosen job roles is not available in your company.' });
+        return;
+      }
+    }
+    // Create approved departments once each, BEFORE members import
+    // against them. A name that exists by now (re-checked by normalized
+    // name) resolves to the existing department — never a duplicate.
+    const deptResolution = new Map<string, string>();
+    const createdDepartments: string[] = [];
+    const failedDeptCreateKeys = new Set<string>();
+    for (const d of deptDecisionByKey.values()) {
+      if (d.action === 'map') { deptResolution.set(d.key, d.targetId); continue; }
+      const name = d.name;
+      if (!name || name.length > 100) { failedDeptCreateKeys.add(d.key); continue; }
+      const existing = companyDeptByKey.get(importNameKey(name));
+      if (existing) { deptResolution.set(d.key, String(existing.id)); continue; }
+      const newId = crypto.randomUUID();
+      try {
+        await query('INSERT INTO departments (id, company_id, name) VALUES ($1, $2, $3)', [newId, companyId, name]);
+      } catch (err: any) {
+        if (err?.code === '23505') {
+          const { rows: again } = await query('SELECT id, name FROM departments WHERE company_id = $1', [companyId]);
+          const found = again.find((x: any) => importNameKey(x.name) === importNameKey(name));
+          if (found) { deptResolution.set(d.key, String(found.id)); companyDeptByKey.set(importNameKey(name), found); }
+          else failedDeptCreateKeys.add(d.key);
+          continue;
+        }
+        throw err;
+      }
+      companyDeptByKey.set(importNameKey(name), { id: newId, name });
+      deptResolution.set(d.key, newId);
+      createdDepartments.push(name);
+      await auditLog({
+        companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
+        changedBy: req.session.userId!, description: `Added department "${name}"`,
+      });
+    }
+    // Job-role creation mirrors POST /api/job-roles' department scoping:
+    // a scheduler may only create roles in departments they can edit.
+    // (No departments were created above for a scheduler — their create
+    // decisions were refused — so this check runs before any role write.)
+    if (req.session.role === 'scheduler' && [...roleDecisionByKey.values()].some((d) => d.action === 'create')) {
+      const edit = myAccess ? myAccess.edit : [];
+      for (const m of members) {
+        if (m?.roleGroupKey === undefined || m?.roleGroupKey === null) continue;
+        const dec = roleDecisionByKey.get(String(m.roleGroupKey));
+        if (!dec || dec.action !== 'create') continue;
+        let dId: string | null = null;
+        if (m.departmentId) dId = String(m.departmentId);
+        else if (m.deptGroupKey !== undefined && m.deptGroupKey !== null && deptResolution.has(String(m.deptGroupKey))) {
+          dId = deptResolution.get(String(m.deptGroupKey))!;
+        }
+        if (!dId || !edit.includes(dId)) {
+          res.status(403).json({ error: 'You can only create job roles in departments you can edit. Choose an existing job role instead.' });
+          return;
+        }
+      }
+    }
+    const createdJobRoles: string[] = [];
+    const createdRoleNames = new Set<string>();
+    const roleCreateCache = new Map<string, { id: string; name: string }>();
+
     const created: any[] = [];
     const skipped: any[] = [];
     const seen = new Set<string>();
+    // Position (1-based) of each email's first occurrence in THIS
+    // request, for the "Same email as row N in this file" skip reason —
+    // same wording as the preview so the result summary reads the same.
+    const seenRowByKey = new Map<string, number>();
+    let memberIdx = 0;
     for (const m of members) {
+      memberIdx++;
       const first = String(m?.firstName || '').trim();
       const last = String(m?.lastName || '').trim();
       const email = String(m?.email || '').trim();
@@ -487,10 +693,17 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
       if (!first || !email) { skip('First name and email are required.'); continue; }
       if (!EMAIL_RE.test(email)) { skip('Email looks invalid.'); continue; }
       const key = email.toLowerCase();
-      if (seen.has(key)) { skip('Same email appears twice.'); continue; }
+      if (seen.has(key)) { skip(`Same email as row ${seenRowByKey.get(key)} in this file.`); continue; }
       seen.add(key);
-      const { rows: ex } = await query('SELECT id, company_id AS c FROM users WHERE lower(email) = lower($1)', [email]);
-      if (ex.length) { skip(ex[0].c === companyId ? 'Already on your team.' : 'This email already has an account.'); continue; }
+      seenRowByKey.set(key, memberIdx);
+      const { rows: ex } = await query(
+        'SELECT id, company_id AS c, name, is_active AS "isActive" FROM users WHERE lower(email) = lower($1)', [email]);
+      if (ex.length) {
+        skip(ex[0].c === companyId
+          ? `Already on the team — ${email} belongs to ${ex[0].name}${ex[0].isActive ? '' : ' (deactivated)'}.`
+          : 'This email already has an account.');
+        continue;
+      }
       const systemRole = (VALID_ROLES as string[]).includes(String(m.systemRole)) ? String(m.systemRole) : 'employee';
       if (systemRole === 'owner' && req.session.role !== 'owner') { skip('Only an owner can add an owner account.'); continue; }
       let deptId: string | null = null;
@@ -498,7 +711,20 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
         const dept = await resolveDepartment(String(m.departmentId), companyId);
         if (!dept.ok) { skip(dept.error); continue; }
         deptId = dept.id;
-        if (myAccess && deptId && !myAccess.edit.includes(deptId)) { skip('Outside the departments you can edit.'); continue; }
+      } else if (m.deptGroupKey !== undefined && m.deptGroupKey !== null) {
+        // The row's department came from the preview's resolution panel.
+        const gk = String(m.deptGroupKey);
+        if (deptResolution.has(gk)) deptId = deptResolution.get(gk)!;
+        else if (gk === '') deptId = null; // blank group left unassigned — no department, as before
+        else if (failedDeptCreateKeys.has(gk)) { skip(`Department name "${String(m.departmentName || '')}" is too long to create.`); continue; }
+        else { skip(`Department "${String(m.departmentName || '')}" not found.`); continue; }
+      }
+      if (myAccess && deptId && !myAccess.edit.includes(deptId)) { skip('Outside the departments you can edit.'); continue; }
+      let endDate: string | null = null;
+      if (m.endDate) {
+        const nd = normalizeMemberDate(String(m.endDate));
+        if (!nd) { skip('End date not understood (use YYYY-MM-DD).'); continue; }
+        endDate = nd;
       }
       let jobRoleIdVal: string | null = null;
       let jobRoleText: string | null = String(m.jobRole || '').trim() || null;
@@ -506,17 +732,76 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
         const jr = await resolveJobRole(String(m.jobRoleId), deptId, companyId);
         if (jr.ok) { jobRoleIdVal = jr.id; jobRoleText = jr.name; }
       }
+      // Panel decision for the row's job-role group (create / map),
+      // applied before the plain namesake lookup below.
+      const roleDec = (m.roleGroupKey !== undefined && m.roleGroupKey !== null)
+        ? roleDecisionByKey.get(String(m.roleGroupKey)) : undefined;
+      if (!jobRoleIdVal && roleDec) {
+        if (roleDec.action === 'create' && roleDec.name && roleDec.name.length <= 100) {
+          jobRoleText = roleDec.name;
+          if (deptId) {
+            // Roles are department-scoped: get-or-create the role as a
+            // real entity in THIS member's department, then link it.
+            const ck = deptId + '|' + importNameKey(roleDec.name);
+            const cached = roleCreateCache.get(ck);
+            if (cached) { jobRoleIdVal = cached.id; jobRoleText = cached.name; }
+            else {
+              const { rows: found } = await query(
+                'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+                [companyId, deptId, roleDec.name]);
+              let roleRow: any = found[0];
+              if (!roleRow) {
+                const newRoleId = crypto.randomUUID();
+                try {
+                  await query(
+                    'INSERT INTO job_roles (id, company_id, department_id, name) VALUES ($1, $2, $3, $4)',
+                    [newRoleId, companyId, deptId, roleDec.name]);
+                  roleRow = { id: newRoleId, name: roleDec.name };
+                  if (!createdRoleNames.has(roleDec.name)) {
+                    createdRoleNames.add(roleDec.name);
+                    createdJobRoles.push(roleDec.name);
+                  }
+                  const deptNameForAudit = (companyDepts.find((x: any) => String(x.id) === deptId) || {}).name || '';
+                  await auditLog({
+                    companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
+                    changedBy: req.session.userId!,
+                    description: `Added job role "${roleDec.name}"${deptNameForAudit ? ` to ${deptNameForAudit}` : ''}`,
+                  });
+                } catch (err: any) {
+                  if (err?.code === '23505') {
+                    const { rows: again } = await query(
+                      'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+                      [companyId, deptId, roleDec.name]);
+                    roleRow = again[0];
+                  } else throw err;
+                }
+              }
+              if (roleRow) {
+                roleCreateCache.set(ck, { id: String(roleRow.id), name: roleRow.name });
+                jobRoleIdVal = String(roleRow.id); jobRoleText = roleRow.name;
+              }
+            }
+          }
+        } else if (roleDec.action === 'map') {
+          const target = companyRoleById.get(roleDec.targetId);
+          if (target) {
+            jobRoleText = target.name;
+            if (deptId) {
+              // Link when the member's department holds that role (the
+              // target itself, or a same-named role in their department).
+              const { rows: found } = await query(
+                'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+                [companyId, deptId, target.name]);
+              if (found.length) { jobRoleIdVal = String(found[0].id); jobRoleText = found[0].name; }
+            }
+          }
+        }
+      }
       if (!jobRoleIdVal && jobRoleText && deptId) {
         const { rows: jrRows } = await query(
           'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
           [companyId, deptId, jobRoleText]);
         if (jrRows.length) { jobRoleIdVal = jrRows[0].id; jobRoleText = jrRows[0].name; }
-      }
-      let endDate: string | null = null;
-      if (m.endDate) {
-        const nd = normalizeMemberDate(String(m.endDate));
-        if (!nd) { skip('End date not understood (use YYYY-MM-DD).'); continue; }
-        endDate = nd;
       }
       // A past end date means the account starts inactive, marked as an
       // end-date deactivation (same rule as the sweep, 2026-11-05).
@@ -538,7 +823,7 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
         description: `Imported team member "${joinName(first, last)}" from a file${ended ? ' (end date already passed — account starts inactive)' : ''}`,
       });
     }
-    res.json({ created, skipped });
+    res.json({ created, skipped, createdDepartments, createdJobRoles });
   } catch (err) {
     console.error('[users] import failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

@@ -10758,6 +10758,10 @@ window.qsNpOfferSend = function (btn) {
               // nothing is written until the Import button is tapped.
               function setupImport() {
                 var importRows = [];
+                var importData = null;
+                var deptDecisions = {};
+                var roleDecisions = {};
+                var importSkippedRows = {};
                 function escH(s) {
                   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                 }
@@ -10770,8 +10774,21 @@ window.qsNpOfferSend = function (btn) {
                   $('team-import-card').classList.add('hidden');
                 });
                 $('team-import-template').addEventListener('click', function () {
+                  // Example rows use THIS company's own departments —
+                  // the first two the company created — so the sample
+                  // file is real for the person downloading it, never a
+                  // hardcoded department name from our side.
+                  var tplDeptNames = (departments || []).slice().sort(function (a, b) {
+                    var ca = a.createdAt || '', cb = b.createdAt || '';
+                    if (ca !== cb) return ca < cb ? -1 : 1;
+                    return String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase());
+                  }).map(function (d) { return d.name; });
+                  var tplD1 = tplDeptNames[0] || 'Example Department';
+                  var tplD2 = tplDeptNames[1] || tplDeptNames[0] || 'Example Department';
+                  function csvCell(v) { return /[",]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : v; }
                   var csv = 'First name,Last name,Email,Phone,Department,Job role,End date\n' +
-                    'Jane,Doe,jane.doe@example.com,(555) 010-2030,Internal Medicine,Physician,\n';
+                    'Jane,Doe,jane.doe@example.com,(555) 010-2030,' + csvCell(tplD1) + ',Manager,\n' +
+                    'John,Smith,john.smith@example.com,(555) 010-2031,' + csvCell(tplD2) + ',,\n';
                   var blob = new Blob([csv], { type: 'text/csv' });
                   var a = document.createElement('a');
                   a.href = URL.createObjectURL(blob);
@@ -10803,6 +10820,35 @@ window.qsNpOfferSend = function (btn) {
                         return;
                       }
                       importRows = (r.data && r.data.rows) || [];
+                      importData = r.data;
+                      deptDecisions = {};
+                      roleDecisions = {};
+                      importSkippedRows = {};
+                      // Inline-edit state (Deepika, 2026-11-08: flagged
+                      // rows are fixed "then and there itself"): each row
+                      // keeps its editable department / job-role TEXT;
+                      // problems that depend on editable fields (name,
+                      // email duplicates, department / role matching)
+                      // become dynamic and are recomputed by
+                      // revalidateImportRows() on every edit. Everything
+                      // else from the server stays as static problems.
+                      importRows.forEach(function (row) {
+                        row.deptText = row.deptIssue ? row.deptIssue.name : (row.departmentName || '');
+                        row.roleText = row.jobRole || '';
+                        row.staticProblems = (row.problems || []).filter(function (p) {
+                          if (row.deptIssue && p === row.deptIssue.problem) return false;
+                          if (p.indexOf('Already on the team') === 0) return false;
+                          if (p.indexOf('Same email as row') === 0) return false;
+                          if (p === 'This email already has an account') return false;
+                          if (p === 'Missing name' || p === 'Missing email' || p === 'Email looks invalid') return false;
+                          if (p === 'Outside the departments you can edit') return false;
+                          return true;
+                        });
+                        row.emailFlag = null;
+                        row.nameFlag = null;
+                        row.deptFlag = null;
+                      });
+                      revalidateImportRows();
                       renderImportPreview(r.data);
                     }).catch(function () {
                       $('team-import-preview').innerHTML = '';
@@ -10812,10 +10858,312 @@ window.qsNpOfferSend = function (btn) {
                   reader.onerror = function () { showErr(errEl, 'Could not read that file.'); };
                   reader.readAsDataURL(f);
                 });
+                // Resolution groups are computed from the CURRENT rows
+                // (not the server's original lists), so inline edits move
+                // rows between groups live: a department edited to an
+                // existing one leaves its group; a brand-new name starts
+                // a group of its own.
+                function computeImportGroups(kind) {
+                  var seenKeys = {};
+                  var groups = [];
+                  var blank = 0;
+                  importRows.forEach(function (r) {
+                    var k = kind === 'dept' ? r.deptGroupKey : r.roleGroupKey;
+                    if (k === null || k === undefined) return;
+                    if (k === '') { blank++; return; }
+                    if (seenKeys[k]) { seenKeys[k].rowCount++; return; }
+                    var g = { key: k, name: kind === 'dept' ? (r.deptIssue ? r.deptIssue.name : k) : (r.jobRole || k), rowCount: 1 };
+                    seenKeys[k] = g;
+                    groups.push(g);
+                  });
+                  return { groups: groups, blank: blank };
+                }
+                function importGroupName(kind, key) {
+                  var groups = computeImportGroups(kind).groups;
+                  for (var i = 0; i < groups.length; i++) if (groups[i].key === key) return groups[i].name;
+                  var fallback = (kind === 'dept' ? (importData.unknownDepartments || []) : (importData.unknownJobRoles || []));
+                  for (var j = 0; j < fallback.length; j++) if (fallback[j].key === key) return fallback[j].name;
+                  return '';
+                }
+                function importNameKeyClient(s) {
+                  return String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase();
+                }
+                // Recompute every dynamic flag from the rows' current
+                // (possibly edited) values: name presence, email
+                // duplicates (in-file first-occurrence wins, then the
+                // company's existing members), department auto-match /
+                // grouping, scheduler edit-scope, and job-role linking /
+                // grouping against the row's final department.
+                function revalidateImportRows() {
+                  if (!importData) return;
+                  var memberByKey = {};
+                  (importData.existingMembers || []).forEach(function (m) {
+                    memberByKey[importNameKeyClient(m.email)] = m;
+                  });
+                  var deptByKey = {};
+                  (importData.departments || []).forEach(function (d) { deptByKey[importNameKeyClient(d.name)] = d; });
+                  var firstRowByEmail = {};
+                  importRows.forEach(function (r) {
+                    r.nameFlag = r.firstName ? null : 'Missing name';
+                    var email = String(r.email || '').trim();
+                    r.email = email;
+                    var key = email.toLowerCase();
+                    if (!email) r.emailFlag = 'Missing email';
+                    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) r.emailFlag = 'Email looks invalid';
+                    else if (firstRowByEmail[key] !== undefined) r.emailFlag = 'Same email as row ' + firstRowByEmail[key] + ' in this file';
+                    else if (memberByKey[key]) {
+                      var mem = memberByKey[key];
+                      r.emailFlag = 'Already on the team — ' + email + ' belongs to ' + mem.name + (mem.isActive ? '' : ' (deactivated)');
+                    } else r.emailFlag = null;
+                    if (email && firstRowByEmail[key] === undefined) firstRowByEmail[key] = r.row;
+                    // Department: re-run the quiet auto-match on the text.
+                    var dText = String(r.deptText == null ? '' : r.deptText).trim().replace(/\s+/g, ' ');
+                    r.deptFlag = null;
+                    if (!dText) {
+                      r.departmentId = null; r.departmentName = null; r.deptGroupKey = ''; r.deptIssue = null;
+                    } else {
+                      var d = deptByKey[importNameKeyClient(dText)];
+                      if (d) {
+                        r.departmentId = d.id; r.departmentName = d.name; r.deptGroupKey = null; r.deptIssue = null;
+                        if (importData.myEditDepartmentIds && importData.myEditDepartmentIds.indexOf(d.id) < 0) {
+                          r.deptFlag = 'Outside the departments you can edit';
+                        }
+                      } else {
+                        var gk = importNameKeyClient(dText);
+                        r.departmentId = null; r.departmentName = null; r.deptGroupKey = gk;
+                        r.deptIssue = { key: gk, name: dText, problem: 'Department "' + dText + '" not found' };
+                      }
+                    }
+                    // Job role: link to a same-named role in the row's
+                    // department when one exists; otherwise group it.
+                    var rText = String(r.roleText == null ? '' : r.roleText).trim().replace(/\s+/g, ' ');
+                    if (!rText) {
+                      r.jobRoleId = null; r.jobRole = null; r.roleGroupKey = '';
+                    } else {
+                      var linked = null;
+                      if (r.departmentId) {
+                        (importData.jobRoles || []).forEach(function (jr) {
+                          if (!linked && jr.departmentId === r.departmentId && importNameKeyClient(jr.name) === importNameKeyClient(rText)) linked = jr;
+                        });
+                      }
+                      if (linked) { r.jobRoleId = linked.id; r.jobRole = linked.name; r.roleGroupKey = null; }
+                      else { r.jobRoleId = null; r.jobRole = rText; r.roleGroupKey = importNameKeyClient(rText); }
+                    }
+                  });
+                }
+                function importDeptNameById(id) {
+                  var ds = (importData && importData.departments) || [];
+                  for (var i = 0; i < ds.length; i++) if (ds[i].id === id) return ds[i].name;
+                  return '';
+                }
+                function importRoleLabelById(id) {
+                  var rs = (importData && importData.jobRoles) || [];
+                  for (var i = 0; i < rs.length; i++) if (rs[i].id === id) return rs[i].name + (rs[i].departmentName ? ' (' + rs[i].departmentName + ')' : '');
+                  return '';
+                }
+                // Problems that still block a row: the static server
+                // problems plus the dynamic flags from the row's current
+                // (possibly edited) values. A panel decision placing the
+                // row's department group clears its not-found problem; a
+                // scheduler mapping into a department they cannot edit
+                // adds the outside-edit problem instead.
+                function effProblems(r) {
+                  var probs = (r.staticProblems || []).slice();
+                  if (r.nameFlag) probs.push(r.nameFlag);
+                  if (r.emailFlag) probs.push(r.emailFlag);
+                  if (r.deptFlag) probs.push(r.deptFlag);
+                  var d = r.deptIssue ? deptDecisions[r.deptIssue.key] : null;
+                  if (r.deptIssue && !d) probs.push(r.deptIssue.problem);
+                  if (r.deptIssue && d && d.action === 'map' && importData.myEditDepartmentIds &&
+                      importData.myEditDepartmentIds.indexOf(d.departmentId) < 0 &&
+                      probs.indexOf('Outside the departments you can edit') < 0) {
+                    probs.push('Outside the departments you can edit');
+                  }
+                  return probs;
+                }
+                function rowReady(r) {
+                  if (importSkippedRows[r.row]) return false;
+                  if (effProblems(r).length) return false;
+                  // An unplaced unknown-department group keeps its rows out.
+                  if (r.deptGroupKey) return !!deptDecisions[r.deptGroupKey];
+                  return true;
+                }
+                // Every row is editable in place (name, email,
+                // department, job role + a Skip tick). Flagged rows are
+                // the ones showing a reason; a resolved row keeps its
+                // inputs so it can be adjusted again — and a clean row
+                // edited INTO a problem (e.g. a duplicate email) flags
+                // immediately via the same revalidation.
+                function rowEditable(r) {
+                  return true;
+                }
+                function deptCellText(r) {
+                  if (r.departmentName) return r.departmentName;
+                  var key = r.deptGroupKey;
+                  if (key === null || key === undefined) return '—';
+                  var d = deptDecisions[key];
+                  if (!d) return key === '' ? '—' : (r.deptIssue ? r.deptIssue.name : '—');
+                  if (d.action === 'create') return (key === '' ? (d.newName || 'New department') : importGroupName('dept', key)) + ' (new)';
+                  return importDeptNameById(d.departmentId);
+                }
+                function roleCellText(r) {
+                  var key = r.roleGroupKey;
+                  var d = (key === null || key === undefined) ? null : roleDecisions[key];
+                  if (d && d.action === 'map') return importRoleLabelById(d.jobRoleId);
+                  if (d && d.action === 'create') return (key === '' ? (d.newName || 'New job role') : importGroupName('role', key)) + ' (new)';
+                  return r.jobRole || '—';
+                }
+                function resolveRowHtml(kind, key, label, sub) {
+                  var isDept = kind === 'dept';
+                  var canCreate = isDept ? importData.canCreateDepartments : importData.canCreateJobRoles;
+                  var dec = (isDept ? deptDecisions[key] : roleDecisions[key]) || null;
+                  var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--border)">' +
+                    '<span style="min-width:210px;font-size:13.5px"><b>' + escH(label) + '</b> <span style="color:var(--dim)">' + escH(sub) + '</span></span>' +
+                    '<select class="import-resolve-select" data-kind="' + kind + '" data-key="' + escH(key) + '" style="padding:6px;border-radius:8px;border:1px solid var(--border);font-size:13px;max-width:320px">';
+                  if (isDept) {
+                    h += '<option value="">' + (key === '' ? 'Leave without a department' : 'Skip these people for now') + '</option>';
+                    if (canCreate) h += '<option value="create"' + (dec && dec.action === 'create' ? ' selected' : '') + '>' + (key === '' ? 'Create a new department…' : 'Create department "' + escH(label) + '"') + '</option>';
+                    (importData.departments || []).forEach(function (d) {
+                      h += '<option value="map:' + d.id + '"' + (dec && dec.action === 'map' && dec.departmentId === d.id ? ' selected' : '') + '>Add them to ' + escH(d.name) + '</option>';
+                    });
+                  } else {
+                    h += '<option value="">' + (key === '' ? 'Leave without a job role' : 'Keep the name as plain text') + '</option>';
+                    if (canCreate) h += '<option value="create"' + (dec && dec.action === 'create' ? ' selected' : '') + '>' + (key === '' ? 'Create a new job role…' : 'Create job role "' + escH(label) + '"') + '</option>';
+                    (importData.jobRoles || []).forEach(function (jr) {
+                      h += '<option value="map:' + jr.id + '"' + (dec && dec.action === 'map' && dec.jobRoleId === jr.id ? ' selected' : '') + '>Use ' + escH(jr.name) + (jr.departmentName ? ' (' + escH(jr.departmentName) + ')' : '') + '</option>';
+                    });
+                  }
+                  h += '</select>';
+                  if (key === '' && canCreate) {
+                    h += '<input type="text" class="import-resolve-newname' + (dec && dec.action === 'create' ? '' : ' hidden') + '" data-kind="' + kind + '" data-key="" value="' + escH(dec && dec.newName ? dec.newName : '') + '" placeholder="' + (isDept ? 'New department name' : 'New job role name') + '" style="padding:6px;border-radius:8px;border:1px solid var(--border);font-size:13px">';
+                  }
+                  return h + '</div>';
+                }
+                function renderResolvePanel() {
+                  var parts = [];
+                  var deptGroups = computeImportGroups('dept');
+                  var roleGroups = computeImportGroups('role');
+                  var dg = deptGroups.groups;
+                  var rg = roleGroups.groups;
+                  if (dg.length || deptGroups.blank) {
+                    parts.push('<p style="margin:8px 0 2px;font-weight:700;font-size:13.5px">Departments</p>');
+                    dg.forEach(function (g) {
+                      parts.push(resolveRowHtml('dept', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + ' — not set up yet'));
+                    });
+                    if (deptGroups.blank) {
+                      parts.push(resolveRowHtml('dept', '', 'No department', '· ' + deptGroups.blank + (deptGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file'));
+                    }
+                  }
+                  if (rg.length || roleGroups.blank) {
+                    parts.push('<p style="margin:10px 0 2px;font-weight:700;font-size:13.5px">Job roles</p>');
+                    rg.forEach(function (g) {
+                      parts.push(resolveRowHtml('role', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + ' — not set up yet'));
+                    });
+                    if (roleGroups.blank) {
+                      parts.push(resolveRowHtml('role', '', 'No job role', '· ' + roleGroups.blank + (roleGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file'));
+                    }
+                  }
+                  if (!parts.length) return '';
+                  return '<div id="team-import-resolve" style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#f8fafc">' +
+                    '<p style="margin:0;font-size:13.5px"><b>Place departments &amp; job roles</b><br>' +
+                    '<span style="color:var(--dim);font-size:12.5px">The file gave us the people — choose where each group belongs. Nothing is created until you import.</span></p>' +
+                    parts.join('') + '</div>';
+                }
+                function applyDecision(kind, key, value) {
+                  var store = kind === 'dept' ? deptDecisions : roleDecisions;
+                  var box = $('team-import-preview');
+                  var escKey = (window.CSS && CSS.escape) ? CSS.escape(key) : key;
+                  var nameInput = box ? box.querySelector('.import-resolve-newname[data-kind="' + kind + '"][data-key="' + escKey + '"]') : null;
+                  if (!value) {
+                    delete store[key];
+                    if (nameInput) nameInput.classList.add('hidden');
+                  } else if (value === 'create') {
+                    store[key] = { action: 'create', newName: nameInput ? nameInput.value.trim() : '' };
+                    if (nameInput) nameInput.classList.remove('hidden');
+                  } else if (value.indexOf('map:') === 0) {
+                    var id = value.slice(4);
+                    store[key] = kind === 'dept' ? { action: 'map', departmentId: id } : { action: 'map', jobRoleId: id };
+                    if (nameInput) nameInput.classList.add('hidden');
+                  }
+                  renderImportTable();
+                }
+                function bindResolvePanel(box) {
+                  box.querySelectorAll('.import-resolve-select').forEach(function (sel) {
+                    sel.addEventListener('change', function () {
+                      applyDecision(sel.getAttribute('data-kind'), sel.getAttribute('data-key'), sel.value);
+                    });
+                  });
+                  box.querySelectorAll('.import-resolve-newname').forEach(function (inp) {
+                    inp.addEventListener('input', function () {
+                      var store = inp.getAttribute('data-kind') === 'dept' ? deptDecisions : roleDecisions;
+                      var key = inp.getAttribute('data-key');
+                      if (store[key] && store[key].action === 'create') store[key].newName = inp.value.trim();
+                    });
+                  });
+                }
+                // Inline edits on flagged rows: a change updates the
+                // row's value, revalidates everything, and re-renders the
+                // panel + table so flags and groups update immediately.
+                // Edits live only in this preview state — the import call
+                // carries the final values and the server re-checks all
+                // of it.
+                function bindImportEditHandlers(wrap) {
+                  wrap.addEventListener('change', function (e) {
+                    var el = e.target;
+                    if (!el || !el.classList) return;
+                    var rowNo = parseInt(el.getAttribute('data-row') || '', 10);
+                    if (!rowNo) return;
+                    var row = null;
+                    importRows.forEach(function (r) { if (r.row === rowNo) row = r; });
+                    if (!row) return;
+                    if (el.classList.contains('import-edit-skip')) {
+                      if (el.checked) importSkippedRows[rowNo] = true; else delete importSkippedRows[rowNo];
+                      renderImportTable();
+                      return;
+                    }
+                    if (el.classList.contains('import-edit-first')) row.firstName = el.value.trim();
+                    else if (el.classList.contains('import-edit-last')) row.lastName = el.value.trim();
+                    else if (el.classList.contains('import-edit-email')) row.email = el.value.trim();
+                    else if (el.classList.contains('import-edit-dept')) row.deptText = el.value;
+                    else if (el.classList.contains('import-edit-role')) row.roleText = el.value;
+                    else return;
+                    row.name = ((row.firstName || '') + ' ' + (row.lastName || '')).trim();
+                    revalidateImportRows();
+                    renderImportBody();
+                  });
+                }
+                function renderImportBody() {
+                  var box = $('team-import-preview');
+                  if (!box || !importData) return;
+                  var panelHtml = renderResolvePanel();
+                  var oldPanel = box.querySelector('#team-import-resolve');
+                  if (panelHtml) {
+                    var tmp = document.createElement('div');
+                    tmp.innerHTML = panelHtml;
+                    var newPanel = tmp.firstChild;
+                    if (oldPanel) oldPanel.replaceWith(newPanel);
+                    else box.insertBefore(newPanel, box.firstChild);
+                    bindResolvePanel(box);
+                  } else if (oldPanel) {
+                    oldPanel.remove();
+                  }
+                  renderImportTable();
+                }
                 function renderImportPreview(data) {
+                  importData = data;
                   var box = $('team-import-preview');
                   var rows = data.rows || [];
                   if (!rows.length) { box.innerHTML = '<p style="color:var(--dim)">No people found in that file.</p>'; return; }
+                  box.innerHTML = renderResolvePanel() + '<div id="team-import-tablewrap"></div>';
+                  bindResolvePanel(box);
+                  bindImportEditHandlers($('team-import-tablewrap'));
+                  renderImportTable();
+                }
+                function renderImportTable() {
+                  var wrap = $('team-import-tablewrap');
+                  if (!wrap || !importData) return;
+                  var rows = importData.rows || [];
+                  var readyCount = 0;
                   var h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
                     '<thead><tr>' +
                     '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Name</th>' +
@@ -10827,40 +11175,93 @@ window.qsNpOfferSend = function (btn) {
                     '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Status</th>' +
                     '</tr></thead><tbody>';
                   rows.forEach(function (r) {
-                    h += '<tr' + (r.ok ? '' : ' style="background:#fdf0f0"') + '>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.name || '—') + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.email || '—') + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.departmentName || '—') + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.jobRole || '—') + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.systemRole) + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escH(r.endDate || '—') + '</td>' +
-                      '<td style="padding:6px;border-bottom:1px solid var(--border)">' + (r.ok ? '<span style="color:#15803d;font-weight:600">✓ Ready</span>' : '<span style="color:#b91c1c">' + escH((r.problems || []).join('; ')) + '</span>') + '</td></tr>';
+                    var ready = rowReady(r);
+                    if (ready) readyCount++;
+                    var skippedRow = !!importSkippedRows[r.row];
+                    var cellStyle = 'padding:6px;border-bottom:1px solid var(--border)';
+                    var nameCell, emailCell, deptCell, roleCell;
+                    if (rowEditable(r)) {
+                      // Flagged rows are fixed then and there: name,
+                      // email, department and job role are inputs whose
+                      // changes re-validate the whole preview.
+                      var inputStyle = 'width:100%;min-width:90px;padding:5px;border-radius:6px;border:1px solid var(--border);font-size:13px;box-sizing:border-box';
+                      nameCell = '<input type="text" class="import-edit-first" data-row="' + r.row + '" value="' + escH(r.firstName || '') + '" placeholder="First" style="' + inputStyle + '">' +
+                        '<input type="text" class="import-edit-last" data-row="' + r.row + '" value="' + escH(r.lastName || '') + '" placeholder="Last" style="' + inputStyle + ';margin-top:4px">';
+                      emailCell = '<input type="email" class="import-edit-email" data-row="' + r.row + '" value="' + escH(r.email || '') + '" style="' + inputStyle + '">';
+                      deptCell = '<input type="text" class="import-edit-dept" data-row="' + r.row + '" value="' + escH(r.deptText || '') + '" placeholder="Department" style="' + inputStyle + '">';
+                      roleCell = '<input type="text" class="import-edit-role" data-row="' + r.row + '" value="' + escH(r.roleText || '') + '" placeholder="Job role" style="' + inputStyle + '">';
+                    } else {
+                      nameCell = escH(r.name || '—');
+                      emailCell = escH(r.email || '—');
+                      deptCell = escH(deptCellText(r));
+                      roleCell = escH(roleCellText(r));
+                    }
+                    var statusCell;
+                    if (skippedRow) statusCell = '<span style="color:#6b7280;font-weight:600">Skipped</span>';
+                    else if (ready) statusCell = '<span style="color:#15803d;font-weight:600">✓ Ready</span>';
+                    else statusCell = '<span style="color:#b91c1c">' + escH(effProblems(r).join('; ')) + '</span>';
+                    if (rowEditable(r)) {
+                      statusCell += '<br><label style="font-size:12px;color:var(--dim);white-space:nowrap"><input type="checkbox" class="import-edit-skip" data-row="' + r.row + '"' + (skippedRow ? ' checked' : '') + '> Skip this row</label>';
+                    }
+                    h += '<tr' + (ready ? '' : ' style="background:#fdf0f0"') + '>' +
+                      '<td style="' + cellStyle + '">' + nameCell + '</td>' +
+                      '<td style="' + cellStyle + '">' + emailCell + '</td>' +
+                      '<td style="' + cellStyle + '">' + deptCell + '</td>' +
+                      '<td style="' + cellStyle + '">' + roleCell + '</td>' +
+                      '<td style="' + cellStyle + '">' + escH(r.systemRole) + '</td>' +
+                      '<td style="' + cellStyle + '">' + escH(r.endDate || '—') + '</td>' +
+                      '<td style="' + cellStyle + '">' + statusCell + '</td></tr>';
                   });
                   h += '</tbody></table></div>';
-                  h += '<p style="font-size:13.5px;margin:10px 0 6px"><b>' + data.ready + ' of ' + data.total + '</b> ready to add.' +
-                    (data.truncated ? ' The file had more rows — only the first 200 were read.' : '') +
-                    (data.ready < data.total ? ' Rows with problems are skipped — fix them in the file and import again if needed.' : '') + '</p>';
-                  if (data.ready > 0) {
-                    h += '<button type="button" id="team-import-go" class="btn">Import ' + data.ready + ' team member' + (data.ready === 1 ? '' : 's') + '</button>';
+                  h += '<p style="font-size:13.5px;margin:10px 0 6px"><b>' + readyCount + ' of ' + importData.total + '</b> ready to add.' +
+                    (importData.truncated ? ' The file had more rows — only the first 200 were read.' : '') +
+                    (readyCount < importData.total ? ' Flagged rows can be fixed right here in the list — or tick "Skip this row" to leave them out.' : '') + '</p>';
+                  if (readyCount > 0) {
+                    h += '<button type="button" id="team-import-go" class="btn">Import ' + readyCount + ' team member' + (readyCount === 1 ? '' : 's') + '</button>';
                   }
-                  box.innerHTML = h;
+                  wrap.innerHTML = h;
                   var go = $('team-import-go');
                   if (go) go.addEventListener('click', runImport);
                 }
                 function runImport() {
                   var go = $('team-import-go');
                   if (go) { go.disabled = true; go.textContent = 'Importing…'; }
-                  var members = importRows.filter(function (r) { return r.ok; }).map(function (r) {
+                  // Rows that are not sent (still flagged, in an unplaced
+                  // group, or ticked Skip) are still accounted for in the
+                  // result summary, with their flag as the reason.
+                  var heldRows = importRows.filter(function (r) { return !rowReady(r); }).map(function (r) {
+                    return {
+                      name: r.name, email: r.email,
+                      reason: importSkippedRows[r.row] ? 'Skipped in the preview.' : (effProblems(r).join('; ') || 'Not ready.')
+                    };
+                  });
+                  var members = importRows.filter(rowReady).map(function (r) {
                     return {
                       firstName: r.firstName, lastName: r.lastName, email: r.email, phone: r.phone,
                       departmentId: r.departmentId, jobRoleId: r.jobRoleId, jobRole: r.jobRole,
-                      systemRole: r.systemRole, endDate: r.endDate
+                      systemRole: r.systemRole, endDate: r.endDate,
+                      deptGroupKey: r.deptGroupKey, departmentName: r.deptIssue ? r.deptIssue.name : null,
+                      roleGroupKey: r.roleGroupKey
                     };
+                  });
+                  // Only decisions actually used by the imported rows are sent.
+                  var usedDeptKeys = {}, usedRoleKeys = {};
+                  members.forEach(function (m) {
+                    if (m.deptGroupKey !== null && m.deptGroupKey !== undefined) usedDeptKeys[m.deptGroupKey] = true;
+                    if (m.roleGroupKey !== null && m.roleGroupKey !== undefined) usedRoleKeys[m.roleGroupKey] = true;
+                  });
+                  var departmentDecisions = Object.keys(usedDeptKeys).filter(function (k) { return deptDecisions[k]; }).map(function (k) {
+                    var d = deptDecisions[k];
+                    return { key: k, name: k === '' ? '' : importGroupName('dept', k), newName: d.newName || '', action: d.action, departmentId: d.departmentId || '' };
+                  });
+                  var jobRoleDecisions = Object.keys(usedRoleKeys).filter(function (k) { return roleDecisions[k]; }).map(function (k) {
+                    var d = roleDecisions[k];
+                    return { key: k, name: k === '' ? '' : importGroupName('role', k), newName: d.newName || '', action: d.action, jobRoleId: d.jobRoleId || '' };
                   });
                   api('/api/users/import', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ members: members })
+                    body: JSON.stringify({ members: members, departmentDecisions: departmentDecisions, jobRoleDecisions: jobRoleDecisions })
                   }).then(function (r) {
                     if (!r.ok) {
                       showErr($('team-import-error'), (r.data && r.data.error) || 'Import failed.');
@@ -10868,10 +11269,15 @@ window.qsNpOfferSend = function (btn) {
                       return;
                     }
                     var created = (r.data && r.data.created) || [];
-                    var skipped = (r.data && r.data.skipped) || [];
+                    var skipped = ((r.data && r.data.skipped) || []).concat(heldRows);
+                    var createdDepts = (r.data && r.data.createdDepartments) || [];
+                    var createdRoles = (r.data && r.data.createdJobRoles) || [];
                     var h = '<div class="alert alert-success" role="status">Added ' + created.length + ' team member' + (created.length === 1 ? '' : 's') + ': ' +
                       created.map(function (c) { return escH(c.name); }).join(', ') +
-                      '. Their invites are ready in the team list — send them when you are ready.</div>';
+                      '. Their invites are ready in the team list — send them when you are ready.' +
+                      (createdDepts.length ? ' Created departments: ' + createdDepts.map(escH).join(', ') + '.' : '') +
+                      (createdRoles.length ? ' Created job roles: ' + createdRoles.map(escH).join(', ') + '.' : '') +
+                      '</div>';
                     if (skipped.length) {
                       h += '<div class="alert alert-error" role="alert" style="margin-top:0.6rem">Skipped ' + skipped.length + ': ' +
                         skipped.map(function (s) { return escH((s.name || s.email || 'A row') + ' — ' + s.reason); }).join('; ') + '</div>';
@@ -10881,7 +11287,11 @@ window.qsNpOfferSend = function (btn) {
                     var fileInput = $('team-import-file');
                     if (fileInput) fileInput.value = '';
                     importRows = [];
+                    importData = null;
+                    deptDecisions = {};
+                    roleDecisions = {};
                     loadMembers();
+                    loadDepartments();
                   }).catch(function () {
                     showErr($('team-import-error'), 'Network error. Please try again.');
                     if (go) { go.disabled = false; go.textContent = 'Import'; }
