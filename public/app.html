@@ -17458,10 +17458,14 @@ window.qsNpOfferSend = function (btn) {
         el.querySelectorAll('[data-acedit]').forEach(function (c) {
           c.addEventListener('click', function (e) {
             e.stopPropagation();
-            if (acReadOnly) {
-              var s = acSessions.find(function (x) { return x.id === c.getAttribute('data-acedit'); });
-              if (s) window.qsShowSessionDetails(s, function () { load(); });
-            } else openForm(c.getAttribute('data-acedit'));
+            // Details first (Deepika, 2026-11-07): a session click
+            // opens the details for EVERYONE — editors included; the
+            // details' ✏️ Edit button (shown to those who may edit
+            // this event) is the bridge to the form. Read-only
+            // viewers land on the same details without Edit.
+            var s = acSessions.find(function (x) { return x.id === c.getAttribute('data-acedit'); });
+            if (s) window.qsShowSessionDetails(s, function () { load(); }, { fromCalendar: true });
+            else if (!acReadOnly) openForm(c.getAttribute('data-acedit'));
           });
         });
         el.querySelectorAll('[data-acday]').forEach(function (c) {
@@ -17714,7 +17718,7 @@ window.qsNpOfferSend = function (btn) {
       // speaker spot is still open. No editing and no "give it up"
       // here; giving a session back lives in Admin view.
       var sdMyId = null;
-      window.qsShowSessionDetails = function (e, onDone) {
+      window.qsShowSessionDetails = function (e, onDone, opts) {
         function show(myId) {
           var old = document.getElementById('sd-modal');
           if (old) old.remove();
@@ -17754,6 +17758,17 @@ window.qsNpOfferSend = function (btn) {
           // calendar dashboard has loaded.
           var sdIsManager = (acMyRole === 'owner' || acMyRole === 'scheduler') || (window.currentRole === 'owner' || window.currentRole === 'scheduler');
           var copyHtml = (archView || !sdIsManager) ? '' : '<button type="button" class="btn-secondary" data-sd-copy style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">⧉ Copy event</button>';
+          // Details-first (Deepika, 2026-11-07): Calendars clicks open
+          // these details for everyone — editors included — so the
+          // bridge to the form is an Edit button here, shown only when
+          // the details were opened from Calendars (opts.fromCalendar)
+          // and the viewer may edit THIS event under the unchanged
+          // per-event predicate: full editors (owner / department
+          // schedulers) or the event's own organizer (an employee
+          // edits only their own events). Archived views never show
+          // it; non-Calendar callers (My Schedule) pass no flag and
+          // never show it.
+          var editHtml = (!archView && opts && opts.fromCalendar && acCanEditEvent(e)) ? '<button type="button" class="btn" data-sd-edit style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">✏️ Edit</button>' : '';
           var rsvpCtl = '';
           if (e.viewerIsBeneficiary && !iSpeak && !archView) {
             var rb = function (v, label) {
@@ -17780,7 +17795,7 @@ window.qsNpOfferSend = function (btn) {
             '</div>' +
             rsvpCtl +
             (pres ? '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + pres + '</div>' : '') +
-            '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + copyHtml + ivHtml + '<button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">Close</button></div>';
+            '<div style="display:flex;gap:0.6rem;margin-top:1rem;flex-wrap:wrap">' + editHtml + copyHtml + ivHtml + '<button type="button" class="btn-secondary" data-sd-close style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">Close</button></div>';
           var wrap = document.createElement('div');
           wrap.id = 'sd-modal';
           wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:230;padding:1rem');
@@ -17791,6 +17806,8 @@ window.qsNpOfferSend = function (btn) {
           wrap.querySelector('[data-sd-close]').addEventListener('click', close);
           var cpBtn = wrap.querySelector('[data-sd-copy]');
           if (cpBtn) cpBtn.addEventListener('click', function () { close(); if (window.qsCopySession) window.qsCopySession(e); });
+          var edBtn = wrap.querySelector('[data-sd-edit]');
+          if (edBtn) edBtn.addEventListener('click', function () { close(); openForm(e.id); });
           wrap.querySelectorAll('[data-sd-rsvp]').forEach(function (b) {
             b.addEventListener('click', function () {
               var v = b.getAttribute('data-sd-rsvp');
@@ -17832,7 +17849,7 @@ window.qsNpOfferSend = function (btn) {
         if (curDash && curDash.archivedAt) {
           if (id) {
             var archTgt = acSessions.find(function (x) { return x.id === id; });
-            if (archTgt) window.qsShowSessionDetails(archTgt, function () { load(); });
+            if (archTgt) window.qsShowSessionDetails(archTgt, function () { load(); }, { fromCalendar: true });
           }
           return;
         }
@@ -17842,7 +17859,7 @@ window.qsNpOfferSend = function (btn) {
         if (id) {
           var gateTgt = acSessions.find(function (x) { return x.id === id; });
           if (!acCanEditEvent(gateTgt)) {
-            if (gateTgt) window.qsShowSessionDetails(gateTgt, function () { load(); });
+            if (gateTgt) window.qsShowSessionDetails(gateTgt, function () { load(); }, { fromCalendar: true });
             return;
           }
         } else if (!acCanEdit && acMyRole !== 'employee') return;
