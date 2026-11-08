@@ -1178,7 +1178,8 @@
     .msg-ch { align-items: center; }
     .msg-ch .ch-main { display: inline-flex; align-items: center; min-width: 0; flex: 1; }
     .msg-ch .ch-texts { display: flex; flex-direction: column; min-width: 0; text-align: left; }
-    .msg-ch .ch-name { font-weight: 700; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msg-ch .ch-name { font-weight: 700; font-size: 0.92rem; display: flex; align-items: center; gap: 2px; min-width: 0; }
+    .msg-ch .ch-nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .msg-ch .ch-snip { font-size: 0.78rem; color: var(--dim); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
     .msg-ch .ch-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; margin-left: 8px; }
     .msg-ch .ch-time { font-size: 0.7rem; color: var(--dim); }
@@ -15672,9 +15673,13 @@ window.qsNpOfferSend = function (btn) {
             }
             function chBtn(c) {
               total += c.unread || 0;
-              var del = c.kind === 'group' ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
+              // System groups (unified store): labelled, and no ×
+              // here — they're managed/deleted from the Groups panel.
+              var isSys = c.kind === 'group' && c.groupKind === 'system';
+              var del = c.kind === 'group' && !isSys ? ' <span class="grp-del" data-grpdel="' + esc(c.key.slice(6)) + '" title="Delete group" style="color:#94a3b8;font-weight:700;padding:0 4px">×</span>' : '';
+              var sysTag = isSys ? ' <span class="grp-sys" title="System group — managed from the Groups panel" style="background:#e0f2f1;color:#0e7c86;font-size:0.68rem;font-weight:700;border-radius:8px;padding:1px 6px;vertical-align:middle;flex:none">System</span>' : '';
               return '<button type="button" class="msg-ch' + (activeChannel === c.key ? ' active' : '') + '" data-ch="' + esc(c.key) + '" data-name="' + esc(c.name) + '">' +
-                '<span class="ch-main">' + chAv(c.name) + '<span class="ch-texts"><span class="ch-name">' + esc(c.name) + del + '</span>' +
+                '<span class="ch-main">' + chAv(c.name) + '<span class="ch-texts"><span class="ch-name"><span class="ch-nm">' + esc(c.name) + '</span>' + del + sysTag + '</span>' +
                 (c.last ? '<span class="ch-snip">' + esc(c.last.body) + '</span>' : '') + '</span></span>' +
                 '<span class="ch-side">' + (c.last ? '<span class="ch-time">' + esc(fmtDay(c.last.at)) + '</span>' : '') +
                 (c.unread ? '<span class="ubadge">' + c.unread + '</span>' : '') + '</span></button>';

@@ -4562,14 +4562,17 @@ router.get('/messages/channels', requireRole('owner', 'scheduler', 'employee'), 
           last: await lastMsg("kind = 'department' AND department_id = $2", [d.id]) });
       }
     }
-    // Custom groups.
+    // Groups (unified store, migration 096): the member's chat
+    // groups + the member's system groups. groupKind tells the UI
+    // which is which — system groups are labelled "System" and are
+    // managed from the Groups panel, not from here.
     const { rows: groups } = await query(
-      `SELECT g.id, g.name FROM message_groups g
+      `SELECT g.id, g.name, g.kind FROM message_groups g
        JOIN message_group_members m ON m.group_id = g.id
        WHERE g.company_id = $1 AND m.user_id = $2 ORDER BY g.name`,
       [companyId, me]);
     for (const g of groups) {
-      channels.push({ key: 'group:' + g.id, name: g.name, kind: 'group',
+      channels.push({ key: 'group:' + g.id, name: g.name, kind: 'group', groupKind: g.kind,
         unread: await unread('group:' + g.id, "kind = 'group' AND group_id = $4", [g.id]),
         last: await lastMsg("kind = 'group' AND group_id = $2", [g.id]) });
     }
@@ -4804,7 +4807,10 @@ router.post('/messages/read', requireRole('owner', 'scheduler', 'employee'), asy
   }
 });
 
-// POST /api/schedule/messages/groups — create a group.
+// POST /api/schedule/messages/groups — create a CHAT group
+// (migration 096: kind='chat', Messages-only — it never appears in
+// the Tools-bar panel or the event Attendees picker; named system
+// groups are created via /comm-groups by owners/schedulers).
 // Body: { name, memberIds?: string[], departmentIds?: string[] }
 // Department ids expand to all active members of those departments.
 router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
@@ -4834,7 +4840,7 @@ router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), a
     const groupId = crypto.randomUUID();
     await withTransaction(async (tx) => {
       await tx.query(
-        'INSERT INTO message_groups (id, company_id, name, created_by) VALUES ($1, $2, $3, $4)',
+        "INSERT INTO message_groups (id, company_id, name, created_by, kind) VALUES ($1, $2, $3, $4, 'chat')",
         [groupId, companyId, gname, me]);
       for (const uid of memberSet) {
         await tx.query(
@@ -4849,16 +4855,22 @@ router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), a
   }
 });
 
-// DELETE /api/schedule/messages/groups/:id — creator, scheduler, or owner.
+// DELETE /api/schedule/messages/groups/:id — CHAT groups only:
+// creator, scheduler, or owner. System groups are managed (and
+// deleted) from the Groups panel instead — refused here for every
+// role so the two doors can't disagree about a system group.
 router.delete('/messages/groups/:id', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const me = req.session.userId!;
     const role = req.session.role!;
     const { rows } = await query(
-      'SELECT id, created_by AS "createdBy" FROM message_groups WHERE id = $1 AND company_id = $2',
+      'SELECT id, created_by AS "createdBy", kind FROM message_groups WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Group not found.' }); return; }
+    if (rows[0].kind === 'system') {
+      res.status(403).json({ error: 'System groups are managed from the Groups panel.' }); return;
+    }
     const privileged = role === 'owner' || role === 'scheduler';
     if (!privileged && rows[0].createdBy !== me) {
       res.status(403).json({ error: 'Only the creator or a scheduler can delete this group.' }); return;
@@ -9203,18 +9215,28 @@ router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Reque
 // Beneficiaries area expands a picked group (client-side, snapshot)
 // into ordinary beneficiary people — the session stores no group
 // link, so editing a group never changes saved events.
+//
+// UNIFIED STORE (migration 096, Deepika 2026-11-07): comm groups
+// live in message_groups with kind = 'system' — ONE group store,
+// two kinds. kind='system' groups are managed ONLY through this
+// section (owners/schedulers; Tools-bar panel + form creator) and
+// are the only ones these endpoints list or touch; kind='chat'
+// groups belong to Messages (anyone creates one there) and never
+// surface here. A system group can also hold a Messages
+// conversation — thread membership reads the same unified
+// message_group_members table.
 function commGroupName(r: any): string {
   return ([r.first_name, r.last_name].filter(Boolean).join(' ') || r.name || '').trim();
 }
 
 async function loadCommGroups(companyId: string) {
   const { rows: groups } = await query(
-    'SELECT * FROM comm_groups WHERE company_id = $1 ORDER BY lower(name)', [companyId]);
+    "SELECT * FROM message_groups WHERE company_id = $1 AND kind = 'system' ORDER BY lower(name)", [companyId]);
   if (!groups.length) return [];
   const ids = groups.map((g: any) => g.id);
   const { rows: mem } = await query(
     `SELECT m.group_id, m.user_id, u.first_name, u.last_name, u.name, u.department_id, u.is_active
-     FROM comm_group_members m JOIN users u ON u.id = m.user_id
+     FROM message_group_members m JOIN users u ON u.id = m.user_id
      WHERE m.group_id = ANY($1::uuid[])
      ORDER BY u.first_name, u.last_name`,
     [ids]);
@@ -9229,7 +9251,7 @@ async function loadCommGroups(companyId: string) {
   return groups.map((g: any) => {
     const members = byGroup.get(g.id) || [];
     return {
-      id: g.id, name: g.name, createdBy: g.created_by || null,
+      id: g.id, name: g.name, kind: g.kind, createdBy: g.created_by || null,
       createdAt: g.created_at, updatedAt: g.updated_at,
       memberCount: members.length,
       activeMemberCount: members.filter((mm: any) => mm.isActive).length,
@@ -9255,9 +9277,9 @@ async function cleanGroupMemberIds(companyId: string, raw: any, keepIds: string[
 }
 
 async function saveGroupMembers(groupId: string, memberIds: string[]) {
-  await query('DELETE FROM comm_group_members WHERE group_id = $1', [groupId]);
+  await query('DELETE FROM message_group_members WHERE group_id = $1', [groupId]);
   for (const uid of memberIds) {
-    await query('INSERT INTO comm_group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [groupId, uid]);
+    await query('INSERT INTO message_group_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [groupId, uid]);
   }
 }
 
@@ -9301,12 +9323,12 @@ router.post('/comm-groups', requireRole('owner', 'scheduler'), async (req: Reque
     if (name.length > 80) { res.status(400).json({ error: 'Group names can be up to 80 characters.' }); return; }
     const companyId = req.session.companyId!;
     const { rows: dupe } = await query(
-      'SELECT id FROM comm_groups WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+      "SELECT id FROM message_groups WHERE company_id = $1 AND kind = 'system' AND lower(name) = lower($2)", [companyId, name]);
     if (dupe.length) { res.status(400).json({ error: 'A group with that name already exists.' }); return; }
     const memberIds = await cleanGroupMemberIds(companyId, b.memberIds);
     if (!Array.isArray(memberIds)) { res.status(400).json(memberIds); return; }
     const id = crypto.randomUUID();
-    await query('INSERT INTO comm_groups (id, company_id, name, created_by) VALUES ($1,$2,$3,$4)',
+    await query("INSERT INTO message_groups (id, company_id, name, created_by, kind) VALUES ($1,$2,$3,$4,'system')",
       [id, companyId, name, req.session.userId!]);
     await saveGroupMembers(id, memberIds);
     res.json({ ok: true, id });
@@ -9320,25 +9342,25 @@ router.put('/comm-groups/:id', requireRole('owner', 'scheduler'), async (req: Re
   try {
     const b = req.body ?? {};
     const companyId = req.session.companyId!;
-    const { rows } = await query('SELECT * FROM comm_groups WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
+    const { rows } = await query("SELECT * FROM message_groups WHERE id = $1 AND company_id = $2 AND kind = 'system'", [req.params.id, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Group not found.' }); return; }
     const name = b.name !== undefined ? String(b.name).trim().replace(/\s+/g, ' ') : rows[0].name;
     if (!name) { res.status(400).json({ error: 'A group name is required.' }); return; }
     if (name.length > 80) { res.status(400).json({ error: 'Group names can be up to 80 characters.' }); return; }
     if (name !== rows[0].name) {
       const { rows: dupe } = await query(
-        'SELECT id FROM comm_groups WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
+        "SELECT id FROM message_groups WHERE company_id = $1 AND kind = 'system' AND lower(name) = lower($2) AND id <> $3",
         [companyId, name, req.params.id]);
       if (dupe.length) { res.status(400).json({ error: 'A group with that name already exists.' }); return; }
     }
     let memberIds: string[] | null = null;
     if (b.memberIds !== undefined) {
-      const { rows: cur } = await query('SELECT user_id FROM comm_group_members WHERE group_id = $1', [req.params.id]);
+      const { rows: cur } = await query('SELECT user_id FROM message_group_members WHERE group_id = $1', [req.params.id]);
       const cleaned = await cleanGroupMemberIds(companyId, b.memberIds, cur.map((r: any) => r.user_id));
       if (!Array.isArray(cleaned)) { res.status(400).json(cleaned); return; }
       memberIds = cleaned;
     }
-    await query('UPDATE comm_groups SET name = $1, updated_at = now() WHERE id = $2', [name, req.params.id]);
+    await query("UPDATE message_groups SET name = $1, updated_at = now() WHERE id = $2 AND kind = 'system'", [name, req.params.id]);
     if (memberIds) await saveGroupMembers(req.params.id, memberIds);
     res.json({ ok: true });
   } catch (err) {
@@ -9349,7 +9371,10 @@ router.put('/comm-groups/:id', requireRole('owner', 'scheduler'), async (req: Re
 
 router.delete('/comm-groups/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
-    await query('DELETE FROM comm_groups WHERE id = $1 AND company_id = $2', [req.params.id, req.session.companyId!]);
+    // Deleting a system group deletes the group outright — including
+    // any Messages thread on it (messages.group_id cascades), the
+    // same end state as deleting a group from Messages.
+    await query("DELETE FROM message_groups WHERE id = $1 AND company_id = $2 AND kind = 'system'", [req.params.id, req.session.companyId!]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete comm group failed:', err);
