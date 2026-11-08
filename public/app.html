@@ -2043,7 +2043,7 @@
       <div class="sched-control-box">
         <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
-        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end"></div>
+        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
 
         <div class="sched-toolbar">
           <div class="view-tabs" role="tablist" aria-label="Schedule view">
@@ -2429,15 +2429,18 @@
         }
         // --- Job role filter (Deepika, 2026-11-08: "Add a filter by
         // job role in schedule and calender" + "available in all
-        // views"). A per-session VIEW choice, shared across Schedule /
-        // My Schedule / Calendars through window.qsRoleFilter
-        // ({key,id,name} | null) so switching tabs keeps it. Assigned
-        // shifts match on the PERSON's job role; open slots match on
-        // the shift TYPE's role fit (an empty eligible list is
-        // unrestricted — the same rule as the server eligibility
-        // gate); calendar events match when ANY speaker has the role
-        // (guest speakers have no role and never match a specific
-        // role). View-only: badges, counts and Short cover never read
+        // views" + "Job roles also should be multiselect"). A
+        // per-session VIEW choice, shared across Schedule / My
+        // Schedule / Calendars through window.qsRoleFilter — an ARRAY
+        // of selected roles ({key,id,name}), or null when empty
+        // (empty = All roles = no filtering) so switching tabs keeps
+        // it. Matching is UNION over the set: assigned shifts match
+        // on the PERSON's job role; open slots match on the shift
+        // TYPE's role fit (an empty eligible list is unrestricted —
+        // the same rule as the server eligibility gate); calendar
+        // events match when ANY speaker has a selected role (guest
+        // speakers have no role and never match a specific role).
+        // View-only: badges, counts and Short cover never read
         // this — they run off their own fetches.
         function roleNameOfUser(u) { return ((u && (u.jobRoleName || u.jobRole)) || '').trim(); }
         function roleKeyOfUser(u) {
@@ -2457,35 +2460,54 @@
           out.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
           return out;
         }
+        function normRoleSel(v) {
+          if (!v) return null;
+          if (Array.isArray(v)) return v.length ? v : null;
+          return [v]; // tolerate a legacy single-role object
+        }
+        function roleSelSet() { return normRoleSel(sched.roleFilter) || []; }
+        function roleBtnLabel(set) {
+          var s = set || roleSelSet();
+          if (!s.length) return 'All roles';
+          if (s.length === 1) return s[0].name;
+          var joined = s.map(function (r) { return r.name; }).join(', ');
+          return joined.length <= 26 ? joined : s.length + ' roles';
+        }
+        function userMatchesRoleSet(u, set) {
+          var nm = roleNameOfUser(u);
+          return set.some(function (sel) {
+            if (sel.id && u.jobRoleId && String(u.jobRoleId) === String(sel.id)) return true;
+            return !!nm && !!sel.name && nm.toLowerCase() === String(sel.name).toLowerCase();
+          });
+        }
         function memberMatchesRole(userId) {
-          var sel = sched.roleFilter;
-          if (!sel) return true;
+          var set = roleSelSet();
+          if (!set.length) return true;
           var u = memberById(userId);
           if (!u) return false;
-          if (sel.id && u.jobRoleId && String(u.jobRoleId) === String(sel.id)) return true;
-          var nm = roleNameOfUser(u);
-          return !!nm && !!sel.name && nm.toLowerCase() === String(sel.name).toLowerCase();
+          return userMatchesRoleSet(u, set);
         }
         function shiftTypeFitsRole(st) {
-          var sel = sched.roleFilter;
-          if (!sel) return true;
+          var set = roleSelSet();
+          if (!set.length) return true;
           var ids = (st && Array.isArray(st.eligibleJobRoleIds)) ? st.eligibleJobRoleIds : [];
           if (!ids.length) return true; // unrestricted type — every role fits
-          return !!sel.id && ids.map(String).indexOf(String(sel.id)) !== -1;
+          return set.some(function (sel) {
+            return !!sel.id && ids.map(String).indexOf(String(sel.id)) !== -1;
+          });
         }
         function openCountRole(dateStr, st) {
           return shiftTypeFitsRole(st) ? openCountFor(dateStr, st.id) : 0;
         }
         function eventMatchesRole(e) {
-          if (!sched.roleFilter) return true;
+          if (!roleSelSet().length) return true;
           var sps = (e.speakers && e.speakers.length) ? e.speakers
             : (e.lecturerUserId ? [{ userId: e.lecturerUserId }] : []);
           return sps.some(function (sp) { return !!sp.userId && memberMatchesRole(sp.userId); });
         }
-        function setRoleFilter(sel) {
-          sched.roleFilter = sel || null;
+        function setRoleFilterSet(list) {
+          sched.roleFilter = normRoleSel(list);
           window.qsRoleFilter = sched.roleFilter;
-          renderView();
         }
 
         function shiftsFor(dateStr) {
@@ -2736,35 +2758,77 @@
               '</div>';
             })() + '</div>' : '') +
             (roles.length ?
-            '<div style="flex:1;min-width:150px"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
-            '<select id="sched-role-filter" aria-label="Filter by job role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;cursor:pointer">' +
-            '<option value="">All roles</option>' +
+            '<div style="flex:1;min-width:150px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
+            '<button type="button" id="sched-role-filter" aria-label="Filter by job role" aria-haspopup="true" aria-expanded="false" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(roleBtnLabel()) + '</span><span style="color:var(--dim)">▾</span></button>' +
+            '<div id="sched-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
+            '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;font-weight:700;border-radius:6px;cursor:pointer;border-bottom:1px solid var(--border)">' +
+            '<input type="checkbox" data-role="__all"' + (roleSelSet().length === 0 ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">All roles</label>' +
             roles.map(function (r) {
-              return '<option value="' + esc(r.key) + '"' + (sched.roleFilter && sched.roleFilter.key === r.key ? ' selected' : '') + '>' + esc(r.name) + '</option>';
+              var on = roleSelSet().some(function (s) { return s.key === r.key; });
+              return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'">' +
+                '<input type="checkbox" data-role="' + esc(r.key) + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(r.name) + '</label>';
             }).join('') +
-            '</select></div>' : '');
+            '</div></div>' : '');
           var btn = $('sched-dept-btn'), menu = $('sched-dept-menu');
           var sbtn = $('sched-shift-btn'), smenu = $('sched-shift-menu');
-          var rsel = $('sched-role-filter');
-          if (rsel) rsel.addEventListener('change', function () {
-            var key = rsel.value, sel = null;
-            roleOptions().forEach(function (r) { if (r.key === key) sel = r; });
-            setRoleFilter(sel);
-          });
+          var rbtn = $('sched-role-filter'), rmenu = $('sched-role-menu');
+          if (rbtn && rmenu) {
+            rbtn.addEventListener('click', function (e) {
+              e.stopPropagation();
+              if (menu) menu.style.display = 'none';
+              if (smenu) smenu.style.display = 'none';
+              var open = rmenu.style.display !== 'none';
+              rmenu.style.display = open ? 'none' : 'block';
+              rbtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+            });
+            rmenu.addEventListener('keydown', function (e) {
+              if (e.key === 'Escape') { rmenu.style.display = 'none'; rbtn.setAttribute('aria-expanded', 'false'); rbtn.focus(); }
+            });
+            rmenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+              cb.addEventListener('change', function () {
+                var key = cb.getAttribute('data-role');
+                var set = roleSelSet().slice();
+                if (key === '__all') {
+                  set = [];
+                } else {
+                  var idx = -1;
+                  set.forEach(function (r, i) { if (r.key === key) idx = i; });
+                  if (cb.checked && idx === -1) {
+                    var opt = null;
+                    roleOptions().forEach(function (r) { if (r.key === key) opt = r; });
+                    if (opt) set.push(opt);
+                  }
+                  if (!cb.checked && idx !== -1) set.splice(idx, 1);
+                }
+                setRoleFilterSet(set);
+                renderDeptFilter();
+                var m2 = $('sched-role-menu'); if (m2) m2.style.display = 'block';
+                var b2 = $('sched-role-filter'); if (b2) b2.setAttribute('aria-expanded', 'true');
+                renderView();
+              });
+            });
+          }
           if (btn && menu && sbtn && smenu) {
           btn.addEventListener('click', function (e) {
             e.stopPropagation();
             smenu.style.display = 'none';
+            if (rmenu) rmenu.style.display = 'none';
             menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
           });
           sbtn.addEventListener('click', function (e) {
             e.stopPropagation();
             menu.style.display = 'none';
+            if (rmenu) rmenu.style.display = 'none';
             smenu.style.display = smenu.style.display === 'none' ? 'block' : 'none';
           });
           document.addEventListener('click', function h(e) {
             if (!menu.contains(e.target) && e.target !== btn) menu.style.display = 'none';
             if (!smenu.contains(e.target) && e.target !== sbtn) smenu.style.display = 'none';
+            var rm = $('sched-role-menu'), rb = $('sched-role-filter');
+            if (rm && rb && !rm.contains(e.target) && e.target !== rb && !rb.contains(e.target)) {
+              rm.style.display = 'none';
+              rb.setAttribute('aria-expanded', 'false');
+            }
           });
           menu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
             cb.addEventListener('change', function () {
@@ -7154,22 +7218,32 @@ function qsPrintRender() {
   var bounds = qsPrintRangeBounds();
   // Job role filter (Deepika, 2026-11-08): the printed sheet follows
   // the SAME shared view choice as Schedule / My Schedule / Calendars
-  // (window.qsRoleFilter) — people rows and their shifts narrow to
-  // the selected role, and "Still needed" only counts types whose
-  // role fit includes it (empty eligible list = unrestricted).
-  var roleSel = window.qsRoleFilter || null;
+  // (window.qsRoleFilter — an array of selected roles, or null for
+  // All roles; multi-select since the follow-up ask) — people rows
+  // and their shifts narrow to the selected roles (union), and
+  // "Still needed" only counts types whose role fit intersects the
+  // set (empty eligible list = unrestricted).
+  var roleSelSet = (function () {
+    var v = window.qsRoleFilter || null;
+    if (!v) return [];
+    return Array.isArray(v) ? v : [v];
+  })();
   var printUserMatches = function (u) {
-    if (!roleSel) return true;
+    if (!roleSelSet.length) return true;
     if (!u) return false;
-    if (roleSel.id && u.jobRoleId && String(u.jobRoleId) === String(roleSel.id)) return true;
     var nm = ((u.jobRoleName || u.jobRole) || '').trim();
-    return !!nm && !!roleSel.name && nm.toLowerCase() === String(roleSel.name).toLowerCase();
+    return roleSelSet.some(function (sel) {
+      if (sel.id && u.jobRoleId && String(u.jobRoleId) === String(sel.id)) return true;
+      return !!nm && !!sel.name && nm.toLowerCase() === String(sel.name).toLowerCase();
+    });
   };
   var printTypeFits = function (t) {
-    if (!roleSel) return true;
+    if (!roleSelSet.length) return true;
     var ids = (t && Array.isArray(t.eligibleJobRoleIds)) ? t.eligibleJobRoleIds : [];
     if (!ids.length) return true;
-    return !!roleSel.id && ids.map(String).indexOf(String(roleSel.id)) !== -1;
+    return roleSelSet.some(function (sel) {
+      return !!sel.id && ids.map(String).indexOf(String(sel.id)) !== -1;
+    });
   };
   var deptId = (document.getElementById('print-dept') || {}).value || '';
   var includeDrafts = !!((document.getElementById('print-drafts') || {}).checked);
@@ -7198,7 +7272,7 @@ function qsPrintRender() {
     var shifts = allShifts.filter(function (s) {
       if (!includeDrafts && s.published === false) return false;
       if (deptId && typeById[s.shiftTypeId] && !inDept(typeById[s.shiftTypeId])) return false;
-      if (roleSel && !printUserMatches(userById[s.userId])) return false;
+      if (roleSelSet.length && !printUserMatches(userById[s.userId])) return false;
       return true;
     });
     var members = (qsPrintUsers || []).filter(function (u) { return (!deptId || u.departmentId === deptId) && printUserMatches(u); });
@@ -7242,7 +7316,7 @@ function qsPrintRender() {
         : longDay(days[0]) + ' – ' + longDay(days[days.length - 1]);
       var h = '<div class="print-sheet">';
       h += '<div class="ps-head"><div><div class="ps-title">' + esc(company) + ' — ' + esc(deptName) + '</div>' +
-        '<div class="ps-sub">' + esc(rangeLabel) + (roleSel ? ' · Job role: ' + esc(roleSel.name) : '') + '</div></div>' +
+        '<div class="ps-sub">' + esc(rangeLabel) + (roleSelSet.length ? ' · Job role: ' + esc(roleSelSet.map(function (r) { return r.name; }).join(', ')) : '') + '</div></div>' +
         '<div class="ps-meta">Quick Scheduling<br>Printed ' + esc(printed) + '</div></div>';
       h += '<table class="ps-table"><tr><th>Team member</th>' + days.map(function (ds) {
         var d = new Date(ds + 'T12:00:00');
@@ -7785,6 +7859,8 @@ window.qsNpOfferSend = function (btn) {
           #tab-dash #db-today-slot .ac-nav { background: var(--accent); color: #fff; border-color: var(--accent); }
           #tab-dash #db-filters label { flex: 1 1 100%; }
           #tab-dash #db-filters label select { width: 100%; }
+          #tab-dash #db-filters #db-role-wrap { flex: 1 1 100%; }
+          #tab-dash #db-filters #db-role-filter { width: 100%; }
           #tab-dash #db-actions { margin-left: 0; }
           #tab-dash .ac-views { flex: 1 1 100%; order: 1; }
           #tab-dash .ac-tleft { order: 2; }
@@ -7832,9 +7908,10 @@ window.qsNpOfferSend = function (btn) {
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Session type
           <select id="db-kind-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text)"></select>
         </label>
-        <label id="db-role-wrap" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Job role
-          <select id="db-role-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text)"></select>
-        </label>
+        <div id="db-role-wrap" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff;position:relative">Job role
+          <button type="button" id="db-role-filter" aria-label="Filter by job role" aria-haspopup="true" aria-expanded="false" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text);display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;text-align:left;font-weight:400"><span id="db-role-btn-label">All roles</span><span style="color:var(--dim)">▾</span></button>
+          <div id="db-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;color:var(--text);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px;font-size:0.92rem;font-weight:400"></div>
+        </div>
       </div>
       <div class="db-tbar" id="db-toolbar"></div>
       <div id="db-view"></div>
@@ -14441,31 +14518,40 @@ window.qsNpOfferSend = function (btn) {
             '</div></div>' +
             (roles.length ?
             '<div style="flex:1;min-width:150px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
-            '<select id="ms-role-filter" aria-label="Filter by job role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;cursor:pointer">' +
-            '<option value="">All roles</option>' +
+            ddBtn('ms-role-filter', roleBtnLabel()) + ddMenu('ms-role-menu') +
+            ddCheck('All roles', 'data-msrole', '__all', roleSelSet().length === 0, true) +
             roles.map(function (r) {
-              return '<option value="' + esc(r.key) + '"' + (roleFilter && roleFilter.key === r.key ? ' selected' : '') + '>' + esc(r.name) + '</option>';
-            }).join('') +
-            '</select></div>' : '');
+              return ddCheck(r.name, 'data-msrole', r.key, roleSelSet().some(function (s) { return s.key === r.key; }));
+            }).join('') + '</div></div>' : '');
           var dbtn = $('ms-dept-btn'), dmenu = $('ms-dept-menu');
           var sbtn = $('ms-shift-btn'), smenu = $('ms-shift-menu');
           var vbtn = $('ms-view-btn'), vmenu = $('ms-view-menu');
+          var rbtn = $('ms-role-filter'), rmenu = $('ms-role-menu');
           function closeAll(except) {
-            [dmenu, smenu, vmenu].forEach(function (m) { if (m !== except) m.style.display = 'none'; });
+            [dmenu, smenu, vmenu, rmenu].forEach(function (m) { if (m && m !== except) m.style.display = 'none'; });
           }
           dbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = dmenu.style.display === 'none'; closeAll(); dmenu.style.display = o ? 'block' : 'none'; });
           sbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = smenu.style.display === 'none'; closeAll(); smenu.style.display = o ? 'block' : 'none'; });
           vbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = vmenu.style.display === 'none'; closeAll(); vmenu.style.display = o ? 'block' : 'none'; });
+          if (rbtn && rmenu) {
+            rbtn.setAttribute('aria-haspopup', 'true');
+            rbtn.setAttribute('aria-expanded', 'false');
+            rbtn.setAttribute('aria-label', 'Filter by job role');
+            rbtn.addEventListener('click', function (e) { e.stopPropagation(); var o = rmenu.style.display === 'none'; closeAll(); rmenu.style.display = o ? 'block' : 'none'; rbtn.setAttribute('aria-expanded', o ? 'true' : 'false'); });
+            rmenu.addEventListener('keydown', function (e) {
+              if (e.key === 'Escape') { rmenu.style.display = 'none'; rbtn.setAttribute('aria-expanded', 'false'); rbtn.focus(); }
+            });
+          }
           // Single document-level closer (guarded — renderFilters re-renders the menus).
           if (!window._msDocCloser) {
             window._msDocCloser = function (e) {
-              var dm = $('ms-dept-menu'), sm = $('ms-shift-menu'), vm = $('ms-view-menu');
-              var db = $('ms-dept-btn'), sb = $('ms-shift-btn'), vb = $('ms-view-btn');
-              if (dm && !dm.contains(e.target) && e.target !== db &&
-                  sm && !sm.contains(e.target) && e.target !== sb &&
-                  vm && !vm.contains(e.target) && e.target !== vb) {
-                [dm, sm, vm].forEach(function (m) { if (m) m.style.display = 'none'; });
-              }
+              var pairs = [['ms-dept-menu', 'ms-dept-btn'], ['ms-shift-menu', 'ms-shift-btn'], ['ms-view-menu', 'ms-view-btn'], ['ms-role-menu', 'ms-role-filter']];
+              var inside = false;
+              pairs.forEach(function (p) {
+                var m = $(p[0]), b = $(p[1]);
+                if (m && (m.contains(e.target) || e.target === b || (b && b.contains(e.target)))) inside = true;
+              });
+              if (!inside) pairs.forEach(function (p) { var m = $(p[0]); if (m) m.style.display = 'none'; });
             };
             document.addEventListener('click', window._msDocCloser);
           }
@@ -14503,21 +14589,38 @@ window.qsNpOfferSend = function (btn) {
               var m2 = $('ms-view-menu'); if (m2) m2.style.display = 'block';
             });
           });
-          var msRsel = $('ms-role-filter');
-          if (msRsel) msRsel.addEventListener('change', function () {
-            var key = msRsel.value, sel = null;
-            roleOptions().forEach(function (r) { if (r.key === key) sel = r; });
-            setRoleFilter(sel);
+          if (rmenu) rmenu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var key = cb.getAttribute('data-msrole');
+              var set = roleSelSet().slice();
+              if (key === '__all') {
+                set = [];
+              } else {
+                var idx = -1;
+                set.forEach(function (r, i) { if (r.key === key) idx = i; });
+                if (cb.checked && idx === -1) {
+                  var opt = null;
+                  roleOptions().forEach(function (r) { if (r.key === key) opt = r; });
+                  if (opt) set.push(opt);
+                }
+                if (!cb.checked && idx !== -1) set.splice(idx, 1);
+              }
+              setRoleFilterSet(set);
+              renderFilters(); renderView();
+              var m2 = $('ms-role-menu'); if (m2) m2.style.display = 'block';
+              var b2 = $('ms-role-filter'); if (b2) b2.setAttribute('aria-expanded', 'true');
+            });
           });
         }
 
         // ---------- shift / slot filtering ----------
         // Job role filter (Deepika, 2026-11-08): same shared view
-        // choice as the admin Schedule — window.qsRoleFilter. A shift
-        // passes on its PERSON's role; an open slot passes on its
-        // shift TYPE's role fit (empty eligible list = unrestricted);
-        // an event passes when ANY speaker has the role (guests never
-        // match).
+        // choice as the admin Schedule — window.qsRoleFilter, an
+        // ARRAY of selected roles or null when empty (multi-select;
+        // empty = All roles). A shift passes on its PERSON's role;
+        // an open slot passes on its shift TYPE's role fit (empty
+        // eligible list = unrestricted); an event passes when ANY
+        // speaker has a selected role (guests never match).
         function roleNameOfUser(u) { return ((u && (u.jobRoleName || u.jobRole)) || '').trim(); }
         function roleKeyOfUser(u) {
           if (!u) return '';
@@ -14536,24 +14639,42 @@ window.qsNpOfferSend = function (btn) {
           out.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
           return out;
         }
+        function normRoleSel(v) {
+          if (!v) return null;
+          if (Array.isArray(v)) return v.length ? v : null;
+          return [v]; // tolerate a legacy single-role object
+        }
+        function roleSelSet() { return normRoleSel(roleFilter) || []; }
+        function roleBtnLabel() {
+          var s = roleSelSet();
+          if (!s.length) return 'All roles';
+          if (s.length === 1) return s[0].name;
+          var joined = s.map(function (r) { return r.name; }).join(', ');
+          return joined.length <= 26 ? joined : s.length + ' roles';
+        }
         function memberMatchesRole(userId) {
-          if (!roleFilter) return true;
+          var set = roleSelSet();
+          if (!set.length) return true;
           var u = memberById(userId);
           if (!u) return false;
-          if (roleFilter.id && u.jobRoleId && String(u.jobRoleId) === String(roleFilter.id)) return true;
           var nm = roleNameOfUser(u);
-          return !!nm && !!roleFilter.name && nm.toLowerCase() === String(roleFilter.name).toLowerCase();
+          return set.some(function (sel) {
+            if (sel.id && u.jobRoleId && String(u.jobRoleId) === String(sel.id)) return true;
+            return !!nm && !!sel.name && nm.toLowerCase() === String(sel.name).toLowerCase();
+          });
         }
         function typeFitsRole(st) {
-          if (!roleFilter) return true;
+          var set = roleSelSet();
+          if (!set.length) return true;
           var ids = eligibleRoleIds(st);
           if (!ids.length) return true; // unrestricted type — every role fits
-          return !!roleFilter.id && ids.map(String).indexOf(String(roleFilter.id)) !== -1;
+          return set.some(function (sel) {
+            return !!sel.id && ids.map(String).indexOf(String(sel.id)) !== -1;
+          });
         }
-        function setRoleFilter(sel) {
-          roleFilter = sel || null;
+        function setRoleFilterSet(list) {
+          roleFilter = normRoleSel(list);
           window.qsRoleFilter = roleFilter;
-          renderView();
         }
         function shiftPasses(s) {
           if (shiftFilters.length && shiftFilters.indexOf(String(s.shiftTypeId)) === -1) return false;
@@ -17510,8 +17631,9 @@ window.qsNpOfferSend = function (btn) {
       var acUsers = [], acDepts = [], acSessions = [], acMyId = null, acCanEdit = false, acReadOnly = false;
       var acDeptFilter = '', acShowFilter = 'all', acKindFilter = '';
       // Job role filter (Deepika, 2026-11-08): the same shared view
-      // choice as Schedule / My Schedule — window.qsRoleFilter
-      // ({key,id,name} | null). acRoleSel mirrors it for this module.
+      // choice as Schedule / My Schedule — window.qsRoleFilter, an
+      // ARRAY of selected roles ({key,id,name}) or null when empty
+      // (multi-select). acRoleSel mirrors it for this module.
       var acRoleSel = window.qsRoleFilter || null;
       // Session kinds live on EACH dashboard (Deepika, 2026-10-20).
       // acKinds = the open dashboard's kinds. window.qsKinds = every
@@ -17991,35 +18113,91 @@ window.qsNpOfferSend = function (btn) {
         out.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
         return out;
       }
+      function acRoleSelSet() {
+        if (!acRoleSel) return [];
+        return Array.isArray(acRoleSel) ? acRoleSel : [acRoleSel]; // tolerate a legacy single-role object
+      }
+      function acRoleBtnLabel() {
+        var s = acRoleSelSet();
+        if (!s.length) return 'All roles';
+        if (s.length === 1) return s[0].name;
+        var joined = s.map(function (r) { return r.name; }).join(', ');
+        return joined.length <= 26 ? joined : s.length + ' roles';
+      }
       function acUserMatchesRole(userId) {
-        if (!acRoleSel) return true;
+        var set = acRoleSelSet();
+        if (!set.length) return true;
         var u = null;
         for (var i = 0; i < acUsers.length; i++) if (String(acUsers[i].id) === String(userId)) { u = acUsers[i]; break; }
         if (!u) return false;
-        if (acRoleSel.id && u.jobRoleId && String(u.jobRoleId) === String(acRoleSel.id)) return true;
         var nm = acRoleNameOf(u);
-        return !!nm && !!acRoleSel.name && nm.toLowerCase() === String(acRoleSel.name).toLowerCase();
+        return set.some(function (sel) {
+          if (sel.id && u.jobRoleId && String(u.jobRoleId) === String(sel.id)) return true;
+          return !!nm && !!sel.name && nm.toLowerCase() === String(sel.name).toLowerCase();
+        });
       }
       function acEventMatchesRole(s) {
-        if (!acRoleSel) return true;
+        if (!acRoleSelSet().length) return true;
         var sps = (s.speakers && s.speakers.length) ? s.speakers
           : (s.lecturerUserId ? [{ userId: s.lecturerUserId }] : []);
         return sps.some(function (sp) { return !!sp.userId && acUserMatchesRole(sp.userId); });
       }
       function fillRoleFilter() {
-        var sel = document.getElementById('db-role-filter');
+        var btn = document.getElementById('db-role-filter');
+        var menu = document.getElementById('db-role-menu');
         var wrap = document.getElementById('db-role-wrap');
-        if (!sel) return;
+        if (!btn || !menu) return;
         // Pick up a selection made on another tab (shared view state).
         acRoleSel = window.qsRoleFilter || null;
         var roles = acRoleOptions();
         if (wrap) wrap.style.display = roles.length ? 'flex' : 'none';
-        if (acRoleSel && !roles.some(function (r) { return r.key === acRoleSel.key; })) {
-          acRoleSel = null; window.qsRoleFilter = null;
+        // Prune selected roles that no longer exist in this company.
+        var set = acRoleSelSet();
+        if (set.length) {
+          var kept = set.filter(function (s) { return roles.some(function (r) { return r.key === s.key; }); });
+          if (kept.length !== set.length) {
+            acRoleSel = kept.length ? kept : null;
+            window.qsRoleFilter = acRoleSel;
+            set = kept;
+          }
         }
-        sel.innerHTML = '<option value="">All roles</option>' + roles.map(function (r) {
-          return '<option value="' + esc(r.key) + '"' + (acRoleSel && acRoleSel.key === r.key ? ' selected' : '') + '>' + esc(r.name) + '</option>';
-        }).join('');
+        var lbl = document.getElementById('db-role-btn-label');
+        if (lbl) lbl.textContent = acRoleBtnLabel();
+        menu.innerHTML =
+          '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;font-weight:700;border-radius:6px;cursor:pointer;border-bottom:1px solid var(--border);color:var(--text)">' +
+          '<input type="checkbox" data-acrole="__all"' + (set.length === 0 ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">All roles</label>' +
+          roles.map(function (r) {
+            var on = set.some(function (s) { return s.key === r.key; });
+            return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;border-radius:6px;cursor:pointer;color:var(--text)">' +
+              '<input type="checkbox" data-acrole="' + esc(r.key) + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(r.name) + '</label>';
+          }).join('');
+        menu.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+          cb.addEventListener('change', function () {
+            var key = cb.getAttribute('data-acrole');
+            var cur = acRoleSelSet().slice();
+            if (key === '__all') {
+              cur = [];
+            } else {
+              var idx = -1;
+              cur.forEach(function (r, i) { if (r.key === key) idx = i; });
+              if (cb.checked && idx === -1) {
+                var opt = null;
+                acRoleOptions().forEach(function (r) { if (r.key === key) opt = r; });
+                if (opt) cur.push(opt);
+              }
+              if (!cb.checked && idx !== -1) cur.splice(idx, 1);
+            }
+            acRoleSel = cur.length ? cur : null;
+            window.qsRoleFilter = acRoleSel;
+            // Sync the All-roles row + button label in place; the
+            // menu itself stays open and untouched.
+            var allCb = menu.querySelector('input[data-acrole="__all"]');
+            if (allCb) allCb.checked = cur.length === 0;
+            var l2 = document.getElementById('db-role-btn-label');
+            if (l2) l2.textContent = acRoleBtnLabel();
+            render();
+          });
+        });
       }
       // Dashboard page filters (Deepika, 2026-10-20 — like the Admin
       // view's Department/Shift filters): narrow by department and by
@@ -19942,13 +20120,32 @@ window.qsNpOfferSend = function (btn) {
       var dbKindFilterEl = document.getElementById('db-kind-filter');
       if (dbKindFilterEl) dbKindFilterEl.addEventListener('change', function () { acKindFilter = dbKindFilterEl.value; render(); });
       var dbRoleFilterEl = document.getElementById('db-role-filter');
-      if (dbRoleFilterEl) dbRoleFilterEl.addEventListener('change', function () {
-        var key = dbRoleFilterEl.value, sel = null;
-        acRoleOptions().forEach(function (r) { if (r.key === key) sel = r; });
-        acRoleSel = sel;
-        window.qsRoleFilter = sel;
-        render();
-      });
+      if (dbRoleFilterEl) {
+        dbRoleFilterEl.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var menu = document.getElementById('db-role-menu');
+          if (!menu) return;
+          var open = menu.style.display !== 'none';
+          menu.style.display = open ? 'none' : 'block';
+          dbRoleFilterEl.setAttribute('aria-expanded', open ? 'false' : 'true');
+        });
+        var dbRoleMenuEl = document.getElementById('db-role-menu');
+        if (dbRoleMenuEl) dbRoleMenuEl.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape') {
+            dbRoleMenuEl.style.display = 'none';
+            dbRoleFilterEl.setAttribute('aria-expanded', 'false');
+            dbRoleFilterEl.focus();
+          }
+        });
+        document.addEventListener('click', function (e) {
+          var wrap = document.getElementById('db-role-wrap');
+          var menu = document.getElementById('db-role-menu');
+          if (menu && wrap && !wrap.contains(e.target)) {
+            menu.style.display = 'none';
+            dbRoleFilterEl.setAttribute('aria-expanded', 'false');
+          }
+        });
+      }
       function fillKindFilter() {
         var kf = document.getElementById('db-kind-filter');
         if (!kf) return;
