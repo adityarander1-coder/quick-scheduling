@@ -4807,19 +4807,36 @@ router.post('/messages/read', requireRole('owner', 'scheduler', 'employee'), asy
   }
 });
 
-// POST /api/schedule/messages/groups — create a CHAT group
-// (migration 096: kind='chat', Messages-only — it never appears in
-// the Tools-bar panel or the event Attendees picker; named system
-// groups are created via /comm-groups by owners/schedulers).
+// POST /api/schedule/messages/groups — create a group from Messages.
+// WHO creates it decides the kind (Deepika, 2026-11-07, closing the
+// gap she hit live: "I created new group in messages but it did not
+// get added to communication groups"):
+//   owner/scheduler -> kind='system': it IS a Communication group —
+//     it appears in the Tools-bar panel + the event Attendees picker
+//     as well as here, under the system rules (name unique within
+//     the system kind; membership managed from the panel side).
+//   employee -> kind='chat': a Messages-only group, exactly as
+//     Messages groups always were; it appears nowhere else.
 // Body: { name, memberIds?: string[], departmentIds?: string[] }
 // Department ids expand to all active members of those departments.
 router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const me = req.session.userId!;
+    const role = req.session.role!;
+    const kind = (role === 'owner' || role === 'scheduler') ? 'system' : 'chat';
     const { name, memberIds, departmentIds } = req.body ?? {};
-    const gname = String(name || '').trim().slice(0, 80);
+    let gname = String(name || '').trim().slice(0, 80);
     if (!gname) { res.status(400).json({ error: 'Give the group a name.' }); return; }
+    if (kind === 'system') {
+      // Same normalisation + duplicate rule as the panel door
+      // (POST /comm-groups): system names are unique per company.
+      gname = gname.replace(/\s+/g, ' ');
+      const { rows: dupe } = await query(
+        "SELECT id FROM message_groups WHERE company_id = $1 AND kind = 'system' AND lower(name) = lower($2)",
+        [companyId, gname]);
+      if (dupe.length) { res.status(400).json({ error: 'A group with that name already exists.' }); return; }
+    }
     const memberSet = new Set<string>([me]);
     if (Array.isArray(memberIds)) {
       const { rows } = await query(
@@ -4840,16 +4857,22 @@ router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), a
     const groupId = crypto.randomUUID();
     await withTransaction(async (tx) => {
       await tx.query(
-        "INSERT INTO message_groups (id, company_id, name, created_by, kind) VALUES ($1, $2, $3, $4, 'chat')",
-        [groupId, companyId, gname, me]);
+        'INSERT INTO message_groups (id, company_id, name, created_by, kind) VALUES ($1, $2, $3, $4, $5)',
+        [groupId, companyId, gname, me, kind]);
       for (const uid of memberSet) {
         await tx.query(
           'INSERT INTO message_group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
           [groupId, uid]);
       }
     });
-    res.status(201).json({ id: groupId, name: gname });
-  } catch (err) {
+    res.status(201).json({ id: groupId, name: gname, kind });
+  } catch (err: any) {
+    // The partial unique index on system names is the only unique
+    // constraint this insert can hit (fresh UUID pk; members use
+    // ON CONFLICT) — a lost race gets the panel door's clean refusal.
+    if (err?.code === '23505') {
+      res.status(400).json({ error: 'A group with that name already exists.' }); return;
+    }
     console.error('[schedule] create group failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
@@ -9224,7 +9247,11 @@ router.delete('/rooms/:id', requireRole('owner', 'scheduler'), async (req: Reque
 // groups belong to Messages (anyone creates one there) and never
 // surface here. A system group can also hold a Messages
 // conversation — thread membership reads the same unified
-// message_group_members table.
+// message_group_members table. CREATION has two doors: this
+// section, and POST /messages/groups, where an owner/scheduler
+// creating a group makes a system group too (her ruling: system
+// groups are Communication groups, whoever's door they came
+// through); employees creating there still make chat groups.
 function commGroupName(r: any): string {
   return ([r.first_name, r.last_name].filter(Boolean).join(' ') || r.name || '').trim();
 }

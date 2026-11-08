@@ -15914,6 +15914,12 @@ window.qsNpOfferSend = function (btn) {
               '<div class="modal-back hidden" id="group-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:60;padding:1rem">' +
               '<div style="background:var(--surface);border-radius:14px;padding:1.4rem;width:100%;max-width:420px;max-height:85vh;overflow-y:auto">' +
               '<h3 style="margin-top:0">New group</h3>' +
+              // Managers create SYSTEM groups from here too (same
+              // groups as Communication groups) — say so plainly.
+              // Employees create Messages-only chat groups; no line.
+              ((window.currentRole === 'owner' || window.currentRole === 'scheduler')
+                ? '<p style="margin:0.15rem 0 0;font-size:0.85rem;color:var(--dim)">Groups you create here are system groups — they also appear in Communication groups.</p>'
+                : '') +
               '<label style="display:block;font-weight:700;font-size:0.9rem;margin:0.6rem 0 0.3rem">Group name</label>' +
               '<input type="text" id="grp-name" placeholder="e.g. Weekend crew" maxlength="80" style="width:100%;padding:0.6rem;border:1px solid var(--border);border-radius:8px;font-size:1rem">' +
               '<label style="display:block;font-weight:700;font-size:0.9rem;margin:0.9rem 0 0.3rem">Departments (adds everyone in them)</label>' +
