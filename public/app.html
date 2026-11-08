@@ -2038,6 +2038,8 @@
         <span style="color:var(--dim);font-size:0.82rem">Edits apply to this department only.</span>
       </div>
 
+      <div id="xbranch-strip" class="hidden" style="background:#eef6f6;border:1px solid #bfe0e2;border-radius:12px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-size:0.9rem"></div>
+
       <div class="sched-control-box">
         <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
@@ -12639,7 +12641,9 @@ window.qsNpOfferSend = function (btn) {
             // render with the /api/institutions/branches payload.
             (function () {
               window.qsRenderBranchExtras = function (data) {
-                if (!data || !data.linked || !data.isAdmin) return;
+                if (!data || !data.linked) return;
+                if (window.qsRenderShares) window.qsRenderShares(data);
+                if (!data.isAdmin) return;
                 (data.branches || []).forEach(function (b) {
                   var slot = document.querySelector('[data-br-actions="' + b.companyId + '"]');
                   if (!slot || b.companyId === data.myCompany.id) return;
@@ -12656,8 +12660,186 @@ window.qsNpOfferSend = function (btn) {
                   });
                   slot.appendChild(btn);
                 });
-                if (window.qsRenderShares) window.qsRenderShares(data);
               };
+            })();
+            </script>
+            <script>
+            // Shared departments (Deepika, 2026-11-08): offer → pull.
+            // The owning branch shares a department to a sibling branch;
+            // the receiving branch sees its on-call strip, and — when the
+            // share is cover-enabled — can ask its people to cover/take
+            // shifts here. Confirmations happen on the person's act page.
+            (function () {
+              function esc2(s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              }
+              var branchesData = null;
+
+              window.qsRenderShares = function (data) {
+                branchesData = data;
+                var host = document.getElementById('br-shares');
+                if (!host) return;
+                Promise.all([
+                  api('/api/institutions/shares'),
+                  api('/api/departments'),
+                  api('/api/schedule/shift-types'),
+                  api('/api/institutions/assignments'),
+                ]).then(function (rs) {
+                  var shares = rs[0].ok ? rs[0].data : { outgoing: [], incoming: [] };
+                  var depts = rs[1].ok ? (rs[1].data.departments || []) : [];
+                  var types = rs[2].ok ? (rs[2].data.shiftTypes || []) : [];
+                  var assigns = rs[3].ok ? (rs[3].data.assignments || []) : [];
+                  var sibs = (data.branches || []).filter(function (b) { return b.companyId !== data.myCompany.id; });
+                  var h = '<h4 style="margin:1.2rem 0 0.3rem">Shared departments</h4>' +
+                    '<p style="color:var(--dim);font-size:0.88rem;margin:0 0 0.6rem">Share one of your departments with a sister branch: they see who is on call in it, and — if you allow cover — can ask its people to cover shifts. Nothing else about your branch is visible to them.</p>';
+                  if (window.currentRole === 'owner') {
+                    h += '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+                      '<select id="br-share-dept" style="padding:0.55rem;border:1px solid var(--border);border-radius:8px">' +
+                      depts.map(function (d) { return '<option value="' + d.id + '">' + esc2(d.name) + '</option>'; }).join('') + '</select>' +
+                      '<span>→</span>' +
+                      '<select id="br-share-to" style="padding:0.55rem;border:1px solid var(--border);border-radius:8px">' +
+                      sibs.map(function (b) { return '<option value="' + b.companyId + '">' + esc2(b.name) + '</option>'; }).join('') + '</select>' +
+                      '<select id="br-share-mode" style="padding:0.55rem;border:1px solid var(--border);border-radius:8px">' +
+                      '<option value="view">View-only (on-call)</option><option value="cover">Cover-enabled</option></select>' +
+                      '<button type="button" class="btn" id="br-share-add" style="padding:0.55rem 1rem;border-radius:8px">Share department</button></div>' +
+                      '<p id="br-share-msg" style="font-size:0.88rem;margin:0.4rem 0 0"></p>';
+                  }
+                  if (shares.outgoing.length) {
+                    h += '<p style="font-weight:700;margin:0.8rem 0 0.3rem">You share</p>' + shares.outgoing.map(function (s) {
+                      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border)"><span><strong>' +
+                        esc2(s.departmentName) + '</strong> → ' + esc2(s.toCompanyName) +
+                        ' <span style="background:#eef2f2;border-radius:999px;padding:0.1rem 0.55rem;font-size:0.78rem">' + (s.mode === 'cover' ? 'Cover-enabled' : 'View-only') + '</span></span>' +
+                        (window.currentRole === 'owner' ? '<button type="button" class="btn-secondary" data-br-revoke="' + s.id + '" style="padding:0.3rem 0.7rem;border-radius:8px">Revoke</button>' : '') + '</div>';
+                    }).join('');
+                  }
+                  if (shares.incoming.length) {
+                    h += '<p style="font-weight:700;margin:0.8rem 0 0.3rem">Shared with you</p>' + shares.incoming.map(function (s) {
+                      var extra = '';
+                      if (s.mode === 'cover') {
+                        extra = '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin:0.45rem 0 0.2rem">' +
+                          '<select data-xb-people="' + s.id + '" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px"><option value="">Loading people…</option></select>' +
+                          '<input type="date" data-xb-date="' + s.id + '" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px">' +
+                          '<select data-xb-type="' + s.id + '" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px">' +
+                          types.map(function (tp) { return '<option value="' + tp.id + '">' + esc2(tp.name) + '</option>'; }).join('') + '</select>' +
+                          '<select data-xb-kind="' + s.id + '" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px"><option value="cover">Cover</option><option value="assign">Assign</option></select>' +
+                          '<button type="button" class="btn" data-xb-send="' + s.id + '" style="padding:0.45rem 0.9rem;border-radius:8px">Send request</button></div>' +
+                          '<p data-xb-msg="' + s.id + '" style="font-size:0.85rem;margin:0.2rem 0 0"></p>';
+                      } else {
+                        extra = '<p style="color:var(--dim);font-size:0.85rem;margin:0.3rem 0">View-only — its on-call shows on your Schedule. Cover requests are not allowed on a view-only share.</p>';
+                      }
+                      return '<div style="padding:0.35rem 0;border-bottom:1px solid var(--border)"><span><strong>' +
+                        esc2(s.departmentName) + '</strong> from ' + esc2(s.fromCompanyName) +
+                        ' <span style="background:#eef2f2;border-radius:999px;padding:0.1rem 0.55rem;font-size:0.78rem">' + (s.mode === 'cover' ? 'Cover-enabled' : 'View-only') + '</span></span>' + extra + '</div>';
+                    }).join('');
+                  }
+                  if (assigns.length) {
+                    h += '<p style="font-weight:700;margin:0.8rem 0 0.3rem">Cross-branch requests you sent</p>' + assigns.map(function (a) {
+                      return '<div style="padding:0.3rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
+                        esc2(a.personName) + ' (' + esc2(a.fromCompanyName) + ') · ' + esc2(a.shiftTypeName) + ' · ' + a.date +
+                        ' · <strong>' + a.status + '</strong></div>';
+                    }).join('');
+                  }
+                  if (!shares.outgoing.length && !shares.incoming.length) {
+                    h += '<p style="color:var(--dim);font-size:0.88rem">No departments are shared yet.</p>';
+                  }
+                  host.innerHTML = h;
+                  var addBtn = document.getElementById('br-share-add');
+                  if (addBtn) addBtn.addEventListener('click', function () {
+                    var body = {
+                      departmentId: document.getElementById('br-share-dept').value,
+                      toCompanyId: document.getElementById('br-share-to').value,
+                      mode: document.getElementById('br-share-mode').value,
+                    };
+                    api('/api/institutions/shares', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                      var m = document.getElementById('br-share-msg');
+                      if (r.ok) { m.style.color = '#14743c'; m.textContent = 'Shared.'; if (window.qsLoadBranches) window.qsLoadBranches(); }
+                      else { m.style.color = '#b3261e'; m.textContent = (r.data && r.data.error) || 'Could not share.'; }
+                    });
+                  });
+                  host.querySelectorAll('[data-br-revoke]').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                      api('/api/institutions/shares/' + btn.getAttribute('data-br-revoke'), { method: 'DELETE' }).then(function (r) {
+                        if (r.ok && window.qsLoadBranches) window.qsLoadBranches();
+                        else pageError((r.data && r.data.error) || 'Could not revoke.');
+                      });
+                    });
+                  });
+                  shares.incoming.filter(function (s) { return s.mode === 'cover'; }).forEach(function (s) {
+                    api('/api/institutions/shared-people?shareId=' + s.id).then(function (r) {
+                      var sel = host.querySelector('[data-xb-people="' + s.id + '"]');
+                      if (!sel) return;
+                      if (r.ok) {
+                        sel.innerHTML = (r.data.people || []).map(function (p) {
+                          return '<option value="' + p.id + '">' + esc2(p.name) + ' (' + esc2(s.fromBranchName) + ')</option>';
+                        }).join('') || '<option value="">Nobody in that department</option>';
+                      } else sel.innerHTML = '<option value="">Could not load people</option>';
+                    });
+                  });
+                  host.querySelectorAll('[data-xb-send]').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                      var sid = btn.getAttribute('data-xb-send');
+                      var body = {
+                        shareId: sid,
+                        homeUserId: host.querySelector('[data-xb-people="' + sid + '"]').value,
+                        date: host.querySelector('[data-xb-date="' + sid + '"]').value,
+                        hostShiftTypeId: host.querySelector('[data-xb-type="' + sid + '"]').value,
+                        kind: host.querySelector('[data-xb-kind="' + sid + '"]').value,
+                      };
+                      api('/api/institutions/assignments', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                        var m = host.querySelector('[data-xb-msg="' + sid + '"]');
+                        if (r.ok) { m.style.color = '#14743c'; m.textContent = 'Request sent — the person confirms from their bell or email.'; if (window.qsLoadBranches) window.qsLoadBranches(); }
+                        else { m.style.color = '#b3261e'; m.textContent = (r.data && r.data.error) || 'Could not send.'; }
+                      });
+                    });
+                  });
+                }).catch(function () { /* panel extras are best-effort */ });
+              };
+
+              // ---- Schedule on-call strip ----
+              // The schedule's own range state lives inside another
+              // script's scope, so the strip learns the visible range by
+              // watching the app's own shifts requests go by.
+              var xbRange = null;
+              var xbOrigFetch = window.fetch;
+              window.fetch = function (input) {
+                var url = typeof input === 'string' ? input : (input && input.url) || '';
+                var p = xbOrigFetch.apply(this, arguments);
+                var m = /\/api\/schedule\/shifts\?from=(\d{4}-\d{2}-\d{2})&to=(\d{4}-\d{2}-\d{2})/.exec(url);
+                if (m) {
+                  xbRange = { from: m[1], to: m[2] };
+                  p.then(function () { setTimeout(refreshStrip, 80); }).catch(function () { /* ignore */ });
+                }
+                return p;
+              };
+              function fmtMin(m) {
+                if (m == null) return '';
+                var mm = ((m % 1440) + 1440) % 1440;
+                return String(Math.floor(mm / 60)).padStart(2, '0') + ':' + String(mm % 60).padStart(2, '0');
+              }
+              function refreshStrip() {
+                var strip = document.getElementById('xbranch-strip');
+                if (!strip || !xbRange) return;
+                var r = xbRange;
+                api('/api/institutions/oncall?from=' + r.from + '&to=' + r.to).then(function (res) {
+                  if (!res.ok || !res.data.entries || !res.data.entries.length) { strip.classList.add('hidden'); strip.innerHTML = ''; return; }
+                  var lines = res.data.entries.slice(0, 14).map(function (e) {
+                    var when = new Date(e.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                    if (e.kind === 'cross') {
+                      return '<div>🤝 ' + when + ' — <strong>' + esc2(e.personName) + '</strong> (from ' + esc2(e.fromBranch) + ') is ' +
+                        (e.assignmentKind === 'cover' ? 'covering' : 'on') + ' <strong>' + esc2(e.shiftTypeName) + '</strong> here · ' + esc2(e.departmentName) + '</div>';
+                    }
+                    var times = e.startMin != null ? ' · ' + fmtMin(e.startMin) + '–' + fmtMin(e.endMin) : '';
+                    return '<div>🤝 ' + when + ' — ' + esc2(e.departmentName) + ' (from ' + esc2(e.fromBranch) + '): <strong>' + esc2(e.personName) + '</strong> · ' +
+                      esc2(e.shiftTypeName) + times + '</div>';
+                  });
+                  if (res.data.entries.length > 14) lines.push('<div style="color:var(--dim)">…and ' + (res.data.entries.length - 14) + ' more</div>');
+                  strip.innerHTML = '<div style="font-weight:700;margin-bottom:0.25rem">On call at sister branches</div>' + lines.join('');
+                  strip.classList.remove('hidden');
+                }).catch(function () { /* standalone: stays hidden */ });
+              }
+              window.qsRefreshXbranchStrip = refreshStrip;
+              setTimeout(refreshStrip, 4000);
             })();
             </script>
           </div>

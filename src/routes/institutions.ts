@@ -17,6 +17,8 @@ import {
   getBranchLink, isInstitutionAdmin, listBranches,
   findInstitutionByName, notifyInstitutionAdmins,
 } from '../util/institutions';
+import { getShiftsForRange } from '../util/shiftRange';
+import { loadTimedShifts, getShiftTypeTimes } from '../util/shiftConflicts';
 
 const router = Router();
 
@@ -529,6 +531,545 @@ router.post('/branch-invite/accept', publicLimit(10), async (req: Request, res: 
     });
   } catch (err) {
     console.error('[institutions] branch invite accept failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared departments (phase 3): Branch A OFFERS one of its departments to
+// a named sibling branch; Branch B PULLS. View-only shares feed B's
+// on-call strip; cover-enabled shares additionally let B's managers ask
+// A's people in that department to cover or take B shifts of it. The
+// cross-branch identity key is the person's EMAIL: a human with accounts
+// in both branches is the same human, matched by email for conflict
+// checks.
+// ---------------------------------------------------------------------------
+
+interface ShareRow {
+  id: string; institutionId: string; fromCompanyId: string; departmentId: string;
+  toCompanyId: string; mode: string; departmentName: string;
+  fromCompanyName: string; toCompanyName: string;
+}
+
+async function loadShare(id: string): Promise<ShareRow | null> {
+  const { rows } = await query<ShareRow>(
+    `SELECT ds.id, ds.institution_id AS "institutionId", ds.from_company_id AS "fromCompanyId",
+            ds.department_id AS "departmentId", ds.to_company_id AS "toCompanyId", ds.mode,
+            d.name AS "departmentName", cf.name AS "fromCompanyName", ct.name AS "toCompanyName"
+     FROM department_shares ds
+     JOIN departments d ON d.id = ds.department_id
+     JOIN companies cf ON cf.id = ds.from_company_id
+     JOIN companies ct ON ct.id = ds.to_company_id
+     WHERE ds.id = $1 AND ds.revoked_at IS NULL`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+router.get('/shares', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows: outgoing } = await query(
+      `SELECT ds.id, ds.department_id AS "departmentId", d.name AS "departmentName",
+              ds.to_company_id AS "toCompanyId", c.name AS "toCompanyName", ds.mode
+       FROM department_shares ds
+       JOIN departments d ON d.id = ds.department_id
+       JOIN companies c ON c.id = ds.to_company_id
+       WHERE ds.from_company_id = $1 AND ds.revoked_at IS NULL ORDER BY d.name`,
+      [companyId]
+    );
+    const { rows: incoming } = await query(
+      `SELECT ds.id, ds.department_id AS "departmentId", d.name AS "departmentName",
+              ds.from_company_id AS "fromCompanyId", c.name AS "fromCompanyName", ds.mode
+       FROM department_shares ds
+       JOIN departments d ON d.id = ds.department_id
+       JOIN companies c ON c.id = ds.from_company_id
+       WHERE ds.to_company_id = $1 AND ds.revoked_at IS NULL ORDER BY d.name`,
+      [companyId]
+    );
+    res.json({ outgoing, incoming });
+  } catch (err) {
+    console.error('[institutions] shares list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/shares', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const departmentId = String(req.body?.departmentId || '');
+    const toCompanyId = String(req.body?.toCompanyId || '');
+    const mode = req.body?.mode === 'cover' ? 'cover' : 'view';
+    const link = await getBranchLink(companyId);
+    if (!link) {
+      res.status(400).json({ error: 'Only branches of an institution can share departments.' });
+      return;
+    }
+    const { rows: dept } = await query(
+      'SELECT id, name FROM departments WHERE id = $1 AND company_id = $2',
+      [departmentId, companyId]
+    );
+    if (!dept.length) {
+      res.status(400).json({ error: 'That department is not in this branch.' });
+      return;
+    }
+    if (toCompanyId === companyId) {
+      res.status(400).json({ error: 'Pick a different branch to share with.' });
+      return;
+    }
+    const { rows: sib } = await query(
+      'SELECT company_id AS "companyId" FROM institution_branches WHERE institution_id = $1 AND company_id = $2',
+      [link.institutionId, toCompanyId]
+    );
+    if (!sib.length) {
+      res.status(400).json({ error: 'That branch is not part of this institution.' });
+      return;
+    }
+    const { rows: existing } = await query(
+      `SELECT id FROM department_shares WHERE department_id = $1 AND to_company_id = $2 AND revoked_at IS NULL`,
+      [departmentId, toCompanyId]
+    );
+    if (existing.length) {
+      await query('UPDATE department_shares SET mode = $1 WHERE id = $2', [mode, existing[0].id]);
+      res.json({ ok: true, id: existing[0].id, updated: true });
+      return;
+    }
+    const id = crypto.randomUUID();
+    await query(
+      `INSERT INTO department_shares (id, institution_id, from_company_id, department_id, to_company_id, mode, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, link.institutionId, companyId, departmentId, toCompanyId, mode, req.session.userId!]
+    );
+    res.status(201).json({ ok: true, id });
+  } catch (err) {
+    console.error('[institutions] share create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.delete('/shares/:id', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const share = await loadShare(req.params.id);
+    if (!share) {
+      res.status(404).json({ error: 'Share not found.' });
+      return;
+    }
+    // Only the owning branch revokes (an institution admin acting inside
+    // the branch via the switcher has this session company too).
+    if (share.fromCompanyId !== req.session.companyId) {
+      res.status(403).json({ error: 'Only the branch that shared the department can revoke the share.' });
+      return;
+    }
+    await query('UPDATE department_shares SET revoked_at = now() WHERE id = $1', [share.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[institutions] share revoke failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+/** All ACTIVE shares INTO the caller's company, with the source rows. */
+async function incomingShares(companyId: string): Promise<ShareRow[]> {
+  const { rows } = await query<ShareRow>(
+    `SELECT ds.id, ds.institution_id AS "institutionId", ds.from_company_id AS "fromCompanyId",
+            ds.department_id AS "departmentId", ds.to_company_id AS "toCompanyId", ds.mode,
+            d.name AS "departmentName", cf.name AS "fromCompanyName", ct.name AS "toCompanyName"
+     FROM department_shares ds
+     JOIN departments d ON d.id = ds.department_id
+     JOIN companies cf ON cf.id = ds.from_company_id
+     JOIN companies ct ON ct.id = ds.to_company_id
+     WHERE ds.to_company_id = $1 AND ds.revoked_at IS NULL`,
+    [companyId]
+  );
+  return rows;
+}
+
+// GET /oncall?from&to — the receiving branch's cross-branch on-call
+// source: for every incoming share, the source branch's actual shifts
+// for the shared department in range, plus CONFIRMED cross-branch
+// assignments into this branch. Visible to any signed-in member of the
+// receiving branch (the on-call strip is a staff surface).
+router.get('/oncall', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      res.status(400).json({ error: 'from and to dates are required.' });
+      return;
+    }
+    const shares = await incomingShares(companyId);
+    const entries: any[] = [];
+    for (const share of shares) {
+      // People of the shared department in the source branch.
+      const { rows: people } = await query(
+        'SELECT id FROM users WHERE company_id = $1 AND department_id = $2 AND is_active = true',
+        [share.fromCompanyId, share.departmentId]
+      );
+      const personIds = new Set(people.map((p: any) => p.id));
+      if (!personIds.size) continue;
+      const shifts = await getShiftsForRange(query, share.fromCompanyId, from, to);
+      const types = await getShiftTypeTimes(query, share.fromCompanyId);
+      for (const s of shifts) {
+        if (!s.userId || !personIds.has(s.userId)) continue;
+        const tt = s.shiftTypeId ? types.get(s.shiftTypeId) : undefined;
+        entries.push({
+          kind: 'oncall', shareId: share.id, date: s.date,
+          personName: s.personName, shiftTypeName: s.shiftTypeName,
+          startMin: tt?.startMin ?? null, endMin: tt?.endMin ?? null,
+          departmentName: share.departmentName, fromBranch: share.fromCompanyName,
+          mode: share.mode,
+        });
+      }
+    }
+    if (shares.length) {
+      const { rows: cross } = await query(
+        `SELECT ca.id, ca.date::text AS date, ca.kind, ca.share_id AS "shareId",
+                COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+                st.name AS "shiftTypeName", st.start_time AS "startTime", st.end_time AS "endTime",
+                d.name AS "departmentName", cf.name AS "fromCompanyName"
+         FROM cross_branch_assignments ca
+         JOIN users u ON u.id = ca.home_user_id
+         JOIN shift_types st ON st.id = ca.host_shift_type_id
+         JOIN department_shares ds ON ds.id = ca.share_id
+         JOIN departments d ON d.id = ds.department_id
+         JOIN companies cf ON cf.id = ca.home_company_id
+         WHERE ca.host_company_id = $1 AND ca.status = 'confirmed'
+           AND ca.date >= $2 AND ca.date <= $3 AND ds.revoked_at IS NULL
+         ORDER BY ca.date`,
+        [companyId, from, to]
+      );
+      for (const c of cross) {
+        entries.push({
+          kind: 'cross', assignmentKind: c.kind, shareId: c.shareId, date: c.date,
+          personName: c.personName, shiftTypeName: c.shiftTypeName,
+          startTime: c.startTime, endTime: c.endTime,
+          departmentName: c.departmentName, fromBranch: c.fromCompanyName,
+        });
+      }
+    }
+    entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    res.json({ entries });
+  } catch (err) {
+    console.error('[institutions] oncall failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /shared-people?shareId= — the shared department's people, for the
+// receiving branch's managers to pick from (cover-enabled shares only).
+router.get('/shared-people', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const share = await loadShare(String(req.query.shareId || ''));
+    if (!share || share.toCompanyId !== req.session.companyId) {
+      res.status(404).json({ error: 'Share not found.' });
+      return;
+    }
+    if (share.mode !== 'cover') {
+      res.status(403).json({ error: 'This share is view-only — its people cannot be asked to cover.' });
+      return;
+    }
+    const { rows } = await query(
+      `SELECT id, COALESCE(nickname, first_name || ' ' || last_name) AS name, email
+       FROM users WHERE company_id = $1 AND department_id = $2 AND is_active = true
+       ORDER BY name`,
+      [share.fromCompanyId, share.departmentId]
+    );
+    res.json({ people: rows, departmentName: share.departmentName, fromBranch: share.fromCompanyName });
+  } catch (err) {
+    console.error('[institutions] shared-people failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /assignments — cross-branch requests THIS branch sent (as host).
+router.get('/assignments', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const { rows } = await query(
+      `SELECT ca.id, ca.date::text AS date, ca.kind, ca.status,
+              COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+              st.name AS "shiftTypeName", cf.name AS "fromCompanyName"
+       FROM cross_branch_assignments ca
+       JOIN users u ON u.id = ca.home_user_id
+       JOIN shift_types st ON st.id = ca.host_shift_type_id
+       JOIN companies cf ON cf.id = ca.home_company_id
+       WHERE ca.host_company_id = $1 ORDER BY ca.created_at DESC LIMIT 50`,
+      [req.session.companyId!]
+    );
+    res.json({ assignments: rows });
+  } catch (err) {
+    console.error('[institutions] assignments list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /assignments — Branch B asks one of Branch A's people (in the
+// shared department) to cover or take one of B's shifts. Creates a
+// PENDING cross-branch assignment; the person confirms on the act page
+// (bell + email), where the dual conflict check runs.
+router.post('/assignments', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const hostCompany = req.session.companyId!;
+    const shareId = String(req.body?.shareId || '');
+    const homeUserId = String(req.body?.homeUserId || '');
+    const hostShiftTypeId = String(req.body?.hostShiftTypeId || '');
+    const date = String(req.body?.date || '');
+    const kind = req.body?.kind === 'cover' ? 'cover' : 'assign';
+    const hostDepartmentId = req.body?.hostDepartmentId ? String(req.body.hostDepartmentId) : null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: 'Pick a date.' });
+      return;
+    }
+    const share = await loadShare(shareId);
+    if (!share || share.toCompanyId !== hostCompany) {
+      res.status(404).json({ error: 'Share not found.' });
+      return;
+    }
+    if (share.mode !== 'cover') {
+      res.status(403).json({ error: 'This department is shared view-only — cover requests are not allowed.' });
+      return;
+    }
+    const { rows: person } = await query(
+      `SELECT id, email, COALESCE(nickname, first_name || ' ' || last_name) AS name
+       FROM users WHERE id = $1 AND company_id = $2 AND department_id = $3 AND is_active = true`,
+      [homeUserId, share.fromCompanyId, share.departmentId]
+    );
+    if (!person.length) {
+      res.status(400).json({ error: 'That person is not in the shared department.' });
+      return;
+    }
+    const { rows: st } = await query(
+      'SELECT id, name FROM shift_types WHERE id = $1 AND company_id = $2',
+      [hostShiftTypeId, hostCompany]
+    );
+    if (!st.length) {
+      res.status(400).json({ error: 'That shift type is not in this branch.' });
+      return;
+    }
+    const { rows: dup } = await query(
+      `SELECT id FROM cross_branch_assignments
+       WHERE share_id = $1 AND home_user_id = $2 AND host_shift_type_id = $3 AND date = $4
+         AND status IN ('pending', 'confirmed')`,
+      [shareId, homeUserId, hostShiftTypeId, date]
+    );
+    if (dup.length) {
+      res.status(409).json({ error: 'That person already has a request for this shift.' });
+      return;
+    }
+    const id = crypto.randomUUID();
+    const token = crypto.randomBytes(32).toString("hex");
+    await query(
+      `INSERT INTO cross_branch_assignments
+         (id, share_id, host_company_id, home_company_id, home_user_id, host_shift_type_id, host_department_id, date, kind, status, token, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)`,
+      [id, shareId, hostCompany, share.fromCompanyId, homeUserId, hostShiftTypeId, hostDepartmentId, date, kind, token, req.session.userId!]
+    );
+    const { rows: hostCo } = await query('SELECT name FROM companies WHERE id = $1', [hostCompany]);
+    const actPath = '/xbranch.html?' + new URLSearchParams({ token }).toString();
+    const title = kind === 'cover' ? 'Cover request from another branch' : 'Shift offer from another branch';
+    const body =
+      `${hostCo[0]?.name || 'Another branch'} is asking you to ${kind === 'cover' ? 'cover' : 'take'} the ${st[0].name} shift on ${date} ` +
+      `(${share.departmentName}, shared with your branch). Open the link to accept or decline — accepting checks your shifts in both branches first.`;
+    await notify({
+      companyId: share.fromCompanyId, userIds: [person[0].id],
+      category: 'schedule', type: 'xbranch_request', title, body, link: actPath,
+    }).catch(() => { /* bell is best-effort */ });
+    const appUrl = process.env.APP_URL || 'http://localhost:4100';
+    sendMail({
+      to: person[0].email,
+      subject: title,
+      text: `${body}\n\nReview it here: ${appUrl}${actPath}\n`,
+      html: `<p>${body}</p><p><a href="${appUrl}${actPath}">Review the request</a></p>`,
+    }).catch(() => { /* DEV outbox / best-effort */ });
+    res.status(201).json({ ok: true, id, status: 'pending' });
+  } catch (err) {
+    console.error('[institutions] assignment create failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Public act page for cross-branch assignments (token = the credential,
+// same pattern as the gap offers).
+// ---------------------------------------------------------------------------
+async function assignmentByToken(token: string) {
+  if (!token || token.length < 32) return null;
+  const { rows } = await query(
+    `SELECT ca.id, ca.share_id AS "shareId", ca.host_company_id AS "hostCompanyId",
+            ca.home_company_id AS "homeCompanyId", ca.home_user_id AS "homeUserId",
+            ca.host_shift_type_id AS "hostShiftTypeId", ca.host_department_id AS "hostDepartmentId",
+            ca.date::text AS date, ca.kind, ca.status, ca.created_by AS "createdBy",
+            COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+            u.email AS "personEmail",
+            st.name AS "shiftTypeName", st.start_time AS "startTime", st.end_time AS "endTime",
+            hc.name AS "hostCompanyName", d.name AS "departmentName"
+     FROM cross_branch_assignments ca
+     JOIN users u ON u.id = ca.home_user_id
+     JOIN shift_types st ON st.id = ca.host_shift_type_id
+     JOIN companies hc ON hc.id = ca.host_company_id
+     JOIN department_shares ds ON ds.id = ca.share_id
+     JOIN departments d ON d.id = ds.department_id
+     WHERE ca.token = $1`,
+    [token]
+  );
+  return rows[0] || null;
+}
+
+router.get('/assignments/act-info', publicLimit(60), async (req: Request, res: Response) => {
+  try {
+    const a = await assignmentByToken(String(req.query.token || ''));
+    if (!a) {
+      res.status(404).json({ error: 'This link is not valid.' });
+      return;
+    }
+    res.json({
+      personName: a.personName, hostBranch: a.hostCompanyName, departmentName: a.departmentName,
+      date: a.date, shiftTypeName: a.shiftTypeName, startTime: a.startTime, endTime: a.endTime,
+      kind: a.kind, status: a.status,
+    });
+  } catch (err) {
+    console.error('[institutions] act-info failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+function dayNumOf(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return Math.floor(Date.UTC(y, (m || 1) - 1, d || 1) / 86400000);
+}
+
+router.post('/assignments/act', publicLimit(30), async (req: Request, res: Response) => {
+  try {
+    const a = await assignmentByToken(String(req.body?.token || ''));
+    if (!a) {
+      res.status(404).json({ error: 'This link is not valid.' });
+      return;
+    }
+    if (a.status !== 'pending') {
+      res.status(409).json({ error: `This request was already ${a.status}.` });
+      return;
+    }
+    const decision = String(req.body?.decision || '');
+    if (decision === 'decline') {
+      await query(
+        `UPDATE cross_branch_assignments SET status = 'declined', decided_at = now() WHERE id = $1`,
+        [a.id]
+      );
+      res.json({ ok: true, status: 'declined' });
+      return;
+    }
+    if (decision !== 'accept') {
+      res.status(400).json({ error: 'Say accept or decline.' });
+      return;
+    }
+    // --- DUAL conflict check (the heart of the feature) ---
+    // Candidate window: the host shift on its date, in absolute minutes.
+    const hostTypes = await getShiftTypeTimes(query, a.hostCompanyId);
+    const hostType = hostTypes.get(a.hostShiftTypeId);
+    const candStart = hostType?.startMin != null ? dayNumOf(a.date) * 1440 + hostType.startMin : null;
+    const candEnd = hostType?.endMin != null ? dayNumOf(a.date) * 1440 + hostType.endMin : null;
+    const overlaps = (s: { date: string; startMin: number | null; endMin: number | null }) => {
+      if (candStart == null || candEnd == null || s.startMin == null || s.endMin == null) return false;
+      const ss = dayNumOf(s.date) * 1440 + s.startMin;
+      const ee = dayNumOf(s.date) * 1440 + s.endMin;
+      return ss < candEnd && candStart < ee;
+    };
+    if (candStart != null) {
+      // 1) The person's HOME-branch shifts (manual + rotation) that day
+      //    and the day before (overnight spill).
+      const prev = new Date((dayNumOf(a.date) - 1) * 86400000).toISOString().slice(0, 10);
+      const homeShifts = await loadTimedShifts(query, a.homeCompanyId, prev, a.date);
+      const clashHome = homeShifts.find((s) => s.userId === a.homeUserId && overlaps(s));
+      if (clashHome) {
+        res.status(409).json({
+          error: `You already work ${clashHome.shiftTypeName} at your home branch then — accepting would double-book you.`,
+        });
+        return;
+      }
+      // 2) The same human in the HOST branch (matched by EMAIL): their
+      //    own host-branch shifts, plus their other confirmed
+      //    cross-branch assignments into the host branch.
+      const { rows: hostUsers } = await query(
+        'SELECT id FROM users WHERE company_id = $1 AND lower(email) = lower($2) AND is_active = true',
+        [a.hostCompanyId, a.personEmail]
+      );
+      if (hostUsers.length) {
+        const hostShifts = await loadTimedShifts(query, a.hostCompanyId, prev, a.date);
+        const ids = new Set(hostUsers.map((u: any) => u.id));
+        const clashHost = hostShifts.find((s) => ids.has(s.userId) && overlaps(s));
+        if (clashHost) {
+          res.status(409).json({
+            error: `You already work ${clashHost.shiftTypeName} at ${a.hostCompanyName} then — accepting would double-book you.`,
+          });
+          return;
+        }
+      }
+      const { rows: otherCross } = await query(
+        `SELECT ca.date::text AS date, st.start_time AS "startTime", st.end_time AS "endTime"
+         FROM cross_branch_assignments ca
+         JOIN shift_types st ON st.id = ca.host_shift_type_id
+         JOIN users u ON u.id = ca.home_user_id
+         WHERE ca.host_company_id = $1 AND ca.status = 'confirmed' AND ca.id <> $2
+           AND lower(u.email) = lower($3) AND ca.date IN ($4, $5)`,
+        [a.hostCompanyId, a.id, a.personEmail, a.date, prev]
+      );
+      // start/end are "HH:MM" — compare in minutes-of-day on same date only.
+      const toMin = (t: string | null) => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null);
+      const clashCross = otherCross.find((c: any) => {
+        if (c.date !== a.date) return false;
+        const s = { date: c.date, startMin: toMin(c.startTime), endMin: toMin(c.endTime) };
+        if (s.startMin != null && s.endMin != null && s.endMin <= s.startMin) s.endMin += 1440;
+        return overlaps(s);
+      });
+      if (clashCross) {
+        res.status(409).json({ error: 'You already confirmed another cross-branch shift that overlaps this one.' });
+        return;
+      }
+      // 3) Cover only: the host shift must still NEED someone (staffing
+      //    target vs people already on it — host staff + confirmed
+      //    cross-branch assignees).
+      if (a.kind === 'cover') {
+        const { rows: targets } = await query(
+          `SELECT target_count AS "targetCount", weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+           FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+          [a.hostCompanyId, a.hostShiftTypeId]
+        );
+        const tgt = targets[0];
+        if (tgt && tgt.targetCount > 0) {
+          const dow = new Date(a.date + 'T00:00:00Z').getUTCDay();
+          const weekdays: number[] = tgt.weekdays || [0, 1, 2, 3, 4, 5, 6];
+          const inWindow = (!tgt.startDate || a.date >= tgt.startDate) && (!tgt.endDate || a.date <= tgt.endDate);
+          if (inWindow && weekdays.includes(dow)) {
+            const hostShifts = await getShiftsForRange(query, a.hostCompanyId, a.date, a.date);
+            const own = hostShifts.filter((s) => s.shiftTypeId === a.hostShiftTypeId).length;
+            const { rows: conf } = await query(
+              `SELECT COUNT(*)::int AS n FROM cross_branch_assignments
+               WHERE host_company_id = $1 AND host_shift_type_id = $2 AND date = $3 AND status = 'confirmed'`,
+              [a.hostCompanyId, a.hostShiftTypeId, a.date]
+            );
+            if (own + conf[0].n >= tgt.targetCount) {
+              res.status(409).json({ error: 'Good news — that shift is fully staffed now, so cover is no longer needed.' });
+              return;
+            }
+          }
+        }
+      }
+    }
+    await query(
+      `UPDATE cross_branch_assignments SET status = 'confirmed', decided_at = now() WHERE id = $1`,
+      [a.id]
+    );
+    if (a.createdBy) {
+      await notify({
+        companyId: a.hostCompanyId, userIds: [a.createdBy],
+        category: 'schedule', type: 'xbranch_decision',
+        title: 'Cross-branch request accepted',
+        body: `${a.personName} accepted the ${a.shiftTypeName} shift on ${a.date} (${a.departmentName}, from another branch).`,
+      }).catch(() => { /* best-effort */ });
+    }
+    res.json({ ok: true, status: 'confirmed' });
+  } catch (err) {
+    console.error('[institutions] act failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
