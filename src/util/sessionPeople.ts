@@ -126,11 +126,11 @@ export async function cleanBeneficiaries(
   const userIds = Array.isArray(userRaw) ? [...new Set(userRaw.map((x: any) => String(x)).filter(Boolean))] : [];
   if (deptIds.length) {
     const { rows } = await q('SELECT id FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, deptIds]);
-    if (rows.length !== deptIds.length) return { error: 'A beneficiary department could not be found.' };
+    if (rows.length !== deptIds.length) return { error: 'An attendee department could not be found.' };
   }
   if (userIds.length) {
     const { rows } = await q('SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id = ANY($2::uuid[])', [companyId, userIds]);
-    if (rows.length !== userIds.length) return { error: 'A beneficiary is not an active team member.' };
+    if (rows.length !== userIds.length) return { error: 'An attendee is not an active team member.' };
   }
   return { departmentIds: deptIds, userIds };
 }

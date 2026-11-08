@@ -93,7 +93,7 @@
         var BOX = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem';
         m.innerHTML = '<div class="cg-panel" style="background:var(--bg);border-radius:16px;padding:1.3rem;width:100%;max-height:90vh;overflow-y:auto">' +
           '<h3 style="margin:0 0 0.3rem">' + (group ? 'Edit communication group' : 'New communication group') + '</h3>' +
-          '<p class="muted" style="margin:0 0 0.9rem;font-size:0.88rem">A saved circle of people you can pick in one tap — for event beneficiaries, and later for messages.</p>' +
+          '<p class="muted" style="margin:0 0 0.9rem;font-size:0.88rem">A saved circle of people you can pick in one tap — for event attendees, and later for messages.</p>' +
           '<div class="cg-boxes">' +
           '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
           '<input id="cg-name" type="text" maxlength="80" placeholder="e.g. Interview Panel" value="' + (group ? esc(group.name) : '') + '" style="' + IN + ';margin-top:0"></div>' +
@@ -8336,7 +8336,7 @@ window.qsNpOfferSend = function (btn) {
             </div>
             <button type="button" class="btn" id="room-new-save">＋ Add room</button>
             <h3 style="margin-top:2rem">👥 Communication groups</h3>
-            <p class="muted">Saved circles of people who regularly need to be at things — members can come from any departments, mixed together. Pick a group in one tap when adding an event's beneficiaries and everyone in it gets the event. Groups are for communications only — they don't change anyone's schedule or permissions.</p>
+            <p class="muted">Saved circles of people who regularly need to be at things — members can come from any departments, mixed together. Pick a group in one tap when adding an event's attendees and everyone in it gets the event. Groups are for communications only — they don't change anyone's schedule or permissions.</p>
             <div id="cg-list"></div>
             <button type="button" class="btn" id="cg-new">＋ New group</button>
           </div>
@@ -17879,43 +17879,30 @@ window.qsNpOfferSend = function (btn) {
         if (src && src.speakers && src.speakers.length) speakerState = src.speakers.map(function (sp) { return sp.guest ? { guest: true, name: sp.name || '', email: sp.guestEmail || '' } : { userId: sp.userId }; });
         else if (src && src.lecturerUserId) speakerState = [{ userId: src.lecturerUserId }];
         else if (prefill && prefill.speakerUserIds && prefill.speakerUserIds.length) speakerState = prefill.speakerUserIds.map(function (u) { return { userId: u }; });
-        if (!speakerState.length) speakerState = [{ userId: '' }];
+        // Form pass: no blank starter row — an empty speaker list is
+        // just an empty chip field ("Add a …" placeholder).
         var initDate = src ? src.date : (presetDate || (prefill && prefill.date) || fmtD(new Date()));
         var initStart = src ? (src.startTime || '') : (opts.startTime || (prefill && prefill.startTime) || '');
         var initEnd = src ? (src.endTime || '') : (opts.endTime || (prefill && prefill.endTime) || '');
         var initTitle = src ? src.title : (prefill && prefill.title) || '';
-        // Role name (Deepika, 2026-11-07): the people slot follows
-        // the session TYPE — an "Interview" type's slot is called
-        // "Interviewer" — and the form's Role name box can rename it
-        // for THIS session only. The type's label comes from the
-        // kind (kinds manager "needs a ___"); default 'Speaker'.
+        // People-slot label (Deepika, 2026-11-07, form pass): the
+        // slot follows the session TYPE — an "Interview" type's slot
+        // is called "Interviewer". There is NO Role name box anymore:
+        // the label comes from the kind alone (kinds manager "needs
+        // a ___"; default 'Speaker'), the form ignores any stored
+        // per-session override, and saves post personLabel: null.
         function typeLabelFor(key) { var k = kindOf(key); return (k && k.personLabel) || 'Speaker'; }
-        var roleInit = src ? (src.personLabelOverride || typeLabelFor(src.kind)) : typeLabelFor('session');
+        var spLabelInit = typeLabelFor(src ? src.kind : 'session');
         var m = document.createElement('div');
         m.id = 'ac-modal';
         m.className = 'modal-back';
         m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:70;padding:1rem';
-        var IN = 'width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-top:0.3rem';
-        m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.5rem;width:100%;max-width:560px;max-height:90vh;overflow-y:auto">' +
-          '<h2 style="margin-top:0">' + (s ? 'Edit event' : (isCopy ? 'Copy event' : 'Add event')) + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
+        var IN = 'width:100%;padding:0.52rem;border-radius:8px;border:1px solid var(--border);margin-top:0.25rem';
+        m.innerHTML = '<div style="background:var(--surface);border-radius:16px;padding:1.2rem;width:100%;max-width:460px;max-height:90vh;overflow-y:auto">' +
+          '<h2 style="margin:0 0 0.6rem">' + (s ? 'Edit event' : (isCopy ? 'Copy event' : 'Add event')) + (curDash ? ' — ' + esc(curDash.name) : '') + '</h2>' +
           (isCopy ? '<div style="font-size:0.85rem;color:var(--dim);margin-bottom:0.7rem">A fresh copy of “' + esc(src ? src.title : '') + '” — room and meeting link start empty; change the date or time and save.</div>' : '') +
           (s && rule !== 'none' ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:0.6rem 0.7rem;font-size:0.88rem;margin-bottom:0.7rem"><div style="font-weight:700;margin-bottom:0.35rem">↻ This session repeats — what are you changing?</div><label style="display:block;cursor:pointer;margin-bottom:0.25rem"><input type="radio" name="acf-scope" value="date" checked> Just this date (<span id="acf-scope-dlabel"></span>)</label><label style="display:block;cursor:pointer"><input type="radio" name="acf-scope" value="series"> The whole series — every date</label><div id="acf-scope-note" style="margin-top:0.35rem;color:#6d28d9"></div></div>' : '') +
-          '<div id="acf-org-wrap" style="margin-bottom:0.7rem">' + (function () {
-            if (empOrg) {
-              var ed = orgSelected ? acDepts.find(function (d) { return d.id === orgSelected; }) : null;
-              return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + (ed ? esc(ed.name) : 'No department') + '</div>' + (orgSelected ? '<input type="hidden" id="acf-orgdept" value="' + orgSelected + '">' : '');
-            }
-            if (!manageable.length) return '<div style="font-weight:600">Organizing department</div><div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-top:0.3rem">You don\'t manage a department on this calendar.</div>';
-            if (manageable.length === 1) return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + esc(manageable[0].name) + '</div><input type="hidden" id="acf-orgdept" value="' + manageable[0].id + '">';
-            var extra = '';
-            if (orgSelected && !manageable.some(function (d) { return d.id === orgSelected; })) {
-              var curD = acDepts.find(function (d) { return d.id === orgSelected; });
-              extra = '<option value="' + orgSelected + '" selected>' + esc(curD ? curD.name : (src && src.departmentName) || 'Current department') + '</option>';
-            }
-            return '<label style="display:block">Organizing department<br><select id="acf-orgdept" style="' + IN + '">' + extra + manageable.map(function (d) { return '<option value="' + d.id + '"' + (d.id === orgSelected ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select><div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">You can organize events for the departments you manage. With one department, this fills in by itself.</div></label>';
-          })() + '</div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Event name<br><input id="acf-title" type="text" value="' + esc(initTitle) + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
-          '<label style="display:block;margin-bottom:0.7rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
+          '<label style="display:block;margin-bottom:0.55rem">Session type<br><select id="acf-kind" style="' + IN + '">' + (function () {
             var list = acKinds.length ? acKinds : [{ key: 'session', label: 'Lecture' }, { key: 'event', label: 'Event' }];
             var cur = src ? src.kind : 'session';
             var has = list.some(function (k) { return k.key === cur; });
@@ -17923,8 +17910,31 @@ window.qsNpOfferSend = function (btn) {
             if (!has) opts += '<option value="' + esc(cur) + '" selected>' + esc(kindLabel(cur)) + '</option>';
             return opts;
           })() + '</select></label>' +
-          '<div id="acf-ben-wrap" style="margin-bottom:0.7rem"><div style="font-weight:600">Beneficiaries — who is this event for?</div>' +
+          '<label style="display:block;margin-bottom:0.55rem">Event name<br><input id="acf-title" type="text" value="' + esc(initTitle) + '" placeholder="e.g. Cardiology lecture" style="' + IN + '"></label>' +
+          '<div id="acf-org-wrap" style="margin-bottom:0.55rem">' + (function () {
+            if (empOrg) {
+              var ed = orgSelected ? acDepts.find(function (d) { return d.id === orgSelected; }) : null;
+              return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.52rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + (ed ? esc(ed.name) : 'No department') + '</div>' + (orgSelected ? '<input type="hidden" id="acf-orgdept" value="' + orgSelected + '">' : '');
+            }
+            if (!manageable.length) return '<div style="font-weight:600">Organizing department</div><div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-top:0.3rem">You don\'t manage a department on this calendar.</div>';
+            if (manageable.length === 1) return '<div style="font-weight:600">Organizing department</div><div style="margin-top:0.3rem;padding:0.52rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">' + esc(manageable[0].name) + '</div><input type="hidden" id="acf-orgdept" value="' + manageable[0].id + '">';
+            var extra = '';
+            if (orgSelected && !manageable.some(function (d) { return d.id === orgSelected; })) {
+              var curD = acDepts.find(function (d) { return d.id === orgSelected; });
+              extra = '<option value="' + orgSelected + '" selected>' + esc(curD ? curD.name : (src && src.departmentName) || 'Current department') + '</option>';
+            }
+            return '<label style="display:block">Organizing department<br><select id="acf-orgdept" style="' + IN + '">' + extra + manageable.map(function (d) { return '<option value="' + d.id + '"' + (d.id === orgSelected ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') + '</select><div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">You can organize events for the departments you manage. With one department, this fills in by itself.</div></label>';
+          })() + '</div>' +
+          '<div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.2rem"><label style="flex:1;min-width:140px">Date<br><input id="acf-date" type="date" value="' + esc(initDate) + '" style="' + IN + '"></label>' +
+          '<label style="flex:1;min-width:105px">Start time<br><input id="acf-start" type="time" value="' + esc(initStart) + '" style="' + IN + '"></label>' +
+          '<label style="flex:1;min-width:105px">End time<br><input id="acf-end" type="time" value="' + esc(initEnd) + '" style="' + IN + '"></label></div>' +
+          ((opts.fromSlot || prefill) ? '<div style="font-size:0.82rem;color:var(--dim);margin-bottom:0.55rem">Picked from the calendar block you tapped — adjust if needed.</div>' : '<div style="margin-bottom:0.35rem"></div>') +
+          '<div id="acf-ben-wrap" style="margin-bottom:0.55rem"><div style="font-weight:600">Attendees — who is this event for?</div>' +
           '<div style="font-size:0.82rem;color:var(--dim);margin:0.25rem 0 0.45rem">They\'ll have this event on their calendar to attend.</div>' +
+          '<div id="acf-benfield" role="button" tabindex="0" aria-expanded="false" style="border:1px solid var(--border);border-radius:10px;padding:0.45rem 0.55rem;cursor:pointer;display:flex;align-items:flex-start;gap:0.4rem;background:var(--surface)">' +
+          '<div id="acf-benusers" style="display:flex;gap:0.35rem;flex-wrap:wrap;flex:1;align-items:center;min-height:1.55rem"></div>' +
+          '<span aria-hidden="true" style="flex:none;color:var(--dim);padding-top:0.25rem">▾</span></div>' +
+          '<div id="acf-benpanel" style="display:none;border:1px solid var(--border);border-radius:12px;padding:0.7rem;margin-top:0.45rem;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,0.10)">' +
           '<div id="acf-bengroups-wrap" style="margin-bottom:0.6rem">' +
           '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;font-size:0.9rem">Groups</span>' +
           ((acMyRole === 'owner' || acMyRole === 'scheduler') ? '<button type="button" id="acf-cgnew" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.86rem;cursor:pointer;padding:0">＋ New group</button>' : '') + '</div>' +
@@ -17935,37 +17945,34 @@ window.qsNpOfferSend = function (btn) {
             var on = benDeptSel.has(d.id);
             return '<button type="button" data-bendept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.3rem 0.7rem;font-size:0.83rem;cursor:pointer">' + esc(d.name) + '</button>';
           }).join('') + '</div>' +
-          '<label style="display:block;margin-top:0.55rem">People (optional)<br><select id="acf-benadd" style="' + IN + '"><option value="">Add a person…</option>' + people.map(function (u) { var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; return '<option value="' + u.id + '">' + esc(nm) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>'; }).join('') + '</select></label>' +
-          '<div id="acf-benusers" style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.45rem"></div></div>' +
-          '<div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.2rem"><label style="flex:1;min-width:140px">Date<br><input id="acf-date" type="date" value="' + esc(initDate) + '" style="' + IN + '"></label>' +
-          '<label style="flex:1;min-width:105px">Start time<br><input id="acf-start" type="time" value="' + esc(initStart) + '" style="' + IN + '"></label>' +
-          '<label style="flex:1;min-width:105px">End time<br><input id="acf-end" type="time" value="' + esc(initEnd) + '" style="' + IN + '"></label></div>' +
-          ((opts.fromSlot || prefill) ? '<div style="font-size:0.82rem;color:var(--dim);margin-bottom:0.7rem">Picked from the calendar block you tapped — adjust if needed.</div>' : '<div style="margin-bottom:0.5rem"></div>') +
-          '<div id="acf-sched-wrap" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.8rem;margin-bottom:0.7rem">' +
+          '<div id="acf-benpeople-head" style="font-weight:600;font-size:0.9rem;margin:0.65rem 0 0.15rem"></div>' +
+          '<div id="acf-benpeople"></div></div></div>' +
+          '<div id="acf-sched-wrap" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:0.7rem;margin-bottom:0.55rem">' +
             '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.4rem">🎯 From the schedule</div>' +
             '<div style="display:flex;gap:0.6rem;align-items:flex-end;flex-wrap:wrap"><label style="flex:1;min-width:180px">That day\'s shifts<br><select id="acf-dshift" style="' + IN + '"><option value="">Loading…</option></select></label>' +
             '<button type="button" class="btn-secondary" id="acf-useshift" style="padding:0.6rem 1rem;border-radius:8px">Use its times &amp; people</button></div>' +
             '<div id="acf-dshift-note" style="margin-top:0.4rem;font-size:0.85rem;color:#15803d"></div>' +
           '</div>' +
-          '<div id="acf-speakers-wrap" style="margin-bottom:0.7rem"><div id="acf-sphead" style="font-weight:600;margin-bottom:0.4rem">' + esc(roleInit) + '</div>' +
-          '<label id="acf-role-label" style="display:block;margin-bottom:0.7rem">Role name:' +
-          '<input id="acf-role" type="text" maxlength="40" value="' + esc(roleInit) + '" style="width:220px;padding:0.6rem;border-radius:8px;border:1px solid var(--border);margin-left:0.45rem">' +
-          '<div style="font-size:0.82rem;color:var(--dim);margin-top:0.3rem">This is what the slot is called for this session.</div></label>' +
-          '<div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.55rem">' +
-            '<div style="font-weight:700;font-size:0.88rem;margin-bottom:0.5rem">Find people — filter the <span id="acf-filterword">' + esc(roleInit.toLowerCase()) + '</span> list</div>' +
-            '<div style="display:flex;gap:0.6rem;flex-wrap:wrap"><label style="flex:1;min-width:150px">By department<br><select id="acf-fdept" style="' + IN + '"><option value="">All departments</option>' + acDepts.map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') + '</select></label>' +
-            '<label style="flex:1;min-width:150px">By job role<br><select id="acf-frole" style="' + IN + '"><option value="">All job roles</option>' + roleNames.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r) + '</option>'; }).join('') + '</select></label></div>' +
+          '<div id="acf-speakers-wrap" style="margin-bottom:0.55rem"><div id="acf-sphead" style="font-weight:600;margin-bottom:0.4rem">' + esc(spLabelInit) + '</div>' +
+          '<div id="acf-spfield" role="button" tabindex="0" aria-expanded="false" style="border:1px solid var(--border);border-radius:10px;padding:0.45rem 0.55rem;cursor:pointer;display:flex;align-items:flex-start;gap:0.4rem;background:var(--surface)">' +
+          '<div id="acf-spchips" style="display:flex;gap:0.35rem;flex-wrap:wrap;flex:1;align-items:center;min-height:1.55rem"></div>' +
+          '<span aria-hidden="true" style="flex:none;color:var(--dim);padding-top:0.25rem">▾</span></div>' +
+          '<div id="acf-sppanel" style="display:none;border:1px solid var(--border);border-radius:12px;padding:0.7rem;margin-top:0.45rem;background:var(--surface);box-shadow:0 10px 30px rgba(0,0,0,0.10)">' +
+          '<input id="acf-spsearch" type="text" placeholder="🔍 Find people…" style="' + IN + ';margin-top:0">' +
+          '<div id="acf-sponsched-head" style="display:none;font-weight:700;font-size:0.78rem;letter-spacing:0.04em;color:var(--dim);margin:0.7rem 0 0.15rem">ON THE SCHEDULE THAT DAY</div>' +
+          '<div id="acf-sponsched"></div>' +
+          '<div id="acf-spgroups"></div>' +
+          '<div id="acf-spguests"></div>' +
+          '<button type="button" id="acf-spguestadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.9rem;cursor:pointer;padding:0.5rem 0 0">+ Add a guest</button>' +
           '</div>' +
-          '<div id="acf-speakers"></div>' +
-          '<button type="button" id="acf-spadd" style="background:none;border:none;color:#0e7c86;font-weight:600;font-size:0.88rem;cursor:pointer;padding:0.2rem 0">+ Add another ' + esc(roleInit.toLowerCase()) + '</button>' +
-          '<div id="acf-spnote" style="display:none;font-size:0.82rem;color:#6d28d9;margin-top:0.3rem">For one date you can change only the main speaker — the full list of speakers belongs to the series.</div></div>' +
+          '<div id="acf-spnote" style="display:none;font-size:0.82rem;color:#6d28d9;margin-top:0.3rem"></div></div>' +
           '<label style="display:block;margin-bottom:0.4rem">Room / location</label>' +
           '<div id="acf-room" style="position:relative;margin-bottom:0.4rem">' +
             '<button type="button" id="acf-roombtn" style="' + IN + ';margin-top:0;text-align:left;cursor:pointer;background:var(--surface);display:flex;justify-content:space-between;align-items:center;gap:0.5rem"><span id="acf-roomlabel">— Type a location below —</span><span aria-hidden="true">▾</span></button>' +
             '<div id="acf-roomlist" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:40;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.18);max-height:320px;overflow-y:auto;padding:0.35rem"></div>' +
           '</div>' +
           '<input id="acf-loc" type="text" value="' + (s && s.location ? esc(s.location) : '') + '" placeholder="e.g. Lecture Hall A" style="' + IN + ';margin-bottom:0.4rem">' +
-          '<div id="acf-roominfo" style="margin-bottom:0.7rem"></div>' +
+          '<div id="acf-roominfo" style="margin-bottom:0.55rem"></div>' +
           '<label style="display:block;margin-bottom:0.35rem">🔗 Meeting link<br><input id="acf-meeting" type="url" value="' + (s && s.meetingUrl ? esc(s.meetingUrl) : '') + '" placeholder="Paste a Zoom, Teams or Google Meet link" style="' + IN + '"></label>' +
           '<div id="acf-meetgen" style="display:flex;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.35rem">' +
             '<button type="button" class="btn-secondary" data-mgen="zoom" style="padding:0.45rem 0.8rem;border-radius:8px;font-size:0.88rem">＋ Zoom link</button>' +
@@ -17974,8 +17981,8 @@ window.qsNpOfferSend = function (btn) {
           '</div>' +
           '<div id="acf-meetnote" style="display:none;font-size:0.82rem;color:var(--dim);margin-bottom:0.7rem"></div>' +
           '<div id="acf-meetspacer" style="margin-bottom:0.35rem"></div>' +
-          '<label style="display:block;margin-bottom:0.7rem">Notes<br><input id="acf-notes" type="text" value="' + (src && src.notes ? esc(src.notes) : '') + '" style="' + IN + '"></label>' +
-          '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.8rem;margin-bottom:0.7rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Repeats</div>' +
+          '<label style="display:block;margin-bottom:0.55rem">Notes<br><input id="acf-notes" type="text" value="' + (src && src.notes ? esc(src.notes) : '') + '" style="' + IN + '"></label>' +
+          '<div id="acf-rotation" style="border:1px solid var(--border);border-radius:12px;padding:0.7rem;margin-bottom:0.55rem"><div style="font-weight:700;font-size:0.9rem;margin-bottom:0.5rem">🔁 Repeats</div>' +
           '<label style="display:block;margin-bottom:0.6rem">Repeats<br><select id="acf-recur" style="' + IN + '"><option value="none"' + (freq0 === 'none' ? ' selected' : '') + '>Does not repeat</option><option value="daily"' + (freq0 === 'daily' ? ' selected' : '') + '>Daily</option><option value="weekly"' + (freq0 === 'weekly' ? ' selected' : '') + '>Weekly</option><option value="monthly"' + (freq0 === 'monthly' ? ' selected' : '') + '>Monthly</option><option value="yearly"' + (freq0 === 'yearly' ? ' selected' : '') + '>Yearly</option></select></label>' +
           '<div id="acf-everyrow" style="display:none;margin-bottom:0.6rem"><label>Every <input id="acf-interval" type="number" min="1" max="52" value="' + interval0 + '" style="width:4.5rem;padding:0.45rem;border:1px solid var(--border);border-radius:8px"> <span id="acf-unit">weeks</span></label></div>' +
           '<div id="acf-daysrow" style="display:none;margin-bottom:0.6rem"><div style="font-weight:600;font-size:0.88rem;margin-bottom:0.35rem">On these days</div><div style="display:flex;gap:0.35rem;flex-wrap:wrap">' +
@@ -17991,8 +17998,8 @@ window.qsNpOfferSend = function (btn) {
             '<label style="display:block;margin-bottom:0.3rem;cursor:pointer"><input type="radio" name="acf-ends" value="date"' + (ends0 === 'date' ? ' checked' : '') + '> On date <input id="acf-until" type="date" value="' + (src && src.recurUntil ? esc(String(src.recurUntil).slice(0, 10)) : '') + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"></label>' +
             '<label style="display:block;cursor:pointer"><input type="radio" name="acf-ends" value="count"' + (ends0 === 'count' ? ' checked' : '') + '> After <input id="acf-count" type="number" min="1" max="500" value="' + (src && src.recurCount ? src.recurCount : 10) + '" style="width:4.5rem;padding:0.4rem;border:1px solid var(--border);border-radius:8px"> times</label></div>' +
           '</div>' +
-          '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
-          '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px' + (canSaveOrg ? '' : ';opacity:0.5') + '" id="acf-save"' + (canSaveOrg ? '' : ' disabled') + '>Save event</button></div>' +
+          '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.62rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
+          '<button type="button" class="btn" style="flex:1;padding:0.62rem;border-radius:10px' + (canSaveOrg ? '' : ';opacity:0.5') + '" id="acf-save"' + (canSaveOrg ? '' : ' disabled') + '>Save event</button></div>' +
           (s && rule !== 'none' ? '<div id="acf-daterow" style="display:none;margin-top:0.7rem"><button type="button" id="acf-canceldate" style="width:100%;padding:0.6rem;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;cursor:pointer">🚫 Cancel just this date</button><button type="button" id="acf-resetdate" style="display:none;width:100%;margin-top:0.5rem;padding:0.6rem;border-radius:10px;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;cursor:pointer">↩ Reset this date to the series defaults</button></div>' : '') +
           (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
@@ -18102,98 +18109,153 @@ window.qsNpOfferSend = function (btn) {
         var inDateScope = false;
         var savedSpeakerState = null;
         function userNameOf(u) { return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.name || u.email; }
-        // The Role name box's current value (what the slot is called
-        // right now in this form) — drives the rows' wording live.
-        function roleLabelNow() {
-          var el = m.querySelector('#acf-role');
-          var v = el ? el.value.trim().replace(/\s+/g, ' ') : '';
-          return v || 'Speaker';
+        // The people-slot label comes from the TYPE alone now (the
+        // Role name box is gone) — it drives the section heading and
+        // the empty-state wording live as the Type changes.
+        function spLabelNow() { return typeLabelFor(m.querySelector('#acf-kind').value); }
+        function tickSq(on) {
+          return '<span style="flex:none;width:1.35rem;height:1.35rem;border-radius:6px;border:2px solid ' + (on ? '#0e7c86' : '#cbd5e1') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;font-weight:700">' + (on ? '✓' : '') + '</span>';
         }
-        function speakerOptions(selectedId) {
-          var fd = m.querySelector('#acf-fdept').value;
-          var fr = m.querySelector('#acf-frole').value;
-          var list = people.filter(function (u) {
-            if (selectedId && u.id === selectedId) return true;
-            if (fd && u.departmentId !== fd) return false;
-            if (fr && u.jobRole !== fr) return false;
-            return true;
-          });
-          var low = roleLabelNow().toLowerCase();
-          return '<option value="">— No ' + esc(low) + ' —</option>' + list.map(function (u) {
-            return '<option value="' + u.id + '"' + (selectedId === u.id ? ' selected' : '') + '>' + esc(userNameOf(u)) + (u.jobRole ? ' (' + esc(u.jobRole) + ')' : '') + '</option>';
-          }).join('') + '<option value="__guest__">Guest ' + esc(low) + ' (not on the team)</option>';
+        // ---------- Speakers: ONE dropdown (form pass, 2026-11-07).
+        // speakerState is the single source of truth, in pick order —
+        // the first entry is the primary (the lecturer mirror). The
+        // field shows the picks as chips; the panel holds a Find
+        // people search, the on-the-schedule group for the form's
+        // date, everyone grouped by department, and guest entry.
+        var spSearch = '';
+        function spIsPicked(uid) { return speakerState.some(function (sp) { return !sp.guest && sp.userId === uid; }); }
+        function spMatches(u) { return !spSearch || userNameOf(u).toLowerCase().indexOf(spSearch) >= 0; }
+        function spRowHtml(uid, name, sub, right) {
+          return '<div data-sppick="' + uid + '" style="display:flex;align-items:center;gap:0.55rem;padding:0.45rem 0.15rem;border-bottom:1px solid var(--border);cursor:pointer">' + tickSq(spIsPicked(uid)) +
+            '<span style="flex:1;min-width:0"><span style="font-weight:600">' + esc(name) + '</span>' + (sub ? '<span style="display:block;font-size:0.8rem;color:var(--dim)">' + esc(sub) + '</span>' : '') + '</span>' +
+            (right ? '<span style="flex:none;color:var(--dim);font-size:0.85rem">' + esc(right) + '</span>' : '') + '</div>';
         }
-        function harvestSpeakers() {
-          var rows = m.querySelectorAll('.acf-sprow');
-          if (!rows.length) return;
-          var next = [];
-          rows.forEach(function (row) {
-            var gn = row.querySelector('.acf-gname');
-            if (gn) { next.push({ guest: true, name: gn.value, email: (row.querySelector('.acf-gemail') || {}).value || '' }); return; }
-            var sel = row.querySelector('.acf-spuser');
-            next.push({ userId: sel ? sel.value : '' });
-          });
-          speakerState = next;
-        }
-        function renderSpeakers() {
-          var box = m.querySelector('#acf-speakers');
+        function renderSpChips() {
+          var box = m.querySelector('#acf-spchips');
+          if (!speakerState.length) {
+            var lowLbl = spLabelNow().toLowerCase();
+            box.innerHTML = '<span style="color:var(--dim);font-size:0.9rem;padding:0.2rem 0.1rem">Add ' + (/^[aeiou]/i.test(lowLbl) ? 'an' : 'a') + ' ' + esc(lowLbl) + '…</span>';
+            return;
+          }
           box.innerHTML = speakerState.map(function (sp, idx) {
-            var del = inDateScope ? '' : '<button type="button" class="acf-spdel" data-spdel="' + idx + '" title="Remove ' + esc(roleLabelNow().toLowerCase()) + '" style="background:none;border:1px solid var(--border);border-radius:8px;width:2rem;height:2rem;cursor:pointer;flex:none">×</button>';
-            if (sp.guest) {
-              return '<div class="acf-sprow" style="display:flex;gap:0.45rem;align-items:flex-start;margin-bottom:0.45rem">' +
-                '<div style="flex:1"><input type="text" class="acf-gname" placeholder="Guest name" value="' + esc(sp.name || '') + '" style="' + IN + ';margin-top:0">' +
-                '<input type="email" class="acf-gemail" placeholder="Guest email (optional — we\'ll send them the event details)" value="' + esc(sp.email || '') + '" style="' + IN + ';margin-top:0.35rem">' +
-                '<button type="button" class="acf-spteam" data-spteam="' + idx + '" style="background:none;border:none;color:#0e7c86;font-size:0.8rem;cursor:pointer;padding:0.25rem 0">Use a team member instead</button></div>' + del + '</div>';
-            }
-            return '<div class="acf-sprow" style="display:flex;gap:0.45rem;align-items:center;margin-bottom:0.45rem">' +
-              '<select class="acf-spuser" data-spuser="' + idx + '" style="flex:1;' + IN + ';margin-top:0">' + speakerOptions(sp.userId || '') + '</select>' + del + '</div>';
+            var label;
+            if (sp.guest) label = ((sp.name || '').trim() || 'Guest') + ' · guest';
+            else { var u = acUsers.find(function (x) { return x.id === sp.userId; }); label = u ? userNameOf(u) : '—'; }
+            return '<span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0fdfa;border:1px solid #99f6e4;border-radius:999px;padding:0.25rem 0.6rem;font-size:0.83rem">' + esc(label) + '<button type="button" data-spdel="' + idx + '" style="background:none;border:none;cursor:pointer;font-size:0.9rem;line-height:1;padding:0">×</button></span>';
           }).join('');
-          box.querySelectorAll('.acf-spuser').forEach(function (sel) {
-            sel.addEventListener('change', function () {
-              var idx = parseInt(sel.getAttribute('data-spuser'), 10);
-              harvestSpeakers();
-              if (sel.value === '__guest__') { speakerState[idx] = { guest: true, name: '', email: '' }; renderSpeakers(); }
+          box.querySelectorAll('[data-spdel]').forEach(function (b) {
+            b.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              speakerState.splice(parseInt(b.getAttribute('data-spdel'), 10), 1);
+              renderSpAll();
             });
           });
-          box.querySelectorAll('.acf-spdel').forEach(function (b) {
-            b.addEventListener('click', function () { harvestSpeakers(); speakerState.splice(parseInt(b.getAttribute('data-spdel'), 10), 1); renderSpeakers(); });
+        }
+        function renderSpPanel() {
+          // On the schedule that day: distinct people holding a shift
+          // on the form's date (dayShiftsCache is the From-the-
+          // schedule pull's data; it loads async and re-renders us).
+          var schedBox = m.querySelector('#acf-sponsched');
+          var schedHead = m.querySelector('#acf-sponsched-head');
+          var seen = {};
+          var schedRows = [];
+          (typeof dayShiftsCache !== 'undefined' && dayShiftsCache ? dayShiftsCache : []).forEach(function (sh) {
+            if (!sh.userId || seen[sh.userId]) return;
+            seen[sh.userId] = true;
+            var u = acUsers.find(function (x) { return x.id === sh.userId; });
+            if (!u || !spMatches(u)) return;
+            var sub = sh.shiftTypeName + (sh.startTime ? ' · ' + fmtTime(sh.startTime) + (sh.endTime ? ' – ' + fmtTime(sh.endTime) : '') : '');
+            schedRows.push(spRowHtml(sh.userId, userNameOf(u), sub, ''));
           });
-          box.querySelectorAll('.acf-spteam').forEach(function (b) {
-            b.addEventListener('click', function () { harvestSpeakers(); speakerState[parseInt(b.getAttribute('data-spteam'), 10)] = { userId: '' }; renderSpeakers(); });
+          schedHead.style.display = schedRows.length ? '' : 'none';
+          schedBox.innerHTML = schedRows.join('');
+          // Everyone else, grouped by department (the old By
+          // department / By job role filter selects are gone — the
+          // grouping and the search replace them).
+          var html = '';
+          function groupHtml(title, list) {
+            var rows = list.filter(spMatches).map(function (u) { return spRowHtml(u.id, userNameOf(u), '', u.jobRole || ''); }).join('');
+            if (!rows) return '';
+            return '<div style="font-weight:700;font-size:0.78rem;letter-spacing:0.04em;color:var(--dim);margin:0.7rem 0 0.15rem">' + esc(title.toUpperCase()) + '</div>' + rows;
+          }
+          acDepts.forEach(function (d) { html += groupHtml(d.name, people.filter(function (u) { return u.departmentId === d.id; })); });
+          html += groupHtml('No department', people.filter(function (u) { return !u.departmentId || !acDepts.some(function (d) { return d.id === u.departmentId; }); }));
+          m.querySelector('#acf-spgroups').innerHTML = html || '<div style="color:var(--dim);font-size:0.88rem;padding:0.4rem 0">Nobody matches.</div>';
+          m.querySelectorAll('[data-sppick]').forEach(function (row) {
+            row.addEventListener('click', function () { toggleSpeakerUser(row.getAttribute('data-sppick')); });
           });
-          var add = m.querySelector('#acf-spadd');
+        }
+        function toggleSpeakerUser(uid) {
+          if (inDateScope) {
+            // One-date change: the panel picks THE date's main speaker
+            // (ticking the current one again clears the date's slot).
+            speakerState = (speakerState.length === 1 && !speakerState[0].guest && speakerState[0].userId === uid) ? [] : [{ userId: uid }];
+          } else if (spIsPicked(uid)) {
+            speakerState = speakerState.filter(function (sp) { return sp.guest || sp.userId !== uid; });
+          } else {
+            speakerState.push({ userId: uid });
+          }
+          renderSpAll();
+        }
+        function renderSpGuests() {
+          var box = m.querySelector('#acf-spguests');
+          var html = '';
+          speakerState.forEach(function (sp, idx) {
+            if (!sp.guest) return;
+            html += '<div style="border:1px solid var(--border);border-radius:10px;padding:0.55rem 0.6rem;margin-top:0.55rem">' +
+              '<input type="text" class="acf-gname" data-gidx="' + idx + '" placeholder="Guest name" value="' + esc(sp.name || '') + '" style="' + IN + ';margin-top:0">' +
+              '<input type="email" class="acf-gemail" data-gidx="' + idx + '" placeholder="Guest email (optional — we\'ll send them the event details)" value="' + esc(sp.email || '') + '" style="' + IN + ';margin-top:0.35rem">' +
+              '<button type="button" class="acf-gremove" data-gidx="' + idx + '" style="background:none;border:none;color:#b91c1c;font-size:0.8rem;cursor:pointer;padding:0.3rem 0 0">Remove guest</button></div>';
+          });
+          box.innerHTML = html;
+          box.querySelectorAll('.acf-gname').forEach(function (inp) {
+            inp.addEventListener('input', function () { var i = parseInt(inp.getAttribute('data-gidx'), 10); if (speakerState[i] && speakerState[i].guest) { speakerState[i].name = inp.value; renderSpChips(); } });
+          });
+          box.querySelectorAll('.acf-gemail').forEach(function (inp) {
+            inp.addEventListener('input', function () { var i = parseInt(inp.getAttribute('data-gidx'), 10); if (speakerState[i] && speakerState[i].guest) speakerState[i].email = inp.value; });
+          });
+          box.querySelectorAll('.acf-gremove').forEach(function (b) {
+            b.addEventListener('click', function () { speakerState.splice(parseInt(b.getAttribute('data-gidx'), 10), 1); renderSpAll(); });
+          });
+        }
+        function renderSpAll() {
+          renderSpChips();
+          renderSpPanel();
+          renderSpGuests();
+          var add = m.querySelector('#acf-spguestadd');
           if (add) add.style.display = inDateScope ? 'none' : '';
+          var guests = m.querySelector('#acf-spguests');
+          if (guests) guests.style.display = inDateScope ? 'none' : '';
           var note = m.querySelector('#acf-spnote');
-          if (note) note.style.display = inDateScope ? '' : 'none';
+          if (note) {
+            note.style.display = inDateScope ? '' : 'none';
+            if (inDateScope) { var low = spLabelNow().toLowerCase(); note.textContent = 'For one date you can change only the main ' + low + ' — the full list of ' + low + 's belongs to the series.'; }
+          }
         }
-        m.querySelector('#acf-spadd').addEventListener('click', function () { harvestSpeakers(); speakerState.push({ userId: '' }); renderSpeakers(); });
-        function applyFilters() { harvestSpeakers(); renderSpeakers(); }
-        m.querySelector('#acf-fdept').addEventListener('change', applyFilters);
-        m.querySelector('#acf-frole').addEventListener('change', applyFilters);
-        renderSpeakers();
-        // Role name wiring (Deepika, 2026-11-07): the box refills
-        // from the Type whenever the type changes — UNLESS the user
-        // has typed in the box during this form-open (manual edits
-        // stick). The section heading, the filter caption and the
-        // add-link follow the box value live.
-        var roleEdited = false;
-        var roleInput = m.querySelector('#acf-role');
-        function syncRoleTexts() {
-          var lbl = roleLabelNow();
-          var low = lbl.toLowerCase();
-          var head = m.querySelector('#acf-sphead'); if (head) head.textContent = lbl;
-          var fw = m.querySelector('#acf-filterword'); if (fw) fw.textContent = low;
-          var add = m.querySelector('#acf-spadd'); if (add) add.textContent = '+ Add another ' + low;
-          var note = m.querySelector('#acf-spnote'); if (note) note.textContent = 'For one date you can change only the main ' + low + ' — the full list of ' + low + 's belongs to the series.';
+        function syncSpLabel() {
+          var head = m.querySelector('#acf-sphead');
+          if (head) head.textContent = spLabelNow();
+          renderSpChips();
+          var note = m.querySelector('#acf-spnote');
+          if (note && inDateScope) renderSpAll();
         }
-        roleInput.addEventListener('input', function () { roleEdited = true; harvestSpeakers(); syncRoleTexts(); renderSpeakers(); });
-        m.querySelector('#acf-kind').addEventListener('change', function () {
-          if (!roleEdited) roleInput.value = typeLabelFor(this.value);
-          harvestSpeakers(); syncRoleTexts(); renderSpeakers();
+        m.querySelector('#acf-kind').addEventListener('change', syncSpLabel);
+        var spPanelEl = m.querySelector('#acf-sppanel');
+        var spFieldEl = m.querySelector('#acf-spfield');
+        spFieldEl.addEventListener('click', function () {
+          var open = spPanelEl.style.display === 'none';
+          spPanelEl.style.display = open ? '' : 'none';
+          spFieldEl.setAttribute('aria-expanded', open ? 'true' : 'false');
         });
-        syncRoleTexts();
+        m.querySelector('#acf-spsearch').addEventListener('input', function () { spSearch = this.value.trim().toLowerCase(); renderSpPanel(); });
+        m.querySelector('#acf-spguestadd').addEventListener('click', function () {
+          speakerState.push({ guest: true, name: '', email: '' });
+          renderSpAll();
+          var gs = m.querySelectorAll('#acf-spguests .acf-gname');
+          if (gs.length) gs[gs.length - 1].focus();
+        });
+        renderSpAll();
         function readSpeakers() {
-          harvestSpeakers();
           var out = [];
           speakerState.forEach(function (sp) {
             if (sp.guest) {
@@ -18204,32 +18266,65 @@ window.qsNpOfferSend = function (btn) {
           return out;
         }
         function addSpeakerUser(uid) {
-          harvestSpeakers();
-          if (speakerState.some(function (sp) { return !sp.guest && sp.userId === uid; })) return false;
-          var blank = -1;
-          for (var i = 0; i < speakerState.length; i++) { if (!speakerState[i].guest && !speakerState[i].userId) { blank = i; break; } }
-          if (blank >= 0) speakerState[blank] = { userId: uid };
+          if (spIsPicked(uid)) return false;
+          if (inDateScope) speakerState = [{ userId: uid }];
           else speakerState.push({ userId: uid });
-          renderSpeakers();
+          renderSpAll();
           return true;
         }
-        // Beneficiaries: chips for departments, removable chips for people.
+        // Attendees: ONE dropdown (form pass, 2026-11-07). The field
+        // shows the picked people as removable chips; the panel holds
+        // Groups, Departments, and the browsed department's people
+        // as tick rows. benUserIds / benDeptSel keep their exact
+        // semantics — only the controls changed.
+        var benBrowseDept = orgSelected || (benDeptSel.size ? Array.from(benDeptSel)[0] : (acDepts.length ? acDepts[0].id : null));
         function renderBenUsers() {
           var box = m.querySelector('#acf-benusers');
-          box.innerHTML = benUserIds.map(function (uid) {
-            var u = acUsers.find(function (x) { return x.id === uid; });
-            return '<span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0fdfa;border:1px solid #99f6e4;border-radius:999px;padding:0.25rem 0.6rem;font-size:0.83rem">' + esc(u ? userNameOf(u) : '—') + '<button type="button" data-bendel="' + uid + '" style="background:none;border:none;cursor:pointer;font-size:0.9rem;line-height:1">×</button></span>';
+          if (!benUserIds.length) {
+            box.innerHTML = benDeptSel.size
+              ? '<span style="color:var(--dim);font-size:0.88rem;padding:0.2rem 0.1rem">' + benDeptSel.size + (benDeptSel.size === 1 ? ' department' : ' departments') + ' picked — tap to add people too</span>'
+              : '<span style="color:var(--dim);font-size:0.88rem;padding:0.2rem 0.1rem">Tap to add people…</span>';
+          } else {
+            box.innerHTML = benUserIds.map(function (uid) {
+              var u = acUsers.find(function (x) { return x.id === uid; });
+              return '<span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0fdfa;border:1px solid #99f6e4;border-radius:999px;padding:0.25rem 0.6rem;font-size:0.83rem">' + esc(u ? userNameOf(u) : '—') + '<button type="button" data-bendel="' + uid + '" style="background:none;border:none;cursor:pointer;font-size:0.9rem;line-height:1">×</button></span>';
+            }).join('');
+            box.querySelectorAll('[data-bendel]').forEach(function (b) {
+              b.addEventListener('click', function (ev) { ev.stopPropagation(); benUserIds = benUserIds.filter(function (x) { return x !== b.getAttribute('data-bendel'); }); renderBenUsers(); });
+            });
+          }
+          renderBenPeople();
+        }
+        function renderBenPeople() {
+          var head = m.querySelector('#acf-benpeople-head');
+          var box = m.querySelector('#acf-benpeople');
+          if (!head || !box) return;
+          var d = acDepts.find(function (x) { return x.id === benBrowseDept; });
+          head.textContent = d ? 'People in ' + d.name : 'People';
+          var list = d ? people.filter(function (u) { return u.departmentId === d.id; }) : [];
+          if (!list.length) { box.innerHTML = '<div style="color:var(--dim);font-size:0.88rem;padding:0.35rem 0">No one in this department.</div>'; return; }
+          box.innerHTML = list.map(function (u) {
+            var on = benUserIds.indexOf(u.id) >= 0;
+            return '<div data-benpick="' + u.id + '" style="display:flex;align-items:center;gap:0.55rem;padding:0.45rem 0.15rem;border-bottom:1px solid var(--border);cursor:pointer">' + tickSq(on) + '<span style="flex:1;font-weight:600">' + esc(userNameOf(u)) + '</span>' + (u.jobRole ? '<span style="color:var(--dim);font-size:0.85rem">' + esc(u.jobRole) + '</span>' : '') + '</div>';
           }).join('');
-          box.querySelectorAll('[data-bendel]').forEach(function (b) {
-            b.addEventListener('click', function () { benUserIds = benUserIds.filter(function (x) { return x !== b.getAttribute('data-bendel'); }); renderBenUsers(); });
+          box.querySelectorAll('[data-benpick]').forEach(function (row) {
+            row.addEventListener('click', function () {
+              var uid = row.getAttribute('data-benpick');
+              benTouched = true;
+              if (benUserIds.indexOf(uid) >= 0) benUserIds = benUserIds.filter(function (x) { return x !== uid; });
+              else benUserIds.push(uid);
+              renderBenUsers();
+            });
           });
         }
-        renderBenUsers();
-        m.querySelector('#acf-benadd').addEventListener('change', function () {
-          var v = this.value;
-          if (v && benUserIds.indexOf(v) < 0) { benUserIds.push(v); renderBenUsers(); }
-          this.value = '';
+        var benPanelEl = m.querySelector('#acf-benpanel');
+        var benFieldEl = m.querySelector('#acf-benfield');
+        benFieldEl.addEventListener('click', function () {
+          var open = benPanelEl.style.display === 'none';
+          benPanelEl.style.display = open ? '' : 'none';
+          benFieldEl.setAttribute('aria-expanded', open ? 'true' : 'false');
         });
+        renderBenUsers();
         // Communication groups (migration 094): picking a group chip
         // EXPANDS the group into beneficiary people — its CURRENT
         // members, active only — as a snapshot in benUserIds (the
@@ -18266,7 +18361,7 @@ window.qsNpOfferSend = function (btn) {
           paintBenGroups();
           note.style.display = 'block';
           if (!actives.length) note.innerHTML = '<strong>' + esc(g.name) + '</strong> has no active members right now — nobody to add.';
-          else if (!added.length) note.innerHTML = '<strong>' + esc(g.name) + '</strong> — everyone in it is already a beneficiary.';
+          else if (!added.length) note.innerHTML = '<strong>' + esc(g.name) + '</strong> — everyone in it is already an attendee.';
           else {
             var names = added.slice(0, 3).map(function (mm) { return esc(mm.name); }).join(', ');
             var more = added.length > 3 ? ' + ' + (added.length - 3) + ' more' : '';
@@ -18296,6 +18391,10 @@ window.qsNpOfferSend = function (btn) {
             var id = chip.getAttribute('data-bendept');
             if (benDeptSel.has(id)) benDeptSel.delete(id); else benDeptSel.add(id);
             paintBenChip(chip);
+            // The clicked department also becomes the people list's
+            // lens ("People in <department>").
+            benBrowseDept = id;
+            renderBenUsers();
           });
         });
         var orgSelEl = m.querySelector('#acf-orgdept');
@@ -18303,6 +18402,8 @@ window.qsNpOfferSend = function (btn) {
           if (s || benTouched) return;
           benDeptSel = new Set([orgSelEl.value]);
           m.querySelectorAll('[data-bendept]').forEach(paintBenChip);
+          benBrowseDept = orgSelEl.value;
+          renderBenUsers();
         });
         function orgDeptVal() { var el = m.querySelector('#acf-orgdept'); return el ? (el.value || null) : orgSelected; }
         // From the schedule: that date's shifts (the day-shifts endpoint).
@@ -18310,10 +18411,11 @@ window.qsNpOfferSend = function (btn) {
         function fillDayShifts() {
           var sel = m.querySelector('#acf-dshift');
           var date = m.querySelector('#acf-date').value;
-          if (!date) { sel.innerHTML = '<option value="">Pick a date first</option>'; return; }
+          if (!date) { sel.innerHTML = '<option value="">Pick a date first</option>'; dayShiftsCache = []; renderSpPanel(); return; }
           sel.innerHTML = '<option value="">Loading…</option>';
           api('/api/schedule/day-shifts?date=' + date).then(function (r) {
             dayShiftsCache = (r.ok && r.data.shifts) || [];
+            renderSpPanel();
             if (!dayShiftsCache.length) { sel.innerHTML = '<option value="">No shifts that day</option>'; return; }
             sel.innerHTML = dayShiftsCache.map(function (sh, i) {
               var lbl = sh.shiftTypeName + ' — ' + (sh.personName || 'OPEN') + (sh.startTime ? ' · ' + fmtTime(sh.startTime) + (sh.endTime ? '–' + fmtTime(sh.endTime) : '') : '');
@@ -18332,7 +18434,7 @@ window.qsNpOfferSend = function (btn) {
           if (sh.endTime) m.querySelector('#acf-end').value = sh.endTime;
           var added = sh.userId ? addSpeakerUser(sh.userId) : false;
           note.style.color = '#15803d';
-          var rlLow = roleLabelNow().toLowerCase();
+          var rlLow = spLabelNow().toLowerCase();
           var rlArt = /^[aeiou]/i.test(rlLow) ? 'an' : 'a';
           note.textContent = '✓ Times set from ' + sh.shiftTypeName + (sh.userId ? (added ? ' — ' + (sh.personName || 'they') + ' added as ' + rlArt + ' ' + rlLow + '.' : ' — ' + (sh.personName || 'that person') + ' is already ' + rlArt + ' ' + rlLow + '.') : ' (open shift — nobody to add).');
         });
@@ -18362,16 +18464,15 @@ window.qsNpOfferSend = function (btn) {
           var orgW = m.querySelector('#acf-org-wrap'); if (orgW) orgW.style.display = dateScope ? 'none' : '';
           var benW = m.querySelector('#acf-ben-wrap'); if (benW) benW.style.display = dateScope ? 'none' : '';
           var schW = m.querySelector('#acf-sched-wrap'); if (schW) schW.style.display = dateScope ? 'none' : '';
-          var roleW = m.querySelector('#acf-role-label'); if (roleW) roleW.style.display = dateScope ? 'none' : '';
           if (dateScope && !inDateScope) {
             inDateScope = true;
             savedSpeakerState = speakerState;
-            speakerState = occ && occ.lecturerUserId ? [{ userId: occ.lecturerUserId }] : [{ userId: '' }];
-            renderSpeakers();
+            speakerState = occ && occ.lecturerUserId ? [{ userId: occ.lecturerUserId }] : [];
+            renderSpAll();
           } else if (!dateScope && inDateScope) {
             inDateScope = false;
             speakerState = savedSpeakerState || speakerState;
-            renderSpeakers();
+            renderSpAll();
           }
         }
         if (isSeries) {
@@ -18595,13 +18696,11 @@ window.qsNpOfferSend = function (btn) {
             beneficiaryDepartmentIds: Array.from(benDeptSel),
             beneficiaryUserIds: benUserIds.slice(),
             speakers: readSpeakers(),
-            // Role name: posted only when it differs from the type's
-            // label (an override for this session); equal → null, so
-            // the session keeps following its type.
-            personLabel: (function () {
-              var v = (roleInput.value || '').trim().replace(/\s+/g, ' ').slice(0, 40);
-              return v && v !== typeLabelFor(m.querySelector('#acf-kind').value) ? v : null;
-            })(),
+            // People-slot label: always null from the form — the
+            // label follows the session TYPE (form pass, 2026-11-07;
+            // the Role name box is gone). Stored overrides on rows
+            // the form never touches are left as they are.
+            personLabel: null,
             date: m.querySelector('#acf-date').value,
             startTime: m.querySelector('#acf-start').value || null,
             endTime: m.querySelector('#acf-end').value || null,
@@ -18638,10 +18737,10 @@ window.qsNpOfferSend = function (btn) {
             // One-date change: only the main speaker rides along as
             // the date's lecturer override; the series' speaker list
             // stays untouched.
-            var firstSel = m.querySelector('.acf-sprow .acf-spuser');
+            var firstSp = speakerState[0];
             var dpayload = {
               scope: 'date', date: occDate,
-              lecturerUserId: firstSel && firstSel.value && firstSel.value !== '__guest__' ? firstSel.value : null,
+              lecturerUserId: firstSp && !firstSp.guest && firstSp.userId ? firstSp.userId : null,
               location: m.querySelector('#acf-loc').value.trim() || null,
               meetingUrl: m.querySelector('#acf-meeting').value.trim() || null,
               startTime: m.querySelector('#acf-start').value || null,
