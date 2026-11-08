@@ -10762,6 +10762,7 @@ window.qsNpOfferSend = function (btn) {
                 var deptDecisions = {};
                 var roleDecisions = {};
                 var importSkippedRows = {};
+                var importSelectedRows = {};
                 function escH(s) {
                   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                 }
@@ -10824,6 +10825,7 @@ window.qsNpOfferSend = function (btn) {
                       deptDecisions = {};
                       roleDecisions = {};
                       importSkippedRows = {};
+                      importSelectedRows = {};
                       // Inline-edit state (Deepika, 2026-11-08: flagged
                       // rows are fixed "then and there itself"): each row
                       // keeps its editable department / job-role TEXT;
@@ -10961,6 +10963,21 @@ window.qsNpOfferSend = function (btn) {
                   for (var i = 0; i < rs.length; i++) if (rs[i].id === id) return rs[i].name + (rs[i].departmentName ? ' (' + rs[i].departmentName + ')' : '');
                   return '';
                 }
+                // Job-role names offered in a row's role picker: the
+                // roles of the row's own department first, then every
+                // other role name in the company.
+                function importRoleNamesForRow(r) {
+                  var all = (importData && importData.jobRoles) || [];
+                  var seen = {};
+                  var out = [];
+                  function push(name) {
+                    var k = importNameKeyClient(name);
+                    if (!seen[k]) { seen[k] = 1; out.push(name); }
+                  }
+                  if (r.departmentId) all.forEach(function (jr) { if (jr.departmentId === r.departmentId) push(jr.name); });
+                  all.forEach(function (jr) { push(jr.name); });
+                  return out;
+                }
                 // Problems that still block a row: the static server
                 // problems plus the dynamic flags from the row's current
                 // (possibly edited) values. A panel decision placing the
@@ -11013,27 +11030,48 @@ window.qsNpOfferSend = function (btn) {
                   if (d && d.action === 'create') return (key === '' ? (d.newName || 'New job role') : importGroupName('role', key)) + ' (new)';
                   return r.jobRole || '—';
                 }
+                // The choices for a group are a VISIBLE pick-list of
+                // chips (Deepika, 2026-11-08): the available departments
+                // / roles are enumerated right there as options, not
+                // hidden inside a bare mode select. Clicking a chip
+                // stores the same decision encoding the import call
+                // already uses ('' = no placement, 'create', 'map:<id>').
+                function resolveChipHtml(kind, key, value, text, selected, title) {
+                  var style = 'padding:5px 11px;border-radius:999px;border:1px solid ' + (selected ? '#0e7c86' : 'var(--border)') +
+                    ';background:' + (selected ? '#0e7c86' : '#fff') + ';color:' + (selected ? '#fff' : 'inherit') +
+                    ';font-size:12.5px;cursor:pointer';
+                  return '<button type="button" class="import-resolve-opt' + (selected ? ' sel' : '') + '" data-kind="' + kind + '" data-key="' + escH(key) + '" data-value="' + escH(value) + '"' +
+                    (title ? ' title="' + escH(title) + '"' : '') + ' style="' + style + '">' + escH(text) + '</button>';
+                }
                 function resolveRowHtml(kind, key, label, sub) {
                   var isDept = kind === 'dept';
                   var canCreate = isDept ? importData.canCreateDepartments : importData.canCreateJobRoles;
                   var dec = (isDept ? deptDecisions[key] : roleDecisions[key]) || null;
                   var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--border)">' +
                     '<span style="min-width:210px;font-size:13.5px"><b>' + escH(label) + '</b> <span style="color:var(--dim)">' + escH(sub) + '</span></span>' +
-                    '<select class="import-resolve-select" data-kind="' + kind + '" data-key="' + escH(key) + '" style="padding:6px;border-radius:8px;border:1px solid var(--border);font-size:13px;max-width:320px">';
+                    '<span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
                   if (isDept) {
-                    h += '<option value="">' + (key === '' ? 'Leave without a department' : 'Skip these people for now') + '</option>';
-                    if (canCreate) h += '<option value="create"' + (dec && dec.action === 'create' ? ' selected' : '') + '>' + (key === '' ? 'Create a new department…' : 'Create department "' + escH(label) + '"') + '</option>';
-                    (importData.departments || []).forEach(function (d) {
-                      h += '<option value="map:' + d.id + '"' + (dec && dec.action === 'map' && dec.departmentId === d.id ? ' selected' : '') + '>Add them to ' + escH(d.name) + '</option>';
-                    });
+                    h += resolveChipHtml(kind, key, '', key === '' ? 'Leave without a department' : 'Skip these people for now', !dec);
+                    if (canCreate) h += resolveChipHtml(kind, key, 'create', key === '' ? 'Create a new department…' : 'Create department "' + label + '"', !!(dec && dec.action === 'create'));
+                    var depts = importData.departments || [];
+                    if (depts.length) {
+                      h += '<span style="font-size:12.5px;color:var(--dim)">or put them in:</span>';
+                      depts.forEach(function (d) {
+                        h += resolveChipHtml(kind, key, 'map:' + d.id, d.name, !!(dec && dec.action === 'map' && dec.departmentId === d.id), 'Put them in ' + d.name);
+                      });
+                    }
                   } else {
-                    h += '<option value="">' + (key === '' ? 'Leave without a job role' : 'Keep the name as plain text') + '</option>';
-                    if (canCreate) h += '<option value="create"' + (dec && dec.action === 'create' ? ' selected' : '') + '>' + (key === '' ? 'Create a new job role…' : 'Create job role "' + escH(label) + '"') + '</option>';
-                    (importData.jobRoles || []).forEach(function (jr) {
-                      h += '<option value="map:' + jr.id + '"' + (dec && dec.action === 'map' && dec.jobRoleId === jr.id ? ' selected' : '') + '>Use ' + escH(jr.name) + (jr.departmentName ? ' (' + escH(jr.departmentName) + ')' : '') + '</option>';
-                    });
+                    h += resolveChipHtml(kind, key, '', key === '' ? 'Leave without a job role' : 'Keep the name as plain text', !dec);
+                    if (canCreate) h += resolveChipHtml(kind, key, 'create', key === '' ? 'Create a new job role…' : 'Create job role "' + label + '"', !!(dec && dec.action === 'create'));
+                    var roles = importData.jobRoles || [];
+                    if (roles.length) {
+                      h += '<span style="font-size:12.5px;color:var(--dim)">or use:</span>';
+                      roles.forEach(function (jr) {
+                        h += resolveChipHtml(kind, key, 'map:' + jr.id, jr.name + (jr.departmentName ? ' (' + jr.departmentName + ')' : ''), !!(dec && dec.action === 'map' && dec.jobRoleId === jr.id), 'Use the existing role ' + jr.name);
+                      });
+                    }
                   }
-                  h += '</select>';
+                  h += '</span>';
                   if (key === '' && canCreate) {
                     h += '<input type="text" class="import-resolve-newname' + (dec && dec.action === 'create' ? '' : ' hidden') + '" data-kind="' + kind + '" data-key="" value="' + escH(dec && dec.newName ? dec.newName : '') + '" placeholder="' + (isDept ? 'New department name' : 'New job role name') + '" style="padding:6px;border-radius:8px;border:1px solid var(--border);font-size:13px">';
                   }
@@ -11085,12 +11123,12 @@ window.qsNpOfferSend = function (btn) {
                     store[key] = kind === 'dept' ? { action: 'map', departmentId: id } : { action: 'map', jobRoleId: id };
                     if (nameInput) nameInput.classList.add('hidden');
                   }
-                  renderImportTable();
+                  renderImportBody();
                 }
                 function bindResolvePanel(box) {
-                  box.querySelectorAll('.import-resolve-select').forEach(function (sel) {
-                    sel.addEventListener('change', function () {
-                      applyDecision(sel.getAttribute('data-kind'), sel.getAttribute('data-key'), sel.value);
+                  box.querySelectorAll('.import-resolve-opt').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                      applyDecision(btn.getAttribute('data-kind'), btn.getAttribute('data-key'), btn.getAttribute('data-value'));
                     });
                   });
                   box.querySelectorAll('.import-resolve-newname').forEach(function (inp) {
@@ -11108,9 +11146,53 @@ window.qsNpOfferSend = function (btn) {
                 // carries the final values and the server re-checks all
                 // of it.
                 function bindImportEditHandlers(wrap) {
+                  // Bulk bar actions (multi-select edit): assign a
+                  // department / job role to every ticked row at once,
+                  // skip the ticked rows, or clear the selection. An
+                  // assigned value flows through the same revalidation
+                  // as a per-row edit — existing names match quietly, a
+                  // brand-new name joins the resolution panel groups.
+                  wrap.addEventListener('click', function (e) {
+                    var el = e.target;
+                    if (!el || !el.classList) return;
+                    if (el.classList.contains('import-bulk-apply')) {
+                      var kind = el.getAttribute('data-assign');
+                      var inp = wrap.querySelector(kind === 'dept' ? '#import-bulk-dept' : '#import-bulk-role');
+                      var val = inp ? inp.value.trim().replace(/\s+/g, ' ') : '';
+                      if (!val) { if (inp) inp.focus(); return; }
+                      importRows.forEach(function (r) {
+                        if (!importSelectedRows[r.row]) return;
+                        if (kind === 'dept') r.deptText = val; else r.roleText = val;
+                      });
+                      revalidateImportRows();
+                      renderImportBody();
+                    } else if (el.classList.contains('import-bulk-skip')) {
+                      importRows.forEach(function (r) { if (importSelectedRows[r.row]) importSkippedRows[r.row] = true; });
+                      importSelectedRows = {};
+                      renderImportTable();
+                    } else if (el.classList.contains('import-bulk-clear')) {
+                      importSelectedRows = {};
+                      renderImportTable();
+                    }
+                  });
                   wrap.addEventListener('change', function (e) {
                     var el = e.target;
                     if (!el || !el.classList) return;
+                    if (el.classList.contains('import-check-all')) {
+                      importRows.forEach(function (r) {
+                        if (el.checked) importSelectedRows[r.row] = true; else delete importSelectedRows[r.row];
+                      });
+                      renderImportTable();
+                      return;
+                    }
+                    if (el.classList.contains('import-row-check')) {
+                      var checkRowNo = parseInt(el.getAttribute('data-row') || '', 10);
+                      if (checkRowNo) {
+                        if (el.checked) importSelectedRows[checkRowNo] = true; else delete importSelectedRows[checkRowNo];
+                        renderImportTable();
+                      }
+                      return;
+                    }
                     var rowNo = parseInt(el.getAttribute('data-row') || '', 10);
                     if (!rowNo) return;
                     var row = null;
@@ -11164,8 +11246,44 @@ window.qsNpOfferSend = function (btn) {
                   if (!wrap || !importData) return;
                   var rows = importData.rows || [];
                   var readyCount = 0;
-                  var h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                  var selectedCount = 0;
+                  rows.forEach(function (r) { if (importSelectedRows[r.row]) selectedCount++; });
+                  var h = '';
+                  // Pick-lists shared by the row cells and the bulk bar:
+                  // the company's AVAILABLE departments and job roles,
+                  // offered as options in every picker — picking one
+                  // fills the cell; typing a new name works too and
+                  // flows into the resolution panel like a file value.
+                  h += '<datalist id="import-dept-options">';
+                  (importData.departments || []).forEach(function (d) { h += '<option value="' + escH(d.name) + '"></option>'; });
+                  h += '</datalist><datalist id="import-role-options-all">';
+                  var seenRoleNames = {};
+                  (importData.jobRoles || []).forEach(function (jr) {
+                    var rk = importNameKeyClient(jr.name);
+                    if (!seenRoleNames[rk]) { seenRoleNames[rk] = 1; h += '<option value="' + escH(jr.name) + '"></option>'; }
+                  });
+                  h += '</datalist>';
+                  rows.forEach(function (r) {
+                    h += '<datalist id="import-role-options-' + r.row + '">';
+                    importRoleNamesForRow(r).forEach(function (n) { h += '<option value="' + escH(n) + '"></option>'; });
+                    h += '</datalist>';
+                  });
+                  if (selectedCount > 0) {
+                    var bulkBtn = 'padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:#fff;font-size:12.5px;cursor:pointer';
+                    var bulkInput = 'padding:6px;border-radius:8px;border:1px solid var(--border);font-size:12.5px;min-width:175px;box-sizing:border-box';
+                    h += '<div id="team-import-bulkbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:10px;background:#eef7f8">' +
+                      '<b style="font-size:13px">' + selectedCount + ' selected</b>' +
+                      '<input type="text" id="import-bulk-dept" list="import-dept-options" placeholder="Department — pick or type new" style="' + bulkInput + '">' +
+                      '<button type="button" class="import-bulk-apply" data-assign="dept" style="' + bulkBtn + '">Assign department</button>' +
+                      '<input type="text" id="import-bulk-role" list="import-role-options-all" placeholder="Job role — pick or type new" style="' + bulkInput + '">' +
+                      '<button type="button" class="import-bulk-apply" data-assign="role" style="' + bulkBtn + '">Assign job role</button>' +
+                      '<button type="button" class="import-bulk-skip" style="' + bulkBtn + '">Skip selected</button>' +
+                      '<button type="button" class="import-bulk-clear" style="' + bulkBtn + '">Clear selection</button>' +
+                      '</div>';
+                  }
+                  h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
                     '<thead><tr>' +
+                    '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)"><input type="checkbox" class="import-check-all" title="Select all rows"' + (rows.length && selectedCount === rows.length ? ' checked' : '') + '></th>' +
                     '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Name</th>' +
                     '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Email</th>' +
                     '<th style="text-align:left;padding:6px;border-bottom:2px solid var(--border)">Department</th>' +
@@ -11188,8 +11306,8 @@ window.qsNpOfferSend = function (btn) {
                       nameCell = '<input type="text" class="import-edit-first" data-row="' + r.row + '" value="' + escH(r.firstName || '') + '" placeholder="First" style="' + inputStyle + '">' +
                         '<input type="text" class="import-edit-last" data-row="' + r.row + '" value="' + escH(r.lastName || '') + '" placeholder="Last" style="' + inputStyle + ';margin-top:4px">';
                       emailCell = '<input type="email" class="import-edit-email" data-row="' + r.row + '" value="' + escH(r.email || '') + '" style="' + inputStyle + '">';
-                      deptCell = '<input type="text" class="import-edit-dept" data-row="' + r.row + '" value="' + escH(r.deptText || '') + '" placeholder="Department" style="' + inputStyle + '">';
-                      roleCell = '<input type="text" class="import-edit-role" data-row="' + r.row + '" value="' + escH(r.roleText || '') + '" placeholder="Job role" style="' + inputStyle + '">';
+                      deptCell = '<input type="text" class="import-edit-dept" data-row="' + r.row + '" list="import-dept-options" value="' + escH(r.deptText || '') + '" placeholder="Pick or type a department" style="' + inputStyle + '">';
+                      roleCell = '<input type="text" class="import-edit-role" data-row="' + r.row + '" list="import-role-options-' + r.row + '" value="' + escH(r.roleText || '') + '" placeholder="Pick or type a job role" style="' + inputStyle + '">';
                     } else {
                       nameCell = escH(r.name || '—');
                       emailCell = escH(r.email || '—');
@@ -11204,6 +11322,7 @@ window.qsNpOfferSend = function (btn) {
                       statusCell += '<br><label style="font-size:12px;color:var(--dim);white-space:nowrap"><input type="checkbox" class="import-edit-skip" data-row="' + r.row + '"' + (skippedRow ? ' checked' : '') + '> Skip this row</label>';
                     }
                     h += '<tr' + (ready ? '' : ' style="background:#fdf0f0"') + '>' +
+                      '<td style="' + cellStyle + '"><input type="checkbox" class="import-row-check" data-row="' + r.row + '"' + (importSelectedRows[r.row] ? ' checked' : '') + '></td>' +
                       '<td style="' + cellStyle + '">' + nameCell + '</td>' +
                       '<td style="' + cellStyle + '">' + emailCell + '</td>' +
                       '<td style="' + cellStyle + '">' + deptCell + '</td>' +
@@ -11220,6 +11339,8 @@ window.qsNpOfferSend = function (btn) {
                     h += '<button type="button" id="team-import-go" class="btn">Import ' + readyCount + ' team member' + (readyCount === 1 ? '' : 's') + '</button>';
                   }
                   wrap.innerHTML = h;
+                  var checkAllBox = wrap.querySelector('.import-check-all');
+                  if (checkAllBox && selectedCount > 0 && selectedCount < rows.length) checkAllBox.indeterminate = true;
                   var go = $('team-import-go');
                   if (go) go.addEventListener('click', runImport);
                 }
@@ -11290,6 +11411,7 @@ window.qsNpOfferSend = function (btn) {
                     importData = null;
                     deptDecisions = {};
                     roleDecisions = {};
+                    importSelectedRows = {};
                     loadMembers();
                     loadDepartments();
                   }).catch(function () {
