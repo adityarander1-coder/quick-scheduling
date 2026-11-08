@@ -90,14 +90,81 @@ function pad2(n: number): string {
   return n < 10 ? '0' + n : String(n);
 }
 
-/** Floating local datetime (YYYYMMDDTHHMMSS, no Z) for `totalMin`
- * minutes after midnight on `dateStr` (rolls into following days for
- * overnight shifts). */
-function floatingDt(dateStr: string, totalMin: number): string {
-  const dayOff = Math.floor(totalMin / 1440);
-  const mins = totalMin - dayOff * 1440;
-  const d = addDays(dateStr, dayOff).replace(/-/g, '');
-  return `${d}T${pad2(Math.floor(mins / 60))}${pad2(mins % 60)}00`;
+/** The company's timezone (company_settings 'timezone', default
+ * 'America/Chicago') — stored wall-clock times in the feed are read in
+ * this zone. Same read + Intl-validation pattern as the email poller. */
+async function companyTimezone(companyId: string): Promise<string> {
+  let tz = 'America/Chicago';
+  try {
+    const { rows } = await query(
+      `SELECT value FROM company_settings WHERE company_id = $1 AND key = 'timezone'`,
+      [companyId]
+    );
+    if (rows.length && rows[0].value) {
+      const v = String(rows[0].value);
+      try { new Intl.DateTimeFormat('en-US', { timeZone: v }); tz = v; }
+      catch { /* bad stored value — keep the fallback */ }
+    }
+  } catch { /* settings unavailable — default */ }
+  return tz;
+}
+
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+function dtfFor(tz: string): Intl.DateTimeFormat {
+  let f = dtfCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    dtfCache.set(tz, f);
+  }
+  return f;
+}
+
+/** Offset (ms) of timezone `tz` from UTC at instant `utcMs`, i.e.
+ * local-wall-reading minus UTC. Derived by formatting the instant in
+ * `tz` and reading the parts back as if they were UTC. */
+function tzOffsetMs(tz: string, utcMs: number): number {
+  const parts = dtfFor(tz).formatToParts(new Date(utcMs));
+  let y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
+  for (const p of parts) {
+    if (p.type === 'year') y = +p.value;
+    else if (p.type === 'month') mo = +p.value;
+    else if (p.type === 'day') d = +p.value;
+    else if (p.type === 'hour') h = +p.value % 24;
+    else if (p.type === 'minute') mi = +p.value;
+    else if (p.type === 'second') s = +p.value;
+  }
+  return Date.UTC(y, mo - 1, d, h, mi, s) - Math.floor(utcMs / 1000) * 1000;
+}
+
+/** UTC datetime (YYYYMMDDTHHMMSSZ) for `totalMin` minutes after local
+ * midnight on `dateStr` in timezone `tz`.
+ *
+ * Why UTC: the feed used to emit floating local times (no zone), and
+ * Google Calendar's URL-feed importer reads floating times as UTC, so
+ * a 7 AM CST shift showed up at 1 AM. A Z-suffixed UTC instant is the
+ * one form every consumer places correctly (2026-11-08 fix).
+ *
+ * `totalMin` may exceed 1440 (overnight shifts): the whole local
+ * datetime — date plus total minutes — is resolved to an instant in
+ * one step, so next-day ends land right. The offset is computed at
+ * the event's own date (a January shift is CST, a July shift is CDT),
+ * evaluated twice so a local time near a DST transition still pins
+ * the offset actually in force for it. */
+function utcDt(dateStr: string, totalMin: number, tz: string): string {
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const wallMs = Date.UTC(y, mo - 1, d) + totalMin * 60000;
+  let utcMs = wallMs - tzOffsetMs(tz, wallMs);
+  const offAtInstant = tzOffsetMs(tz, utcMs);
+  if (offAtInstant !== tzOffsetMs(tz, wallMs)) utcMs = wallMs - offAtInstant;
+  const dt = new Date(utcMs);
+  return (
+    `${dt.getUTCFullYear()}${pad2(dt.getUTCMonth() + 1)}${pad2(dt.getUTCDate())}` +
+    `T${pad2(dt.getUTCHours())}${pad2(dt.getUTCMinutes())}${pad2(dt.getUTCSeconds())}Z`
+  );
 }
 
 function dateOnly(dateStr: string): string {
@@ -153,7 +220,7 @@ interface FeedEvent {
   summary: string;
   location?: string | null;
   /** Timed event. */
-  start?: string; // floating datetime
+  start?: string; // UTC datetime (YYYYMMDDTHHMMSSZ)
   end?: string;
   /** All-day event (date-only). */
   startDate?: string; // YYYYMMDD
@@ -189,6 +256,7 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
     }
     const userId = urows[0].id as string;
     const companyId = urows[0].company_id as string;
+    const tz = await companyTimezone(companyId);
 
     const today = await companyTodayStr(companyId);
     const from = addDays(today, -7);
@@ -211,8 +279,8 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
         events.push({
           uid,
           summary: s.shiftTypeName,
-          start: floatingDt(s.date, tt.startMin),
-          end: floatingDt(s.date, endMin),
+          start: utcDt(s.date, tt.startMin, tz),
+          end: utcDt(s.date, endMin, tz),
         });
       } else {
         events.push({
@@ -285,8 +353,8 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
           uid,
           summary,
           location: o.location || null,
-          start: floatingDt(o.date, startMin),
-          end: floatingDt(o.date, endMin),
+          start: utcDt(o.date, startMin, tz),
+          end: utcDt(o.date, endMin, tz),
         });
       } else {
         events.push({
@@ -312,6 +380,9 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
       'CALSCALE:GREGORIAN',
       'METHOD:PUBLISH',
       'X-WR-CALNAME:Quick Scheduling — my shifts & sessions',
+      // Informational only: timed events are UTC instants (Z), which
+      // every consumer renders in the viewer's own zone.
+      `X-WR-TIMEZONE:${tz}`,
     ];
     for (const ev of events) lines.push(...renderEvent(ev, stamp));
     lines.push('END:VCALENDAR');
