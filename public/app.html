@@ -17708,7 +17708,16 @@ window.qsNpOfferSend = function (btn) {
           var dashForIv = dashList.find(function (d) { return d.id === e.dashboardId; }) || (curDash && curDash.id === e.dashboardId ? curDash : null);
           var ivHtml = (dashForIv && dashForIv.interviewLinkUrl)
             ? '<a href="' + esc(dashForIv.interviewLinkUrl) + '" target="_blank" rel="noopener" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px;text-align:center;text-decoration:none;min-width:120px">' + esc(dashForIv.interviewLinkLabel || 'Interviews') + ' ↗</a>' : '';
-          var copyHtml = archView ? '' : '<button type="button" class="btn-secondary" data-sd-copy style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">⧉ Copy event</button>';
+          // Copy event is managers-only (Deepika, 2026-11-07:
+          // "Employee cannot copy an event" — blanket, even for
+          // events the employee organized). Same owner/scheduler
+          // predicate the form uses for manager-only affordances
+          // (acMyRole pair, e.g. the comm-groups ＋ New group link);
+          // window.currentRole is the same pair set at app init,
+          // covering details opened from My Schedule before any
+          // calendar dashboard has loaded.
+          var sdIsManager = (acMyRole === 'owner' || acMyRole === 'scheduler') || (window.currentRole === 'owner' || window.currentRole === 'scheduler');
+          var copyHtml = (archView || !sdIsManager) ? '' : '<button type="button" class="btn-secondary" data-sd-copy style="flex:1;padding:0.7rem;border-radius:10px;min-width:120px">⧉ Copy event</button>';
           var rsvpCtl = '';
           if (e.viewerIsBeneficiary && !iSpeak && !archView) {
             var rb = function (v, label) {
