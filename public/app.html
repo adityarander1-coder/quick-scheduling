@@ -17985,7 +17985,6 @@ window.qsNpOfferSend = function (btn) {
           '<div style="display:flex;gap:0.6rem"><button type="button" class="btn-secondary" style="flex:1;padding:0.7rem;border-radius:10px" id="acf-cancel">Cancel</button>' +
           '<button type="button" class="btn" style="flex:1;padding:0.7rem;border-radius:10px' + (canSaveOrg ? '' : ';opacity:0.5') + '" id="acf-save"' + (canSaveOrg ? '' : ' disabled') + '>Save event</button></div>' +
           (s && rule !== 'none' ? '<div id="acf-daterow" style="display:none;margin-top:0.7rem"><button type="button" id="acf-canceldate" style="width:100%;padding:0.6rem;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;cursor:pointer">🚫 Cancel just this date</button><button type="button" id="acf-resetdate" style="display:none;width:100%;margin-top:0.5rem;padding:0.6rem;border-radius:10px;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;cursor:pointer">↩ Reset this date to the series defaults</button></div>' : '') +
-          (s ? '<button type="button" id="acf-dup" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer">⧉ Duplicate on the same day</button>' : '') +
           (s ? '<button type="button" id="acf-del" style="width:100%;margin-top:0.7rem;padding:0.6rem;border-radius:10px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">' + (rule !== 'none' ? 'Delete whole rotation' : 'Delete session') + '</button>' : '') +
           '</div>';
         document.body.appendChild(m);
@@ -18343,7 +18342,6 @@ window.qsNpOfferSend = function (btn) {
           var mt = m.querySelector('#acf-meeting'); if (mt) mt.value = (src && src.meetingUrl) || '';
           ['#acf-title', '#acf-kind', '#acf-date', '#acf-notes'].forEach(function (sel) { var el = m.querySelector(sel); if (el) el.disabled = dateScope; });
           var rot = m.querySelector('#acf-rotation'); if (rot) rot.style.display = dateScope ? 'none' : '';
-          var dp2 = m.querySelector('#acf-dup'); if (dp2) dp2.style.display = dateScope ? 'none' : '';
           var dl2 = m.querySelector('#acf-del'); if (dl2) dl2.style.display = dateScope ? 'none' : '';
           var dr = m.querySelector('#acf-daterow'); if (dr) dr.style.display = dateScope ? '' : 'none';
           var note = m.querySelector('#acf-scope-note');
@@ -18668,21 +18666,6 @@ window.qsNpOfferSend = function (btn) {
             }
             else pageError((r.data && r.data.error) || 'Could not save.');
           }).catch(function () { pageError('Could not save.'); });
-        });
-        var dup = m.querySelector('#acf-dup');
-        if (dup) dup.addEventListener('click', function () {
-          var payload = readPayload();
-          payload.recurRule = 'none';
-          payload.recurUntil = null;
-          // The copy keeps the link as a plain link — the generated
-          // meeting belongs to the original session alone.
-          payload.meetingProvider = null;
-          payload.meetingExternalId = null;
-          if (!payload.title) { pageError('A title is required.'); return; }
-          api('/api/schedule/academic-sessions', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
-            if (r.ok) { m.remove(); pageSuccess('Duplicated — the copy is on the same day. Tap it to change its time.'); load(); }
-            else pageError((r.data && r.data.error) || 'Could not duplicate.');
-          }).catch(function () { pageError('Could not duplicate.'); });
         });
         var del = m.querySelector('#acf-del');
         if (del) del.addEventListener('click', function () {
