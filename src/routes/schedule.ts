@@ -6104,13 +6104,17 @@ router.delete('/payroll-schedules/:id', requireRole('owner', 'scheduler'), async
 });
 
 // GET /api/schedule/audit — change report for a date or date range (owner/scheduler).
-// Query: ?date=YYYY-MM-DD (single date) or ?from=YYYY-MM-DD&to=YYYY-MM-DD (range)
+// Query: ?date=YYYY-MM-DD (single date) or ?from=YYYY-MM-DD&to=YYYY-MM-DD (range).
+// Calendar separation (Deepika, 2026-11-07): ?category=calendar returns
+// ONLY calendar-event entries (the Calendar report); without it, the
+// original Run report returns schedule + settings and never calendar.
 router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const date = String(req.query.date || '');
     const from = String(req.query.from || '');
     const to = String(req.query.to || '');
+    const wantCalendar = String(req.query.category || '') === 'calendar';
     let where = '';
     const params: any[] = [companyId];
     if (isValidDate(date)) {
@@ -6123,6 +6127,7 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
       res.status(400).json({ error: 'Provide a date or a from/to range.' });
       return;
     }
+    where += wantCalendar ? ` AND a.category = 'calendar'` : ` AND COALESCE(a.category, 'schedule') <> 'calendar'`;
     const { rows } = await query(
       `SELECT a.date::text AS date, a.action, a.category, a.person_name AS "personName",
               a.shift_type_name AS "shiftTypeName", a.source,
@@ -12366,6 +12371,77 @@ router.post('/sessions/meeting-link', requireRole('owner', 'scheduler', 'employe
   }
 });
 
+// ------------------------------------------------------------------
+// Calendar report logging (Deepika, 2026-11-07): event changes are
+// written to the audit table under category 'calendar' and shown in
+// their OWN Calendar report — never mixed into the schedule Run
+// report. Descriptions are one plain sentence saying what happened;
+// edits spell out what changed. RSVPs are NOT logged (attendance
+// replies are noise, not edits).
+// ------------------------------------------------------------------
+const CAL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function calDstr(v: any): string {
+  if (!v) return '';
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+function calFmtDate(v: any): string {
+  const s = calDstr(v);
+  const p = s.split('-');
+  if (p.length !== 3) return s;
+  return `${CAL_MONTHS[(+p[1] || 1) - 1]} ${+p[2] || 1}, ${p[0]}`;
+}
+function calFmtTime(v: any): string { return v ? String(v).slice(0, 5) : ''; }
+function calFmtRange(start: any, end: any): string {
+  const s = calFmtTime(start), e = calFmtTime(end);
+  return s && e ? `${s}–${e}` : (s || e || '');
+}
+async function calNames(companyId: string, ids: (string | null | undefined)[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const want = [...new Set(ids.filter(Boolean).map(String))];
+  if (!want.length) return out;
+  const { rows } = await query('SELECT id, first_name, last_name, nickname FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, want]);
+  for (const u of rows) out.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'Someone');
+  return out;
+}
+async function calDeptNames(companyId: string, ids: (string | null | undefined)[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const want = [...new Set(ids.filter(Boolean).map(String))];
+  if (!want.length) return out;
+  const { rows } = await query('SELECT id, name FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, want]);
+  for (const d of rows) out.set(d.id, d.name);
+  return out;
+}
+function calSpeakerLabel(sp: { userId?: string | null; guestName?: string | null; guestEmail?: string | null }, names: Map<string, string>): string {
+  if (sp.userId) return names.get(sp.userId) || 'A team member';
+  return sp.guestName || sp.guestEmail || 'A guest';
+}
+function calListNames(list: string[], max = 4): string {
+  if (!list.length) return '';
+  return list.length <= max ? list.join(', ') : `${list.slice(0, max).join(', ')} +${list.length - max} more`;
+}
+function calRecurText(s: { recurRule?: any; recurInterval?: any; recurDays?: any; recurUntil?: any; recurCount?: any }): string {
+  // Stored 'biweekly' reads as weekly with interval 2 (the PUT's own
+  // normalisation) so a no-op save on such a series stays silent.
+  const rule = s.recurRule === 'biweekly' ? 'weekly' : (s.recurRule || 'none');
+  const interval = s.recurRule === 'biweekly' ? 2 : (s.recurInterval || 1);
+  const d = describeRecur({ recurRule: rule, recurInterval: interval, recurDays: s.recurDays ?? null, recurUntil: s.recurUntil ?? null, recurCount: s.recurCount ?? null });
+  if (!d) return 'does not repeat';
+  const tx = d.replace(/\.$/, '');
+  return tx.charAt(0).toLowerCase() + tx.slice(1);
+}
+async function calAudit(req: Request, e: { date: string; action: 'created' | 'updated' | 'deleted'; verb?: string; description: string; details?: any }): Promise<void> {
+  await auditLog({
+    companyId: req.session.companyId!,
+    date: e.date || todayStr(),
+    action: e.action,
+    category: 'calendar',
+    changedBy: req.session.userId!,
+    description: e.description,
+    details: { ...(e.details || {}), ...(e.verb ? { verb: e.verb } : {}), calendarEvent: true },
+  });
+}
+
 // POST /api/schedule/academic-sessions — edit-scoped for
 // owner/scheduler; employees may create events they organize.
 router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
@@ -12487,6 +12563,27 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     const newSessionId = rows[0].id;
     if (speakersIn) await saveSpeakers(query as any, newSessionId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, newSessionId, beneficiaries.departmentIds, beneficiaries.userIds);
+    // Calendar report: the creation itself.
+    {
+      const spkNames = await calNames(companyId, (speakersIn || []).filter((s) => s.userId).map((s) => String(s.userId)));
+      const spk = (speakersIn || []).map((s) => calSpeakerLabel(s, spkNames));
+      const bits: string[] = [];
+      const rng = calFmtRange(b.startTime, b.endTime);
+      bits.push(`${calFmtDate(b.date)}${rng ? ' ' + rng : ''}`);
+      if (spk.length) bits.push(`speaker${spk.length > 1 ? 's' : ''} ${calListNames(spk)}`);
+      if (beneficiaries && (beneficiaries.userIds.length || beneficiaries.departmentIds.length)) {
+        const aNames = await calNames(companyId, beneficiaries.userIds);
+        const dNames = await calDeptNames(companyId, beneficiaries.departmentIds);
+        const att = [...beneficiaries.departmentIds.map((d) => dNames.get(d) || 'a department'), ...beneficiaries.userIds.map((u) => aNames.get(u) || 'a team member')];
+        bits.push(`for ${calListNames(att)}`);
+      }
+      if (recurRule !== 'none') bits.push(calRecurText({ recurRule, recurInterval: rec.interval, recurDays, recurUntil, recurCount: rec.count }));
+      await calAudit(req, {
+        date: calDstr(b.date) || todayStr(), action: 'created',
+        description: `Created event "${title}" — ${bits.join(', ')}`,
+        details: { sessionId: newSessionId },
+      });
+    }
     res.json({ ok: true, id: newSessionId });
     // Notify the team speakers; an event with NO speakers
     // at all (guests count as speakers) tells the calendar's
@@ -12612,6 +12709,38 @@ router.post('/academic-sessions/bulk-assign', requireRole('owner', 'scheduler'),
         if (userId && prevHolder !== userId) assignedChanges++;
         if (prevHolder && prevHolder !== userId) removedCounts.set(prevHolder, (removedCounts.get(prevHolder) || 0) + 1);
       }
+      // Calendar report: one entry per event that actually changed.
+      {
+        const itemDate = recurring && date ? date : calDstr(cur.session_date);
+        const dateSuffix = recurring && date ? ' (just this date)' : '';
+        if (field === 'lecturer' && prevHolder !== userId) {
+          const nm = await calNames(companyId, [prevHolder, userId]);
+          await calAudit(req, {
+            date: itemDate || todayStr(), action: 'updated', verb: !userId && prevHolder ? 'dropped' : undefined,
+            description: userId && prevHolder
+              ? `Speaker on "${cur.title}" (${calFmtDate(itemDate)}) changed ${nm.get(prevHolder) || '—'} → ${nm.get(userId) || '—'}${dateSuffix}`
+              : userId
+                ? `Speaker added: ${nm.get(userId) || '—'} on "${cur.title}" (${calFmtDate(itemDate)})${dateSuffix}`
+                : `Speaker removed: ${nm.get(prevHolder as string) || '—'} from "${cur.title}" (${calFmtDate(itemDate)})${dateSuffix}`,
+            details: { sessionId: seriesId, bulk: true },
+          });
+        } else if (field === 'location') {
+          let prevLoc: any = cur.location;
+          if (recurring && date) {
+            const ovL = await getOverride(seriesId, date);
+            if (ovL && ovL.has_location) prevLoc = ovL.location;
+          }
+          if ((locVal || null) !== (prevLoc || null)) {
+            await calAudit(req, {
+              date: itemDate || todayStr(), action: 'updated',
+              description: locVal
+                ? `Location on "${cur.title}" (${calFmtDate(itemDate)}) set to "${locVal}"${dateSuffix}`
+                : `Location cleared on "${cur.title}" (${calFmtDate(itemDate)})${dateSuffix}`,
+              details: { sessionId: seriesId, bulk: true },
+            });
+          }
+        }
+      }
     }
     res.json({ ok: true, updated, skipped });
     // Notify the newly assigned person and anyone who lost sessions.
@@ -12736,6 +12865,12 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       if (sp.length) {
         if (sp.some((s: any) => s.userId === req.session.userId)) { res.json({ ok: true, already: true }); return; }
         await saveSpeakers(query as any, seriesId, [...sp.map(speakerRowToInput), { userId: req.session.userId! }]);
+        // Calendar report: joined as an additional speaker.
+        await calAudit(req, {
+          date: calDstr(cur.session_date) || todayStr(), action: 'updated', verb: 'picked_up',
+          description: `Picked up speaking at "${cur.title}" (${calFmtDate(cur.session_date)})${cur.recur_rule && cur.recur_rule !== 'none' ? ' (whole series)' : ''}`,
+          details: { sessionId: seriesId },
+        });
         res.json({ ok: true });
         return;
       }
@@ -12764,6 +12899,12 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
         if (nowHolder === req.session.userId) { res.json({ ok: true, already: true }); return; }
         res.status(409).json({ error: 'Someone already picked this up.' }); return;
       }
+      // Calendar report: picked up one date of the series.
+      await calAudit(req, {
+        date: occDate, action: 'updated', verb: 'picked_up',
+        description: `Picked up speaking at "${cur.title}" (${calFmtDate(occDate)}) (just this date)`,
+        details: { sessionId: seriesId },
+      });
       res.json({ ok: true });
       return;
     }
@@ -12776,6 +12917,12 @@ router.post('/academic-sessions/:id/claim', requireRole('owner', 'scheduler', 'e
       [req.session.userId!, seriesId, companyId]);
     if (!upd.rowCount) { res.status(409).json({ error: 'Someone already picked this up.' }); return; }
     await saveSpeakers(query as any, seriesId, [{ userId: req.session.userId! }]);
+    // Calendar report: claimed the (empty) speaker spot.
+    await calAudit(req, {
+      date: calDstr(cur.session_date) || todayStr(), action: 'updated', verb: 'picked_up',
+      description: `Picked up speaking at "${cur.title}" (${calFmtDate(cur.session_date)})${cur.recur_rule && cur.recur_rule !== 'none' ? ' (whole series)' : ''}`,
+      details: { sessionId: seriesId },
+    });
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] academic session claim failed:', err);
@@ -12805,6 +12952,19 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
         if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
       }
       await upsertOverride(companyId, seriesId, occDateU, { has_lecturer: true, lecturer_user_id: null });
+      // Calendar report: this date's speaker spot was given up.
+      {
+        const holder = eff.lecturer as string;
+        const selfDrop = holder === req.session.userId;
+        const nm = selfDrop ? null : await calNames(companyId, [holder]);
+        await calAudit(req, {
+          date: occDateU, action: 'updated', verb: 'dropped',
+          description: selfDrop
+            ? `Dropped speaking at "${cur.title}" (${calFmtDate(occDateU)}) (just this date)`
+            : `Removed ${nm!.get(holder) || 'the speaker'} as speaker of "${cur.title}" (${calFmtDate(occDateU)}) (just this date)`,
+          details: { sessionId: seriesId },
+        });
+      }
       res.json({ ok: true });
       return;
     }
@@ -12815,6 +12975,12 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
       const sp0 = spMap0.get(seriesId) || [];
       if (sp0.some((s: any) => s.userId === req.session.userId) && !(sp0.length && sp0[0].userId === req.session.userId)) {
         await saveSpeakers(query as any, seriesId, sp0.filter((s: any) => s.userId !== req.session.userId).map(speakerRowToInput));
+        // Calendar report: a non-primary speaker left the list.
+        await calAudit(req, {
+          date: calDstr(cur.session_date) || todayStr(), action: 'updated', verb: 'dropped',
+          description: `Dropped speaking at "${cur.title}" (${calFmtDate(cur.session_date)})`,
+          details: { sessionId: seriesId },
+        });
         res.json({ ok: true });
         return;
       }
@@ -12833,6 +12999,19 @@ router.post('/academic-sessions/:id/unclaim', requireRole('owner', 'scheduler', 
       if (sp.length && sp[0].userId === cur.lecturer_user_id) {
         await saveSpeakers(query as any, seriesId, sp.slice(1).map(speakerRowToInput));
       }
+    }
+    // Calendar report: the speaker spot was given up / cleared.
+    {
+      const holder = cur.lecturer_user_id as string;
+      const selfDrop = holder === req.session.userId;
+      const nm = selfDrop ? null : await calNames(companyId, [holder]);
+      await calAudit(req, {
+        date: calDstr(cur.session_date) || todayStr(), action: 'updated', verb: 'dropped',
+        description: selfDrop
+          ? `Dropped speaking at "${cur.title}" (${calFmtDate(cur.session_date)})${cur.recur_rule && cur.recur_rule !== 'none' ? ' (whole series)' : ''}`
+          : `Removed ${nm!.get(holder) || 'the speaker'} as speaker of "${cur.title}" (${calFmtDate(cur.session_date)})`,
+        details: { sessionId: seriesId },
+      });
     }
     res.json({ ok: true });
   } catch (err) {
@@ -12859,6 +13038,23 @@ router.delete('/academic-sessions/:id/overrides/:date', requireRole('owner', 'sc
     } else if (!(await sessionEditCheck(req, res, cur.dashboard_id, cur.department_id))) return;
     const ovBefore = await getOverride(seriesId, date);
     await query('DELETE FROM academic_session_overrides WHERE session_id = $1 AND date = $2', [seriesId, date]);
+    // Calendar report: only when the reset actually changed what
+    // the date showed (the override differed from the series).
+    if (ovBefore) {
+      const effB = effectivePeople(cur, ovBefore);
+      const differs = !!ovBefore.cancelled
+        || effB.lecturer !== cur.lecturer_user_id
+        || (ovBefore.has_location && (ovBefore.location || null) !== (cur.location || null))
+        || (ovBefore.has_meeting_url && (ovBefore.meeting_url || null) !== (cur.meeting_url || null))
+        || (ovBefore.has_times && (calFmtTime(ovBefore.start_time) !== calFmtTime(cur.start_time) || calFmtTime(ovBefore.end_time) !== calFmtTime(cur.end_time)));
+      if (differs) {
+        await calAudit(req, {
+          date, action: 'updated', verb: 'reset_date',
+          description: `Reset "${cur.title}" on ${calFmtDate(date)} back to the series settings`,
+          details: { sessionId: seriesId },
+        });
+      }
+    }
     res.json({ ok: true });
     {
       const eff = effectivePeople(cur, ovBefore);
@@ -12930,6 +13126,14 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
         const ovBefore = await getOverride(seriesId, occDate);
         const eff = effectivePeople(cur, ovBefore);
         await upsertOverride(companyId, seriesId, occDate, { cancelled: true });
+        // Calendar report (only when the date wasn't already cancelled).
+        if (!(ovBefore && ovBefore.cancelled)) {
+          await calAudit(req, {
+            date: occDate, action: 'updated', verb: 'cancelled_date',
+            description: `Cancelled "${cur.title}" for ${calFmtDate(occDate)} (just this date)`,
+            details: { sessionId: seriesId },
+          });
+        }
         res.json({ ok: true, scope: 'date', cancelled: true });
         {
           const people = [eff.lecturer, eff.supervisor].filter(Boolean) as string[];
@@ -12965,7 +13169,40 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
         fields.start_time = b.startTime ? String(b.startTime) : null;
         fields.end_time = b.endTime ? String(b.endTime) : null;
       }
+      // Calendar report: diff what this date effectively showed
+      // before vs after the override write.
+      const dateParts: string[] = [];
+      {
+        const ovB = await getOverride(seriesId, occDate);
+        if (ovB && ovB.cancelled) dateParts.push('date un-cancelled');
+        const effB = effectivePeople(cur, ovB);
+        if (fields.has_lecturer && String(effB.lecturer || '') !== String(fields.lecturer_user_id || '')) {
+          const nm = await calNames(companyId, [effB.lecturer, fields.lecturer_user_id]);
+          dateParts.push(fields.lecturer_user_id
+            ? (effB.lecturer ? `speaker ${nm.get(effB.lecturer) || '—'} → ${nm.get(fields.lecturer_user_id) || '—'}` : `speaker set: ${nm.get(fields.lecturer_user_id) || '—'}`)
+            : `speaker removed (was ${nm.get(effB.lecturer as string) || '—'})`);
+        }
+        const locBefore = ovB && ovB.has_location ? ovB.location : cur.location;
+        if (fields.has_location && (fields.location || null) !== (locBefore || null)) {
+          dateParts.push(!locBefore ? `location added: ${fields.location}` : !fields.location ? `location removed (was ${locBefore})` : `location ${locBefore} → ${fields.location}`);
+        }
+        const muBefore = ovB && ovB.has_meeting_url ? ovB.meeting_url : cur.meeting_url;
+        if (fields.has_meeting_url && (fields.meeting_url || null) !== (muBefore || null)) {
+          dateParts.push(!muBefore ? 'meeting link added' : !fields.meeting_url ? 'meeting link removed' : 'meeting link changed');
+        }
+        const tBefore: [any, any] = ovB && ovB.has_times ? [ovB.start_time, ovB.end_time] : [cur.start_time, cur.end_time];
+        if (fields.has_times && calFmtRange(tBefore[0], tBefore[1]) !== calFmtRange(fields.start_time, fields.end_time)) {
+          dateParts.push(`time ${calFmtRange(tBefore[0], tBefore[1]) || '—'} → ${calFmtRange(fields.start_time, fields.end_time) || '—'}`);
+        }
+      }
       await upsertOverride(companyId, seriesId, occDate, fields);
+      if (dateParts.length) {
+        await calAudit(req, {
+          date: occDate, action: 'updated',
+          description: `Edited "${cur.title}" for ${calFmtDate(occDate)} (just this date) — ${dateParts.join('; ')}`,
+          details: { sessionId: seriesId },
+        });
+      }
       res.json({ ok: true, scope: 'date' });
       {
         const people = [cur.lecturer_user_id, cur.supervisor_user_id, b.lecturerUserId || null].filter(Boolean) as string[];
@@ -13079,6 +13316,12 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
     const pair = (b.meetingProvider !== undefined || b.meetingExternalId !== undefined)
       ? cleanMeetingPair(b)
       : (oldPair ? { provider: oldPair.provider, externalId: oldPair.externalId } : { provider: null, externalId: null });
+    // Calendar report: snapshot the current attendees for the diff.
+    let prevBeneficiaries: { departmentIds: string[]; userIds: string[] } = { departmentIds: [], userIds: [] };
+    {
+      const bmPrev = await loadBeneficiaries(query as any, [seriesId]);
+      prevBeneficiaries = bmPrev.get(seriesId) || prevBeneficiaries;
+    }
     await query(
       `UPDATE academic_sessions SET title=$1, lecturer_user_id=$2, department_id=$3, session_date=$4,
         start_time=$5, end_time=$6, location=$7, kind=$8, notes=$9, dashboard_id=$10, recur_rule=$11, recur_until=$12, supervisor_user_id=$13, recur_days=$14, recur_interval=$15, recur_count=$16, meeting_url=$17, person_label=$18, meeting_provider=$19, meeting_external_id=$20, room_id=$21, room_source=$22, room_external_id=$23 WHERE id=$24`,
@@ -13093,6 +13336,84 @@ router.put('/academic-sessions/:id', requireRole('owner', 'scheduler', 'employee
        pair.provider, pair.externalId, roomId, roomSource, roomExternalId, seriesId]);
     if (speakersIn) await saveSpeakers(query as any, seriesId, speakersIn);
     if (beneficiaries) await saveBeneficiaries(query as any, seriesId, beneficiaries.departmentIds, beneficiaries.userIds);
+    // Calendar report: one entry spelling out what changed (a save
+    // that changes nothing writes nothing).
+    {
+      const parts: string[] = [];
+      if (title !== cur.title) parts.push(`title "${cur.title}" → "${title}"`);
+      const newDateStr = calDstr(b.date || cur.session_date);
+      if (newDateStr !== calDstr(cur.session_date)) parts.push(`date ${calFmtDate(cur.session_date)} → ${calFmtDate(newDateStr)}`);
+      const oldRange = calFmtRange(cur.start_time, cur.end_time);
+      const newRange = calFmtRange(b.startTime !== undefined ? b.startTime : cur.start_time, b.endTime !== undefined ? b.endTime : cur.end_time);
+      if (oldRange !== newRange) parts.push(`time ${oldRange || '—'} → ${newRange || '—'}`);
+      if (String(kind) !== String(cur.kind || '')) {
+        const { rows: kRows } = await query('SELECT key, label FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2', [companyId, dashboardId || cur.dashboard_id]);
+        const kMap = new Map((kRows as any[]).map((k) => [k.key, k.label]));
+        parts.push(`type ${kMap.get(cur.kind) || cur.kind} → ${kMap.get(kind) || kind}`);
+      }
+      if (String(departmentId || '') !== String(cur.department_id || '')) {
+        const dn = await calDeptNames(companyId, [cur.department_id, departmentId]);
+        parts.push(`organizing department ${cur.department_id ? (dn.get(cur.department_id) || '—') : 'none'} → ${departmentId ? (dn.get(departmentId) || '—') : 'none'}`);
+      }
+      if (speakersIn) {
+        const keyOf = (s: any) => s.userId ? 'u:' + s.userId : 'g:' + String(s.guestEmail || s.guestName || '').toLowerCase();
+        const prevKeys = new Set(prevSpeakers.map(keyOf));
+        const nextKeys = new Set(speakersIn.map(keyOf));
+        const added = speakersIn.filter((s) => !prevKeys.has(keyOf(s)));
+        const removed = prevSpeakers.filter((s) => !nextKeys.has(keyOf(s)));
+        if (added.length || removed.length) {
+          const nm = await calNames(companyId, [...added, ...removed].filter((s) => s.userId).map((s) => String(s.userId)));
+          const aL = added.map((s) => calSpeakerLabel(s, nm));
+          const rL = removed.map((s) => calSpeakerLabel(s, nm));
+          if (rL.length === 1 && aL.length === 1) parts.push(`speaker ${rL[0]} → ${aL[0]}`);
+          else {
+            if (aL.length) parts.push(`speakers added: ${calListNames(aL)}`);
+            if (rL.length) parts.push(`speakers removed: ${calListNames(rL)}`);
+          }
+        } else if (prevSpeakers.map(keyOf).join('|') !== speakersIn.map(keyOf).join('|')) {
+          parts.push('speaker order changed');
+        }
+      }
+      if (beneficiaries) {
+        const addU = beneficiaries.userIds.filter((u) => !prevBeneficiaries.userIds.includes(u));
+        const remU = prevBeneficiaries.userIds.filter((u) => !beneficiaries.userIds.includes(u));
+        const addD = beneficiaries.departmentIds.filter((d) => !prevBeneficiaries.departmentIds.includes(d));
+        const remD = prevBeneficiaries.departmentIds.filter((d) => !beneficiaries.departmentIds.includes(d));
+        if (addU.length || remU.length || addD.length || remD.length) {
+          const nm = await calNames(companyId, [...addU, ...remU]);
+          const dn = await calDeptNames(companyId, [...addD, ...remD]);
+          if (addU.length) parts.push(`attendees added: ${calListNames(addU.map((u) => nm.get(u) || 'a team member'))}`);
+          if (remU.length) parts.push(`attendees removed: ${calListNames(remU.map((u) => nm.get(u) || 'a team member'))}`);
+          if (addD.length) parts.push(`attendee departments added: ${calListNames(addD.map((d) => dn.get(d) || 'a department'))}`);
+          if (remD.length) parts.push(`attendee departments removed: ${calListNames(remD.map((d) => dn.get(d) || 'a department'))}`);
+        }
+      }
+      const oldLoc = cur.location || null;
+      if ((locationForSave || null) !== oldLoc) {
+        const w = (roomId || cur.room_id) ? 'room' : 'location';
+        if (!oldLoc) parts.push(`${w} added: ${locationForSave}`);
+        else if (!locationForSave) parts.push(`${w} removed (was ${oldLoc})`);
+        else parts.push(`${w} ${oldLoc} → ${locationForSave}`);
+      }
+      const oldMu = cur.meeting_url || null;
+      if ((meetingUrl || null) !== oldMu) {
+        if (!oldMu) parts.push('meeting link added');
+        else if (!meetingUrl) parts.push('meeting link removed');
+        else parts.push('meeting link changed');
+      }
+      const newNotes = b.notes !== undefined ? (b.notes ? String(b.notes).trim() : null) : cur.notes;
+      if ((newNotes || null) !== (cur.notes || null)) parts.push('notes changed');
+      const oldRec = calRecurText({ recurRule: cur.recur_rule, recurInterval: cur.recur_interval, recurDays: cur.recur_days, recurUntil: cur.recur_until, recurCount: cur.recur_count });
+      const newRec = calRecurText({ recurRule, recurInterval: rec.interval, recurDays, recurUntil, recurCount: rec.count });
+      if (oldRec !== newRec) parts.push(`repeats: ${oldRec} → ${newRec}`);
+      if (parts.length) {
+        await calAudit(req, {
+          date: newDateStr || calDstr(cur.session_date) || todayStr(), action: 'updated',
+          description: `Edited event "${cur.title}" — ${parts.join('; ')}${recurRule !== 'none' ? ' (whole series)' : ''}`,
+          details: { sessionId: seriesId },
+        });
+      }
+    }
     // External meeting sync (best effort — a provider hiccup never
     // blocks the save; a failed update rides back as a warning).
     let meetingWarning: string | null = null;
@@ -13206,7 +13527,7 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'emplo
   try {
     const companyId = req.session.companyId!;
     const seriesId = String(req.params.id).split('@@')[0];
-    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, department_id, dashboard_id, created_by, meeting_provider, meeting_external_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
+    const { rows } = await query('SELECT title, lecturer_user_id, supervisor_user_id, session_date::text AS sdate, start_time, end_time, recur_rule, department_id, dashboard_id, created_by, meeting_provider, meeting_external_id FROM academic_sessions WHERE id = $1 AND company_id = $2', [seriesId, companyId]);
     if (!rows.length) { res.status(404).json({ error: 'Not found.' }); return; }
     if (await sessionWriteBlocked(res, rows[0].dashboard_id)) return;
     if (req.session.role === 'employee') {
@@ -13216,6 +13537,15 @@ router.delete('/academic-sessions/:id', requireRole('owner', 'scheduler', 'emplo
       }
     } else if (!(await sessionEditCheck(req, res, rows[0].dashboard_id, rows[0].department_id))) return;
     await query('DELETE FROM academic_sessions WHERE id = $1', [seriesId]);
+    // Calendar report: the deletion itself.
+    {
+      const delRange = calFmtRange(rows[0].start_time, rows[0].end_time);
+      await calAudit(req, {
+        date: rows[0].sdate || todayStr(), action: 'deleted',
+        description: `Deleted event "${rows[0].title}" — ${calFmtDate(rows[0].sdate)}${delRange ? ' ' + delRange : ''}${rows[0].recur_rule && rows[0].recur_rule !== 'none' ? ' (whole series)' : ''}`,
+        details: { sessionId: seriesId },
+      });
+    }
     res.json({ ok: true });
     // A generated meeting dies with its session (best effort).
     if (rows[0].meeting_provider && rows[0].meeting_external_id) {

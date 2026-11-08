@@ -2167,7 +2167,7 @@
       <div id="sched-view"></div>
 
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
 
       <!-- Assign shift modal -->
@@ -7752,7 +7752,7 @@ window.qsNpOfferSend = function (btn) {
         <div id="plans-list" style="margin-top:0.75rem"></div>
       </div>
       <div id="ask-report-wrap" style="margin-top:1.5rem;text-align:center">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
       <script>
       (function () {
@@ -12484,7 +12484,7 @@ window.qsNpOfferSend = function (btn) {
         </div>
       </div>
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
     </section>
 
@@ -12796,7 +12796,7 @@ window.qsNpOfferSend = function (btn) {
       })();
       </script>
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
     </section>
 
@@ -13327,7 +13327,7 @@ window.qsNpOfferSend = function (btn) {
       })();
       </script>
       <div style="margin-top:1.5rem;text-align:center">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
     </section>
 
@@ -13499,7 +13499,7 @@ window.qsNpOfferSend = function (btn) {
       </div><!-- /help-employee -->
 
       <div style="margin-top:1.5rem;text-align:center" id="help-audit-btn-wrap">
-        <button type="button" class="btn-secondary audit-page-btn">Run report</button>
+        <button type="button" class="btn-secondary audit-page-btn">Run report</button> <button type="button" class="btn-secondary cal-report-page-btn">Calendar report</button>
       </div>
 
       <style>
@@ -16214,6 +16214,32 @@ window.qsNpOfferSend = function (btn) {
       <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow-y:auto"></div>
       <div style="display:flex;justify-content:flex-end;margin-top:1rem">
         <button type="button" class="btn-secondary" id="audit-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global: Calendar change report modal — SEPARATE from the schedule
+       Run report (Deepika, 2026-11-07: calendar reporting stays separate
+       for clarity). Shows only category 'calendar' audit entries. -->
+  <div id="cal-audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
+    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
+      <h3 style="margin-top:0">Calendar report</h3>
+      <p style="color:#5b6b76;font-size:0.9rem">See who created, edited or deleted calendar events, what changed, and who picked up or dropped speaking. The date you pick is the event date the change is for — not the date it was made. Schedule and settings changes live in the Run report instead.</p>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
+        <label><input type="radio" name="cal-audit-mode" value="date" checked> One date</label>
+        <label><input type="radio" name="cal-audit-mode" value="range"> Date range</label>
+      </div>
+      <div id="cal-audit-date-wrap" style="margin-bottom:1rem">
+        <label>Date <input type="date" id="cal-audit-date"></label>
+      </div>
+      <div id="cal-audit-range-wrap" class="hidden" style="margin-bottom:1rem">
+        <label>From <input type="date" id="cal-audit-from"></label>
+        <label>To <input type="date" id="cal-audit-to"></label>
+      </div>
+      <button type="button" id="cal-audit-run" class="btn">Run report</button>
+      <div id="cal-audit-results" style="margin-top:1rem;max-height:50vh;overflow-y:auto"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+        <button type="button" class="btn-secondary" id="cal-audit-close">Close</button>
       </div>
     </div>
   </div>
@@ -19366,6 +19392,85 @@ window.qsNpOfferSend = function (btn) {
               ' <span style="color:#5b6b76">(' + via + ')</span><br>' +
               '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
             html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
+          });
+          box.innerHTML = html;
+        }).catch(function () { pageError('Could not run report.'); });
+      });
+    })();
+
+    // --- Global: Calendar change report — its OWN modal, kept separate
+    // from the schedule Run report (Deepika, 2026-11-07). Reads the
+    // same audit endpoint with category=calendar. ---
+    (function () {
+      var modal = $('cal-audit-modal');
+      if (!modal) return;
+      function openCalAudit() { show(modal); }
+      document.querySelectorAll('.cal-report-page-btn').forEach(function (b) {
+        b.addEventListener('click', function () { openCalAudit(); });
+      });
+      window.openCalendarReport = openCalAudit;
+      $('cal-audit-close').addEventListener('click', function () { hide(modal); });
+      document.querySelectorAll('input[name="cal-audit-mode"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          var isDate = document.querySelector('input[name="cal-audit-mode"]:checked').value === 'date';
+          $('cal-audit-date-wrap').classList.toggle('hidden', !isDate);
+          $('cal-audit-range-wrap').classList.toggle('hidden', isDate);
+        });
+      });
+      $('cal-audit-run').addEventListener('click', function () {
+        var mode = document.querySelector('input[name="cal-audit-mode"]:checked').value;
+        var qs = '?category=calendar';
+        var d = '', f = '', tt = '';
+        if (mode === 'date') {
+          d = $('cal-audit-date').value;
+          if (!d) { pageError('Pick a date.'); return; }
+          qs += '&date=' + encodeURIComponent(d);
+        } else {
+          f = $('cal-audit-from').value; tt = $('cal-audit-to').value;
+          if (!f || !tt || f > tt) { pageError('Pick a valid from/to range.'); return; }
+          qs += '&from=' + encodeURIComponent(f) + '&to=' + encodeURIComponent(tt);
+        }
+        api('/api/schedule/audit' + qs).then(function (r) {
+          if (!r.ok) { pageError((r.data && r.data.error) || 'Could not run report.'); return; }
+          var box = $('cal-audit-results');
+          var entries = r.data.entries || [];
+          if (!entries.length) {
+            box.innerHTML = '<p style="color:#5b6b76">No calendar changes recorded for this period yet.</p>';
+            return;
+          }
+          function fmtDay(iso) {
+            if (!iso) return '';
+            var parts = String(iso).split('-');
+            var dd = new Date(+parts[0], (+parts[1] || 1) - 1, +parts[2] || 1);
+            return dd.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+          }
+          function fmtTime(ts) {
+            return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+          }
+          var verbWords = { picked_up: 'Picked up', dropped: 'Dropped', reset_date: 'Reset', cancelled_date: 'Cancelled' };
+          var actionWords = { created: 'Created', updated: 'Edited', deleted: 'Deleted' };
+          var html = '';
+          if (mode === 'date') {
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Calendar changes for ' + esc(fmtDay(d)) + '.</p>';
+          } else {
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Calendar changes from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(tt)) + '.</p>';
+          }
+          var lastDate = '';
+          entries.forEach(function (e) {
+            if (e.date !== lastDate) {
+              html += '<h4 style="margin:0.75rem 0 0.25rem">' + esc(fmtDay(e.date)) + '</h4>';
+              lastDate = e.date;
+            }
+            var verb = (e.details && e.details.verb) || '';
+            var word = verbWords[verb] || actionWords[e.action] || e.action;
+            var via = e.source === 'agent' ? 'via Q-Scheduler Task'
+              : e.source === 'email' ? 'via Email Q-Scheduler'
+              : 'manual';
+            var what = e.description ? esc(e.description) : 'Calendar event';
+            html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' +
+              '<strong>' + esc(word) + '</strong>: ' + what +
+              ' <span style="color:#5b6b76">(' + via + ')</span><br>' +
+              '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span></div>';
           });
           box.innerHTML = html;
         }).catch(function () { pageError('Could not run report.'); });

@@ -1,5 +1,5 @@
 /**
- * Shared audit log helper — records who changed what (schedule + settings).
+ * Shared audit log helper — records who changed what (schedule + settings + calendar).
  * Used by schedule.ts, departments.ts, jobRoles.ts, users.ts.
  */
 import { query } from '../db.js';
@@ -9,7 +9,7 @@ export interface AuditEntry {
   date: string; // YYYY-MM-DD (schedule date, or today for settings changes)
   action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded'
     | 'archived' | 'restored' | 'delete_requested' | 'delete_rejected' | 'delete_cancelled';
-  category?: 'schedule' | 'settings';
+  category?: 'schedule' | 'settings' | 'calendar';
   personName?: string | null;
   shiftTypeName?: string | null;
   source?: 'manual' | 'rotation' | 'agent' | 'email';
@@ -98,7 +98,13 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
       const r = (results as any[])[i];
       if (!r || r.success === false) continue;
       const isSettings = settingsActions.has(c.action);
-      const action = (c.action === 'unassign' || String(c.action).startsWith('delete')) ? 'deleted'
+      // Calendar session changes belong to the separate Calendar
+      // report (Deepika, 2026-11-07: calendar reporting stays
+      // separate for clarity), never the schedule Run report.
+      const isSession = c.action === 'add_session' || c.action === 'update_session' || c.action === 'cancel_session';
+      const action = isSession
+        ? (c.action === 'add_session' ? 'created' : c.action === 'cancel_session' ? 'deleted' : 'updated')
+        : (c.action === 'unassign' || String(c.action).startsWith('delete')) ? 'deleted'
         : (c.action === 'bulk_publish') ? 'published'
         : (c.action === 'bulk_unpublish') ? 'unpublished'
         : (c.action === 'assign' || c.action === 'assign_recurring' || String(c.action).startsWith('add')) ? 'created' : 'updated';
@@ -109,7 +115,7 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
           companyId,
           date,
           action,
-          category: isSettings ? 'settings' : 'schedule',
+          category: isSession ? 'calendar' : isSettings ? 'settings' : 'schedule',
           personName: r.personDisplay || c.person || c.toPerson || c.firstName || null,
           shiftTypeName: c.shiftType || null,
           source: planSrc as any,
