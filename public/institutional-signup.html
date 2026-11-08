@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Institutional plan signup — Quick Scheduling</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #eef3f4; color: #1c2b2e; min-height: 100vh;
+  }
+  header { background: #083f4d; color: #fff; padding: 26px 20px 30px; text-align: center; }
+  .wordmark { font-size: 15px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #9fd8de; }
+  header h1 { font-size: 27px; font-weight: 700; margin-top: 10px; }
+  header h1 .price { color: #7fd1d9; }
+  header p { margin-top: 7px; font-size: 14px; color: #c8e4e8; }
+  main { padding: 26px 16px 40px; }
+  .card {
+    max-width: 520px; margin: 0 auto; background: #fff; border-radius: 14px;
+    box-shadow: 0 6px 24px rgba(8,63,77,.12); padding: 24px 26px 26px;
+  }
+  .fork { display: flex; gap: 10px; }
+  .fork-card { flex: 1; border: 2px solid #d9e4e6; border-radius: 10px; padding: 13px 14px; cursor: pointer; background: #fff; }
+  .fork-card.selected { border-color: #0e7c86; background: #eefafa; }
+  .fork-card .t { font-size: 14.5px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+  .fork-card .dot { width: 15px; height: 15px; border-radius: 50%; border: 2px solid #b9cdd1; flex: none; position: relative; }
+  .fork-card.selected .dot { border-color: #0e7c86; }
+  .fork-card.selected .dot::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: #0e7c86; }
+  .fork-card .d { font-size: 12.5px; color: #56707a; margin-top: 5px; line-height: 1.45; }
+  label.flabel { display: block; font-size: 13px; font-weight: 600; margin: 17px 0 6px; color: #24444d; }
+  label.flabel.first { margin-top: 15px; }
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], select {
+    width: 100%; padding: 0.52rem 0.65rem; border: 1px solid #c9d8db; border-radius: 8px;
+    font-size: 14px; font-family: inherit; color: #1c2b2e; background: #fff;
+  }
+  input::placeholder { color: #9db4ba; }
+  input:focus, select:focus { outline: 2px solid #0e7c86; outline-offset: 0; border-color: #0e7c86; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; min-width: 0; }
+  .hint { font-size: 12px; color: #6c8891; margin-top: 5px; line-height: 1.4; }
+  .radios { display: flex; gap: 18px; margin-top: 2px; }
+  .radios label { font-size: 13.5px; display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .radios input[type="radio"] { accent-color: #0e7c86; width: 15px; height: 15px; }
+  .submit {
+    width: 100%; margin-top: 24px; background: #0e7c86; color: #fff; border: none;
+    font-size: 15.5px; font-weight: 700; font-family: inherit; padding: 13px; border-radius: 9px; cursor: pointer;
+  }
+  .submit:hover { background: #0a6270; }
+  .submit:disabled { opacity: .6; cursor: default; }
+  .smallprint { text-align: center; font-size: 12.5px; color: #6c8891; margin-top: 11px; line-height: 1.5; }
+  .hidden { display: none; }
+  .alert-error {
+    background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+    border-radius: 10px; padding: 0.7rem 0.9rem; font-size: 13.5px; margin-bottom: 14px;
+  }
+  .alert-ok {
+    background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+    border-radius: 10px; padding: 0.8rem 0.95rem; font-size: 14px; margin-bottom: 14px; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">Quick Scheduling</div>
+  <h1>Institutional plan — <span class="price">$299/month</span></h1>
+  <p>25 departments included · invoice billing · 30-day free trial</p>
+</header>
+<main>
+  <div class="card">
+    <div id="error" class="alert-error hidden" role="alert"></div>
+    <div id="done" class="alert-ok hidden" role="status"></div>
+    <form id="inst-form" novalidate>
+      <div class="fork">
+        <div class="fork-card selected" id="fork-new" role="radio" aria-checked="true" tabindex="0">
+          <div class="t"><span class="dot"></span>A new institution</div>
+          <div class="d">We're signing up our institution for the first time.</div>
+        </div>
+        <div class="fork-card" id="fork-branch" role="radio" aria-checked="false" tabindex="0">
+          <div class="t"><span class="dot"></span>A branch joining an existing institution</div>
+          <div class="d">Our institution already uses Quick Scheduling; this adds our branch.</div>
+        </div>
+      </div>
+
+      <div id="field-existing" class="hidden">
+        <label class="flabel first" for="f-existing">Institution already with us</label>
+        <input type="text" id="f-existing" placeholder="St. Mary Health System" autocomplete="organization">
+      </div>
+
+      <div id="field-legal">
+        <label class="flabel first" for="f-legal">Institution legal name</label>
+        <input type="text" id="f-legal" placeholder="St. Mary Health System" autocomplete="organization">
+      </div>
+
+      <label class="flabel" for="f-branch">Branch / facility name</label>
+      <input type="text" id="f-branch" placeholder="St. Mary — Monroe Campus" autocomplete="organization">
+
+      <div class="row">
+        <div style="flex: 1.5;">
+          <label class="flabel" for="f-address">Branch address</label>
+          <input type="text" id="f-address" placeholder="1200 Hospital Drive, Monroe, LA" autocomplete="street-address">
+        </div>
+        <div>
+          <label class="flabel" for="f-tz">Timezone</label>
+          <select id="f-tz">
+            <option value="America/Chicago" selected>Central (Chicago)</option>
+            <option value="America/New_York">Eastern (New York)</option>
+            <option value="America/Denver">Mountain (Denver)</option>
+            <option value="America/Los_Angeles">Pacific (Los Angeles)</option>
+            <option value="America/Phoenix">Arizona (Phoenix)</option>
+            <option value="Pacific/Honolulu">Hawaii (Honolulu)</option>
+            <option value="America/Anchorage">Alaska (Anchorage)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label class="flabel" for="f-name">Your name</label>
+          <input type="text" id="f-name" placeholder="Jordan Ellis" autocomplete="name">
+        </div>
+        <div>
+          <label class="flabel" for="f-title">Your title</label>
+          <input type="text" id="f-title" placeholder="Director of Operations" autocomplete="organization-title">
+        </div>
+      </div>
+
+      <label class="flabel" for="f-email">Work email</label>
+      <input type="email" id="f-email" placeholder="you@stmaryhealth.org" autocomplete="email">
+
+      <label class="flabel" for="f-pass">Create password</label>
+      <input type="password" id="f-pass" placeholder="••••••••••" autocomplete="new-password">
+      <div class="hint">At least 8 characters, with a capital letter, a number, and a special character.</div>
+
+      <div class="row">
+        <div>
+          <label class="flabel" for="f-depts">Departments at this branch</label>
+          <input type="number" id="f-depts" placeholder="25" min="1">
+          <div class="hint">25 included in the plan; extra departments $10/month each.</div>
+        </div>
+        <div>
+          <label class="flabel" for="f-emps">Employees at this branch</label>
+          <input type="number" id="f-emps" placeholder="300" min="1">
+        </div>
+      </div>
+
+      <div id="billing-block">
+        <label class="flabel">Send invoices to</label>
+        <div class="radios">
+          <label><input type="radio" name="billto" value="parent" checked> The institution (parent)</label>
+          <label><input type="radio" name="billto" value="branch"> This branch</label>
+        </div>
+
+        <label class="flabel" for="f-ap">Billing (AP) email</label>
+        <input type="email" id="f-ap" placeholder="ap@stmaryhealth.org" autocomplete="email">
+      </div>
+
+      <button class="submit" type="submit" id="submit">Start 30-day trial</button>
+      <div class="smallprint">No card needed — institutions are invoiced. We'll collect PO and tax-exemption details with you at kickoff.</div>
+    </form>
+  </div>
+  <div style="text-align:center;margin-top:1rem;font-size:13.5px">
+    <a href="/login.html" style="color:#0e7c86">Already have an account? Log in</a>
+  </div>
+</main>
+<script>
+  (function () {
+    var mode = 'new';
+    var form = document.getElementById('inst-form');
+    var errorBox = document.getElementById('error');
+    var doneBox = document.getElementById('done');
+    var submitBtn = document.getElementById('submit');
+
+    function setFork(which) {
+      mode = which;
+      var branch = which === 'joining';
+      document.getElementById('fork-new').classList.toggle('selected', !branch);
+      document.getElementById('fork-branch').classList.toggle('selected', branch);
+      document.getElementById('fork-new').setAttribute('aria-checked', String(!branch));
+      document.getElementById('fork-branch').setAttribute('aria-checked', String(branch));
+      document.getElementById('field-existing').classList.toggle('hidden', !branch);
+      document.getElementById('field-legal').classList.toggle('hidden', branch);
+    }
+    document.getElementById('fork-new').addEventListener('click', function () { setFork('new'); });
+    document.getElementById('fork-branch').addEventListener('click', function () { setFork('joining'); });
+    if (new URLSearchParams(location.search).get('state') === 'branch') setFork('joining');
+
+    function showError(msg) { errorBox.textContent = msg; errorBox.classList.remove('hidden'); }
+    function clearError() { errorBox.textContent = ''; errorBox.classList.add('hidden'); }
+    function val(id) { return document.getElementById(id).value.trim(); }
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      clearError();
+      var institutionName = mode === 'joining' ? val('f-existing') : val('f-legal');
+      var body = {
+        mode: mode,
+        institutionName: institutionName,
+        branchName: val('f-branch'),
+        address: val('f-address'),
+        timezone: document.getElementById('f-tz').value,
+        contactName: val('f-name'),
+        title: val('f-title'),
+        email: val('f-email'),
+        password: document.getElementById('f-pass').value,
+        declaredDepartments: val('f-depts') ? parseInt(val('f-depts'), 10) : null,
+        declaredEmployees: val('f-emps') ? parseInt(val('f-emps'), 10) : null,
+        billTo: (form.querySelector('input[name="billto"]:checked') || {}).value || 'parent',
+        apEmail: val('f-ap')
+      };
+      if (!body.institutionName || !body.branchName || !body.contactName || !body.email || !body.password) {
+        showError('Please fill in the institution, branch, your name, email, and a password.');
+        return;
+      }
+      submitBtn.disabled = true;
+      fetch('/api/auth/signup-institutional', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      }).then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      }).then(function (result) {
+        submitBtn.disabled = false;
+        if (!result.ok) {
+          showError((result.data && result.data.error) || 'Sign up failed. Please try again.');
+          return;
+        }
+        if (mode === 'joining') {
+          form.classList.add('hidden');
+          doneBox.innerHTML = result.data.joinRequest && result.data.joinRequest.matched
+            ? 'Your account is ready, and your request to join <strong>' + institutionName.replace(/</g, '&lt;') + '</strong> was sent to the institution admin. You\u2019ll be linked as a branch as soon as they approve it — until then, your account works on its own. <a href="/app.html">Continue to Quick Scheduling →</a>'
+            : 'Your account is ready. We couldn\u2019t find an institution with that exact name, so your request is saved — ask the institution admin to check the name, or contact us and we\u2019ll link you. <a href="/app.html">Continue to Quick Scheduling →</a>';
+          doneBox.classList.remove('hidden');
+        } else {
+          window.location.href = '/app.html';
+        }
+      }).catch(function () {
+        submitBtn.disabled = false;
+        showError('Network error. Please check your connection and try again.');
+      });
+    });
+  })();
+</script>
+</body>
+</html>

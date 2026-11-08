@@ -217,6 +217,137 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/auth/signup-institutional — the Institutional plan signup
+// (Deepika, 2026-11-08; mock = institutional-signup-mock.html). SHORT field
+// set only: the fork (new institution vs branch joining), institution
+// legal name, branch name, branch address + timezone, the signup person's
+// name/title/email + password, declared branch size, bill-to + AP email.
+// - mode 'new': creates the institution + this company as its MAIN branch.
+// - mode 'joining': creates this company standalone AND a join request
+//   naming the institution — an institution admin must approve before
+//   anything links (no silent link).
+// Kickoff items (PO, tax certificate) are deliberately NOT fields here.
+// Billing fields are data only — no invoicing engine in this build.
+router.post('/signup-institutional', signupLimiter, async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const mode = b.mode === 'joining' ? 'joining' : 'new';
+    const institutionName = String(b.institutionName || '').trim();
+    const branchName = String(b.branchName || '').trim();
+    const contactName = String(b.contactName || '').trim();
+    const title = String(b.title || '').trim();
+    const email = String(b.email || '').trim();
+    const password = b.password;
+    if (!institutionName || !branchName || !contactName || !email || !password) {
+      res.status(400).json({ error: 'Institution name, branch name, your name, email, and password are required.' });
+      return;
+    }
+    if (!EMAIL_RE.test(email)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+    const apEmail = String(b.apEmail || '').trim();
+    if (apEmail && !EMAIL_RE.test(apEmail)) {
+      res.status(400).json({ error: 'Please enter a valid billing (AP) email address.' });
+      return;
+    }
+    const pwErr = passwordPolicyError(password);
+    if (pwErr) {
+      res.status(400).json({ error: pwErr });
+      return;
+    }
+    const existing = await query('SELECT id FROM users WHERE lower(email) = lower($1)', [email]);
+    if (existing.rowCount > 0) {
+      res.status(409).json({ error: 'An account with that email already exists.' });
+      return;
+    }
+    const billTo = b.billTo === 'branch' ? 'branch' : 'parent';
+    const declaredDepartments = Number.isFinite(+b.declaredDepartments) && +b.declaredDepartments > 0
+      ? Math.floor(+b.declaredDepartments) : null;
+    const declaredEmployees = Number.isFinite(+b.declaredEmployees) && +b.declaredEmployees > 0
+      ? Math.floor(+b.declaredEmployees) : null;
+
+    const passwordHash = await bcrypt.hash(String(password), BCRYPT_COST);
+    const companyId = crypto.randomUUID();
+    const userId = crypto.randomUUID();
+    const nameSplit = splitName(contactName);
+
+    await query(
+      `INSERT INTO companies (id, name, billing_status, trial_ends_at, industry, address, timezone)
+       VALUES ($1, $2, 'trial', now() + interval '30 days', 'hospital', $3, $4)`,
+      [companyId, branchName,
+       String(b.address || '').trim() || null, String(b.timezone || '').trim() || null]
+    );
+    await query(
+      `INSERT INTO users (id, company_id, first_name, last_name, name, email, password_hash, role, title)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'owner', $8)`,
+      [userId, companyId, nameSplit.first, nameSplit.last,
+       joinName(nameSplit.first, nameSplit.last), email, passwordHash, title || null]
+    );
+    await query(
+      'INSERT INTO dashboards (company_id, name, created_by) VALUES ($1, $2, $3)',
+      [companyId, 'Calendars', userId]
+    );
+
+    let institution: { id: string; legalName: string } | null = null;
+    let joinRequest: { id: string; matched: boolean } | null = null;
+    if (mode === 'new') {
+      const institutionId = crypto.randomUUID();
+      await query(
+        `INSERT INTO institutions (id, legal_name, bill_to, ap_email, created_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [institutionId, institutionName, billTo, apEmail || null, userId]
+      );
+      await query(
+        `INSERT INTO institution_branches (id, institution_id, company_id, kind, declared_departments, declared_employees)
+         VALUES ($1, $2, $3, 'main', $4, $5)`,
+        [crypto.randomUUID(), institutionId, companyId, declaredDepartments, declaredEmployees]
+      );
+      institution = { id: institutionId, legalName: institutionName };
+    } else {
+      // Joining: resolve the institution by legal name; the request is the
+      // deliverable either way — admins see it when matched.
+      const { rows: irows } = await query(
+        'SELECT id FROM institutions WHERE lower(legal_name) = lower($1) LIMIT 1',
+        [institutionName]
+      );
+      const { rows: jr } = await query(
+        `INSERT INTO institution_join_requests
+           (id, institution_id, institution_name, requesting_company_id, requester_user_id, requester_email, bill_to, ap_email)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+        [crypto.randomUUID(), irows.length ? irows[0].id : null, institutionName, companyId, userId, email, billTo, apEmail || null]
+      );
+      joinRequest = { id: jr[0].id, matched: irows.length > 0 };
+      if (irows.length) {
+        const { notifyInstitutionAdmins } = await import('../util/institutions.js');
+        await notifyInstitutionAdmins(irows[0].id, {
+          title: 'Branch join request',
+          body: `${branchName} signed up and asked to join ${institutionName} as a branch. Review it in Settings → Branches.`,
+          link: '/app.html',
+        });
+      }
+    }
+
+    await setSession(req, userId, companyId, 'owner');
+    res.status(201).json({
+      user: publicUser({
+        id: userId,
+        first_name: nameSplit.first,
+        last_name: nameSplit.last,
+        name: joinName(nameSplit.first, nameSplit.last),
+        email,
+        role: 'owner',
+      }),
+      company: { id: companyId, name: branchName },
+      institution,
+      joinRequest,
+    });
+  } catch (err) {
+    console.error('[auth] institutional signup failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/auth/login — same 401 message for unknown email or wrong password.
 router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   try {

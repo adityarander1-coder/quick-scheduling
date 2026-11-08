@@ -8386,6 +8386,7 @@ window.qsNpOfferSend = function (btn) {
           <button class="subtab-btn" data-subtab="notifications">Email Q-Scheduler notifications</button>
           <button class="subtab-btn" data-subtab="inbox">Email inbox</button>
           <button class="subtab-btn" data-subtab="meetings">Meeting services</button>
+          <button class="subtab-btn hidden" data-subtab="branches" id="subtab-btn-branches">Branches</button>
         </nav>
       </div>
       <div class="card">
@@ -12480,6 +12481,127 @@ window.qsNpOfferSend = function (btn) {
               window.qsLoadMeetingSettings = load;
               document.querySelector('[data-subtab="meetings"]').addEventListener('click', load);
               if (document.querySelector('[data-subtab="meetings"]').classList.contains('active')) load();
+            })();
+            </script>
+          </div>
+          <div id="subtab-branches" class="sub-panel">
+            <div class="set-head-row">
+              <h3 class="set-h3" style="margin:0">Branches</h3>
+            </div>
+            <p class="set-desc">Institutions link several branches (facilities) under one parent. Each branch keeps its own team, departments and schedules. The institution admin — an owner of the main branch — adds branches and approves join requests here.</p>
+            <div id="br-main"><p class="muted">Loading…</p></div>
+            <div id="br-shares"></div>
+            <script>
+            (function () {
+              var mainBox = document.getElementById('br-main');
+              var btn = document.getElementById('subtab-btn-branches');
+              // Owners only (the endpoints enforce it too): reveal the
+              // section switch once the app shell has published the role.
+              (function gate() {
+                if (window.currentRole === 'owner') btn.classList.remove('hidden');
+                else if (window.currentRole) btn.classList.add('hidden');
+                else setTimeout(gate, 400);
+              })();
+              function row(html) { return '<div class="set-row" style="align-items:flex-start">' + html + '</div>'; }
+              function branchRow(b, myId) {
+                var tags = (b.kind === 'main' ? '<span class="warn-badge" style="background:#e0f2f4;color:#0a5a63">Main branch</span>' : '<span class="warn-badge">Branch</span>') +
+                  (b.companyId === myId ? ' <span style="font-size:0.82rem;color:var(--dim)">(this branch)</span>' : '');
+                var meta = [];
+                if (b.declaredDepartments) meta.push(b.declaredDepartments + ' departments');
+                if (b.declaredEmployees) meta.push(b.declaredEmployees + ' employees');
+                if (b.address) meta.push(b.address);
+                return row('<div class="set-row-name"><strong>' + esc(b.name) + '</strong> ' + tags +
+                  (meta.length ? '<div style="font-size:0.85rem;color:var(--dim)">' + esc(meta.join(' · ')) + '</div>' : '') + '</div>' +
+                  '<span data-br-actions="' + b.companyId + '"></span>');
+              }
+              function render(data) {
+                var h = '';
+                if (!data.linked) {
+                  if (data.pendingRequest) {
+                    h += '<p>Your request to join <strong>' + esc(data.pendingRequest.institutionName) + '</strong> is waiting for the institution admin. Nothing links until they approve it — this account keeps working on its own meanwhile.</p>';
+                  } else {
+                    h += '<p style="margin-top:0">This company is not part of an institution. If your institution already uses Quick Scheduling, ask to join it as a branch:</p>' +
+                      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+                      '<input type="text" id="br-join-name" placeholder="Institution legal name" style="flex:1;min-width:220px;padding:0.52rem 0.65rem;border:1px solid var(--border);border-radius:8px;font-size:14px">' +
+                      '<button type="button" class="btn" id="br-join-btn" style="padding:0.55rem 1rem;border-radius:8px">Request to join</button></div>' +
+                      '<p class="muted" style="margin-top:0.5rem">The institution admin gets a bell and an email, and approves or declines here. Joining never merges your existing data.</p>';
+                  }
+                  mainBox.innerHTML = h;
+                  var jb = document.getElementById('br-join-btn');
+                  if (jb) jb.addEventListener('click', function () {
+                    var name = document.getElementById('br-join-name').value.trim();
+                    if (!name) { pageError('Tell us the institution\u2019s name.'); return; }
+                    api('/api/institutions/request-join', { method: 'POST', body: { institutionName: name } }).then(function (r) {
+                      if (r.ok) { pageSuccess(r.data && r.data.matched ? 'Request sent to the institution admin.' : 'Request saved — we could not find that institution name, so it will link once the name matches.'); load(); }
+                      else pageError((r.data && r.data.error) || 'Could not send the request.');
+                    }).catch(function () { pageError('Could not send the request.'); });
+                  });
+                  return;
+                }
+                h += '<p style="margin-top:0">Part of <strong>' + esc(data.institution.legalName) + '</strong>' +
+                  (data.institution.apEmail ? ' · invoices: ' + esc(data.institution.billTo === 'branch' ? 'this branch' : 'the institution') + ' (' + esc(data.institution.apEmail) + ')' : '') + '</p>';
+                h += '<h4 style="margin:0.8rem 0 0.3rem">Branches</h4>';
+                h += data.branches.map(function (b) { return branchRow(b, data.myCompany.id); }).join('');
+                if (data.isAdmin) {
+                  h += '<h4 style="margin:1.1rem 0 0.3rem">Add a branch</h4>' +
+                    '<p class="muted" style="margin:0 0 0.5rem">Name the branch and invite its first admin. They set the address and timezone when they accept, and the branch is created already linked.</p>' +
+                    '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">' +
+                    '<input type="text" id="br-new-name" placeholder="Branch name (e.g. St. Mary — West Campus)" style="flex:1.4;min-width:220px;padding:0.52rem 0.65rem;border:1px solid var(--border);border-radius:8px;font-size:14px">' +
+                    '<input type="email" id="br-new-email" placeholder="Branch admin email" style="flex:1;min-width:200px;padding:0.52rem 0.65rem;border:1px solid var(--border);border-radius:8px;font-size:14px">' +
+                    '<button type="button" class="btn" id="br-invite-btn" style="padding:0.55rem 1rem;border-radius:8px">Invite branch admin</button></div>' +
+                    '<div id="br-invite-result"></div>';
+                  if (data.invites && data.invites.length) {
+                    h += '<h4 style="margin:1.1rem 0 0.3rem">Invites waiting</h4>' + data.invites.map(function (iv) {
+                      return row('<div class="set-row-name"><strong>' + esc(iv.branchName) + '</strong><div style="font-size:0.85rem;color:var(--dim)">Invited ' + esc(iv.email) + '</div></div>');
+                    }).join('');
+                  }
+                  if (data.requests && data.requests.length) {
+                    h += '<h4 style="margin:1.1rem 0 0.3rem">Join requests</h4>' + data.requests.map(function (rq) {
+                      return row('<div class="set-row-name"><strong>' + esc(rq.companyName || rq.institutionName) + '</strong>' +
+                        '<div style="font-size:0.85rem;color:var(--dim)">Asked by ' + esc(rq.requesterEmail || '') + '</div></div>' +
+                        '<button type="button" class="btn" data-br-approve="' + rq.id + '" style="padding:0.4rem 0.8rem;border-radius:8px">Approve</button>' +
+                        '<button type="button" class="btn-danger" data-br-reject="' + rq.id + '" style="padding:0.4rem 0.8rem;border-radius:8px">Decline</button>');
+                    }).join('');
+                  }
+                } else {
+                  h += '<p class="muted" style="margin-top:0.8rem">The institution admin (an owner of the main branch) adds branches and approves join requests.</p>';
+                }
+                mainBox.innerHTML = h;
+                var ib = document.getElementById('br-invite-btn');
+                if (ib) ib.addEventListener('click', function () {
+                  var bn = document.getElementById('br-new-name').value.trim();
+                  var em = document.getElementById('br-new-email').value.trim();
+                  if (!bn || !em) { pageError('Give the branch a name and the admin\u2019s email.'); return; }
+                  api('/api/institutions/branches/invite', { method: 'POST', body: { branchName: bn, email: em } }).then(function (r) {
+                    if (r.ok) {
+                      pageSuccess('Invite sent to ' + em + '.');
+                      document.getElementById('br-invite-result').innerHTML = '<p style="font-size:0.88rem;margin-top:0.5rem">Invite link (share it if the email doesn\u2019t arrive): <code style="word-break:break-all">' + esc((location.origin || '') + (r.data.inviteLink || '').replace(/^https?:\/\/[^/]+/, '')) + '</code></p>';
+                      load();
+                    } else pageError((r.data && r.data.error) || 'Could not send the invite.');
+                  }).catch(function () { pageError('Could not send the invite.'); });
+                });
+                mainBox.querySelectorAll('[data-br-approve]').forEach(function (b) {
+                  b.addEventListener('click', function () { decide(b.getAttribute('data-br-approve'), 'approve'); });
+                });
+                mainBox.querySelectorAll('[data-br-reject]').forEach(function (b) {
+                  b.addEventListener('click', function () { decide(b.getAttribute('data-br-reject'), 'reject'); });
+                });
+                if (window.qsRenderBranchExtras) window.qsRenderBranchExtras(data);
+              }
+              function decide(id, action) {
+                api('/api/institutions/join-requests/' + id + '/' + action, { method: 'POST' }).then(function (r) {
+                  if (r.ok) { pageSuccess(action === 'approve' ? 'Branch linked.' : 'Request declined.'); load(); }
+                  else pageError((r.data && r.data.error) || 'Could not decide that request.');
+                }).catch(function () { pageError('Could not decide that request.'); });
+              }
+              function load() {
+                api('/api/institutions/branches').then(function (r) {
+                  if (!r.ok) { mainBox.innerHTML = '<p class="muted">Branches are managed by the company owner.</p>'; return; }
+                  render(r.data);
+                }).catch(function () { mainBox.innerHTML = '<p class="muted">Could not load branches.</p>'; });
+              }
+              window.qsLoadBranches = load;
+              document.querySelector('[data-subtab="branches"]').addEventListener('click', load);
             })();
             </script>
           </div>
