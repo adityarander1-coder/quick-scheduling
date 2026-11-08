@@ -7674,6 +7674,7 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
           <a id="db-interview" href="#" target="_blank" rel="noopener" class="btn-secondary" style="display:none;padding:0.6rem 1rem;border-radius:10px;text-decoration:none"></a>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
+          <button type="button" class="btn-secondary" id="db-upload" style="padding:0.6rem 1rem;border-radius:10px;display:none">⬆ Upload schedule</button>
         </div>
       </div>
       <div id="db-archived-banner" style="display:none;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:10px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-weight:600"></div>
@@ -17356,6 +17357,8 @@ window.qsNpOfferSend = function (btn) {
             acCanEdit = (rs[3].data.user.role === 'owner' || rs[3].data.user.role === 'scheduler') && (!curDash || curDash.canEdit !== false) && !acReadOnly;
             var ab = document.getElementById('db-add');
             if (ab) ab.style.display = (acCanEdit || acMyRole === 'employee') && !acReadOnly ? '' : 'none';
+            var ub = document.getElementById('db-upload');
+            if (ub) ub.style.display = acCanEdit ? '' : 'none';
             var kb2 = document.getElementById('db-kinds');
             if (kb2) kb2.style.display = acCanEdit ? '' : 'none';
             var sb2 = document.getElementById('db-select');
@@ -18870,6 +18873,400 @@ window.qsNpOfferSend = function (btn) {
         if (!acUsers.length) { load(); setTimeout(function () { openForm(null); }, 600); }
         else openForm(null);
       });
+
+      // ---------------------------------------------------------------
+      // ⬆ Upload schedule (Deepika, 2026-11-07): bulk-add calendar
+      // events from a spreadsheet. Step 1: template + file. Step 2:
+      // the server checks the sheet (nothing is saved) and every row
+      // that needs info answers right here; Import creates only the
+      // ready rows, through the same server path as the Add form.
+      // ---------------------------------------------------------------
+      var suState = null;
+      var SU_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      function suFmtDate(d) {
+        if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return d || '—';
+        var p = d.split('-');
+        return SU_MONTHS[parseInt(p[1], 10) - 1] + ' ' + parseInt(p[2], 10);
+      }
+      function suFmtTime(t) {
+        if (!t || !/^\d{2}:\d{2}$/.test(t)) return t || '—';
+        var h = parseInt(t.slice(0, 2), 10), m = t.slice(3, 5);
+        var ap = h >= 12 ? 'PM' : 'AM'; h = h % 12; if (h === 0) h = 12;
+        return h + ':' + m + ' ' + ap;
+      }
+      function suClose() {
+        var m = document.getElementById('su-modal');
+        if (m) m.remove();
+        suState = null;
+      }
+      function suCard() { return document.getElementById('su-card'); }
+      function suOpen() {
+        if (!curDash) return;
+        suClose();
+        suState = { dashId: curDash.id, dashName: curDash.name || '', fileName: '', b64: '', rows: null, people: [], kinds: [], orgDepts: [], orgDeptId: null, drafts: {} };
+        var wrap = document.createElement('div');
+        wrap.id = 'su-modal';
+        // z-index above the app chrome (the left rail paints at 900):
+        // the wide preview card would otherwise slide under it.
+        wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:1500;padding:1rem');
+        wrap.innerHTML = '<div id="su-card" role="dialog" aria-label="Upload a schedule" style="background:var(--surface);color:var(--text);border-radius:16px;padding:1.4rem;width:100%;max-width:560px;max-height:92vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)"></div>';
+        document.body.appendChild(wrap);
+        wrap.addEventListener('click', function (ev) { if (ev.target === wrap) suClose(); });
+        suRenderStep1('');
+      }
+      function suRenderStep1(statusMsg) {
+        var card = suCard(); if (!card || !suState) return;
+        card.style.maxWidth = '560px';
+        var chosen = suState.fileName
+          ? '<div style="font-weight:700">' + esc(suState.fileName) + '</div><div style="font-size:0.82rem;color:var(--muted)">Click or drop another file to change it</div>'
+          : '<div style="font-size:1.6rem">📄</div><div style="font-weight:700;margin-top:0.2rem">Drop your filled-in sheet here</div><div style="font-size:0.82rem;color:var(--muted)">.csv or .xlsx — up to 500 events</div>';
+        card.innerHTML =
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+            '<div><div style="font-size:1.25rem;font-weight:800">⬆ Upload a schedule</div>' +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">Add many events at once from a spreadsheet. They land on this calendar' + (suState.dashName ? ' — <b>' + esc(suState.dashName) + '</b>' : '') + '.</div></div>' +
+            '<button type="button" id="su-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+          '</div>' +
+          '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:1rem">' +
+            '<div style="font-weight:700">1 · Start from the template</div>' +
+            '<div style="font-size:0.88rem;color:var(--muted);margin:0.25rem 0 0.6rem">One event per row. Columns: Date · Start · End · Event name · Session type · Speaker · Attendees · Room · Meeting link · Notes</div>' +
+            '<button type="button" id="su-template" class="btn-secondary" style="border-radius:9px;padding:0.45rem 0.8rem">⬇ Download the template (.csv)</button>' +
+          '</div>' +
+          '<div id="su-drop" style="border:1.5px dashed var(--border);border-radius:12px;padding:1.1rem 1rem;margin-top:0.9rem;text-align:center;cursor:pointer">' +
+            '<div style="font-weight:700;margin-bottom:0.5rem;text-align:left">2 · Add your file</div>' + chosen +
+            '<div style="margin-top:0.7rem"><span class="btn" style="border-radius:9px;padding:0.45rem 0.9rem;display:inline-block">Choose file</span></div>' +
+            '<input type="file" id="su-file" accept=".csv,.xlsx" style="display:none">' +
+          '</div>' +
+          '<div id="su-status" style="min-height:1.2rem;font-size:0.88rem;margin-top:0.6rem;color:#b91c1c">' + esc(statusMsg || '') + '</div>' +
+          '<div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:0.4rem">' +
+            '<button type="button" id="su-cancel" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">Cancel</button>' +
+            '<button type="button" id="su-next" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (suState.b64 ? '' : 'disabled') + '>Next: check it →</button>' +
+          '</div>';
+        document.getElementById('su-x').addEventListener('click', suClose);
+        document.getElementById('su-cancel').addEventListener('click', suClose);
+        document.getElementById('su-template').addEventListener('click', function () {
+          fetch('/api/schedule/session-import/template', { credentials: 'same-origin' }).then(function (r) { return r.blob(); }).then(function (blob) {
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'session-schedule-template.csv';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+          }).catch(function () { pageError('Could not download the template.'); });
+        });
+        var drop = document.getElementById('su-drop');
+        var input = document.getElementById('su-file');
+        drop.addEventListener('click', function () { input.click(); });
+        input.addEventListener('change', function () { if (input.files && input.files[0]) suReadFile(input.files[0]); });
+        drop.addEventListener('dragover', function (ev) { ev.preventDefault(); drop.style.borderColor = 'var(--teal, #0e7490)'; });
+        drop.addEventListener('dragleave', function () { drop.style.borderColor = 'var(--border)'; });
+        drop.addEventListener('drop', function (ev) {
+          ev.preventDefault(); drop.style.borderColor = 'var(--border)';
+          if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0]) suReadFile(ev.dataTransfer.files[0]);
+        });
+        document.getElementById('su-next').addEventListener('click', suPreview);
+      }
+      function suReadFile(file) {
+        var st = document.getElementById('su-status');
+        if (!/\.(csv|xlsx)$/i.test(file.name)) { if (st) st.textContent = 'Please choose a .csv or .xlsx file.'; return; }
+        if (file.size > 8 * 1024 * 1024) { if (st) st.textContent = 'That file is over 8 MB — please upload a smaller sheet.'; return; }
+        var rd = new FileReader();
+        rd.onload = function () {
+          var res = String(rd.result || '');
+          suState.fileName = file.name;
+          suState.b64 = res.indexOf(',') >= 0 ? res.split(',')[1] : res;
+          suRenderStep1('');
+        };
+        rd.onerror = function () { if (st) st.textContent = 'Could not read that file.'; };
+        rd.readAsDataURL(file);
+      }
+      function suPreview() {
+        if (!suState || !suState.b64) return;
+        var st = document.getElementById('su-status');
+        var next = document.getElementById('su-next');
+        if (next) { next.disabled = true; next.textContent = 'Checking…'; }
+        if (st) st.textContent = '';
+        api('/api/schedule/session-import/preview', {
+          method: 'POST',
+          body: JSON.stringify({ dashboardId: suState.dashId, filename: suState.fileName, dataBase64: suState.b64 })
+        }).then(function (r) {
+          if (!r.ok) { suRenderStep1((r.data && r.data.error) || 'That sheet could not be checked.'); return; }
+          suState.rows = r.data.rows || [];
+          suState.people = r.data.people || [];
+          suState.kinds = r.data.kinds || [];
+          suState.orgDepts = r.data.orgDepartments || [];
+          suState.orgDeptId = r.data.orgDepartmentId || null;
+          suState.drafts = {};
+          suState.rows.forEach(function (row) { (row.questions || []).forEach(function (q) { q.answered = false; }); });
+          suRenderPreview();
+        }).catch(function () { suRenderStep1('Could not check that sheet — please try again.'); });
+      }
+      function suRowStatus(row) {
+        if (row.skip) return 'skipped';
+        var open = (row.questions || []).filter(function (q) { return !q.answered; });
+        if (!open.length) return 'ready';
+        return open.every(function (q) { return q.kind === 'duplicate'; }) ? 'duplicate' : 'needs_info';
+      }
+      function suCounts() {
+        var c = { ready: 0, needs: 0, skipped: 0 };
+        (suState.rows || []).forEach(function (row) {
+          var s = suRowStatus(row);
+          if (s === 'ready') c.ready++;
+          else if (s === 'skipped') c.skipped++;
+          else c.needs++;
+        });
+        return c;
+      }
+      // Typed-but-not-yet-saved answers survive re-renders.
+      function suHarvest() {
+        var card = suCard(); if (!card) return;
+        card.querySelectorAll('[id^="suq-"]').forEach(function (el) {
+          suState.drafts[el.id] = el.value;
+        });
+      }
+      function suPersonOptions(list, selectedId) {
+        return (list || []).map(function (p) {
+          return '<option value="' + esc(p.id) + '"' + (String(p.id) === String(selectedId || '') ? ' selected' : '') + '>' + esc(p.name) + (p.email ? ' (' + esc(p.email) + ')' : '') + '</option>';
+        }).join('');
+      }
+      function suQuestionHtml(row, q) {
+        var cid = 'suq-' + row.row + '-' + q.id;
+        var draft = suState.drafts[cid];
+        var btn = 'border-radius:8px;padding:0.35rem 0.7rem;font-size:0.85rem';
+        var head = '<div style="font-weight:700;margin-bottom:0.4rem">❓ ' + esc(q.prompt) + '</div>';
+        var ctl = '';
+        if (q.kind === 'date') {
+          ctl = '<input type="date" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (row.date || q.value || '')) + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"> <button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Save</button>';
+        } else if (q.kind === 'start' || q.kind === 'end') {
+          ctl = '<input type="time" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (q.value || '')) + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"> <button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Save</button>';
+        } else if (q.kind === 'title') {
+          ctl = '<input type="text" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (q.value || '')) + '" placeholder="Event name" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;min-width:220px"> <button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Save</button>';
+        } else if (q.kind === 'kind') {
+          ctl = '<select id="' + cid + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px">' +
+            suState.kinds.map(function (k) { return '<option value="' + esc(k.key) + '"' + (draft === k.key ? ' selected' : '') + '>' + esc(k.label) + '</option>'; }).join('') +
+            '</select> <button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Use this type</button>';
+        } else if (q.kind === 'speaker') {
+          var opts = (q.candidates && q.candidates.length) ? q.candidates : suState.people;
+          ctl = '<select id="' + cid + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:280px">' + suPersonOptions(opts, draft) + '</select> ' +
+            '<button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Use this person</button>';
+          if (q.guest) {
+            if (q.showGuest) {
+              var gname = suState.drafts[cid + '-gname'] !== undefined ? suState.drafts[cid + '-gname'] : (q.guest.name || '');
+              var gmail = suState.drafts[cid + '-gmail'] !== undefined ? suState.drafts[cid + '-gmail'] : (q.guest.email || '');
+              ctl += '<div style="margin-top:0.5rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">' +
+                '<input type="text" id="' + cid + '-gname" value="' + esc(gname) + '" placeholder="Guest name" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px">' +
+                '<input type="email" id="' + cid + '-gmail" value="' + esc(gmail) + '" placeholder="Guest email" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px">' +
+                '<button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="guest">Use guest</button></div>' +
+                '<div style="font-size:0.8rem;color:var(--muted);margin-top:0.3rem">The guest gets one email with the event details.</div>';
+            } else {
+              ctl += ' <button type="button" class="btn-secondary" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="guestmode">Add as guest</button>';
+            }
+          }
+        } else if (q.kind === 'attendee') {
+          var aopts = (q.candidates && q.candidates.length) ? q.candidates : suState.people;
+          ctl = '<select id="' + cid + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:280px">' + suPersonOptions(aopts, draft) + '</select> ' +
+            '<button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Use this person</button> ' +
+            '<button type="button" class="btn-secondary" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="remove">Remove it</button>';
+        } else if (q.kind === 'meeting') {
+          ctl = '<input type="text" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (q.value || '')) + '" placeholder="https://…" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;min-width:240px"> ' +
+            '<button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Save</button> ' +
+            '<button type="button" class="btn-secondary" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="clear">Clear it</button>';
+        } else if (q.kind === 'duplicate') {
+          ctl = '<button type="button" class="btn" style="' + btn + '" data-suq="' + q.id + '" data-surow="' + row.row + '" data-suact="apply">Import anyway</button>';
+        }
+        var err = q.error ? '<div style="color:#b91c1c;font-size:0.85rem;margin-top:0.35rem">' + esc(q.error) + '</div>' : '';
+        var skip = q.kind === 'duplicate' ? '' : ' <button type="button" class="btn-secondary" style="' + btn + '" data-surow="' + row.row + '" data-suact="skip">Skip this row</button>';
+        return '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:0.6rem 0.8rem;margin:0.3rem 0">' + head +
+          '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">' + ctl + skip + '</div>' + err + '</div>';
+      }
+      function suSpeakerLabel(row) {
+        if (row.speaker) {
+          if (row.speaker.userId) {
+            var p = suState.people.find(function (x) { return String(x.id) === String(row.speaker.userId); });
+            return p ? p.name : (row.speaker.name || '—');
+          }
+          return row.speaker.guestName || '—';
+        }
+        return row.speakerText || '—';
+      }
+      function suRenderPreview() {
+        var card = suCard(); if (!card || !suState) return;
+        card.style.maxWidth = '880px';
+        var c = suCounts();
+        var orgHtml = '';
+        if (suState.orgDepts.length > 1) {
+          orgHtml = '<div style="margin-top:0.7rem;font-size:0.9rem">Organizing department: <select id="su-org" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px">' +
+            '<option value="">Choose…</option>' +
+            suState.orgDepts.map(function (d) { return '<option value="' + esc(d.id) + '"' + (String(suState.orgDeptId) === String(d.id) ? ' selected' : '') + '>' + esc(d.name) + '</option>'; }).join('') +
+            '</select> <span style="color:var(--muted)">(pick which of your departments organizes these events)</span></div>';
+        } else if (suState.orgDepts.length === 1) {
+          orgHtml = '<div style="margin-top:0.7rem;font-size:0.88rem;color:var(--muted)">Organizing department: <b>' + esc(suState.orgDepts[0].name) + '</b></div>';
+        }
+        var rowsHtml = (suState.rows || []).map(function (row) {
+          var s = suRowStatus(row);
+          var pill = s === 'ready' ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Ready</span>'
+            : s === 'skipped' ? '<span style="background:#e5e7eb;color:#4b5563;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Skipped</span>'
+            : s === 'duplicate' ? '<span style="background:#fee2e2;color:#b91c1c;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Duplicate</span>'
+            : '<span style="background:#fef3c7;color:#b45309;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Needs info</span>';
+          var bg = (s === 'needs_info' || s === 'duplicate') ? ' style="background:#fffbeb"' : '';
+          var timeTxt = row.startTime ? suFmtTime(row.startTime) + (row.endTime ? ' – ' + suFmtTime(row.endTime) : ' – ?') : '—';
+          var html = '<tr' + bg + '><td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border);white-space:nowrap">' + esc(row.date ? suFmtDate(row.date) : (row.dateText || '—')) + '</td>' +
+            '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border);white-space:nowrap">' + esc(timeTxt) + '</td>' +
+            '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + esc(row.title || '(no name)') + '</td>' +
+            '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + esc(suSpeakerLabel(row)) + '</td>' +
+            '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + pill + '</td></tr>';
+          if (row.skip) {
+            html += '<tr><td colspan="5" style="padding:0.3rem 0.6rem;border-bottom:1px solid var(--border);color:var(--muted);font-size:0.87rem">This row will be skipped. <button type="button" class="btn-secondary" style="border-radius:8px;padding:0.25rem 0.6rem;font-size:0.82rem" data-surow="' + row.row + '" data-suact="restore">Restore</button></td></tr>';
+          } else {
+            var open = (row.questions || []).filter(function (q) { return !q.answered; });
+            if (open.length) {
+              html += '<tr><td colspan="5" style="padding:0.2rem 0.6rem 0.6rem;border-bottom:1px solid var(--border)">' +
+                open.map(function (q) { return suQuestionHtml(row, q); }).join('') + '</td></tr>';
+            }
+          }
+          return html;
+        }).join('');
+        card.innerHTML =
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+            '<div style="font-size:1.25rem;font-weight:800">Check your upload — ' + (suState.rows || []).length + ' events</div>' +
+            '<button type="button" id="su-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+          '</div>' + orgHtml +
+          '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:0.55rem 0.9rem;margin-top:0.8rem;font-size:0.92rem">✓ <b>' + c.ready + ' ready</b> · ⚠ <b>' + c.needs + ' need info</b>' + (c.skipped ? ' · ' + c.skipped + ' skipped' : '') + ' · Nothing is saved until you confirm.</div>' +
+          '<div style="overflow:auto;margin-top:0.8rem"><table style="width:100%;border-collapse:collapse;font-size:0.92rem"><thead><tr>' +
+            '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Date</th>' +
+            '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Time</th>' +
+            '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Event</th>' +
+            '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Speaker</th>' +
+            '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Status</th>' +
+          '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+          '<div id="su-import-err" style="color:#b91c1c;font-size:0.88rem;min-height:1.1rem;margin-top:0.5rem"></div>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.6rem;margin-top:0.4rem;flex-wrap:wrap">' +
+            '<div style="color:var(--muted);font-size:0.87rem">Rows that still need info won\'t be imported.</div>' +
+            '<div style="display:flex;gap:0.6rem"><button type="button" id="su-back" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">← Back</button>' +
+            '<button type="button" id="su-import" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (c.ready ? '' : 'disabled') + '>Import ' + c.ready + ' events</button></div>' +
+          '</div>';
+        document.getElementById('su-x').addEventListener('click', suClose);
+        document.getElementById('su-back').addEventListener('click', function () { suHarvest(); suRenderStep1(''); });
+        var orgSel = document.getElementById('su-org');
+        if (orgSel) orgSel.addEventListener('change', function () { suState.orgDeptId = orgSel.value || null; });
+        document.getElementById('su-import').addEventListener('click', suImport);
+        card.querySelectorAll('[data-suact]').forEach(function (btn) {
+          btn.addEventListener('click', function () { suQuestionAction(btn); });
+        });
+      }
+      function suFindRow(n) { return (suState.rows || []).find(function (r) { return r.row === Number(n); }); }
+      function suQuestionAction(btn) {
+        var row = suFindRow(btn.getAttribute('data-surow'));
+        if (!row) return;
+        var act = btn.getAttribute('data-suact');
+        suHarvest();
+        if (act === 'skip') { row.skip = true; suRenderPreview(); return; }
+        if (act === 'restore') { row.skip = false; suRenderPreview(); return; }
+        var q = (row.questions || []).find(function (x) { return x.id === btn.getAttribute('data-suq'); });
+        if (!q) return;
+        var cid = 'suq-' + row.row + '-' + q.id;
+        var el = document.getElementById(cid);
+        var v = el ? String(el.value || '').trim() : '';
+        q.error = '';
+        if (act === 'guestmode') { q.showGuest = true; suRenderPreview(); return; }
+        if (act === 'remove') { q.answered = true; }
+        else if (act === 'clear') { row.meetingUrl = null; q.answered = true; }
+        else if (act === 'guest') {
+          var gn = String((document.getElementById(cid + '-gname') || {}).value || '').trim();
+          var ge = String((document.getElementById(cid + '-gmail') || {}).value || '').trim();
+          if (!gn) { q.error = 'The guest needs a name.'; suRenderPreview(); return; }
+          row.speaker = { guestName: gn, guestEmail: ge || null };
+          q.answered = true;
+        }
+        else if (act === 'apply') {
+          if (q.kind === 'date') {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { q.error = 'Pick a date.'; suRenderPreview(); return; }
+            row.date = v;
+          } else if (q.kind === 'start') {
+            if (!/^\d{2}:\d{2}$/.test(v)) { q.error = 'Pick a start time.'; suRenderPreview(); return; }
+            row.startTime = v;
+          } else if (q.kind === 'end') {
+            if (!/^\d{2}:\d{2}$/.test(v)) { q.error = 'Pick an end time.'; suRenderPreview(); return; }
+            if (row.startTime && v <= row.startTime) { q.error = 'That end time is still at or before the start (' + suFmtTime(row.startTime) + ').'; suRenderPreview(); return; }
+            row.endTime = v;
+          } else if (q.kind === 'title') {
+            if (!v) { q.error = 'Type the event name.'; suRenderPreview(); return; }
+            row.title = v;
+          } else if (q.kind === 'kind') {
+            var k = suState.kinds.find(function (x) { return x.key === v; });
+            if (!k) { q.error = 'Pick a session type.'; suRenderPreview(); return; }
+            row.kind = k.key; row.kindLabel = k.label;
+          } else if (q.kind === 'speaker') {
+            var p = suState.people.find(function (x) { return String(x.id) === v; }) || (q.candidates || []).find(function (x) { return String(x.id) === v; });
+            if (!p) { q.error = 'Pick a person.'; suRenderPreview(); return; }
+            row.speaker = { userId: p.id, name: p.name };
+          } else if (q.kind === 'attendee') {
+            var ap = suState.people.find(function (x) { return String(x.id) === v; }) || (q.candidates || []).find(function (x) { return String(x.id) === v; });
+            if (!ap) { q.error = 'Pick a person.'; suRenderPreview(); return; }
+            if (row.beneficiaryUserIds.indexOf(ap.id) < 0) row.beneficiaryUserIds.push(ap.id);
+            if (row.attendeeNames.indexOf(ap.name) < 0) row.attendeeNames.push(ap.name);
+          } else if (q.kind === 'meeting') {
+            if (!/^https?:\/\//i.test(v)) { q.error = 'That still doesn\'t look like a link — or use "Clear it".'; suRenderPreview(); return; }
+            row.meetingUrl = v;
+          } else if (q.kind === 'duplicate') {
+            row.importAnyway = true;
+          }
+          q.answered = true;
+        }
+        suRenderPreview();
+      }
+      function suImport() {
+        if (!suState) return;
+        var errEl = document.getElementById('su-import-err');
+        if (suState.orgDepts.length > 1 && !suState.orgDeptId) {
+          if (errEl) errEl.textContent = 'Choose the organizing department first.';
+          return;
+        }
+        var payload = (suState.rows || []).filter(function (row) { return suRowStatus(row) === 'ready'; }).map(function (row) {
+          return {
+            row: row.row, date: row.date, startTime: row.startTime, endTime: row.endTime,
+            title: row.title, kind: row.kind, speaker: row.speaker,
+            beneficiaryDepartmentIds: row.beneficiaryDepartmentIds, beneficiaryUserIds: row.beneficiaryUserIds,
+            location: row.location, meetingUrl: row.meetingUrl, notes: row.notes,
+            importAnyway: !!row.importAnyway
+          };
+        });
+        if (!payload.length) { if (errEl) errEl.textContent = 'No rows are ready to import yet.'; return; }
+        var btn = document.getElementById('su-import');
+        if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+        api('/api/schedule/session-import', {
+          method: 'POST',
+          body: JSON.stringify({ dashboardId: suState.dashId, departmentId: suState.orgDeptId, rows: payload })
+        }).then(function (r) {
+          if (!r.ok) {
+            if (errEl) errEl.textContent = (r.data && r.data.error) || 'The import failed.';
+            if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+            return;
+          }
+          suRenderResult(r.data);
+        }).catch(function () {
+          if (errEl) errEl.textContent = 'The import failed — please try again.';
+          if (btn) { btn.disabled = false; }
+        });
+      }
+      function suRenderResult(data) {
+        var card = suCard(); if (!card || !suState) return;
+        card.style.maxWidth = '560px';
+        // "Skipped" on the result = every row that was not sent:
+        // rows the user skipped plus rows left unanswered.
+        var skipped = (suState.rows || []).length - suCounts().ready;
+        var failed = data.failed || [];
+        var failHtml = failed.length
+          ? '<div style="margin-top:0.8rem"><div style="font-weight:700;color:#b91c1c">Didn\'t import:</div><ul style="margin:0.3rem 0 0 1.1rem;padding:0">' +
+            failed.map(function (f) { return '<li>Row ' + esc(String(f.row)) + ' — ' + esc(f.reason || '') + '</li>'; }).join('') + '</ul></div>'
+          : '';
+        card.innerHTML =
+          '<div style="font-size:1.25rem;font-weight:800">Import done</div>' +
+          '<div style="margin-top:0.5rem;font-size:1rem">Imported <b>' + data.imported + '</b> events · ' + skipped + ' skipped · <b>' + failed.length + '</b> failed</div>' +
+          '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The events are on this calendar now.</div>' + failHtml +
+          '<div style="display:flex;justify-content:flex-end;margin-top:1.1rem"><button type="button" id="su-done" class="btn" style="border-radius:10px;padding:0.55rem 1.1rem">Close</button></div>';
+        document.getElementById('su-done').addEventListener('click', function () { suClose(); load(); });
+      }
+      var upBtn = document.getElementById('db-upload');
+      if (upBtn) upBtn.addEventListener('click', function () { if (curDash) suOpen(); });
 
       // Bulk-select wiring: the Select button, the action bar, and
       // long-press on session items (pointer held ~450ms).

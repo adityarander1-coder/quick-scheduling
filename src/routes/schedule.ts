@@ -12444,17 +12444,41 @@ async function calAudit(req: Request, e: { date: string; action: 'created' | 'up
 
 // POST /api/schedule/academic-sessions — edit-scoped for
 // owner/scheduler; employees may create events they organize.
-router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
-  try {
+//
+// The create itself lives in createSessionFromBody so the bulk
+// calendar upload (session-import, below) creates events through the
+// EXACT same path — same gates, organizing-department rule, speaker
+// mirror, attendee snapshot, Calendar-report audit entry, speaker
+// notifications and one-time guest email. It returns a result instead
+// of writing a response; the side effects that today run AFTER the
+// response (notifications + guest email) ride back as afterResponse
+// for the caller to run once it has answered.
+type SessionCreateResult =
+  | { ok: true; id: string; afterResponse: () => Promise<void> }
+  | { ok: false; status: number; error: string };
+
+// A stand-in response that only records what a gate wrote, so the
+// res-writing edit gates (sessionEditCheck) can run inside
+// createSessionFromBody and hand their status/message back.
+function sessionGateProbe(): { res: Response; status: () => number; error: () => string } {
+  let status = 200;
+  let message = '';
+  const res: any = {
+    status: (c: number) => { status = c; return res; },
+    json: (p: any) => { if (p && p.error) message = String(p.error); return res; },
+  };
+  return { res: res as Response, status: () => status, error: () => message };
+}
+
+async function createSessionFromBody(req: Request, b: any): Promise<SessionCreateResult> {
     const companyId = req.session.companyId!;
-    const b = req.body ?? {};
     const title = String(b.title || '').trim();
-    if (!title) { res.status(400).json({ error: 'A title is required.' }); return; }
+    if (!title) return { ok: false, status: 400, error: 'A title is required.' };
     let dashboardId: string | null = null;
     if (b.dashboardId) {
       const { rows: dRows } = await query('SELECT id, archived_at FROM dashboards WHERE id = $1 AND company_id = $2', [String(b.dashboardId), companyId]);
-      if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return; }
-      if (dRows[0].archived_at) { res.status(409).json({ error: 'That dashboard is archived — restore it from Settings → Dashboards to add sessions.' }); return; }
+      if (!dRows.length) return { ok: false, status: 400, error: 'Unknown dashboard.' };
+      if (dRows[0].archived_at) return { ok: false, status: 409, error: 'That dashboard is archived — restore it from Settings → Dashboards to add sessions.' };
       dashboardId = String(b.dashboardId);
     }
     // EVENT model (2026-11-07): on a calendar, department_id is the
@@ -12471,7 +12495,10 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
       // later edit/delete only their own events. Dashboard-editor
       // lists don't block a create; edit rights are separate.
       const isEmployeeCreator = req.session.role === 'employee';
-      if (!isEmployeeCreator && !(await sessionEditCheck(req, res, dashboardId, null))) return;
+      if (!isEmployeeCreator) {
+        const gate = sessionGateProbe();
+        if (!(await sessionEditCheck(req, gate.res, dashboardId, null))) return { ok: false, status: gate.status() || 403, error: gate.error() || 'You do not have permission to do that.' };
+      }
       if (isEmployeeCreator) {
         const { rows: meR } = await query('SELECT department_id FROM users WHERE id = $1', [req.session.userId!]);
         departmentId = meR[0]?.department_id || null;
@@ -12480,22 +12507,20 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
         if (b.departmentId) {
           departmentId = String(b.departmentId);
           if (!manageable.includes(departmentId)) {
-            res.status(403).json({ error: 'You can only organize events for a department you manage on this calendar.' });
-            return;
+            return { ok: false, status: 403, error: 'You can only organize events for a department you manage on this calendar.' };
           }
         } else if (manageable.length === 1) {
           departmentId = manageable[0];
         } else if (manageable.length === 0) {
-          res.status(403).json({ error: "You don't manage a department on this calendar." });
-          return;
+          return { ok: false, status: 403, error: "You don't manage a department on this calendar." };
         } else {
-          res.status(400).json({ error: 'Choose the organizing department for this event.' });
-          return;
+          return { ok: false, status: 400, error: 'Choose the organizing department for this event.' };
         }
       }
     } else {
       departmentId = b.departmentId ? String(b.departmentId) : null;
-      if (!(await sessionEditCheck(req, res, null, departmentId))) return;
+      const gate = sessionGateProbe();
+      if (!(await sessionEditCheck(req, gate.res, null, departmentId))) return { ok: false, status: gate.status() || 403, error: gate.error() || 'You do not have permission to do that.' };
     }
     // Speakers: the new form posts the full list; older callers post
     // lecturerUserId, which becomes Speaker 1. The lecturer column
@@ -12504,12 +12529,12 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     let lecturerId: string | null = b.lecturerUserId ? String(b.lecturerUserId) : null;
     if (b.speakers !== undefined) {
       const cleaned = await cleanSpeakers(query as any, companyId, b.speakers);
-      if ('error' in cleaned) { res.status(400).json({ error: cleaned.error }); return; }
+      if ('error' in cleaned) return { ok: false, status: 400, error: cleaned.error };
       speakersIn = cleaned.speakers;
       lecturerId = speakerMirror(speakersIn);
     } else if (lecturerId) {
       const { rows } = await query('SELECT id FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [lecturerId, companyId]);
-      if (!rows.length) { res.status(400).json({ error: 'That lecturer is not an active team member.' }); return; }
+      if (!rows.length) return { ok: false, status: 400, error: 'That lecturer is not an active team member.' };
       speakersIn = [{ userId: lecturerId }];
     }
     // A supervisorUserId in the body is ignored on purpose:
@@ -12518,11 +12543,11 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     let beneficiaries: { departmentIds: string[]; userIds: string[] } | null = null;
     if (b.beneficiaryDepartmentIds !== undefined || b.beneficiaryUserIds !== undefined) {
       const cb = await cleanBeneficiaries(query as any, companyId, b.beneficiaryDepartmentIds, b.beneficiaryUserIds);
-      if ('error' in cb) { res.status(400).json({ error: cb.error }); return; }
+      if ('error' in cb) return { ok: false, status: 400, error: cb.error };
       beneficiaries = cb;
     }
     const mu = cleanMeetingUrl(b.meetingUrl);
-    if ('error' in mu) { res.status(400).json({ error: mu.error }); return; }
+    if ('error' in mu) return { ok: false, status: 400, error: mu.error };
     const rec = cleanRecur(b);
     const recurRule = rec.rule;
     const recurDays = cleanRecurDays(b.recurDays);
@@ -12542,14 +12567,14 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
     // server is authoritative for an app room's name (it becomes the
     // location text); a connected room keeps the posted location.
     const roomSel = await cleanRoomSelection(companyId, b);
-    if ('error' in roomSel) { res.status(400).json({ error: roomSel.error }); return; }
+    if ('error' in roomSel) return { ok: false, status: 400, error: roomSel.error };
     if (roomSel.roomId) {
       const roomFull = await roomRowById(companyId, roomSel.roomId);
       const conflict = await findRoomConflict(companyId, roomFull, {
         date: String(b.date || ''), startTime: b.startTime || null, endTime: b.endTime || null,
         recurRule, recurInterval: rec.interval, recurDays, recurUntil: recurUntil ? String(recurUntil).slice(0, 10) : null, recurCount: rec.count,
       });
-      if (conflict) { res.status(409).json({ error: `'${roomFull.name}' is already booked by '${conflict.title}' at that time.` }); return; }
+      if (conflict) return { ok: false, status: 409, error: `'${roomFull.name}' is already booked by '${conflict.title}' at that time.` };
     }
     const locationVal = roomSel.roomId ? roomSel.roomName : (b.location ? String(b.location).trim() : null);
     const { rows } = await query(
@@ -12584,7 +12609,7 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
         details: { sessionId: newSessionId },
       });
     }
-    res.json({ ok: true, id: newSessionId });
+    const afterResponse = async (): Promise<void> => {
     // Notify the team speakers; an event with NO speakers
     // at all (guests count as speakers) tells the calendar's
     // department members a presenter is needed.
@@ -12632,9 +12657,483 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
       });
       await emailGuests(speakersIn, ctx);
     }
+    };
+    return { ok: true, id: newSessionId, afterResponse };
+}
+
+router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const r = await createSessionFromBody(req, req.body ?? {});
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    res.json({ ok: true, id: r.id });
+    await r.afterResponse();
   } catch (err) {
     console.error('[schedule] academic session create failed:', err);
-    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+    if (!res.headersSent) res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bulk calendar-event upload — "⬆ Upload schedule" (Deepika,
+// 2026-11-07). Download the sheet format, upload a filled .csv /
+// .xlsx, check the preview (NOTHING is saved), answer what's
+// missing, then import. Creations go through createSessionFromBody —
+// the exact path the Add event form uses — so the organizing-
+// department rule, speaker mirror, attendee snapshot, one-time guest
+// email and Calendar-report audit entry all match a hand-added
+// event. Rows are independent: one bad row never rolls back others.
+// ---------------------------------------------------------------------------
+
+const SESSION_IMPORT_MAX_ROWS = 500;
+const SESSION_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+const SESSION_IMPORT_HEADERS = ['Date', 'Start', 'End', 'Event name', 'Session type', 'Speaker', 'Attendees', 'Room', 'Meeting link', 'Notes'];
+
+// GET /api/schedule/session-import/template — the blank sheet: the
+// exact column headers plus two example rows and nothing else.
+router.get('/session-import/template', requireRole('owner', 'scheduler'), async (_req: Request, res: Response) => {
+  const lines = [
+    SESSION_IMPORT_HEADERS.join(','),
+    '2027-03-08,9:00 AM,10:00 AM,Cardiology Lecture,Lecture,Jane Smith,Cardiology,Room 4,,',
+    '2027-03-09,1:00 PM,2:00 PM,Resident Interview,Interview,Guest Name <guest@email>,,,,Bring the candidate list',
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="session-schedule-template.csv"');
+  res.send(lines.join('\r\n') + '\r\n');
+});
+
+// A sheet time as "HH:MM": accepts "10:00 AM", "10:00", "22:00".
+function sessImpTime(raw: string): string | null {
+  const t = String(raw || '').trim();
+  if (!t) return null;
+  const m = t.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (min > 59) return null;
+  if (m[3]) {
+    if (h < 1 || h > 12) return null;
+    if (m[3].toLowerCase() === 'pm' && h !== 12) h += 12;
+    if (m[3].toLowerCase() === 'am' && h === 12) h = 0;
+  } else if (h > 23) return null;
+  return String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+}
+
+// A spreadsheet time CELL (Excel times arrive as a day fraction or a
+// Date; CSV cells as text) → display text the time parser accepts.
+function sessImpTimeCellText(cell: any): string {
+  if (cell instanceof Date && !isNaN(cell.getTime())) {
+    return String(cell.getHours()).padStart(2, '0') + ':' + String(cell.getMinutes()).padStart(2, '0');
+  }
+  if (typeof cell === 'number' && isFinite(cell)) {
+    const frac = cell - Math.floor(cell);
+    if (frac > 0) {
+      const mins = Math.round(frac * 1440) % 1440;
+      return String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+    }
+    return String(cell);
+  }
+  return String(cell ?? '').trim();
+}
+
+// A spreadsheet text cell → trimmed text (Date/serial cells → date).
+function sessImpCellText(cell: any): string {
+  if (cell instanceof Date && !isNaN(cell.getTime())) return cell.toISOString().slice(0, 10);
+  if (typeof cell === 'number' && isFinite(cell) && cell >= 20000 && cell <= 80000) return excelSerialToDate(cell);
+  return String(cell ?? '').trim();
+}
+
+type SessImpCol = 'date' | 'start' | 'end' | 'title' | 'kind' | 'speaker' | 'attendees' | 'room' | 'meeting' | 'notes';
+function sessImpColKind(header: string): SessImpCol | null {
+  const t = header.toLowerCase().replace(/[^a-z]/g, '');
+  if (t === 'date' || t === 'day') return 'date';
+  if (t === 'start' || t === 'starttime' || t === 'from') return 'start';
+  if (t === 'end' || t === 'endtime' || t === 'to' || t === 'until') return 'end';
+  if (t === 'eventname' || t === 'event' || t === 'title' || t === 'name') return 'title';
+  if (t === 'sessiontype' || t === 'type' || t === 'kind') return 'kind';
+  if (t === 'speaker' || t === 'presenter' || t === 'lecturer' || t === 'interviewer') return 'speaker';
+  if (t === 'attendees' || t === 'attendee' || t === 'audience' || t === 'beneficiaries' || t === 'invited') return 'attendees';
+  if (t === 'room' || t === 'location') return 'room';
+  if (t === 'meetinglink' || t === 'meetingurl' || t === 'link' || t === 'url' || t === 'meeting') return 'meeting';
+  if (t === 'notes' || t === 'note' || t === 'description') return 'notes';
+  return null;
+}
+
+// Uploaded file → a raw grid of cells (CSV parsed as text; anything
+// else read as a workbook, mirroring the team-member import).
+function sessImpGrid(filename: string, buf: Buffer): { grid: any[][] } | { error: string } {
+  const isZip = buf.subarray(0, 2).toString('latin1') === 'PK';
+  const fname = filename.toLowerCase();
+  if (!isZip && (fname.endsWith('.csv') || fname.endsWith('.txt') || !fname)) {
+    return { grid: parseCsvText(buf.toString('utf8')) as any[][] };
+  }
+  try {
+    const wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) return { error: 'That file could not be read as a spreadsheet or CSV.' };
+    return { grid: XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }) as any[][] };
+  } catch {
+    return { error: 'That file could not be read as a spreadsheet or CSV.' };
+  }
+}
+
+interface SessImpMember { id: string; name: string; email: string; }
+interface SessImpQuestion {
+  id: string; kind: 'date' | 'start' | 'end' | 'title' | 'kind' | 'speaker' | 'attendee' | 'duplicate' | 'meeting';
+  prompt: string; value?: string; token?: string;
+  candidates?: Array<{ id: string; name: string; email: string }>;
+  guest?: { name: string; email: string };
+}
+
+// Load the reference data a preview/import matches against.
+async function sessImpRefs(companyId: string, dashboardId: string) {
+  await ensureKinds(companyId, dashboardId);
+  const { rows: kindRows } = await query('SELECT * FROM session_kinds WHERE company_id = $1 AND dashboard_id = $2 ORDER BY position, label', [companyId, dashboardId]);
+  const kinds = kindRows.map(kindRow);
+  const { rows: userRows } = await query(
+    `SELECT id, first_name, last_name, nickname, email FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
+    [companyId]);
+  const members: SessImpMember[] = userRows.map((u: any) => ({
+    id: String(u.id),
+    name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || String(u.email || ''),
+    email: String(u.email || ''),
+  }));
+  const byEmail = new Map<string, SessImpMember>();
+  const byName = new Map<string, SessImpMember[]>();
+  const pushName = (key: string, m: SessImpMember) => {
+    if (!key) return;
+    const arr = byName.get(key) || [];
+    if (!arr.find((x) => x.id === m.id)) arr.push(m);
+    byName.set(key, arr);
+  };
+  for (const u of userRows as any[]) {
+    const m = members.find((x) => x.id === String(u.id))!;
+    if (m.email) byEmail.set(m.email.toLowerCase(), m);
+    pushName(m.name.toLowerCase(), m);
+    if (u.nickname) pushName(String(u.nickname).toLowerCase(), m);
+    const parts = m.name.split(/\s+/);
+    if (parts.length >= 2) pushName(`${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`.toLowerCase(), m);
+  }
+  const { rows: deptRows } = await query('SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
+  const departments = deptRows.map((d: any) => ({ id: String(d.id), name: String(d.name) }));
+  return { kinds, members, byEmail, byName, departments };
+}
+
+// Match one sheet name/email against the active members.
+function sessImpMatchPerson(text: string, refs: { byEmail: Map<string, SessImpMember>; byName: Map<string, SessImpMember[]> }):
+  { one: SessImpMember } | { many: SessImpMember[] } | { none: true } {
+  const t = String(text || '').trim();
+  if (!t) return { none: true };
+  const lt = t.match(/<([^>]+)>/);
+  const emailPart = lt ? lt[1].trim() : (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t) ? t : null);
+  if (emailPart) {
+    const m = refs.byEmail.get(emailPart.toLowerCase());
+    if (m) return { one: m };
+  }
+  const namePart = (lt ? t.slice(0, lt.index).trim() : t).toLowerCase();
+  if (namePart) {
+    const hits = refs.byName.get(namePart) || [];
+    if (hits.length === 1) return { one: hits[0] };
+    if (hits.length > 1) return { many: hits };
+  }
+  return { none: true };
+}
+
+// Split a speaker cell into its display name + email parts.
+function sessImpSpeakerParts(text: string): { name: string; email: string } {
+  const t = String(text || '').trim();
+  const lt = t.match(/^(.*?)<([^>]+)>\s*$/);
+  if (lt) return { name: lt[1].trim(), email: lt[2].trim() };
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return { name: '', email: t };
+  return { name: t, email: '' };
+}
+
+// Existing-event duplicate keys for a calendar: date|start|title.
+async function sessImpDuplicateKeys(companyId: string, dashboardId: string, minDate: string, maxDate: string): Promise<Set<string>> {
+  const keys = new Set<string>();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(minDate) || !/^\d{4}-\d{2}-\d{2}$/.test(maxDate) || maxDate < minDate) return keys;
+  const { rows: sessRows } = await query(
+    `SELECT * FROM academic_sessions WHERE company_id = $1 AND dashboard_id = $2 AND session_date <= $3 AND (recur_rule IS NULL OR recur_rule = 'none' OR recur_until IS NULL OR recur_until >= $4)`,
+    [companyId, dashboardId, maxDate, minDate]);
+  if (!sessRows.length) return keys;
+  const ovMap = await loadOverrides(companyId, sessRows.map((r: any) => r.id), minDate, maxDate);
+  for (const o of expandAcademicSessions(sessRows as any[], minDate, maxDate, ovMap, new Map())) {
+    keys.add(`${o.date}|${o.startTime || ''}|${String(o.title || '').toLowerCase()}`);
+  }
+  return keys;
+}
+
+// The calendar gate shared by preview + import: the caller must be
+// able to add events with edit rights on this calendar.
+async function sessImpGate(req: Request, res: Response, dashboardId: string):
+  Promise<{ companyId: string; manageable: string[] } | null> {
+  const companyId = req.session.companyId!;
+  const { rows: dRows } = await query('SELECT id, archived_at FROM dashboards WHERE id = $1 AND company_id = $2', [dashboardId, companyId]);
+  if (!dRows.length) { res.status(400).json({ error: 'Unknown dashboard.' }); return null; }
+  if (dRows[0].archived_at) { res.status(409).json({ error: 'That dashboard is archived — restore it from Settings → Dashboards to add sessions.' }); return null; }
+  if (!(await canEditSessionQuiet(req, dashboardId, null))) {
+    res.status(403).json({ error: 'You do not have permission to add events to this calendar.' });
+    return null;
+  }
+  const manageable = await manageableOrgDeptIds(req, dashboardId);
+  if (!manageable.length) {
+    res.status(403).json({ error: "You don't manage a department on this calendar." });
+    return null;
+  }
+  return { companyId, manageable };
+}
+
+// POST /api/schedule/session-import/preview — parse + validate the
+// sheet and report per-row questions. Saves NOTHING.
+router.post('/session-import/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const dashboardId = b.dashboardId ? String(b.dashboardId) : '';
+    if (!dashboardId) { res.status(400).json({ error: 'No calendar was given.' }); return; }
+    const gate = await sessImpGate(req, res, dashboardId);
+    if (!gate) return;
+    const filename = String(b.filename || 'upload.csv');
+    const dataBase64 = String(b.dataBase64 || '');
+    if (!dataBase64) { res.status(400).json({ error: 'No file was uploaded.' }); return; }
+    const buf = Buffer.from(dataBase64, 'base64');
+    if (!buf.length) { res.status(400).json({ error: 'That file is empty.' }); return; }
+    if (buf.length > SESSION_IMPORT_MAX_BYTES) { res.status(413).json({ error: 'That file is over 8 MB — please upload a smaller sheet.' }); return; }
+    const parsed = sessImpGrid(filename, buf);
+    if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
+    const grid = parsed.grid;
+    // Find the header row within the first 5 rows.
+    let headerIdx = -1;
+    let colMap: Partial<Record<SessImpCol, number>> = {};
+    for (let i = 0; i < Math.min(grid.length, 5); i++) {
+      const map: Partial<Record<SessImpCol, number>> = {};
+      (grid[i] || []).forEach((cell: any, j: number) => {
+        const k = sessImpColKind(String(cell ?? ''));
+        if (k && map[k] === undefined) map[k] = j;
+      });
+      if (map.date !== undefined && map.title !== undefined) { headerIdx = i; colMap = map; break; }
+    }
+    if (headerIdx < 0) {
+      res.status(400).json({ error: `That sheet's columns don't match the template. Expected columns: ${SESSION_IMPORT_HEADERS.join(', ')}.` });
+      return;
+    }
+    const dataRows = grid.slice(headerIdx + 1).filter((r: any[]) => (r || []).some((c: any) => String(c ?? '').trim() !== ''));
+    if (!dataRows.length) { res.status(400).json({ error: 'That sheet has no events in it yet.' }); return; }
+    if (dataRows.length > SESSION_IMPORT_MAX_ROWS) {
+      res.status(400).json({ error: `That sheet has ${dataRows.length} events — the limit is ${SESSION_IMPORT_MAX_ROWS} per upload. Please split it into smaller sheets.` });
+      return;
+    }
+    const refs = await sessImpRefs(gate.companyId, dashboardId);
+    const deptByName = new Map<string, { id: string; name: string }>();
+    for (const d of refs.departments) {
+      const key = d.name.toLowerCase();
+      if (!deptByName.has(key)) deptByName.set(key, d);
+    }
+    // Duplicate keys over the sheet's own date range.
+    const parsedDates: string[] = [];
+    for (const r of dataRows) {
+      const d = importCellDate((r || [])[colMap.date!]);
+      if (d) parsedDates.push(d);
+    }
+    const dupKeys = parsedDates.length
+      ? await sessImpDuplicateKeys(gate.companyId, dashboardId, parsedDates.reduce((a, c) => (c < a ? c : a)), parsedDates.reduce((a, c) => (c > a ? c : a)))
+      : new Set<string>();
+    const seenKeys = new Set<string>();
+    const cellAt = (r: any[], col: SessImpCol): any => (colMap[col] === undefined ? '' : (r || [])[colMap[col]!]);
+    const out: any[] = [];
+    dataRows.forEach((r: any[], idx: number) => {
+      const questions: SessImpQuestion[] = [];
+      let qn = 0;
+      const ask = (q: Omit<SessImpQuestion, 'id'>) => { questions.push({ id: 'q' + (++qn), ...q }); };
+      const dateRaw = sessImpCellText(cellAt(r, 'date'));
+      const date = importCellDate(cellAt(r, 'date')) || null;
+      if (!date) ask({ kind: 'date', prompt: dateRaw ? `The date "${dateRaw}" isn't readable.` : 'This event has no date.', value: '' });
+      const startRaw = sessImpTimeCellText(cellAt(r, 'start'));
+      const endRaw = sessImpTimeCellText(cellAt(r, 'end'));
+      const startTime = sessImpTime(startRaw);
+      const endTime = sessImpTime(endRaw);
+      if (!startTime) ask({ kind: 'start', prompt: startRaw ? `The start time "${startRaw}" isn't readable.` : 'This event has no start time.', value: '' });
+      if (!endTime) ask({ kind: 'end', prompt: endRaw ? `The end time "${endRaw}" isn't readable.` : 'This event has no end time.', value: '' });
+      else if (startTime && endTime && endTime <= startTime) ask({ kind: 'end', prompt: 'This event ends before it starts — what is the end time?', value: endTime });
+      const title = sessImpCellText(cellAt(r, 'title'));
+      if (!title) ask({ kind: 'title', prompt: 'This event has no name.', value: '' });
+      // Session type — the calendar's kinds.
+      const kindText = sessImpCellText(cellAt(r, 'kind'));
+      let kind: string | null = null;
+      let kindLabel: string | null = null;
+      if (!kindText) {
+        if (refs.kinds.length === 1) { kind = refs.kinds[0].key; kindLabel = refs.kinds[0].label; }
+        else ask({ kind: 'kind', prompt: 'Which session type is this event?', value: '' });
+      } else {
+        const hit = refs.kinds.find((k) => k.label.toLowerCase() === kindText.toLowerCase() || k.key.toLowerCase() === kindText.toLowerCase());
+        if (hit) { kind = hit.key; kindLabel = hit.label; }
+        else ask({ kind: 'kind', prompt: `"${kindText}" isn't one of this calendar's session types.`, value: kindText });
+      }
+      // Speaker — blank is fine; otherwise a team member or a guest.
+      const speakerText = sessImpCellText(cellAt(r, 'speaker'));
+      let speaker: any = null;
+      if (speakerText) {
+        const hit = sessImpMatchPerson(speakerText, refs);
+        if ('one' in hit) speaker = { userId: hit.one.id, name: hit.one.name };
+        else if ('many' in hit) {
+          ask({ kind: 'speaker', prompt: `More than one team member matches "${speakerText}". Who did you mean?`, value: speakerText, candidates: hit.many });
+        } else {
+          const parts = sessImpSpeakerParts(speakerText);
+          ask({ kind: 'speaker', prompt: `"${parts.name || speakerText}" isn't on your team. Who did you mean?`, value: speakerText, guest: { name: parts.name, email: parts.email } });
+        }
+      }
+      // Attendees — department names and people, token by token.
+      const attText = sessImpCellText(cellAt(r, 'attendees'));
+      const beneficiaryDepartmentIds: string[] = [];
+      const beneficiaryUserIds: string[] = [];
+      const attendeeNames: string[] = [];
+      if (attText) {
+        for (const token of attText.split(/[;,]/).map((t) => t.trim()).filter(Boolean)) {
+          const dept = deptByName.get(token.toLowerCase());
+          if (dept) {
+            if (!beneficiaryDepartmentIds.includes(dept.id)) beneficiaryDepartmentIds.push(dept.id);
+            if (!attendeeNames.includes(dept.name)) attendeeNames.push(dept.name);
+            continue;
+          }
+          const hit = sessImpMatchPerson(token, refs);
+          if ('one' in hit) {
+            if (!beneficiaryUserIds.includes(hit.one.id)) beneficiaryUserIds.push(hit.one.id);
+            if (!attendeeNames.includes(hit.one.name)) attendeeNames.push(hit.one.name);
+          } else if ('many' in hit) {
+            ask({ kind: 'attendee', token, prompt: `More than one team member matches "${token}". Who did you mean?`, candidates: hit.many });
+          } else {
+            ask({ kind: 'attendee', token, prompt: `"${token}" isn't a department or a team member. Who did you mean?` });
+          }
+        }
+      }
+      // Room is free text (the form's location); Notes free text.
+      const location = sessImpCellText(cellAt(r, 'room')) || null;
+      const notes = sessImpCellText(cellAt(r, 'notes')) || null;
+      const meetingText = sessImpCellText(cellAt(r, 'meeting'));
+      let meetingUrl: string | null = null;
+      if (meetingText) {
+        if (/^https?:\/\//i.test(meetingText)) meetingUrl = meetingText;
+        else ask({ kind: 'meeting', prompt: `The meeting link "${meetingText}" doesn't look like a link.`, value: meetingText });
+      }
+      // Duplicate — same calendar + date + start + title.
+      let isDup = false;
+      if (date && startTime && title) {
+        const key = `${date}|${startTime}|${title.toLowerCase()}`;
+        if (dupKeys.has(key) || seenKeys.has(key)) {
+          isDup = true;
+          ask({ kind: 'duplicate', prompt: 'An event with this name is already on this calendar at this time.' });
+        }
+        seenKeys.add(key);
+      }
+      const blocking = questions.some((q) => q.kind !== 'duplicate');
+      out.push({
+        row: idx + 1,
+        date, startTime, endTime,
+        dateText: dateRaw, startText: startRaw, endText: endRaw,
+        title, kind, kindLabel, speakerText, speaker,
+        beneficiaryDepartmentIds, beneficiaryUserIds, attendeeNames,
+        location, meetingUrl, notes,
+        status: blocking ? 'needs_info' : (isDup ? 'duplicate' : 'ready'),
+        questions,
+      });
+    });
+    res.json({
+      ok: true,
+      dashboardId,
+      total: out.length,
+      kinds: refs.kinds.map((k) => ({ key: k.key, label: k.label })),
+      people: refs.members.map((m) => ({ id: m.id, name: m.name, email: m.email })),
+      orgDepartments: gate.manageable.map((id) => refs.departments.find((d) => d.id === id)).filter(Boolean),
+      orgDepartmentId: gate.manageable.length === 1 ? gate.manageable[0] : null,
+      rows: out,
+    });
+  } catch (err) {
+    console.error('[schedule] session import preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong reading that sheet. Please try again.' });
+  }
+});
+
+// POST /api/schedule/session-import — create the resolved rows, one
+// by one, through createSessionFromBody. A row that fails (it went
+// stale since the preview, or its speaker was deactivated) lands in
+// `failed` with a reason; the rest still import.
+router.post('/session-import', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const b = req.body ?? {};
+    const dashboardId = b.dashboardId ? String(b.dashboardId) : '';
+    if (!dashboardId) { res.status(400).json({ error: 'No calendar was given.' }); return; }
+    const gate = await sessImpGate(req, res, dashboardId);
+    if (!gate) return;
+    let orgDeptId: string;
+    if (b.departmentId) {
+      orgDeptId = String(b.departmentId);
+      if (!gate.manageable.includes(orgDeptId)) {
+        res.status(403).json({ error: 'You can only organize events for a department you manage on this calendar.' });
+        return;
+      }
+    } else if (gate.manageable.length === 1) {
+      orgDeptId = gate.manageable[0];
+    } else {
+      res.status(400).json({ error: 'Choose the organizing department for these events.' });
+      return;
+    }
+    const rowsIn = Array.isArray(b.rows) ? b.rows : [];
+    if (!rowsIn.length) { res.status(400).json({ error: 'There are no events to import.' }); return; }
+    if (rowsIn.length > SESSION_IMPORT_MAX_ROWS) {
+      res.status(400).json({ error: `Too many events in one import — the limit is ${SESSION_IMPORT_MAX_ROWS}.` });
+      return;
+    }
+    // Fresh duplicate keys across the batch's date range; keys of
+    // rows created during this import join the set as they land.
+    const validDates: string[] = rowsIn.map((r: any) => String(r?.date || '')).filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    const dupKeys = validDates.length
+      ? await sessImpDuplicateKeys(gate.companyId, dashboardId, validDates.reduce((a, c) => (c < a ? c : a)), validDates.reduce((a, c) => (c > a ? c : a)))
+      : new Set<string>();
+    const timeOk = (t: any) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+    const dateOk = (d: any) => {
+      if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+      const dt = new Date(d + 'T00:00:00Z');
+      return !isNaN(dt.getTime()) && dt.toISOString().slice(0, 10) === d;
+    };
+    const failed: Array<{ row: number; reason: string }> = [];
+    let imported = 0;
+    for (const r of rowsIn) {
+      const rowNo = Number(r?.row) || 0;
+      const fail = (reason: string) => { failed.push({ row: rowNo, reason }); };
+      const title = String(r?.title || '').trim();
+      if (!title) { fail('The event has no name.'); continue; }
+      if (!dateOk(r?.date)) { fail('The date is missing or unreadable.'); continue; }
+      if (!timeOk(r?.startTime) || !timeOk(r?.endTime)) { fail('The start or end time is missing or unreadable.'); continue; }
+      if (String(r.endTime) <= String(r.startTime)) { fail('The event ends before it starts.'); continue; }
+      const key = `${r.date}|${r.startTime}|${title.toLowerCase()}`;
+      if (!r.importAnyway && dupKeys.has(key)) { fail('An event with this name is already on this calendar at that time.'); continue; }
+      try {
+        const cr = await createSessionFromBody(req, {
+          title,
+          dashboardId,
+          departmentId: orgDeptId,
+          date: r.date,
+          startTime: r.startTime,
+          endTime: r.endTime,
+          kind: r.kind ? String(r.kind) : undefined,
+          speakers: r.speaker ? [r.speaker] : [],
+          beneficiaryDepartmentIds: Array.isArray(r.beneficiaryDepartmentIds) ? r.beneficiaryDepartmentIds : [],
+          beneficiaryUserIds: Array.isArray(r.beneficiaryUserIds) ? r.beneficiaryUserIds : [],
+          location: r.location ? String(r.location) : undefined,
+          meetingUrl: r.meetingUrl ? String(r.meetingUrl) : undefined,
+          notes: r.notes ? String(r.notes) : undefined,
+        });
+        if (!cr.ok) { fail(cr.error); continue; }
+        await cr.afterResponse();
+        dupKeys.add(key);
+        imported++;
+      } catch (err) {
+        console.error('[schedule] session import row failed:', err);
+        fail('Something went wrong creating this event.');
+      }
+    }
+    res.json({ ok: true, imported, failed });
+  } catch (err) {
+    console.error('[schedule] session import failed:', err);
+    res.status(500).json({ error: 'Something went wrong importing those events. Please try again.' });
   }
 });
 
