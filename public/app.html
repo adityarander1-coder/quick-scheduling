@@ -1028,6 +1028,35 @@
       <button type="button" class="tab-btn" data-etab="ehelp"><span class="tab-ic">❓</span><span class="tab-tx">Help</span></button>
     </nav>
   </header>
+  <div id="br-view-banner" class="hidden" style="background:#fdf6e0;border-bottom:2px solid #e5c15c;color:#5c4a08;padding:0.55rem 1rem;font-size:0.92rem;display:flex;align-items:center;gap:0.7rem;flex-wrap:wrap">
+    <span id="br-view-banner-text"></span>
+    <button type="button" id="br-view-banner-home" class="btn" style="padding:0.35rem 0.8rem;border-radius:8px">Return to your branch</button>
+  </div>
+  <script>
+  // Institution branch viewing banner (Deepika, 2026-11-08): when an
+  // institution admin has switched into a sibling branch, a persistent
+  // banner says which branch is on screen and offers the way back.
+  (function () {
+    var banner = document.getElementById('br-view-banner');
+    var text = document.getElementById('br-view-banner-text');
+    document.getElementById('br-view-banner-home').addEventListener('click', function () {
+      fetch('/api/institutions/switch-home', { method: 'POST', credentials: 'same-origin' })
+        .then(function () { location.reload(); })
+        .catch(function () { location.reload(); });
+    });
+    fetch('/api/institutions/context', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (ctx) {
+        if (ctx && ctx.viewing) {
+          text.innerHTML = '🏥 You are viewing <strong>' + ctx.viewing.companyName + '</strong> — a branch of ' +
+            ctx.viewing.institutionName + '. You are managing it as the institution admin.';
+          banner.classList.remove('hidden');
+        }
+        window.qsInstitutionContext = ctx;
+      })
+      .catch(function () { /* standalone companies: no banner */ });
+  })();
+  </script>
 
   <!-- Desktop top bar (stage 7): department, view switch, bell + account move here on wide screens. Phones keep the existing header. -->
   <button type="button" id="qs-edge-toggle" aria-label="Collapse or expand the side menu" hidden>‹</button>
@@ -12602,6 +12631,33 @@ window.qsNpOfferSend = function (btn) {
               }
               window.qsLoadBranches = load;
               document.querySelector('[data-subtab="branches"]').addEventListener('click', load);
+            })();
+            </script>
+            <script>
+            // Branch switcher buttons + (phase 3) shared departments live
+            // here; the panel above calls qsRenderBranchExtras after each
+            // render with the /api/institutions/branches payload.
+            (function () {
+              window.qsRenderBranchExtras = function (data) {
+                if (!data || !data.linked || !data.isAdmin) return;
+                (data.branches || []).forEach(function (b) {
+                  var slot = document.querySelector('[data-br-actions="' + b.companyId + '"]');
+                  if (!slot || b.companyId === data.myCompany.id) return;
+                  var btn = document.createElement('button');
+                  btn.type = 'button';
+                  btn.className = 'btn-secondary';
+                  btn.style.cssText = 'padding:0.4rem 0.8rem;border-radius:8px';
+                  btn.textContent = 'View branch';
+                  btn.addEventListener('click', function () {
+                    api('/api/institutions/switch', { method: 'POST', body: JSON.stringify({ companyId: b.companyId }) }).then(function (r) {
+                      if (r.ok) location.reload();
+                      else pageError((r.data && r.data.error) || 'Could not switch branches.');
+                    }).catch(function () { pageError('Could not switch branches.'); });
+                  });
+                  slot.appendChild(btn);
+                });
+                if (window.qsRenderShares) window.qsRenderShares(data);
+              };
             })();
             </script>
           </div>

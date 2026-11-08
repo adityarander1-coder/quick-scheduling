@@ -10,6 +10,9 @@ declare module 'express-session' {
     userId?: string;
     companyId?: string;
     role?: Role;
+    /** Institution branch viewing: the admin's home (main branch)
+     * company while companyId points at a branch they switched into. */
+    homeCompanyId?: string;
   }
 }
 

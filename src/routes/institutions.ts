@@ -318,6 +318,111 @@ router.post('/join-requests/:id/reject', requireRole('owner'), async (req: Reque
 });
 
 // ---------------------------------------------------------------------------
+// Branch switcher (institution admins). The session's companyId moves to
+// the branch being viewed; homeCompanyId remembers the main branch.
+// Everything downstream stays company-scoped exactly as before — the
+// admin simply operates inside the branch's company. CALENDAR PRIVACY
+// STANDS: involvement filters key on the session USER, who belongs to
+// the main branch, so the admin does not see branch events they are not
+// part of.
+// ---------------------------------------------------------------------------
+async function homeCompany(req: Request): Promise<string> {
+  return req.session.homeCompanyId || req.session.companyId!;
+}
+
+/** Caller must be an owner (users row) of the home company, and the home
+ * company must be an institution's main branch. Returns institutionId. */
+async function adminInstitution(req: Request): Promise<string | null> {
+  const home = await homeCompany(req);
+  const { rows } = await query(
+    `SELECT ib.institution_id AS "institutionId"
+     FROM institution_branches ib
+     JOIN users u ON u.company_id = ib.company_id
+     WHERE ib.company_id = $1 AND ib.kind = 'main'
+       AND u.id = $2 AND u.role = 'owner' AND u.is_active = true`,
+    [home, req.session.userId!]
+  );
+  return rows.length ? rows[0].institutionId : null;
+}
+
+router.get('/context', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const link = await getBranchLink(companyId);
+    const out: any = { linked: !!link, viewing: null };
+    if (link) {
+      out.institutionName = link.legalName;
+      out.kind = link.kind;
+      out.isAdmin = await isInstitutionAdmin(req.session.userId!, link.institutionId);
+    }
+    if (req.session.homeCompanyId && req.session.homeCompanyId !== companyId) {
+      const { rows } = await query('SELECT name FROM companies WHERE id = $1', [companyId]);
+      const { rows: hrows } = await query('SELECT name FROM companies WHERE id = $1', [req.session.homeCompanyId]);
+      out.viewing = {
+        companyId,
+        companyName: rows[0]?.name || '',
+        homeCompanyName: hrows[0]?.name || '',
+        institutionName: link?.legalName || '',
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('[institutions] context failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/switch', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const target = String(req.body?.companyId || '');
+    if (!target) {
+      res.status(400).json({ error: 'Say which branch to view.' });
+      return;
+    }
+    const institutionId = await adminInstitution(req);
+    if (!institutionId) {
+      res.status(403).json({ error: 'Only the institution admin can view other branches.' });
+      return;
+    }
+    const home = await homeCompany(req);
+    const { rows } = await query(
+      'SELECT company_id AS "companyId" FROM institution_branches WHERE institution_id = $1 AND company_id = $2',
+      [institutionId, target]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: 'That branch is not part of this institution.' });
+      return;
+    }
+    if (target === home) {
+      req.session.companyId = home;
+      delete req.session.homeCompanyId;
+    } else {
+      req.session.companyId = target;
+      req.session.homeCompanyId = home;
+    }
+    req.session.role = 'owner';
+    res.json({ ok: true, companyId: req.session.companyId });
+  } catch (err) {
+    console.error('[institutions] switch failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/switch-home', requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (req.session.homeCompanyId) {
+      req.session.companyId = req.session.homeCompanyId;
+      delete req.session.homeCompanyId;
+      req.session.role = 'owner';
+    }
+    res.json({ ok: true, companyId: req.session.companyId });
+  } catch (err) {
+    console.error('[institutions] switch-home failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Public branch-invite acceptance.
 // ---------------------------------------------------------------------------
 const INVALID_INVITE = 'This invite link is invalid or has expired.';

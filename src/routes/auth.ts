@@ -10,6 +10,7 @@ import { query } from '../db';
 import { requireAuth, Role } from '../middleware/auth';
 import { splitName, joinName } from '../util/names';
 import { getDepartmentAccess, DepartmentAccess } from '../util/departmentAccess';
+import { getBranchLink } from '../util/institutions';
 
 const router = Router();
 
@@ -467,7 +468,30 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     } else {
       departmentAccess = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
     }
-    res.json({ ...data, departmentAccess });
+    // Institution context (2026-11-08): which institution this company
+    // belongs to, and — while an institution admin views a branch —
+    // where home is. Null for standalone companies. While viewing a
+    // branch, `company` reports the VIEWED branch (the header should
+    // name the branch on screen); the user record stays the admin's own.
+    let institutionContext: any = null;
+    let companyOut = data.company;
+    const link = await getBranchLink(req.session.companyId!);
+    if (link) {
+      institutionContext = {
+        institutionId: link.institutionId,
+        institutionName: link.legalName,
+        kind: link.kind,
+        viewing: !!req.session.homeCompanyId,
+        homeCompanyName: null as string | null,
+      };
+      if (req.session.homeCompanyId) {
+        const { rows } = await query('SELECT name FROM companies WHERE id = $1', [req.session.homeCompanyId]);
+        institutionContext.homeCompanyName = rows[0]?.name || null;
+        const { rows: vrows } = await query('SELECT id, name FROM companies WHERE id = $1', [req.session.companyId!]);
+        if (vrows.length) companyOut = { id: vrows[0].id, name: vrows[0].name };
+      }
+    }
+    res.json({ ...data, company: companyOut, departmentAccess, institutionContext });
   } catch (err) {
     console.error('[auth] me failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
