@@ -42,7 +42,7 @@
     // creator — ① group name ② department chooser ③ that
     // department's people. Ticks ACCUMULATE across department
     // switches (switching the chooser only changes who you're
-    // looking at). Shared by Settings → Communication groups and the
+    // looking at). Shared by the Tools-bar Groups panel and the
     // event form's "＋ New group" (managers only — the server
     // enforces it). opts: { group: {id, name, members} | null,
     // onSaved: fn }.
@@ -173,6 +173,64 @@
           }).catch(function () { btn.disabled = false; err.style.display = 'block'; err.textContent = 'Could not save the group.'; });
         });
       }).catch(function () { pageError('Could not load the team list.'); });
+    };
+    // Communication groups manager list (migration 094): paints the
+    // explainer + group list + ＋ New group into a container. This is
+    // the list UI that used to live in Settings → Dashboards; Deepika
+    // (2026-11-07) moved the manager into the Tools bar, so the
+    // Groups panel is its home now. Create/edit goes through the
+    // shared three-box editor above — one implementation, reused.
+    window.qsRenderCommGroups = function (container) {
+      if (!container) return;
+      var canManage = window.currentRole !== 'employee';
+      container.innerHTML = '<p class="muted" style="margin:0 0 0.6rem;font-size:0.88rem">Named circles of people — pick one when adding an event\u2019s attendees.</p>' +
+        '<div class="hl-sec">YOUR GROUPS</div><div id="qtp-cg-list"><p class="muted">Loading…</p></div>' +
+        (canManage ? '<button type="button" class="btn" id="qtp-cg-new" style="width:100%;margin-top:0.2rem">＋ New group</button>' : '');
+      var newBtn = container.querySelector('#qtp-cg-new');
+      if (newBtn) newBtn.addEventListener('click', function () {
+        if (window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ onSaved: function () { window.qsRenderCommGroups(container); } });
+      });
+      api('/api/schedule/comm-groups').then(function (r) {
+        var groups = (r.ok && r.data.groups) || [];
+        var wrap = container.querySelector('#qtp-cg-list');
+        if (!wrap) return; // panel was closed / re-rendered meanwhile
+        if (!groups.length) { wrap.innerHTML = '<p class="muted">No groups yet — make the first one below.</p>'; return; }
+        wrap.innerHTML = groups.map(function (g) {
+          var names = g.members.map(function (mm) { return esc(mm.name) + (mm.isActive ? '' : ' (inactive)'); }).join(', ');
+          return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
+            '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(g.name) + '</strong>' +
+            '<span style="background:#f0fdfa;color:#0e7c86;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">' + g.memberCount + (g.memberCount === 1 ? ' person' : ' people') + '</span>' +
+            (canManage ? '<span style="margin-left:auto;display:flex;gap:0.45rem">' +
+            '<button type="button" class="btn-secondary" data-cg-edit="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px">Edit</button>' +
+            '<button type="button" data-cg-del="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></span>' : '') + '</div>' +
+            (names ? '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">' + names + '</div>' : '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">No members yet.</div>') +
+            '</div>';
+        }).join('');
+        wrap.querySelectorAll('[data-cg-edit]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-edit'); });
+            if (g && window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ group: g, onSaved: function () { window.qsRenderCommGroups(container); } });
+          });
+        });
+        wrap.querySelectorAll('[data-cg-del]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-del'); });
+            var doDel = function () {
+              api('/api/schedule/comm-groups/' + b.getAttribute('data-cg-del'), { method: 'DELETE' }).then(function (r) {
+                if (r.ok) { pageSuccess('Group deleted.'); window.qsRenderCommGroups(container); } else pageError((r.data && r.data.error) || 'Could not delete.');
+              });
+            };
+            if (window.qsShowDialog) {
+              window.qsShowDialog('Delete this group?',
+                '<p>“' + esc(g ? g.name : '') + '” will be removed. Events that already used it keep their people — this only stops future picks.</p>',
+                [{ label: 'Cancel' }, { label: 'Delete group', onClick: doDel }]);
+            } else if (confirm('Delete this group? Events that already used it keep their people.')) doDel();
+          });
+        });
+      }).catch(function () {
+        var wrap = container.querySelector('#qtp-cg-list');
+        if (wrap) wrap.innerHTML = '<p class="muted">Could not load the groups.</p>';
+      });
     };
     // Cover-available marker (Deepika 2026-11-02): a shift with an open
     // cover request shows on the schedule — a Pick up button for the
@@ -1380,6 +1438,7 @@
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="availability" onclick="window.qsToolsAvailability()"><span class="qtr-ic">🗓️</span><span class="qtr-tx">Availability</span></button>
+    <button type="button" class="qtr-btn" id="qtr-groups" data-tool="groups" onclick="window.qsToolsGroups()"><span class="qtr-ic">👥</span><span class="qtr-tx">Groups</span></button>
     <button type="button" class="qtr-btn" data-tool="print" onclick="window.qsToolsPrint()"><span class="qtr-ic">🖨️</span><span class="qtr-tx">Print</span></button>
     <div class="qtr-soon"><span>＋</span><span class="qtr-tx">More soon</span></div>
     <div class="qtr-foot">
@@ -1855,6 +1914,12 @@
         #qs-tools-panel .qtp-head b { font-size: 15px; }
         #qs-tools-panel .qtp-x { background: none; border: none; color: #fff; font-size: 15px; cursor: pointer; opacity: .8; }
         #qtp-body { padding: 12px 16px; max-height: 52vh; overflow: auto; }
+        /* Groups panel (Deepika 2026-11-07): the Communication groups
+           manager needs more room than the 300px tool panels — ~430px
+           on desktop, full-width on phones. */
+        #qs-tools-panel.qtp-wide { width: 430px; max-width: 92vw; }
+        #qs-tools-panel.qtp-wide #qtp-body { max-height: 74vh; }
+        @media (max-width: 640px) { #qs-tools-panel.qtp-wide, body.qs-tools-wide #qs-tools-panel.qtp-wide { left: 8px; right: 8px; width: auto; max-width: none; } }
         .hl-search { position: sticky; top: -12px; z-index: 2; background: var(--surface); padding: 2px 0 9px; }
         .hl-search input { width: 100%; box-sizing: border-box; padding: 8px 11px; border: 1.5px solid var(--border); border-radius: 9px; font-family: inherit; font-size: 13.5px; background: var(--bg); color: var(--text); }
         .hl-search input:focus { outline: none; border-color: var(--accent); }
@@ -6098,8 +6163,8 @@
         // Boot order varies (employee nav and the default tab settle
         // after data loads), so keep the rail's scope + the Short-cover
         // gate in sync on a light ticker and on tab/hash changes.
-        setInterval(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); }, 1500);
-        window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); }, 120); });
+        setInterval(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); }, 1500);
+        window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); }, 120); });
         window.qsToolsOpen = function (tool) {
           if (tool === 'highlight') {
             // Highlight paints the schedule — from any other page, go
@@ -6114,14 +6179,35 @@
             $('qtp-title').textContent = '🎨 Highlight';
             qsRenderHlPanel();
           }
+          if (tool === 'groups') {
+            // Communication groups manager (moved here from Settings,
+            // Deepika 2026-11-07) — the wide panel variant.
+            $('qtp-title').textContent = '👥 Communication groups';
+            $('qs-tools-panel').classList.add('qtp-wide');
+            if (window.qsRenderCommGroups) window.qsRenderCommGroups($('qtp-body'));
+          } else {
+            $('qs-tools-panel').classList.remove('qtp-wide');
+          }
           document.querySelectorAll('#qs-tools-rail .qtr-btn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tool') === tool); });
           show($('qs-tools-panel'));
         };
         window.qsToolsClose = function () {
           hide($('qs-tools-panel'));
+          $('qs-tools-panel').classList.remove('qtp-wide');
           document.querySelectorAll('#qs-tools-rail .qtr-btn').forEach(function (b) { b.classList.remove('active'); });
         };
         window.qsToolsShortcover = function () { location.hash = 'shortcover'; };
+        window.qsToolsGroups = function () { window.qsToolsOpen('groups'); };
+        // Communication groups are a manager tool (owner/schedulers —
+        // the same gating the Settings section had): hide the rail
+        // entry in the employee view.
+        function qsGateGroupsBtn() {
+          var btn = $('qtr-groups');
+          if (!btn) return;
+          var empNav = $('employee-tabs');
+          var isEmp = (empNav && !empNav.classList.contains('hidden')) || window.currentRole === 'employee';
+          btn.style.display = isEmp ? 'none' : '';
+        }
         function qsGateShortcoverBtn() {
           var btn = $('qtr-shortcover');
           if (!btn) return;
@@ -6133,6 +6219,7 @@
           if (e.target.closest && e.target.closest('[data-viewmode]')) setTimeout(qsGateShortcoverBtn, 350);
         });
         setTimeout(qsGateShortcoverBtn, 2600);
+        setTimeout(qsGateGroupsBtn, 2600);
         // --- Short cover -----------------------------------------------------
         var qsScDept = '';
         function scDatePlus(base, n) {
@@ -8335,10 +8422,6 @@ window.qsNpOfferSend = function (btn) {
               <input type="text" id="room-new-ics" placeholder="Calendar link (ICS) — optional" style="max-width:520px">
             </div>
             <button type="button" class="btn" id="room-new-save">＋ Add room</button>
-            <h3 style="margin-top:2rem">👥 Communication groups</h3>
-            <p class="muted">Saved circles of people who regularly need to be at things — members can come from any departments, mixed together. Pick a group in one tap when adding an event's attendees and everyone in it gets the event. Groups are for communications only — they don't change anyone's schedule or permissions.</p>
-            <div id="cg-list"></div>
-            <button type="button" class="btn" id="cg-new">＋ New group</button>
           </div>
           <div id="subtab-rotations" class="sub-panel">
             <div class="set-head-row">
@@ -16787,56 +16870,10 @@ window.qsNpOfferSend = function (btn) {
           });
         }).catch(function () {});
       }
-      // --- Communication groups manager (same sub-tab, migration 094) ---
-      // The create/edit form itself is the shared three-box editor
-      // (window.qsOpenCommGroupEditor); this section lists the groups.
-      var cgCanManage = window.currentRole !== 'employee';
-      function loadCommGroups() {
-        api('/api/schedule/comm-groups').then(function (r) {
-          var groups = (r.ok && r.data.groups) || [];
-          var wrap = el('cg-list');
-          if (!wrap) return;
-          var newBtn = el('cg-new');
-          if (newBtn) newBtn.style.display = cgCanManage ? '' : 'none';
-          if (!groups.length) { wrap.innerHTML = '<p class="muted">No groups yet — make the first one below.</p>'; return; }
-          wrap.innerHTML = groups.map(function (g) {
-            var names = g.members.map(function (mm) { return esc(mm.name) + (mm.isActive ? '' : ' (inactive)'); }).join(', ');
-            return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:0.9rem;margin-bottom:0.7rem">' +
-              '<div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap"><strong>' + esc(g.name) + '</strong>' +
-              '<span style="background:#f0fdfa;color:#0e7c86;border-radius:999px;padding:0.15rem 0.6rem;font-size:0.78rem">' + g.memberCount + (g.memberCount === 1 ? ' person' : ' people') + '</span>' +
-              (cgCanManage ? '<span style="margin-left:auto;display:flex;gap:0.45rem">' +
-              '<button type="button" class="btn-secondary" data-cg-edit="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px">Edit</button>' +
-              '<button type="button" data-cg-del="' + g.id + '" style="padding:0.45rem 0.85rem;border-radius:8px;background:#fee2e2;color:#991b1c;border:1px solid #fecaca;cursor:pointer">Delete</button></span>' : '') + '</div>' +
-              (names ? '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">' + names + '</div>' : '<div class="muted" style="margin-top:0.4rem;font-size:0.88rem">No members yet.</div>') +
-              '</div>';
-          }).join('');
-          wrap.querySelectorAll('[data-cg-edit]').forEach(function (b) {
-            b.addEventListener('click', function () {
-              var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-edit'); });
-              if (g && window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ group: g, onSaved: loadCommGroups });
-            });
-          });
-          wrap.querySelectorAll('[data-cg-del]').forEach(function (b) {
-            b.addEventListener('click', function () {
-              var g = groups.find(function (x) { return x.id === b.getAttribute('data-cg-del'); });
-              var doDel = function () {
-                api('/api/schedule/comm-groups/' + b.getAttribute('data-cg-del'), { method: 'DELETE' }).then(function (r) {
-                  if (r.ok) { pageSuccess('Group deleted.'); loadCommGroups(); } else pageError((r.data && r.data.error) || 'Could not delete.');
-                });
-              };
-              if (window.qsShowDialog) {
-                window.qsShowDialog('Delete this group?',
-                  '<p>“' + esc(g ? g.name : '') + '” will be removed. Events that already used it keep their people — this only stops future picks.</p>',
-                  [{ label: 'Cancel' }, { label: 'Delete group', onClick: doDel }]);
-              } else if (confirm('Delete this group? Events that already used it keep their people.')) doDel();
-            });
-          });
-        }).catch(function () {});
-      }
-      var cgNewBtn = el('cg-new');
-      if (cgNewBtn) cgNewBtn.addEventListener('click', function () {
-        if (window.qsOpenCommGroupEditor) window.qsOpenCommGroupEditor({ onSaved: loadCommGroups });
-      });
+      // Communication groups used to be managed here (migration 094);
+      // Deepika moved the manager to the Tools bar (2026-11-07) — see
+      // window.qsRenderCommGroups + the rail's Groups panel. The
+      // shared three-box editor is window.qsOpenCommGroupEditor.
 
       var roomSave = el('room-new-save');
       if (roomSave) roomSave.addEventListener('click', function () {
@@ -16876,7 +16913,6 @@ window.qsNpOfferSend = function (btn) {
         dashSettingsAt = now;
         load();
         loadRooms();
-        loadCommGroups();
       }
       window.qsLoadDashboardsSettings = loadDashboardsSettings;
       document.querySelector('[data-subtab="dashboards"]').addEventListener('click', loadDashboardsSettings);
