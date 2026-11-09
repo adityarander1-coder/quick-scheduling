@@ -8957,6 +8957,7 @@ window.qsNpOfferSend = function (btn) {
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
             <div style="margin-bottom:0.8rem">
               <button type="button" class="btn-secondary" id="rot-copy-open">⇄ Copy a rotation to people</button>
+              <button type="button" class="btn-secondary" id="rswap-open">⇄ Swap rotations from a date</button>
               <span style="color:var(--dim);font-size:0.85rem;margin-left:0.5rem">Set a pattern up once on one person, then copy it to everyone who works the same pattern.</span>
             </div>
             <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
@@ -9147,6 +9148,28 @@ window.qsNpOfferSend = function (btn) {
                 <div class="modal-actions">
                   <button type="button" id="rchg-cancel" class="btn-secondary">Cancel</button>
                   <button type="button" id="rchg-do" class="btn">Change rotation</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Swap rotations from a date (Deepika 2026-11-09) -->
+            <div id="rswap-modal" class="modal-backdrop hidden">
+              <div class="modal" style="max-width:620px">
+                <h3>Swap rotations from a date</h3>
+                <p class="hint" style="margin-top:0">Tick 2 or more people <strong>in the order of the swap</strong>. From the chosen date, each person takes the <strong>next</strong> person's pattern, starting fresh on that date — the last person takes the first person's. Everything before that date stays exactly as it was, and shifts already saved as real shifts are never touched.</p>
+                <div id="rswap-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <label>Swap starts on</label>
+                  <input type="date" id="rswap-from" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                </div>
+                <div class="form-row">
+                  <label>People in the swap (tick in order)</label>
+                  <div id="rswap-list" style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem"></div>
+                </div>
+                <div id="rswap-summary"></div>
+                <div class="modal-actions">
+                  <button type="button" id="rswap-cancel" class="btn-secondary">Cancel</button>
+                  <button type="button" id="rswap-do" class="btn">Swap rotations</button>
                 </div>
               </div>
             </div>
@@ -9995,6 +10018,117 @@ window.qsNpOfferSend = function (btn) {
                   loadAll();
                 }).catch(function () {
                   $('rchg-do').disabled = false;
+                  fail('Network error. Please try again.');
+                });
+              });
+
+              // ============ Swap rotations from a date (2026-11-09) ============
+              // Pick order IS the swap order: each person receives the
+              // next person's pattern; the last receives the first's.
+              // Cycles anchor fresh at the chosen date (server:
+              // POST /rotations/swap-from, all-or-nothing).
+              var rswapOrder = []; // userIds in tick order
+              var rswapSel = {};   // userId -> chosen rotationId (survives re-renders)
+              function rswapPersonRots(m) {
+                return allRots.filter(function (r) {
+                  return !r.groupId && r.isActive &&
+                    (r.assignments || []).some(function (a) { return a.userId === m.id; });
+                });
+              }
+              function renderRswapSummary() {
+                var box = $('rswap-summary');
+                if (rswapOrder.length < 2) {
+                  box.innerHTML = rswapOrder.length === 1
+                    ? '<p class="hint">Tick at least one more person to swap.</p>' : '';
+                  return;
+                }
+                var parts = rswapOrder.map(function (uid, i) {
+                  var giver = memberById(rswapOrder[(i + 1) % rswapOrder.length]);
+                  var mine = memberById(uid);
+                  var sel = document.querySelector('.rswap-rotsel[data-user="' + uid + '"]');
+                  var rotName = '';
+                  if (sel) { var r = allRots.filter(function (x) { return x.id === sel.value; })[0]; rotName = r ? r.name : ''; }
+                  var giverSel = document.querySelector('.rswap-rotsel[data-user="' + giver.id + '"]');
+                  var giverRot = '';
+                  if (giverSel) { var gr = allRots.filter(function (x) { return x.id === giverSel.value; })[0]; giverRot = gr ? gr.name : ''; }
+                  return '<strong>' + esc(fullName(mine)) + '</strong> gives “' + esc(rotName) + '” away and takes <strong>' +
+                    esc(fullName(giver)) + '</strong>’s “' + esc(giverRot) + '”';
+                });
+                box.innerHTML = '<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem">' +
+                  parts.join('<br>') + '<br><span class="hint">All of these start fresh on the date above; the old patterns stop the day before.</span></div>';
+              }
+              function renderRswapList() {
+                var el = $('rswap-list');
+                var html = '';
+                members.forEach(function (m) {
+                  if (!m.isActive) return;
+                  var rots = rswapPersonRots(m);
+                  if (!rots.length) {
+                    html += '<div style="display:flex;justify-content:space-between;gap:0.6rem;padding:0.3rem 0;color:var(--muted)"><span>' +
+                      esc(fullName(m)) + '</span><span class="hint">No rotation — can’t join a swap</span></div>';
+                    return;
+                  }
+                  var picked = rswapOrder.indexOf(m.id) >= 0;
+                  html += '<div style="padding:0.3rem 0"><label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+                    '<input type="checkbox" class="rswap-pick" data-user="' + m.id + '"' + (picked ? ' checked' : '') + '> ' +
+                    '<span>' + esc(fullName(m)) + (picked ? ' <span class="hint">(#' + (rswapOrder.indexOf(m.id) + 1) + ' in the swap)</span>' : '') + '</span></label>' +
+                    (picked
+                      ? '<select class="rswap-rotsel" data-user="' + m.id + '" style="width:100%;padding:6px;margin-top:0.3rem;border:1px solid var(--border);border-radius:8px">' +
+                        rots.map(function (r) { return '<option value="' + r.id + '"' + (rswapSel[m.id] === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>'; }).join('') + '</select>'
+                      : '') +
+                    '</div>';
+                });
+                el.innerHTML = html || '<p class="hint">Nobody has a rotation yet.</p>';
+                el.querySelectorAll('.rswap-pick').forEach(function (cb) {
+                  cb.addEventListener('change', function () {
+                    var uid = cb.getAttribute('data-user');
+                    if (cb.checked) { if (rswapOrder.indexOf(uid) < 0) rswapOrder.push(uid); }
+                    else rswapOrder = rswapOrder.filter(function (x) { return x !== uid; });
+                    renderRswapList();
+                    renderRswapSummary();
+                  });
+                });
+                el.querySelectorAll('.rswap-rotsel').forEach(function (sel) {
+                  sel.addEventListener('change', function () {
+                    rswapSel[sel.getAttribute('data-user')] = sel.value;
+                    renderRswapSummary();
+                  });
+                });
+                renderRswapSummary();
+              }
+              function openRswap() {
+                rswapOrder = [];
+                rswapSel = {};
+                hide($('rswap-error'));
+                $('rswap-from').value = new Date().toISOString().slice(0, 10);
+                renderRswapList();
+                show($('rswap-modal'));
+              }
+              $('rswap-open').addEventListener('click', openRswap);
+              $('rswap-cancel').addEventListener('click', function () { hide($('rswap-modal')); });
+              $('rswap-modal').addEventListener('click', function (e) { if (e.target === $('rswap-modal')) hide($('rswap-modal')); });
+              $('rswap-do').addEventListener('click', function () {
+                hide($('rswap-error'));
+                var fail = function (msg) { var e = $('rswap-error'); e.textContent = msg; show(e); };
+                var fromDate = $('rswap-from').value;
+                if (!fromDate) { fail('Pick the date the swap starts.'); return; }
+                if (rswapOrder.length < 2) { fail('Tick at least two people to swap.'); return; }
+                var selections = rswapOrder.map(function (uid) {
+                  var sel = document.querySelector('.rswap-rotsel[data-user="' + uid + '"]');
+                  return { userId: uid, rotationId: sel ? sel.value : '' };
+                });
+                if (selections.some(function (s) { return !s.rotationId; })) { fail('Pick a rotation for everyone in the swap.'); return; }
+                $('rswap-do').disabled = true;
+                api('/api/schedule/rotations/swap-from', {
+                  method: 'POST', body: JSON.stringify({ fromDate: fromDate, selections: selections }),
+                }).then(function (r) {
+                  $('rswap-do').disabled = false;
+                  if (!r.ok) { fail((r.data && r.data.error) || 'Could not swap the rotations — nothing was changed.'); return; }
+                  hide($('rswap-modal'));
+                  pageSuccess('Rotations swapped from ' + fromDate + ' for ' + r.data.changes.length + ' people.');
+                  loadAll();
+                }).catch(function () {
+                  $('rswap-do').disabled = false;
                   fail('Network error. Please try again.');
                 });
               });

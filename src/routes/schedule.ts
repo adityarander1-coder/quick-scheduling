@@ -3248,6 +3248,113 @@ router.post('/rotations/:id/change-from', requireRole('owner', 'scheduler'), asy
   }
 });
 
+// POST /api/schedule/rotations/swap-from — swap rotations between
+// 2+ people from a chosen date (Deepika, 2026-11-09). Body:
+// { fromDate, selections: [{ userId, rotationId }] } in pick order:
+// each person receives the NEXT person's pattern; the last receives
+// the first's. Cycles anchor fresh at fromDate. ALL-OR-NOTHING:
+// every selection is validated before anything is written, and the
+// moves happen in one transaction — a bad pick changes nothing and
+// the error names the person. People without a rotation simply
+// can't be selected (the client lists them as such).
+router.post('/rotations/swap-from', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const fromDate = String(req.body?.fromDate || '');
+    const selections: any[] = Array.isArray(req.body?.selections) ? req.body.selections : [];
+    if (!isValidDate(fromDate)) { res.status(400).json({ error: 'Pick the date the swap starts.' }); return; }
+    if (selections.length < 2) { res.status(400).json({ error: 'Pick at least two people to swap.' }); return; }
+    const userIds = selections.map((s) => String(s?.userId || ''));
+    if (new Set(userIds).size !== userIds.length) { res.status(400).json({ error: 'Each person can only be in the swap once.' }); return; }
+
+    const { rows: urows } = await query(
+      'SELECT id, first_name AS "firstName", last_name AS "lastName", is_active AS "isActive" FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])',
+      [companyId, userIds]
+    );
+    const userById = new Map(urows.map((u: any) => [u.id, u]));
+    const nameOf = (id: string) => {
+      const u = userById.get(id);
+      return u ? `${u.firstName} ${u.lastName}`.trim() : 'Someone';
+    };
+
+    // Validate EVERYTHING first — nothing is written in this phase.
+    const prepared: Array<{ userId: string; rotation: any; pattern: RotationPattern }> = [];
+    for (const sel of selections) {
+      const userId = String(sel?.userId || '');
+      const rotationId = String(sel?.rotationId || '');
+      const user = userById.get(userId);
+      if (!user) { res.status(400).json({ error: 'One of the picked people is no longer on the team.' }); return; }
+      if (!user.isActive) { res.status(400).json({ error: `${nameOf(userId)} is not active — take them out of the swap.` }); return; }
+      const { rows: rotRows } = await query(
+        `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+                start_time::text AS "startTime", end_time::text AS "endTime", notes,
+                group_id AS "groupId", is_active AS "isActive"
+         FROM rotations WHERE id = $1 AND company_id = $2`,
+        [rotationId, companyId]
+      );
+      if (!rotRows.length) { res.status(400).json({ error: `${nameOf(userId)}'s rotation no longer exists.` }); return; }
+      const rot = rotRows[0];
+      if (rot.groupId) { res.status(400).json({ error: `${nameOf(userId)}'s pick is a group rotation — swaps work on one person's rotation.` }); return; }
+      if (!rot.isActive) { res.status(400).json({ error: `${nameOf(userId)}'s rotation "${rot.name}" is paused — unpause it or pick a different one.` }); return; }
+      const { rows: peopleRows } = await query(
+        'SELECT DISTINCT user_id AS "userId" FROM rotation_assignments WHERE rotation_id = $1',
+        [rotationId]
+      );
+      const peopleOnIt = peopleRows.map((r: any) => r.userId);
+      if (!peopleOnIt.includes(userId) || peopleOnIt.length > 1) {
+        res.status(400).json({ error: `${nameOf(userId)} is not the only person on "${rot.name}" — pick their own rotation.` });
+        return;
+      }
+      if (fromDate < rot.startDate) {
+        res.status(400).json({ error: `${nameOf(userId)}'s rotation "${rot.name}" only starts ${rot.startDate} — pick a swap date on or after that.` });
+        return;
+      }
+      prepared.push({ userId, rotation: rot, pattern: await readPersonPattern(query, rot, userId) });
+    }
+
+    // Department scope across every ended rotation and every new one.
+    const scopeDepts = new Set<string>();
+    for (let i = 0; i < prepared.length; i++) {
+      for (const d of await rotationRelevantDepartments(prepared[i].rotation.id)) scopeDepts.add(d);
+      const giverPattern = prepared[(i + 1) % prepared.length].pattern;
+      for (const d of await assignmentRelevantDepartments(
+        giverPattern.pairs.map((p) => ({ userId: prepared[i].userId, shiftTypeId: p.shiftTypeId })), companyId)) scopeDepts.add(d);
+    }
+    if (!(await requireActiveDepartment(req, res, [...scopeDepts]))) return;
+
+    const endDate = dayBefore(fromDate);
+    const changes = await withTransaction(async (tx) => {
+      const out: any[] = [];
+      for (let i = 0; i < prepared.length; i++) {
+        const receiver = prepared[i];
+        const giver = prepared[(i + 1) % prepared.length];
+        await tx.query('UPDATE rotations SET end_date = $1 WHERE id = $2 AND company_id = $3', [endDate, receiver.rotation.id, companyId]);
+        const newRotationId = await insertPatternRotation(tx, companyId, req.session.userId!, receiver.userId, giver.pattern, fromDate);
+        out.push({
+          userId: receiver.userId, name: nameOf(receiver.userId),
+          endedRotationId: receiver.rotation.id, newRotationId,
+          receivedFromUserId: giver.userId, receivedFromName: nameOf(giver.userId),
+          patternName: giver.pattern.name,
+        });
+      }
+      return out;
+    });
+    for (const c of changes) {
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings',
+        source: 'manual', rotationName: c.patternName,
+        changedBy: req.session.userId!,
+        description: `Swapped rotations from ${fromDate}: ${c.name} now runs "${c.patternName}" (from ${c.receivedFromName}); their old rotation stops ${endDate}`,
+        details: { rotationId: c.endedRotationId, newRotationId: c.newRotationId, kind: 'rotation', swapFromDate: fromDate, receivedFromUserId: c.receivedFromUserId },
+      });
+    }
+    res.json({ ok: true, changes });
+  } catch (err) {
+    console.error('[schedule] swap rotations from date failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/rotations/:id/apply — generate shifts from rotation
 // over a date range (owner/scheduler; department-scoped). Skips dates that already have the
 // same user+shift-type assigned.
