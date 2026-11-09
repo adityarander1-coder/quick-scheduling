@@ -6543,15 +6543,75 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
   }
 });
 
-// POST /api/schedule/ask-task — the unified bar: one input for questions and
-// tasks, no mode switch. Rule engine + AI data pack answer questions; anything
-// else becomes a plan (admins) or a pointer to Requests (employees).
+// POST /api/schedule/ask-task — the Q-Scheduler bar. With an explicit
+// mode ("ask" | "task", sent by the bar's Ask | Task toggle) the sides
+// are fully separate: Ask answers via the rule engine + AI data pack and
+// never plans; Task plans via the planner and never answers. Without a
+// mode, the original unified routing applies: questions are answered,
+// anything else becomes a plan (admins) or a pointer to Requests
+// (employees).
 router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const message = String(req.body?.message || req.body?.task || req.body?.question || '').slice(0, 1000);
     if (!message.trim()) { res.status(400).json({ kind: 'error', error: 'Say something.' }); return; }
     const history = parseTaskHistory(req.body);
+    // Ask | Task toggle (Deepika, 2026-11-08): when the bar sends an
+    // explicit mode, the two sides are FULLY separate — no routing. Ask
+    // runs the question engine ONLY (it never creates a plan); Task runs
+    // the planner ONLY (it never answers a question). The one crossover
+    // is a signpost line when text lands on the wrong side. Requests
+    // with no mode (older clients) keep the unified routing below,
+    // unchanged.
+    const mode = req.body?.mode === 'ask' || req.body?.mode === 'task' ? req.body.mode : null;
+    if (mode === 'ask') {
+      const { routeAskTask, looksLikeBareInstruction, ASK_MODE_SIGNPOST } = await import('../util/askRouting.js');
+      if (req.session.role === 'employee') {
+        // Employees keep the standing guard: task-like text gets the
+        // Requests pointer before any answering happens.
+        if (routeAskTask(message, [], 'employee') === 'employee-pointer') {
+          res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+          return;
+        }
+      } else if (looksLikeBareInstruction(message)) {
+        res.json({ kind: 'answer', answer: ASK_MODE_SIGNPOST });
+        return;
+      }
+      const ctx = await buildAskContext(req);
+      const { answerQuestionDetailed } = await import('../util/askEngine.js');
+      const { answer } = await answerQuestionDetailed(message, ctx);
+      res.json({ kind: 'answer', answer });
+      return;
+    }
+    if (mode === 'task') {
+      if (req.session.role === 'employee') {
+        res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+        return;
+      }
+      let plan: any, memberNames: string[], shiftNames: string[];
+      try {
+        ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, message, history));
+      } catch (planErr: any) {
+        const { classifyPlanError } = await import('../util/planHelpers.js');
+        console.error('[schedule] ask-task (task mode) plan failed:', planErr?.message, 'task:', message.slice(0, 200));
+        res.json({ kind: 'error', error: classifyPlanError(planErr?.message || '') });
+        return;
+      }
+      if ((plan as any).emailType === 'schedule_question') {
+        // The planner's "not an instruction" outcome: on the Task side a
+        // pure question gets the flip-to-Ask signpost, not an answer.
+        const { TASK_MODE_SIGNPOST } = await import('../util/askRouting.js');
+        res.json({ kind: 'answer', answer: TASK_MODE_SIGNPOST });
+        return;
+      }
+      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames);
+      if (fin.type === 'clarification') {
+        res.json({ kind: 'clarification', question: fin.question, options: fin.options, originalTask: message });
+        return;
+      }
+      res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });
+      return;
+    }
     // Routing is decided from state + wording (see util/askRouting): a
     // follow-up inside an open clarification round goes straight to the
     // planner, plain sentences stating a staffing change count as tasks,

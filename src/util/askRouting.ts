@@ -72,6 +72,41 @@ export function isTaskLike(message: string): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Ask | Task toggle (Deepika, 2026-11-08): the bar's two modes are fully
+// separate — Ask answers questions, Task builds plans. No routing engine:
+// the user picks the side. The ONLY crossover is a one-line signpost when
+// text lands on the wrong side, and detection stays deliberately narrow so
+// it can never swallow a real question or a real task.
+// ---------------------------------------------------------------------------
+
+export const ASK_MODE_SIGNPOST =
+  'That’s an instruction, not a question — flip to Task and I’ll make it a plan.';
+export const TASK_MODE_SIGNPOST =
+  'That looks like a question — flip to Ask for an answer.';
+
+// The small, finite verb list for the Ask-side signpost (Deepika's spec):
+// a message is a "bare instruction" only when one of these verbs LEADS it
+// (an optional "please" may precede) and it is not phrased as a question.
+const BARE_INSTRUCTION_VERBS = new Set([
+  'add', 'move', 'remove', 'delete', 'assign', 'create', 'give', 'swap',
+  'change', 'set', 'put', 'schedule', 'copy', 'cancel',
+]);
+
+export function looksLikeBareInstruction(message: string): boolean {
+  const m = (message || '').trim();
+  if (!m) return false;
+  // Question-shaped text is always answered, never signposted — this also
+  // covers verbs inside questions ("Who can add a shift?", "What did Sam
+  // change?"), because those lead with a question word or end with "?".
+  if (isQuestionForm(m)) return false;
+  const lead = m
+    .replace(/^[\s"'“”‘’\(\[]+/, '')
+    .replace(/^please[\s,]+/i, '');
+  const first = (lead.match(/^[A-Za-z]+/) || [''])[0].toLowerCase();
+  return BARE_INSTRUCTION_VERBS.has(first);
+}
+
 // Route one Ask/Task message. history is the open clarification thread
 // (empty when no round is open).
 export function routeAskTask(

@@ -1062,10 +1062,16 @@
   <button type="button" id="qs-edge-toggle" aria-label="Collapse or expand the side menu" hidden>‹</button>
   <div id="topbar" hidden>
     <div id="tb-dept"></div>
-    <div class="tb-sp"><div id="tb-ask">
-      <input type="text" id="tb-ask-input" placeholder="Ask anything or give Q-Scheduler a task…" aria-label="Ask Q-Scheduler anything or give it a task">
-      <button type="button" id="tb-ask-go">Send</button>
-      <div id="tb-ask-panel" class="hidden"></div>
+    <div class="tb-sp"><div id="tb-ask-wrap">
+      <div class="view-switcher" id="qs-mode-toggle" role="tablist" aria-label="Q-Scheduler mode">
+        <button type="button" id="qs-mode-ask" role="tab" class="active" aria-selected="true">Ask</button>
+        <button type="button" id="qs-mode-task" role="tab" aria-selected="false">Task</button>
+      </div>
+      <div id="tb-ask">
+        <input type="text" id="tb-ask-input" placeholder="Ask anything about your schedule…" aria-label="Ask Q-Scheduler a question or give it a task">
+        <button type="button" id="tb-ask-go">Send</button>
+        <div id="tb-ask-panel" class="hidden"></div>
+      </div>
     </div></div>
     <div id="tb-switch"></div>
     <div id="tb-right"></div>
@@ -1399,6 +1405,39 @@
     /* Header Ask bar (Deepika, 2026-10-25): the unified bar inside the desktop
        top bar's middle space. Desktop only — #topbar is hidden below 1024px. */
     #topbar .tb-sp { display: flex; justify-content: center; }
+    /* Ask | Task toggle (Deepika, 2026-11-08): the segmented toggle sits ON
+       the bar's own row, immediately left of the input — same pill family as
+       Admin view | My schedule. No extra line and no height change: the
+       wrap keeps the OLD bar's width budget (560px) and the input alone
+       absorbs the toggle's width; on very wide screens, where the centre
+       space provably has slack, the wrap widens to give the input its
+       room back. Keeping the bar's HEIGHT unchanged took the min-width
+       guard below — see its comment. */
+    #tb-ask-wrap { position: relative; display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
+    @media (min-width: 1800px) { #tb-ask-wrap { width: min(692px, 100%); } }
+    /* Height guard (measured during verification): a flex item's
+       automatic minimum size is its content's min-content, and the
+       toggle raised the centre's min-content past the leftover space —
+       the centre refused to shrink, the right cluster overflowed the
+       bar, and neighbours wrapped (bar grew to 78–96px). At desktop
+       widths (1440+) letting the centre shrink below its content size
+       restores the exact pre-change distribution. In the 1024–1439
+       band the leftover is too small for that (the input would
+       collapse), so the centre keeps a usable floor and the neighbours
+       absorb the squeeze by wrapping, exactly as they did before the
+       toggle existed (the bar was already 96px tall at 1280). */
+    @media (min-width: 1440px) { #topbar .tb-sp { min-width: 0; } }
+    @media (min-width: 1024px) and (max-width: 1439px) { #topbar .tb-sp { min-width: 280px; } }
+    /* The answer panel anchors to the wrap (toggle + bar), not the
+       shrunken bar alone, so it keeps its pre-change width. */
+    #tb-ask-wrap #tb-ask { flex: 1; width: auto; min-width: 0; position: static; }
+    #qs-mode-toggle { flex: none; margin: 0; }
+    #qs-mode-toggle button { padding: 0.32rem 0.8rem; }
+    /* The same toggle inside the Ask tab sits on the card's light surface,
+       so it takes a light track with an accent active segment. */
+    .qs-mode-toggle-light { background: var(--surface-alt); border-color: var(--border); margin: 0; }
+    .qs-mode-toggle-light button { color: var(--dim); }
+    .qs-mode-toggle-light button.active { background: var(--accent); color: #fff; }
     #tb-ask { position: relative; display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
     #tb-ask-input { flex: 1; min-width: 0; border: none; border-radius: 999px; padding: 8px 14px; font-size: 0.9rem; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
     #tb-ask-go { flex: none; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 0.85rem; font-weight: 800; cursor: pointer; }
@@ -7936,15 +7975,22 @@ window.qsNpOfferSend = function (btn) {
 
     <section id="tab-ask" class="tab-panel">
       <div class="card">
-        <p style="color:var(--dim)">Ask Q-Scheduler anything, or give it a task in plain language — it answers, or builds a plan you approve right here.</p>
+        <p style="color:var(--dim)">Questions and tasks are separate now. <strong>Ask</strong> answers questions about the schedule — it never changes anything. <strong>Task</strong> takes instructions and builds a plan you approve right here.</p>
         <div id="ask-examples" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0">
           <button type="button" class="btn-secondary btn-sm ask-ex">Who's on Friday night?</button>
           <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
           <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
         </div>
         <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
+        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;flex-wrap:wrap">
+          <div class="view-switcher qs-mode-toggle-light" id="qs-mode-toggle-tab" role="tablist" aria-label="Q-Scheduler mode">
+            <button type="button" id="qs-mode-ask-tab" role="tab" class="active" aria-selected="true">Ask</button>
+            <button type="button" id="qs-mode-task-tab" role="tab" aria-selected="false">Task</button>
+          </div>
+          <span id="qs-mode-hint" style="color:var(--dim);font-size:0.85rem">Questions — answers only, nothing changes.</span>
+        </div>
         <div style="display:flex;gap:0.5rem">
-          <input type="text" id="ask-input" placeholder="Ask anything or give Q-Scheduler a task…" style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
+          <input type="text" id="ask-input" placeholder="Ask anything about your schedule…" style="flex:1;padding:0.7rem;border:1px solid var(--border);border-radius:10px;font-size:1rem">
           <button type="button" id="ask-mic" class="btn-secondary" title="Speak your message" aria-label="Speak your message" style="padding:0.7rem 0.9rem">🎤</button>
           <button type="button" id="ask-send" class="btn">Send</button>
         </div>
@@ -8026,6 +8072,42 @@ window.qsNpOfferSend = function (btn) {
         // typed follow-up still carries the original task. Reset on answers
         // and plans — the next message is a new message.
         var thread = [];
+        // Ask | Task toggle (Deepika, 2026-11-08): the bar's two sides are
+        // fully separate — Ask answers, Task plans, and the server splits
+        // on this flag. One shared mode drives the top-bar toggle, the
+        // Ask-tab toggle, both placeholders and the panel footer label,
+        // and it is remembered across visits (localStorage 'qs-mode').
+        var qsMode = 'ask';
+        try { if (localStorage.getItem('qs-mode') === 'task') qsMode = 'task'; } catch (e) {}
+        function qsPaintMode() {
+          var ask = qsMode === 'ask';
+          [['qs-mode-ask', ask], ['qs-mode-task', !ask], ['qs-mode-ask-tab', ask], ['qs-mode-task-tab', !ask]].forEach(function (pair) {
+            var b = document.getElementById(pair[0]);
+            if (b) { b.classList.toggle('active', pair[1]); b.setAttribute('aria-selected', pair[1] ? 'true' : 'false'); }
+          });
+          var ph = ask ? 'Ask anything about your schedule…' : 'Give Q-Scheduler a task…';
+          var tbi = document.getElementById('tb-ask-input'); if (tbi) tbi.placeholder = ph;
+          var ai = $('ask-input'); if (ai) ai.placeholder = ph;
+          var hint = document.getElementById('qs-mode-hint');
+          if (hint) hint.textContent = ask ? 'Questions — answers only, nothing changes.' : 'Instructions — a plan you approve before anything happens.';
+        }
+        function qsSetMode(m) {
+          if (m !== 'ask' && m !== 'task') return;
+          if (m !== qsMode) {
+            qsMode = m;
+            // A clarification thread belongs to the side that opened it;
+            // flipping sides starts a fresh message on both surfaces.
+            thread = [];
+            if (window.qsResetTbThread) window.qsResetTbThread();
+          }
+          try { localStorage.setItem('qs-mode', qsMode); } catch (e) {}
+          qsPaintMode();
+        }
+        [['qs-mode-ask', 'ask'], ['qs-mode-task', 'task'], ['qs-mode-ask-tab', 'ask'], ['qs-mode-task-tab', 'task']].forEach(function (pair) {
+          var b = document.getElementById(pair[0]);
+          if (b) b.addEventListener('click', function () { qsSetMode(pair[1]); });
+        });
+        qsPaintMode();
         function send(q) {
           q = (q || '').trim();
           if (!q) return;
@@ -8034,7 +8116,7 @@ window.qsNpOfferSend = function (btn) {
           var thinking = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
           api('/api/schedule/ask-task', {
             method: 'POST',
-            body: JSON.stringify({ message: q, history: thread }),
+            body: JSON.stringify({ message: q, history: thread, mode: qsMode }),
           }).then(function (r) {
             var d = r.data || {};
             if (!r.ok) { thinking.innerHTML = esc((d && d.error) || 'Sorry, something went wrong.'); return; }
@@ -8147,12 +8229,15 @@ window.qsNpOfferSend = function (btn) {
         })();
         $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
         $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
-        // Header Ask bar (Deepika, 2026-10-25): the unified bar inside the
-        // desktop top bar's middle space. Answers/plans drop down under the
-        // bar — no tab switch, no mode toggle.
+        // Header Ask bar (Deepika, 2026-10-25): the bar inside the desktop
+        // top bar's middle space. Answers/plans drop down under the bar —
+        // no tab switch. Since 2026-11-08 it carries the Ask | Task
+        // toggle: qsMode (shared with the Ask tab, defined above) decides
+        // which side answers.
         (function () {
           var bar = document.getElementById('tb-ask');
           if (!bar) return;
+          var wrap = document.getElementById('tb-ask-wrap') || bar;
           var input = document.getElementById('tb-ask-input');
           var go = document.getElementById('tb-ask-go');
           var panel = document.getElementById('tb-ask-panel');
@@ -8160,7 +8245,7 @@ window.qsNpOfferSend = function (btn) {
           function openPanel(html) { panel.innerHTML = html; panel.classList.remove('hidden'); }
           function closePanel() { panel.classList.add('hidden'); }
           function foot() {
-            return '<div class="tb-foot"><button type="button" data-tb-foot="again">New message ↑</button><button type="button" data-tb-foot="open">Open full conversation in Ask tab →</button></div>';
+            return '<div class="tb-foot"><button type="button" data-tb-foot="again">New message ↑</button><button type="button" data-tb-foot="open">Open full conversation in ' + (qsMode === 'task' ? 'Task' : 'Ask') + ' tab →</button></div>';
           }
           function bindFoot() {
             var again = panel.querySelector('[data-tb-foot="again"]');
@@ -8180,10 +8265,11 @@ window.qsNpOfferSend = function (btn) {
           // Header Task thread: same rule as the Ask tab — kept across
           // clarification rounds, reset once a plan is shown.
           var tbThread = [];
+          window.qsResetTbThread = function () { tbThread = []; };
           function submit() {
             var q = (input.value || '').trim(); if (!q) return;
             openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:#5b6b76">Thinking…</i></div>');
-            api('/api/schedule/ask-task', { method: 'POST', body: JSON.stringify({ message: q, history: tbThread }) }).then(function (res) {
+            api('/api/schedule/ask-task', { method: 'POST', body: JSON.stringify({ message: q, history: tbThread, mode: qsMode }) }).then(function (res) {
               var d = res.data || {};
               if (!res.ok) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc((d && d.error) || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
               if (d.kind === 'answer') {
@@ -8235,7 +8321,7 @@ window.qsNpOfferSend = function (btn) {
           }
           go.addEventListener('click', submit);
           input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); if (e.key === 'Escape') closePanel(); });
-          document.addEventListener('click', function (e) { if (!bar.contains(e.target)) closePanel(); });
+          document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) closePanel(); });
         })();
         // Command chat — in-app agent: plan, approve, done.
         document.querySelectorAll('.ask-ex').forEach(function (b) {
