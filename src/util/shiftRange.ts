@@ -125,7 +125,7 @@ export async function getShiftsForRange(
       `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
               ra.shift_type_id AS "shiftTypeId",
               COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
-              u.is_active AS "userActive", u.end_date AS "userEndDate",
+              u.is_active AS "userActive", u.end_date::text AS "userEndDate",
               st.name AS "shiftTypeName"
        FROM rotation_assignments ra
        JOIN users u ON u.id = ra.user_id
@@ -145,7 +145,7 @@ export async function getShiftsForRange(
         const { rows: members } = await query(
           `SELECT gm.user_id AS "userId",
                   COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
-                  u.end_date AS "userEndDate", st.name AS "shiftTypeName"
+                  u.end_date::text AS "userEndDate", st.name AS "shiftTypeName"
            FROM rotation_group_members gm
            JOIN users u ON u.id = gm.user_id
            JOIN shift_types st ON st.id = $2

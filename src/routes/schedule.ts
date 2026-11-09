@@ -489,7 +489,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
         `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
                 ra.shift_type_id AS "shiftTypeId",
                 u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
-                u.is_active AS "userActive", u.end_date AS "userEndDate",
+                u.is_active AS "userActive", u.end_date::text AS "userEndDate",
                 st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
                 st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
                 st.sort_order AS "sortOrder"
@@ -519,7 +519,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
         for (const gid of groupIds) {
           const { rows: members } = await query(
             `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
-                    u.nickname, u.end_date AS "userEndDate",
+                    u.nickname, u.end_date::text AS "userEndDate",
                     st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
                     st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
                     st.sort_order AS "sortOrder"
@@ -10744,7 +10744,7 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
     for (const rot of rotations) {
       const { rows: assigns } = await query(
         `SELECT ra.user_id, ra.cycle_day, ra.shift_type_id, u.first_name, u.last_name, u.name,
-                u.end_date, jr.name AS job_role, st.name AS shift_name, st.department_id, d.name AS department_name
+                u.end_date::text AS end_date, jr.name AS job_role, st.name AS shift_name, st.department_id, d.name AS department_name
          FROM rotation_assignments ra
          JOIN users u ON u.id = ra.user_id AND u.is_active = true
          JOIN shift_types st ON st.id = ra.shift_type_id
