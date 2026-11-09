@@ -3144,9 +3144,18 @@
             (pub ? 'P' : 'D') + '</span>';
         }
 
+        // Pattern ≠ Schedule (Deepika, 2026-11-09): a rotation
+        // occurrence is draft-at-baseline — only Publish schedule
+        // turns a pattern into real shifts — so for presentation an
+        // occurrence always renders like a stored draft: grey with a
+        // "(draft)" label. ("If its unpublished it has to show grey.")
+        function isOccShift(s) {
+          return !!(s && (s.isRotation || String(s.id).indexOf('rot-') === 0));
+        }
+
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = s.published !== false;
+          var published = s.published !== false && !isOccShift(s);
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
@@ -3355,7 +3364,7 @@
               var key = s.userId || ('nm-' + displayName(s));
               if (!byPerson[key]) { byPerson[key] = { name: displayName(s), days: [] }; order.push(key); }
               if (byPerson[key].days.indexOf(di) === -1) byPerson[key].days.push(di);
-              if (s.published === false) anyDraft = true;
+              if (s.published === false || isOccShift(s)) anyDraft = true;
             });
             var oc = openCountRole(ds, st);
             if (oc > 0) openDays.push({ di: di, count: oc });
@@ -3396,7 +3405,7 @@
               var g = byType[s.shiftTypeId];
               if (!g) { g = byType[s.shiftTypeId] = { idxs: [], draft: false }; order.push(s.shiftTypeId); }
               if (g.idxs.indexOf(di) === -1) g.idxs.push(di);
-              if (s.published === false) g.draft = true;
+              if (s.published === false || isOccShift(s)) g.draft = true;
             });
           });
           if (!order.length) return '<div style="color:#9ca3af">—</div>';
@@ -4021,7 +4030,7 @@
 
         function monthChipHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
-          var published = s.published !== false;
+          var published = s.published !== false && !isOccShift(s);
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
@@ -4065,7 +4074,7 @@
             if (!shiftTypeVisible(st)) return;
             var items = byType[st.id] || [];
             if (!items.length) return;
-            var published = items[0].published !== false;
+            var published = items[0].published !== false && !isOccShift(items[0]);
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
             var names = items.map(function (s) { return '<span class="qs-person" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>' + qsCoverBadge(s); }).join('<br>');
@@ -4819,14 +4828,19 @@
           shifts.forEach(function (s) {
             var st = shiftTypeById(s.shiftTypeId);
             var nm = displayName(s);
-            var isDraftShift = s.published === false;
+            var isDraftShift = s.published === false || isOccShift(s);
             var editable = shiftEditable(s);
+            // Occurrences get no P/D toggle: the legacy per-shift
+            // publish flag no longer publishes them for employees —
+            // only Publish schedule does (Deepika, 2026-11-09).
+            var pubBtnHtml = isOccShift(s) ? '' :
+              '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>';
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
-                '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>' +
+                pubBtnHtml +
                 '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
@@ -5123,8 +5137,15 @@
             // Comment
             var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
             html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
-            var isDraft = s.published === false;
-            html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+            // Occurrences get NO publish/draft item: the legacy
+            // sidecar toggle no longer publishes them for employees —
+            // only Publish schedule does — so offering it would
+            // promise a solid/published state that isn't real
+            // (Deepika, 2026-11-09). Stored shifts keep the toggle.
+            if (!isOccShift(s)) {
+              var isDraft = s.published === false;
+              html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+            }
             // Replace person — the handler opens the same all-members
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
@@ -7754,7 +7775,7 @@ function qsPrintRender() {
           h += '<td class="cell">' + list.map(function (s) {
             var t = typeById[s.shiftTypeId] || {};
             var label = s.shiftTypeShort || t.shortName || (s.shiftTypeName || '').split(' ')[0];
-            return '<span class="ps-pill' + (s.published === false ? ' draft' : '') + '" style="background:' + esc(s.shiftTypeColor || t.color || '#999') + '22;border-color:' + esc(s.shiftTypeColor || t.color || '#999') + '">' + esc(label) + '</span>';
+            return '<span class="ps-pill' + ((s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? ' draft' : '') + '" style="background:' + esc(s.shiftTypeColor || t.color || '#999') + '22;border-color:' + esc(s.shiftTypeColor || t.color || '#999') + '">' + esc(label) + '</span>';
           }).join(' ') + '</td>';
         });
         h += '</tr>';
@@ -16426,7 +16447,7 @@ window.qsNpOfferSend = function (btn) {
           var st = stById(s.shiftTypeId);
           var nm = st ? st.name : 'Shift';
           var times = st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '';
-          var draft = (s.published === false) ? ' (draft)' : '';
+          var draft = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? ' (draft)' : '';
           return nm + times + draft;
         }
         function memberDeptId(userId) {
@@ -16926,7 +16947,7 @@ window.qsNpOfferSend = function (btn) {
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
           var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
-          var draftTag = (s.published === false) ? '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
+          var draftTag = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var html = '<div class="shift-grid">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
