@@ -966,6 +966,12 @@ router.get('/job-role-repairs', requireRole('owner'), async (req: Request, res: 
 // group's role once in its department and link every member of the
 // group. Idempotent: a second run finds an empty list. When the request
 // names groups (departmentId + roleName), only those are repaired.
+// Single-group scope (the Departments page strip): a body of
+// { departmentId, jobRole } repairs only that one (department, role
+// name) group. An unknown department is a 404 and a role name with
+// nothing left to fix is a 400 — no writes either way — except when the
+// role already exists in the department, which means an earlier repair
+// already did the work: that repeat is an idempotent 200 no-op.
 router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -974,11 +980,42 @@ router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res:
     const wantedKeys = wanted
       ? new Set(wanted.map((g: any) => (g && g.departmentId ? 'd:' + String(g.departmentId) : 'nodept') + '|' + importNameKey(g && g.roleName)))
       : null;
+    const bodyDept = typeof req.body?.departmentId === 'string' ? req.body.departmentId : '';
+    const bodyRole = typeof req.body?.jobRole === 'string' ? req.body.jobRole : '';
+    let scopedGroup: RoleRepairGroup | null = null;
+    let singleScope = false;
+    if (bodyDept || bodyRole) {
+      if (!bodyDept || !bodyRole.trim()) {
+        res.status(400).json({ error: 'Name both the department and the job role to fix just one group.' });
+        return;
+      }
+      const { rows: deptRows } = await query(
+        'SELECT id FROM departments WHERE id = $1 AND company_id = $2',
+        [bodyDept, companyId]);
+      if (!deptRows.length) {
+        res.status(404).json({ error: 'That department could not be found.' });
+        return;
+      }
+      scopedGroup = all.find((g) => g.departmentId === bodyDept && g.roleKey === importNameKey(bodyRole)) || null;
+      if (!scopedGroup) {
+        const { rows: existingRole } = await query(
+          'SELECT id FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, bodyDept, bodyRole.trim()]);
+        if (existingRole.length) {
+          res.json({ rolesCreated: [], peopleLinked: 0, groups: [] });
+          return;
+        }
+        res.status(400).json({ error: 'Nothing to fix for that job role in this department.' });
+        return;
+      }
+      singleScope = true;
+    }
     const rolesCreated: string[] = [];
     const repaired: any[] = [];
     let peopleLinked = 0;
     for (const g of all) {
       if (!g.departmentId) continue; // no department — repair never touches these
+      if (singleScope && g !== scopedGroup) continue;
       if (wantedKeys && !wantedKeys.has('d:' + g.departmentId + '|' + g.roleKey)) continue;
       if (!g.roleName || g.roleName.length > 100) continue;
       // Get-or-create the role in this department (exact trimmed /
@@ -1024,7 +1061,7 @@ router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res:
         await auditLog({
           companyId, date: todayStr(), action: 'updated', category: 'settings', source: 'manual',
           changedBy: req.session.userId!,
-          description: `Linked job role "${roleRow.name}" to ${linked} ${linked === 1 ? 'person' : 'people'}${g.departmentName ? ` in ${g.departmentName}` : ''} (job-role repair)`,
+          description: `Linked job role "${roleRow.name}" to ${linked} ${linked === 1 ? 'person' : 'people'}${g.departmentName ? ` in ${g.departmentName}` : ''} (job-role repair${singleScope ? ' — single group' : ''})`,
         });
       }
     }

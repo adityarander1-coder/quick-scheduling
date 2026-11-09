@@ -10620,6 +10620,13 @@ window.qsNpOfferSend = function (btn) {
                 <p>Add and manage employee profiles used throughout the schedule.</p>
               </div>
             </div>
+            <div class="sub-card hidden" id="team-role-repair-card">
+              <h3>Job roles to fix</h3>
+              <p style="color:var(--dim);font-size:14px;margin-top:0">These team members have a job role written as plain text but not linked to a real job role in their department, so the app treats them as having <b>no job role</b>. One tap creates each role in its department and links everyone listed:</p>
+              <div id="team-role-repair-list" style="font-size:14px"></div>
+              <div id="team-role-repair-result" style="margin-top:0.6rem"></div>
+              <div style="margin-top:0.8rem"><button type="button" id="team-role-repair-run" class="btn">Create these roles and link people</button></div>
+            </div>
             <div style="display:flex;gap:0.8rem;margin-bottom:0.8rem;align-items:center;flex-wrap:wrap">
               <input type="text" id="team-search" placeholder="Search team members…" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
               <button type="button" id="team-add-toggle" class="btn">+ Add team member</button>
@@ -10673,14 +10680,6 @@ window.qsNpOfferSend = function (btn) {
               <div id="team-import-error" class="alert alert-error hidden" role="alert" style="margin-top:0.8rem"></div>
               <div id="team-import-preview" style="margin-top:0.8rem"></div>
               <div id="team-import-result" style="margin-top:0.8rem"></div>
-            </div>
-
-            <div class="sub-card hidden" id="team-role-repair-card">
-              <h3>Job roles to fix</h3>
-              <p style="color:var(--dim);font-size:14px;margin-top:0">These team members have a job role written as plain text but not linked to a real job role in their department, so the app treats them as having <b>no job role</b>. One tap creates each role in its department and links everyone listed:</p>
-              <div id="team-role-repair-list" style="font-size:14px"></div>
-              <div id="team-role-repair-result" style="margin-top:0.6rem"></div>
-              <div style="margin-top:0.8rem"><button type="button" id="team-role-repair-run" class="btn">Create these roles and link people</button></div>
             </div>
 
             <div id="team-edit-section" class="sub-card hidden">
@@ -11190,6 +11189,7 @@ window.qsNpOfferSend = function (btn) {
                 viewDepts.forEach(function (d) {
                   var div = document.createElement('div');
                   div.className = 'set-row';
+                  div.setAttribute('data-dept-id', String(d.id));
                   var nameSpan = document.createElement('span');
                   nameSpan.className = 'set-row-name'; nameSpan.textContent = d.name;
                   var renameBtn = document.createElement('button');
@@ -11228,6 +11228,7 @@ window.qsNpOfferSend = function (btn) {
                   }
                   list.appendChild(div);
                 });
+                renderDeptRepairStrips();
               }
 
               function toggleActive(u) {
@@ -12197,44 +12198,115 @@ window.qsNpOfferSend = function (btn) {
               // creates each role and links everyone. The card renders
               // only when the list is non-empty.
               var repairGroups = [];
+              var repairNeedsDept = { count: 0, members: [] };
               function escTeam(s) {
                 return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
               }
+              // One fetch feeds BOTH surfaces (Deepika, 2026-11-08: keep
+              // the fix in both places, at the top): the Team card at the
+              // top of Settings → Team, and a per-department strip at the
+              // top of each department's block in Settings → Departments.
               function loadRoleRepairs() {
-                var card = $('team-role-repair-card');
-                if (!card || myRole !== 'owner') return;
+                if (myRole !== 'owner') return;
                 api('/api/users/job-role-repairs').then(function (r) {
-                  if (!r.ok || !r.data) { card.classList.add('hidden'); return; }
-                  repairGroups = r.data.groups || [];
-                  var nd = r.data.needsDepartment || { count: 0, members: [] };
-                  var resultEl = $('team-role-repair-result');
-                  if (!repairGroups.length && !nd.count) {
-                    if (resultEl && resultEl.innerHTML) {
-                      $('team-role-repair-list').innerHTML = '<p style="margin:4px 0">All job roles are linked — nothing left to fix.</p>';
-                      $('team-role-repair-run').style.display = 'none';
-                      card.classList.remove('hidden');
-                    } else {
-                      card.classList.add('hidden');
-                    }
+                  if (!r.ok || !r.data) {
+                    var card = $('team-role-repair-card');
+                    if (card) card.classList.add('hidden');
                     return;
                   }
-                  var total = repairGroups.reduce(function (n, g) { return n + g.count; }, 0);
-                  var h = '';
-                  repairGroups.forEach(function (g) {
-                    h += '<p style="margin:4px 0"><b>' + escTeam(g.roleName) + '</b> in <b>' + escTeam(g.departmentName || '') + '</b> — ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people') + ': ' +
-                      g.members.map(function (m) { return escTeam(m.name); }).join(', ') + '</p>';
-                  });
-                  if (nd.count) {
-                    h += '<p style="margin:8px 0 4px;color:var(--dim)">' + nd.count + ' ' + (nd.count === 1 ? 'person has' : 'people have') + ' a job role as plain text but <b>no department</b> — give them a department first, then they can be fixed here: ' +
-                      nd.members.map(function (m) { return escTeam(m.name) + ' (' + escTeam(m.roleName) + ')'; }).join(', ') + '</p>';
+                  repairGroups = r.data.groups || [];
+                  repairNeedsDept = r.data.needsDepartment || { count: 0, members: [] };
+                  renderRoleRepairCard();
+                  renderDeptRepairStrips();
+                }).catch(function () { /* leave the surfaces as they are */ });
+              }
+              function renderRoleRepairCard() {
+                var card = $('team-role-repair-card');
+                if (!card || myRole !== 'owner') return;
+                var nd = repairNeedsDept;
+                var resultEl = $('team-role-repair-result');
+                if (!repairGroups.length && !nd.count) {
+                  if (resultEl && resultEl.innerHTML) {
+                    $('team-role-repair-list').innerHTML = '<p style="margin:4px 0">All job roles are linked — nothing left to fix.</p>';
+                    $('team-role-repair-run').style.display = 'none';
+                    card.classList.remove('hidden');
+                  } else {
+                    card.classList.add('hidden');
                   }
-                  $('team-role-repair-list').innerHTML = h;
-                  var btn = $('team-role-repair-run');
-                  btn.textContent = 'Create these roles and link ' + total + ' ' + (total === 1 ? 'person' : 'people');
-                  btn.disabled = total === 0;
-                  btn.style.display = total ? '' : 'none';
-                  card.classList.remove('hidden');
-                }).catch(function () { /* leave the card as it is */ });
+                  return;
+                }
+                var total = repairGroups.reduce(function (n, g) { return n + g.count; }, 0);
+                var h = '';
+                repairGroups.forEach(function (g) {
+                  h += '<p style="margin:4px 0"><b>' + escTeam(g.roleName) + '</b> in <b>' + escTeam(g.departmentName || '') + '</b> — ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people') + ': ' +
+                    g.members.map(function (m) { return escTeam(m.name); }).join(', ') + '</p>';
+                });
+                if (nd.count) {
+                  h += '<p style="margin:8px 0 4px;color:var(--dim)">' + nd.count + ' ' + (nd.count === 1 ? 'person has' : 'people have') + ' a job role as plain text but <b>no department</b> — give them a department first, then they can be fixed here: ' +
+                    nd.members.map(function (m) { return escTeam(m.name) + ' (' + escTeam(m.roleName) + ')'; }).join(', ') + '</p>';
+                }
+                $('team-role-repair-list').innerHTML = h;
+                var btn = $('team-role-repair-run');
+                btn.textContent = 'Create these roles and link ' + total + ' ' + (total === 1 ? 'person' : 'people');
+                btn.disabled = total === 0;
+                btn.style.display = total ? '' : 'none';
+                card.classList.remove('hidden');
+              }
+              // Departments surface: one compact strip per unlinked
+              // group, placed directly above that department's row (the
+              // top of its block). The button repairs ONLY that group
+              // (scoped POST). The no-department group never appears
+              // here — it stays on the Team card only.
+              function renderDeptRepairStrips() {
+                var list = $('team-dept-list');
+                if (!list) return;
+                var old = list.querySelectorAll('.dept-role-repair-strip');
+                for (var i = 0; i < old.length; i++) old[i].remove();
+                if (myRole !== 'owner' || !repairGroups.length) return;
+                repairGroups.forEach(function (g) {
+                  var row = list.querySelector('[data-dept-id="' + g.departmentId + '"]');
+                  if (!row) return;
+                  var strip = document.createElement('div');
+                  strip.className = 'dept-role-repair-strip';
+                  strip.setAttribute('data-repair-dept', String(g.departmentId));
+                  strip.setAttribute('data-repair-role', g.roleName);
+                  strip.style.cssText = 'border:1px solid #d9a400;background:rgba(217,164,0,0.10);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13.5px;display:flex;align-items:center;flex-wrap:wrap;gap:6px';
+                  var label = document.createElement('span');
+                  label.innerHTML = '⚠ <b>' + g.count + ' ' + (g.count === 1 ? 'person' : 'people') + '</b> in <b>' + escTeam(g.departmentName || '') + '</b> ha' + (g.count === 1 ? 's' : 've') + ' the job role <b>“' + escTeam(g.roleName) + '”</b> as plain text only — not linked to a real role yet. ' +
+                    '<span style="color:var(--dim)">' + g.members.map(function (m) { return escTeam(m.name); }).join(', ') + '</span>';
+                  var btn = document.createElement('button');
+                  btn.type = 'button';
+                  btn.className = 'btn';
+                  btn.style.cssText = 'padding:0.3rem 0.7rem;font-size:0.85rem';
+                  btn.textContent = 'Link these ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people');
+                  btn.addEventListener('click', function () { doDeptRoleRepair(g, btn, strip); });
+                  strip.appendChild(label);
+                  strip.appendChild(btn);
+                  list.insertBefore(strip, row);
+                });
+              }
+              function doDeptRoleRepair(g, btn, strip) {
+                btn.disabled = true;
+                btn.textContent = 'Linking…';
+                api('/api/users/job-role-repairs', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ departmentId: g.departmentId, jobRole: g.roleName })
+                }).then(function (r) {
+                  if (!r.ok) {
+                    btn.disabled = false;
+                    btn.textContent = 'Link these ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people');
+                    showErr($('team-dept-error'), (r.data && r.data.error) || 'Could not link the job role.');
+                    return;
+                  }
+                  var linked = (r.data && r.data.peopleLinked) || 0;
+                  strip.innerHTML = '<span>✓ Linked ' + linked + ' ' + (linked === 1 ? 'person' : 'people') + ' to the job role “' + escTeam(g.roleName) + '”.</span>';
+                  setTimeout(function () { loadRoleRepairs(); loadMembers(); }, 1500);
+                }).catch(function () {
+                  btn.disabled = false;
+                  btn.textContent = 'Link these ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people');
+                  showErr($('team-dept-error'), 'Network error. Please try again.');
+                });
               }
               function setupRoleRepair() {
                 var btn = $('team-role-repair-run');
