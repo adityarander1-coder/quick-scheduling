@@ -419,7 +419,7 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
     // normalized name) for the preview's resolution panel; rows with a
     // blank department or job role join the blank groups (key '').
     const unknownDeptGroups = new Map<string, { key: string; name: string; rowCount: number }>();
-    const unknownRoleGroups = new Map<string, { key: string; name: string; rowCount: number }>();
+    const unknownRoleGroups = new Map<string, { key: string; name: string; departmentId: string | null; departmentName: string | null; rowCount: number }>();
     let blankDeptRows = 0;
     let blankRoleRows = 0;
     const seen = new Set<string>();
@@ -502,18 +502,35 @@ router.post('/import/preview', requireRole('owner', 'scheduler'), async (req: Re
         const jr = roleRows.find((x: any) => x.departmentId === departmentId && importNameKey(x.name) === importNameKey(jobRoleText));
         if (jr) { jobRoleId = jr.id; jobRoleText = jr.name; }
       }
-      // A job-role name that didn't link to a role in the row's department
-      // joins the unknown-role group for the resolution panel (keyed by
-      // normalized name); no role text at all joins the blank group.
-      // Neither blocks the row — unresolved, the name imports as free
-      // text (or no role), exactly as today.
+      // A job-role name that didn't link to a role IN THE ROW'S OWN
+      // department joins an unknown-role group keyed per (department,
+      // role name) — the same name aimed at two departments is two
+      // groups with independent decisions. And unlike before, an
+      // unlinked role now BLOCKS the row: everything functional reads
+      // the LINK (member role, role filter, eligibility, Ask), so the
+      // old pre-selected "keep as plain text" default silently produced
+      // members with no job role at all (Deepika's Pulmonary and
+      // Critical Care imports, 2026-11-08). The panel must place the
+      // group explicitly: Create the role in this department, use an
+      // existing role there, or keep the name as plain text on purpose.
       let roleGroupKey: string | null = null;
       if (jobRoleText) {
         if (!jobRoleId) {
-          roleGroupKey = importNameKey(jobRoleText);
+          // Department identity for grouping: the matched department,
+          // else the row's unknown-department group (whose placement is
+          // decided alongside), else no department at all.
+          const deptScope = departmentId ? 'd:' + departmentId : 'g:' + (deptGroupKey ?? '');
+          roleGroupKey = deptScope + '|' + importNameKey(jobRoleText);
+          const deptDisplay = departmentName || (deptIssue ? deptIssue.name : null);
+          problems.push(deptDisplay
+            ? `Job role "${jobRoleText}" is not set up in ${deptDisplay}`
+            : `Job role "${jobRoleText}" is not set up — this person has no department`);
           const g = unknownRoleGroups.get(roleGroupKey);
           if (g) g.rowCount++;
-          else unknownRoleGroups.set(roleGroupKey, { key: roleGroupKey, name: importNameDisplay(jobRoleText), rowCount: 1 });
+          else unknownRoleGroups.set(roleGroupKey, {
+            key: roleGroupKey, name: importNameDisplay(jobRoleText),
+            departmentId, departmentName: deptDisplay, rowCount: 1,
+          });
         }
       } else {
         roleGroupKey = '';
@@ -583,11 +600,13 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
       for (const d of Array.isArray(raw) ? raw : []) {
         if (!d || typeof d !== 'object') continue;
         const action = String((d as any).action || '');
-        if (action !== 'create' && action !== 'map') continue;
+        if (action !== 'create' && action !== 'map' && action !== 'text') continue;
         const key = String((d as any).key ?? '');
         map.set(key, {
           key, action,
-          name: importNameDisplay((d as any).name ?? (d as any).newName ?? ''),
+          // A create on the blank group carries the typed name in
+          // newName (the group itself has no name to send).
+          name: importNameDisplay((d as any).name || (d as any).newName || ''),
           targetId: String((d as any)[targetField] || ''),
         });
       }
@@ -678,6 +697,10 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
 
     const created: any[] = [];
     const skipped: any[] = [];
+    // Members imported with a job-role NAME but no linked role, by
+    // explicit preview decision — named in the result so the choice is
+    // never invisible (the 2026-11-08 bug was exactly this, silent).
+    const textOnlyJobRoles: any[] = [];
     const seen = new Set<string>();
     // Position (1-based) of each email's first occurrence in THIS
     // request, for the "Same email as row N in this file" skip reason —
@@ -732,14 +755,28 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
         const jr = await resolveJobRole(String(m.jobRoleId), deptId, companyId);
         if (jr.ok) { jobRoleIdVal = jr.id; jobRoleText = jr.name; }
       }
-      // Panel decision for the row's job-role group (create / map),
-      // applied before the plain namesake lookup below.
+      // Panel decision for the row's job-role group (create / map /
+      // text), applied before the plain namesake lookup below.
       const roleDec = (m.roleGroupKey !== undefined && m.roleGroupKey !== null)
         ? roleDecisionByKey.get(String(m.roleGroupKey)) : undefined;
+      // A member may end up with an UNLINKED role name only when the
+      // preview decision said so explicitly ('text', or a 'map' whose
+      // role has no namesake in the member's department). Anything else
+      // carrying an unlinked role name is skipped with the reason —
+      // never the old silent text-only save that landed members with
+      // no job role at all (2026-11-08).
+      let roleTextOnly = false;
+      let roleSkipReason: string | null = null;
       if (!jobRoleIdVal && roleDec) {
-        if (roleDec.action === 'create' && roleDec.name && roleDec.name.length <= 100) {
-          jobRoleText = roleDec.name;
-          if (deptId) {
+        if (roleDec.action === 'create') {
+          if (!roleDec.name || roleDec.name.length > 100) {
+            roleSkipReason = !roleDec.name
+              ? 'A name is needed to create the job role.'
+              : `Job role name "${roleDec.name}" is too long to create.`;
+          } else if (!deptId) {
+            roleSkipReason = `Job role "${roleDec.name}" can't be created — this person has no department.`;
+          } else {
+            jobRoleText = roleDec.name;
             // Roles are department-scoped: get-or-create the role as a
             // real entity in THIS member's department, then link it.
             const ck = deptId + '|' + importNameKey(roleDec.name);
@@ -795,13 +832,32 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
               if (found.length) { jobRoleIdVal = String(found[0].id); jobRoleText = found[0].name; }
             }
           }
+          // An explicit Use-existing pick that cannot link in the
+          // member's department keeps the name as plain text — on
+          // purpose, and reported in the result (see textOnlyJobRoles).
+          if (!jobRoleIdVal) roleTextOnly = true;
+        } else if (roleDec.action === 'text') {
+          roleTextOnly = true;
         }
       }
+      if (roleSkipReason) { skip(roleSkipReason); continue; }
       if (!jobRoleIdVal && jobRoleText && deptId) {
         const { rows: jrRows } = await query(
           'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
           [companyId, deptId, jobRoleText]);
         if (jrRows.length) { jobRoleIdVal = jrRows[0].id; jobRoleText = jrRows[0].name; }
+      }
+      // Defense in depth: a role name that still cannot link in the
+      // member's final department, with NO explicit decision behind it
+      // (forged or legacy payloads included), skips the row with the
+      // reason instead of saving a text-only "role" the app ignores.
+      if (!jobRoleIdVal && jobRoleText && !roleTextOnly) {
+        const deptNameForReason = deptId
+          ? ((companyDepts.find((x: any) => String(x.id) === deptId) || {}).name || '') : '';
+        skip(deptNameForReason
+          ? `Job role "${jobRoleText}" is not set up in ${deptNameForReason}`
+          : `Job role "${jobRoleText}" is not set up — this person has no department`);
+        continue;
       }
       // A past end date means the account starts inactive, marked as an
       // end-date deactivation (same rule as the sweep, 2026-11-05).
@@ -817,15 +873,164 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
       );
       await issueInvite(userId, companyId);
       created.push({ id: userId, name: joinName(first, last), email, inactive: ended });
+      if (!jobRoleIdVal && jobRoleText && roleTextOnly) {
+        textOnlyJobRoles.push({ name: joinName(first, last), email, jobRole: jobRoleText });
+      }
       await auditLog({
         companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
         changedBy: req.session.userId!, personName: joinName(first, last),
         description: `Imported team member "${joinName(first, last)}" from a file${ended ? ' (end date already passed — account starts inactive)' : ''}`,
       });
     }
-    res.json({ created, skipped, createdDepartments, createdJobRoles });
+    res.json({ created, skipped, createdDepartments, createdJobRoles, textOnlyJobRoles });
   } catch (err) {
     console.error('[users] import failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Job-role repair (Deepika, 2026-11-08): members imported before the
+// role fix landed (her Pulmonary and Critical Care imports) can carry a
+// job-role NAME as free text with no linked role — job_role set,
+// job_role_id NULL — which everything in the app reads as "no job
+// role". The owner sees them in Settings → Team grouped by
+// (department, role name) and repairs them with one tap: create each
+// role once in its department and link everyone in the group. Members
+// with no department are listed separately and never touched (a role
+// cannot exist without a department). There is NO automatic migration:
+// the repair runs only when the owner clicks it, after seeing the list.
+// ---------------------------------------------------------------------------
+
+type RoleRepairGroup = {
+  departmentId: string | null;
+  departmentName: string | null;
+  roleName: string;
+  roleKey: string;
+  members: { id: string; name: string; email: string; isActive: boolean }[];
+};
+
+async function loadRoleRepairGroups(companyId: string): Promise<RoleRepairGroup[]> {
+  const { rows } = await query(
+    `SELECT u.id, u.name, u.email, u.is_active AS "isActive", u.job_role AS "jobRole",
+            u.department_id AS "departmentId", d.name AS "departmentName"
+     FROM users u LEFT JOIN departments d ON d.id = u.department_id
+     WHERE u.company_id = $1 AND u.job_role_id IS NULL
+       AND u.job_role IS NOT NULL AND btrim(u.job_role) <> ''
+     ORDER BY u.name`,
+    [companyId]);
+  const groups = new Map<string, RoleRepairGroup>();
+  for (const u of rows as any[]) {
+    const gk = (u.departmentId ? 'd:' + u.departmentId : 'nodept') + '|' + importNameKey(u.jobRole);
+    let g = groups.get(gk);
+    if (!g) {
+      g = {
+        departmentId: u.departmentId ?? null,
+        departmentName: u.departmentName ?? null,
+        roleName: importNameDisplay(u.jobRole),
+        roleKey: importNameKey(u.jobRole),
+        members: [],
+      };
+      groups.set(gk, g);
+    }
+    g.members.push({ id: String(u.id), name: String(u.name || ''), email: String(u.email || ''), isActive: !!u.isActive });
+  }
+  return [...groups.values()];
+}
+
+// GET /api/users/job-role-repairs — owner only: the text-only members,
+// grouped for the "Job roles to fix" card.
+router.get('/job-role-repairs', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const groups = await loadRoleRepairGroups(req.session.companyId!);
+    const withDept = groups.filter((g) => g.departmentId);
+    const noDept = groups.filter((g) => !g.departmentId);
+    res.json({
+      groups: withDept.map((g) => ({
+        departmentId: g.departmentId, departmentName: g.departmentName,
+        roleName: g.roleName, count: g.members.length, members: g.members,
+      })),
+      needsDepartment: {
+        count: noDept.reduce((n, g) => n + g.members.length, 0),
+        members: noDept.flatMap((g) => g.members.map((m) => ({ ...m, roleName: g.roleName }))),
+      },
+      totalPeople: groups.reduce((n, g) => n + g.members.length, 0),
+    });
+  } catch (err) {
+    console.error('[users] job-role repair list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/users/job-role-repairs — owner only: create each listed
+// group's role once in its department and link every member of the
+// group. Idempotent: a second run finds an empty list. When the request
+// names groups (departmentId + roleName), only those are repaired.
+router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const all = await loadRoleRepairGroups(companyId);
+    const wanted = Array.isArray(req.body?.groups) ? req.body.groups : null;
+    const wantedKeys = wanted
+      ? new Set(wanted.map((g: any) => (g && g.departmentId ? 'd:' + String(g.departmentId) : 'nodept') + '|' + importNameKey(g && g.roleName)))
+      : null;
+    const rolesCreated: string[] = [];
+    const repaired: any[] = [];
+    let peopleLinked = 0;
+    for (const g of all) {
+      if (!g.departmentId) continue; // no department — repair never touches these
+      if (wantedKeys && !wantedKeys.has('d:' + g.departmentId + '|' + g.roleKey)) continue;
+      if (!g.roleName || g.roleName.length > 100) continue;
+      // Get-or-create the role in this department (exact trimmed /
+      // case-insensitive name match — created at most once per group).
+      const { rows: found } = await query(
+        'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+        [companyId, g.departmentId, g.roleName]);
+      let roleRow: any = found[0];
+      if (!roleRow) {
+        const newRoleId = crypto.randomUUID();
+        try {
+          await query(
+            'INSERT INTO job_roles (id, company_id, department_id, name) VALUES ($1, $2, $3, $4)',
+            [newRoleId, companyId, g.departmentId, g.roleName]);
+          roleRow = { id: newRoleId, name: g.roleName };
+          rolesCreated.push(g.roleName);
+          await auditLog({
+            companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
+            changedBy: req.session.userId!,
+            description: `Added job role "${g.roleName}"${g.departmentName ? ` to ${g.departmentName}` : ''}`,
+          });
+        } catch (err: any) {
+          if (err?.code === '23505') {
+            const { rows: again } = await query(
+              'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+              [companyId, g.departmentId, g.roleName]);
+            roleRow = again[0];
+          } else throw err;
+        }
+      }
+      if (!roleRow) continue;
+      let linked = 0;
+      for (const m of g.members) {
+        const { rows: updated } = await query(
+          `UPDATE users SET job_role_id = $1
+           WHERE id = $2 AND company_id = $3 AND job_role_id IS NULL RETURNING id`,
+          [String(roleRow.id), m.id, companyId]);
+        linked += updated.length;
+      }
+      if (linked) {
+        peopleLinked += linked;
+        repaired.push({ departmentName: g.departmentName, roleName: roleRow.name, linked });
+        await auditLog({
+          companyId, date: todayStr(), action: 'updated', category: 'settings', source: 'manual',
+          changedBy: req.session.userId!,
+          description: `Linked job role "${roleRow.name}" to ${linked} ${linked === 1 ? 'person' : 'people'}${g.departmentName ? ` in ${g.departmentName}` : ''} (job-role repair)`,
+        });
+      }
+    }
+    res.json({ rolesCreated, peopleLinked, groups: repaired });
+  } catch (err) {
+    console.error('[users] job-role repair failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

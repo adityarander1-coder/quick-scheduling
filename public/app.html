@@ -10303,6 +10303,14 @@ window.qsNpOfferSend = function (btn) {
               <div id="team-import-result" style="margin-top:0.8rem"></div>
             </div>
 
+            <div class="sub-card hidden" id="team-role-repair-card">
+              <h3>Job roles to fix</h3>
+              <p style="color:var(--dim);font-size:14px;margin-top:0">These team members have a job role written as plain text but not linked to a real job role in their department, so the app treats them as having <b>no job role</b>. One tap creates each role in its department and links everyone listed:</p>
+              <div id="team-role-repair-list" style="font-size:14px"></div>
+              <div id="team-role-repair-result" style="margin-top:0.6rem"></div>
+              <div style="margin-top:0.8rem"><button type="button" id="team-role-repair-run" class="btn">Create these roles and link people</button></div>
+            </div>
+
             <div id="team-edit-section" class="sub-card hidden">
               <h3>Edit team member</h3>
               <div id="team-edit-error" class="alert alert-error hidden" role="alert"></div>
@@ -11149,6 +11157,10 @@ window.qsNpOfferSend = function (btn) {
                           if (p === 'This email already has an account') return false;
                           if (p === 'Missing name' || p === 'Missing email' || p === 'Email looks invalid') return false;
                           if (p === 'Outside the departments you can edit') return false;
+                          // The job-role placement problem is dynamic
+                          // too (a panel decision or a department edit
+                          // resolves it) — recomputed in effProblems().
+                          if (p.indexOf('Job role "') === 0 && p.indexOf(' is not set up') > 0) return false;
                           return true;
                         });
                         row.emailFlag = null;
@@ -11180,6 +11192,14 @@ window.qsNpOfferSend = function (btn) {
                     if (k === '') { blank++; return; }
                     if (seenKeys[k]) { seenKeys[k].rowCount++; return; }
                     var g = { key: k, name: kind === 'dept' ? (r.deptIssue ? r.deptIssue.name : k) : (r.jobRole || k), rowCount: 1 };
+                    if (kind === 'role') {
+                      // Role groups are per (department, name): carry
+                      // the department the group belongs to so the
+                      // panel can offer ITS roles only.
+                      var fdg = importRoleDeptOf(r);
+                      g.deptId = fdg.deptId;
+                      g.deptName = fdg.deptName;
+                    }
                     seenKeys[k] = g;
                     groups.push(g);
                   });
@@ -11194,6 +11214,33 @@ window.qsNpOfferSend = function (btn) {
                 }
                 function importNameKeyClient(s) {
                   return String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase();
+                }
+                // The department a row will END UP in, as far as the
+                // preview can tell: its matched department, else the
+                // department its group is placed into by a panel
+                // decision (map -> that department; create -> the new
+                // department's name, no id yet), else no department.
+                // Job roles live inside departments, so role placement
+                // is always judged against THIS department.
+                function importRoleDeptOf(r) {
+                  if (r.departmentId) return { deptId: r.departmentId, deptName: r.departmentName || importDeptNameById(r.departmentId) };
+                  var gk = r.deptGroupKey;
+                  if (gk !== null && gk !== undefined) {
+                    var dd = deptDecisions[gk];
+                    if (dd && dd.action === 'map') return { deptId: dd.departmentId, deptName: importDeptNameById(dd.departmentId) };
+                    if (dd && dd.action === 'create') return { deptId: null, deptName: dd.newName || importGroupName('dept', gk) };
+                    if (gk === '') return { deptId: null, deptName: null };
+                    return { deptId: null, deptName: r.deptIssue ? r.deptIssue.name : null };
+                  }
+                  return { deptId: null, deptName: null };
+                }
+                // Stable identity of the department a row's role group
+                // belongs to: the matched department's id, else the
+                // row's department GROUP (so a later department
+                // decision never orphans the role decision).
+                function importRoleScopeKey(r) {
+                  if (r.departmentId) return 'd:' + r.departmentId;
+                  return 'g:' + (r.deptGroupKey === null || r.deptGroupKey === undefined ? '' : r.deptGroupKey);
                 }
                 // Recompute every dynamic flag from the rows' current
                 // (possibly edited) values: name presence, email
@@ -11242,19 +11289,23 @@ window.qsNpOfferSend = function (btn) {
                       }
                     }
                     // Job role: link to a same-named role in the row's
-                    // department when one exists; otherwise group it.
+                    // FINAL department when one exists; otherwise the
+                    // name joins a per-(department, name) group that
+                    // needs an explicit panel decision before the row
+                    // can import (no more silent plain-text roles).
                     var rText = String(r.roleText == null ? '' : r.roleText).trim().replace(/\s+/g, ' ');
                     if (!rText) {
                       r.jobRoleId = null; r.jobRole = null; r.roleGroupKey = '';
                     } else {
                       var linked = null;
-                      if (r.departmentId) {
+                      var fd = importRoleDeptOf(r);
+                      if (fd.deptId) {
                         (importData.jobRoles || []).forEach(function (jr) {
-                          if (!linked && jr.departmentId === r.departmentId && importNameKeyClient(jr.name) === importNameKeyClient(rText)) linked = jr;
+                          if (!linked && jr.departmentId === fd.deptId && importNameKeyClient(jr.name) === importNameKeyClient(rText)) linked = jr;
                         });
                       }
                       if (linked) { r.jobRoleId = linked.id; r.jobRole = linked.name; r.roleGroupKey = null; }
-                      else { r.jobRoleId = null; r.jobRole = rText; r.roleGroupKey = importNameKeyClient(rText); }
+                      else { r.jobRoleId = null; r.jobRole = rText; r.roleGroupKey = importRoleScopeKey(r) + '|' + importNameKeyClient(rText); }
                     }
                   });
                 }
@@ -11268,19 +11319,18 @@ window.qsNpOfferSend = function (btn) {
                   for (var i = 0; i < rs.length; i++) if (rs[i].id === id) return rs[i].name + (rs[i].departmentName ? ' (' + rs[i].departmentName + ')' : '');
                   return '';
                 }
-                // Job-role names offered in a row's role picker: the
-                // roles of the row's own department first, then every
-                // other role name in the company.
+                // Job-role names offered in a row's role picker: ONLY
+                // the roles of the row's own (final) department. Other
+                // departments' role names are no longer offered as if
+                // they were assignable — a typed foreign or new name
+                // simply becomes a group that needs a decision.
                 function importRoleNamesForRow(r) {
-                  var all = (importData && importData.jobRoles) || [];
-                  var seen = {};
+                  var fd = importRoleDeptOf(r);
+                  if (!fd.deptId) return [];
                   var out = [];
-                  function push(name) {
-                    var k = importNameKeyClient(name);
-                    if (!seen[k]) { seen[k] = 1; out.push(name); }
-                  }
-                  if (r.departmentId) all.forEach(function (jr) { if (jr.departmentId === r.departmentId) push(jr.name); });
-                  all.forEach(function (jr) { push(jr.name); });
+                  ((importData && importData.jobRoles) || []).forEach(function (jr) {
+                    if (jr.departmentId === fd.deptId) out.push(jr.name);
+                  });
                   return out;
                 }
                 // Problems that still block a row: the static server
@@ -11301,6 +11351,17 @@ window.qsNpOfferSend = function (btn) {
                       probs.indexOf('Outside the departments you can edit') < 0) {
                     probs.push('Outside the departments you can edit');
                   }
+                  // An unplaced job-role group (the role name is not a
+                  // role in the row's final department) blocks the row
+                  // until the panel decides: create it there, use an
+                  // existing role there, or keep it as plain text —
+                  // nothing is pre-selected any more.
+                  if (r.roleGroupKey && !roleDecisions[r.roleGroupKey]) {
+                    var rfd = importRoleDeptOf(r);
+                    probs.push(rfd.deptName
+                      ? 'Job role "' + r.jobRole + '" is not set up in ' + rfd.deptName
+                      : 'Job role "' + r.jobRole + '" is not set up — this person has no department');
+                  }
                   return probs;
                 }
                 function rowReady(r) {
@@ -11308,6 +11369,8 @@ window.qsNpOfferSend = function (btn) {
                   if (effProblems(r).length) return false;
                   // An unplaced unknown-department group keeps its rows out.
                   if (r.deptGroupKey) return !!deptDecisions[r.deptGroupKey];
+                  // An unplaced job-role group keeps its rows out too.
+                  if (r.roleGroupKey) return !!roleDecisions[r.roleGroupKey];
                   return true;
                 }
                 // Every row is editable in place (name, email,
@@ -11333,6 +11396,7 @@ window.qsNpOfferSend = function (btn) {
                   var d = (key === null || key === undefined) ? null : roleDecisions[key];
                   if (d && d.action === 'map') return importRoleLabelById(d.jobRoleId);
                   if (d && d.action === 'create') return (key === '' ? (d.newName || 'New job role') : importGroupName('role', key)) + ' (new)';
+                  if (d && d.action === 'text') return (r.jobRole || '—') + ' (plain text only)';
                   return r.jobRole || '—';
                 }
                 // The choices for a group are a VISIBLE pick-list of
@@ -11348,7 +11412,7 @@ window.qsNpOfferSend = function (btn) {
                   return '<button type="button" class="import-resolve-opt' + (selected ? ' sel' : '') + '" data-kind="' + kind + '" data-key="' + escH(key) + '" data-value="' + escH(value) + '"' +
                     (title ? ' title="' + escH(title) + '"' : '') + ' style="' + style + '">' + escH(text) + '</button>';
                 }
-                function resolveRowHtml(kind, key, label, sub) {
+                function resolveRowHtml(kind, key, label, sub, group) {
                   var isDept = kind === 'dept';
                   var canCreate = isDept ? importData.canCreateDepartments : importData.canCreateJobRoles;
                   var dec = (isDept ? deptDecisions[key] : roleDecisions[key]) || null;
@@ -11365,9 +11429,12 @@ window.qsNpOfferSend = function (btn) {
                         h += resolveChipHtml(kind, key, 'map:' + d.id, d.name, !!(dec && dec.action === 'map' && dec.departmentId === d.id), 'Put them in ' + d.name);
                       });
                     }
-                  } else {
-                    h += resolveChipHtml(kind, key, '', key === '' ? 'Leave without a job role' : 'Keep the name as plain text', !dec);
-                    if (canCreate) h += resolveChipHtml(kind, key, 'create', key === '' ? 'Create a new job role…' : 'Create job role "' + label + '"', !!(dec && dec.action === 'create'));
+                  } else if (key === '') {
+                    // Blank job role in the file: optional, as before —
+                    // leave them without a role, create a new one, or
+                    // use an existing one.
+                    h += resolveChipHtml(kind, key, '', 'Leave without a job role', !dec);
+                    if (canCreate) h += resolveChipHtml(kind, key, 'create', 'Create a new job role…', !!(dec && dec.action === 'create'));
                     var roles = importData.jobRoles || [];
                     if (roles.length) {
                       h += '<span style="font-size:12.5px;color:var(--dim)">or use:</span>';
@@ -11375,6 +11442,27 @@ window.qsNpOfferSend = function (btn) {
                         h += resolveChipHtml(kind, key, 'map:' + jr.id, jr.name + (jr.departmentName ? ' (' + jr.departmentName + ')' : ''), !!(dec && dec.action === 'map' && dec.jobRoleId === jr.id), 'Use the existing role ' + jr.name);
                       });
                     }
+                  } else {
+                    // A role name that is NOT a role in these people's
+                    // department: a decision is REQUIRED — nothing is
+                    // pre-selected. Create the role in that department,
+                    // use one of THAT department's existing roles, or
+                    // keep the name as plain text on purpose (it will
+                    // not count as a real job role).
+                    var gDeptId = group ? group.deptId : null;
+                    var gDeptName = group ? group.deptName : null;
+                    if (canCreate && gDeptName) {
+                      h += resolveChipHtml(kind, key, 'create', 'Create "' + label + '" in ' + gDeptName, !!(dec && dec.action === 'create'), 'Create the job role in ' + gDeptName);
+                    }
+                    var deptRoles = (importData.jobRoles || []).filter(function (jr) { return gDeptId && jr.departmentId === gDeptId; });
+                    if (deptRoles.length) {
+                      h += '<span style="font-size:12.5px;color:var(--dim)">or use:</span>';
+                      deptRoles.forEach(function (jr) {
+                        h += resolveChipHtml(kind, key, 'map:' + jr.id, jr.name, !!(dec && dec.action === 'map' && dec.jobRoleId === jr.id), 'Use the existing role ' + jr.name);
+                      });
+                    }
+                    h += resolveChipHtml(kind, key, 'text', 'Keep as plain text only — won\'t count as a real job role', !!(dec && dec.action === 'text'));
+                    if (!dec) h += '<span style="font-size:12.5px;color:#b91c1c;font-weight:600">Choose one to continue</span>';
                   }
                   h += '</span>';
                   if (key === '' && canCreate) {
@@ -11391,19 +11479,19 @@ window.qsNpOfferSend = function (btn) {
                   if (dg.length || deptGroups.blank) {
                     parts.push('<p style="margin:8px 0 2px;font-weight:700;font-size:13.5px">Departments</p>');
                     dg.forEach(function (g) {
-                      parts.push(resolveRowHtml('dept', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + ' — not set up yet'));
+                      parts.push(resolveRowHtml('dept', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + ' — not set up yet', g));
                     });
                     if (deptGroups.blank) {
-                      parts.push(resolveRowHtml('dept', '', 'No department', '· ' + deptGroups.blank + (deptGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file'));
+                      parts.push(resolveRowHtml('dept', '', 'No department', '· ' + deptGroups.blank + (deptGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file', null));
                     }
                   }
                   if (rg.length || roleGroups.blank) {
                     parts.push('<p style="margin:10px 0 2px;font-weight:700;font-size:13.5px">Job roles</p>');
                     rg.forEach(function (g) {
-                      parts.push(resolveRowHtml('role', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + ' — not set up yet'));
+                      parts.push(resolveRowHtml('role', g.key, g.name, '· ' + g.rowCount + (g.rowCount === 1 ? ' person' : ' people') + (g.deptName ? ' — not set up in ' + g.deptName : ' — not set up yet'), g));
                     });
                     if (roleGroups.blank) {
-                      parts.push(resolveRowHtml('role', '', 'No job role', '· ' + roleGroups.blank + (roleGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file'));
+                      parts.push(resolveRowHtml('role', '', 'No job role', '· ' + roleGroups.blank + (roleGroups.blank === 1 ? ' person' : ' people') + ' — blank in the file', null));
                     }
                   }
                   if (!parts.length) return '';
@@ -11423,11 +11511,18 @@ window.qsNpOfferSend = function (btn) {
                   } else if (value === 'create') {
                     store[key] = { action: 'create', newName: nameInput ? nameInput.value.trim() : '' };
                     if (nameInput) nameInput.classList.remove('hidden');
+                  } else if (value === 'text') {
+                    store[key] = { action: 'text' };
+                    if (nameInput) nameInput.classList.add('hidden');
                   } else if (value.indexOf('map:') === 0) {
                     var id = value.slice(4);
                     store[key] = kind === 'dept' ? { action: 'map', departmentId: id } : { action: 'map', jobRoleId: id };
                     if (nameInput) nameInput.classList.add('hidden');
                   }
+                  // A department placement can change where a role
+                  // group belongs (and whether its name now links), so
+                  // revalidate before re-rendering.
+                  revalidateImportRows();
                   renderImportBody();
                 }
                 function bindResolvePanel(box) {
@@ -11561,12 +11656,6 @@ window.qsNpOfferSend = function (btn) {
                   // flows into the resolution panel like a file value.
                   h += '<datalist id="import-dept-options">';
                   (importData.departments || []).forEach(function (d) { h += '<option value="' + escH(d.name) + '"></option>'; });
-                  h += '</datalist><datalist id="import-role-options-all">';
-                  var seenRoleNames = {};
-                  (importData.jobRoles || []).forEach(function (jr) {
-                    var rk = importNameKeyClient(jr.name);
-                    if (!seenRoleNames[rk]) { seenRoleNames[rk] = 1; h += '<option value="' + escH(jr.name) + '"></option>'; }
-                  });
                   h += '</datalist>';
                   rows.forEach(function (r) {
                     h += '<datalist id="import-role-options-' + r.row + '">';
@@ -11580,7 +11669,7 @@ window.qsNpOfferSend = function (btn) {
                       '<b style="font-size:13px">' + selectedCount + ' selected</b>' +
                       '<input type="text" id="import-bulk-dept" list="import-dept-options" placeholder="Department — pick or type new" style="' + bulkInput + '">' +
                       '<button type="button" class="import-bulk-apply" data-assign="dept" style="' + bulkBtn + '">Assign department</button>' +
-                      '<input type="text" id="import-bulk-role" list="import-role-options-all" placeholder="Job role — pick or type new" style="' + bulkInput + '">' +
+                      '<input type="text" id="import-bulk-role" placeholder="Job role — type a name" style="' + bulkInput + '">' +
                       '<button type="button" class="import-bulk-apply" data-assign="role" style="' + bulkBtn + '">Assign job role</button>' +
                       '<button type="button" class="import-bulk-skip" style="' + bulkBtn + '">Skip selected</button>' +
                       '<button type="button" class="import-bulk-clear" style="' + bulkBtn + '">Clear selection</button>' +
@@ -11698,11 +11787,13 @@ window.qsNpOfferSend = function (btn) {
                     var skipped = ((r.data && r.data.skipped) || []).concat(heldRows);
                     var createdDepts = (r.data && r.data.createdDepartments) || [];
                     var createdRoles = (r.data && r.data.createdJobRoles) || [];
+                    var textOnly = (r.data && r.data.textOnlyJobRoles) || [];
                     var h = '<div class="alert alert-success" role="status">Added ' + created.length + ' team member' + (created.length === 1 ? '' : 's') + ': ' +
                       created.map(function (c) { return escH(c.name); }).join(', ') +
                       '. Their invites are ready in the team list — send them when you are ready.' +
                       (createdDepts.length ? ' Created departments: ' + createdDepts.map(escH).join(', ') + '.' : '') +
                       (createdRoles.length ? ' Created job roles: ' + createdRoles.map(escH).join(', ') + '.' : '') +
+                      (textOnly.length ? ' Added with job role as plain text only: ' + textOnly.map(function (x) { return escH(x.name) + ' (' + escH(x.jobRole) + ')'; }).join(', ') + '.' : '') +
                       '</div>';
                     if (skipped.length) {
                       h += '<div class="alert alert-error" role="alert" style="margin-top:0.6rem">Skipped ' + skipped.length + ': ' +
@@ -11719,11 +11810,88 @@ window.qsNpOfferSend = function (btn) {
                     importSelectedRows = {};
                     loadMembers();
                     loadDepartments();
+                    loadRoleRepairs();
                   }).catch(function () {
                     showErr($('team-import-error'), 'Network error. Please try again.');
                     if (go) { go.disabled = false; go.textContent = 'Import'; }
                   });
                 }
+              }
+
+              // Job-role repair card (owner only): members whose job
+              // role is plain text but not linked to a real role in
+              // their department (the 2026-11-08 import bug's victims)
+              // are listed grouped by department + role name; one tap
+              // creates each role and links everyone. The card renders
+              // only when the list is non-empty.
+              var repairGroups = [];
+              function escTeam(s) {
+                return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              }
+              function loadRoleRepairs() {
+                var card = $('team-role-repair-card');
+                if (!card || myRole !== 'owner') return;
+                api('/api/users/job-role-repairs').then(function (r) {
+                  if (!r.ok || !r.data) { card.classList.add('hidden'); return; }
+                  repairGroups = r.data.groups || [];
+                  var nd = r.data.needsDepartment || { count: 0, members: [] };
+                  var resultEl = $('team-role-repair-result');
+                  if (!repairGroups.length && !nd.count) {
+                    if (resultEl && resultEl.innerHTML) {
+                      $('team-role-repair-list').innerHTML = '<p style="margin:4px 0">All job roles are linked — nothing left to fix.</p>';
+                      $('team-role-repair-run').style.display = 'none';
+                      card.classList.remove('hidden');
+                    } else {
+                      card.classList.add('hidden');
+                    }
+                    return;
+                  }
+                  var total = repairGroups.reduce(function (n, g) { return n + g.count; }, 0);
+                  var h = '';
+                  repairGroups.forEach(function (g) {
+                    h += '<p style="margin:4px 0"><b>' + escTeam(g.roleName) + '</b> in <b>' + escTeam(g.departmentName || '') + '</b> — ' + g.count + ' ' + (g.count === 1 ? 'person' : 'people') + ': ' +
+                      g.members.map(function (m) { return escTeam(m.name); }).join(', ') + '</p>';
+                  });
+                  if (nd.count) {
+                    h += '<p style="margin:8px 0 4px;color:var(--dim)">' + nd.count + ' ' + (nd.count === 1 ? 'person has' : 'people have') + ' a job role as plain text but <b>no department</b> — give them a department first, then they can be fixed here: ' +
+                      nd.members.map(function (m) { return escTeam(m.name) + ' (' + escTeam(m.roleName) + ')'; }).join(', ') + '</p>';
+                  }
+                  $('team-role-repair-list').innerHTML = h;
+                  var btn = $('team-role-repair-run');
+                  btn.textContent = 'Create these roles and link ' + total + ' ' + (total === 1 ? 'person' : 'people');
+                  btn.disabled = total === 0;
+                  btn.style.display = total ? '' : 'none';
+                  card.classList.remove('hidden');
+                }).catch(function () { /* leave the card as it is */ });
+              }
+              function setupRoleRepair() {
+                var btn = $('team-role-repair-run');
+                if (!btn) return;
+                btn.addEventListener('click', function () {
+                  btn.disabled = true;
+                  btn.textContent = 'Fixing…';
+                  api('/api/users/job-role-repairs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groups: repairGroups })
+                  }).then(function (r) {
+                    if (!r.ok) {
+                      btn.disabled = false;
+                      btn.textContent = 'Create these roles and link people';
+                      $('team-role-repair-result').innerHTML = '<div class="alert alert-error" role="alert">' + escTeam((r.data && r.data.error) || 'Could not fix the job roles.') + '</div>';
+                      return;
+                    }
+                    var made = (r.data && r.data.rolesCreated) || [];
+                    var linked = (r.data && r.data.peopleLinked) || 0;
+                    $('team-role-repair-result').innerHTML = '<div class="alert alert-success" role="status">Done — linked ' + linked + ' ' + (linked === 1 ? 'person' : 'people') + (made.length ? '; created job roles: ' + made.map(escTeam).join(', ') : '') + '.</div>';
+                    loadRoleRepairs();
+                    loadMembers();
+                  }).catch(function () {
+                    btn.disabled = false;
+                    btn.textContent = 'Create these roles and link people';
+                    $('team-role-repair-result').innerHTML = '<div class="alert alert-error" role="alert">Network error. Please try again.</div>';
+                  });
+                });
               }
 
               function setupEdit() {
@@ -11934,6 +12102,7 @@ window.qsNpOfferSend = function (btn) {
                   }
                   setupAdd();
                   setupImport();
+                  setupRoleRepair();
                   setupEdit();
                   setupDeptForm();
                   setupPromote();
@@ -11949,10 +12118,11 @@ window.qsNpOfferSend = function (btn) {
                   $('team-invite-mark-sent').addEventListener('click', function () { if (inviteUserId) markInviteSent(inviteUserId); });
                   loadDepartments();
                   loadMembers();
+                  loadRoleRepairs();
                 });
               }
 
-              window.addEventListener('hashchange', function () { if (isActive()) { loadDepartments(); loadMembers(); } });
+              window.addEventListener('hashchange', function () { if (isActive()) { loadDepartments(); loadMembers(); loadRoleRepairs(); } });
               if (isActive()) init();
               else {
                 // Defer init until first activation
