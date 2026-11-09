@@ -38,14 +38,96 @@
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+    // Shared people-file parser + exact token matcher for BOTH group
+    // creators (communication groups + rotation groups, Deepika
+    // 2026-11-08): one implementation, two editors, two routes
+    // (⬆ Upload file and paste-a-list into the people search). The
+    // two group KINDS stay different — this only shares the matching.
+    // Parser: CSV/TXT text -> entry strings. With an Email and/or
+    // Name header (detected case-insensitively) it reads that column;
+    // headerless lines are split into cells and every value is an
+    // entry (so a bare list of emails/names, one per line or
+    // comma-separated, works).
+    window.qsParsePeopleFile = function (text) {
+      function cellsOf(line) {
+        return line.split(/[,\t;]/).map(function (c) { return c.trim().replace(/^"+|"+$/g, '').trim(); });
+      }
+      var lines = String(text || '').split(/\r\n|\r|\n/);
+      var first = -1;
+      for (var i = 0; i < lines.length; i++) { if (lines[i].trim()) { first = i; break; } }
+      if (first < 0) return [];
+      var head = cellsOf(lines[first]).map(function (c) { return c.toLowerCase(); });
+      var emailCol = -1, nameCol = -1;
+      head.forEach(function (c, idx) {
+        if (emailCol < 0 && c.indexOf('email') >= 0) emailCol = idx;
+        if (nameCol < 0 && (c === 'name' || c.indexOf('full name') >= 0 || c.indexOf('person') >= 0)) nameCol = idx;
+      });
+      var entries = [];
+      if (emailCol >= 0 || nameCol >= 0) {
+        for (var j = first + 1; j < lines.length; j++) {
+          if (!lines[j].trim()) continue;
+          var cells = cellsOf(lines[j]);
+          var v = (emailCol >= 0 && cells[emailCol]) ? cells[emailCol] : (nameCol >= 0 ? (cells[nameCol] || '') : '');
+          if (v) entries.push(v);
+        }
+      } else {
+        for (var k = first; k < lines.length; k++) {
+          cellsOf(lines[k]).forEach(function (v) { if (v) entries.push(v); });
+        }
+      }
+      return entries;
+    };
+    // qsMatchPeopleTokens(tokens, roster) — roster entries are
+    // normalized { id, name, firstName, email } for ACTIVE members
+    // only (a deactivated person simply never matches and is
+    // reported as not found). Matching is EXACT, per Deepika's
+    // standing rule (2026-11-08): email trimmed + case-insensitive;
+    // name against the FULL name, or — for a single-token entry —
+    // against the first name as stored. Names like Muh are the
+    // ACTUAL names she gave those members, not abbreviations:
+    // NEVER prefix-match or expand into a longer name ('Ash' does
+    // not match Ashley; 'Pat Phys' does not match Pat Physician).
+    // A non-unique exact match is 'ambiguous' with its candidates —
+    // reported, never guessed. Returns one result per unique token,
+    // in first-seen order: { token, status, id?, candidateIds? }.
+    window.qsMatchPeopleTokens = function (tokens, roster) {
+      function norm(s) { return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' '); }
+      var seen = {};
+      var out = [];
+      (tokens || []).forEach(function (raw) {
+        var token = String(raw == null ? '' : raw).trim();
+        var key = norm(token);
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        var res = { token: token, status: 'notfound' };
+        if (key.indexOf('@') >= 0) {
+          for (var i = 0; i < roster.length; i++) {
+            if (norm(roster[i].email) === key) { res.status = 'matched'; res.id = roster[i].id; break; }
+          }
+        } else {
+          var full = roster.filter(function (x) { return norm(x.name) === key; });
+          if (full.length === 1) { res.status = 'matched'; res.id = full[0].id; }
+          else if (full.length > 1) { res.status = 'ambiguous'; res.candidateIds = full.map(function (x) { return x.id; }); }
+          else if (key.indexOf(' ') < 0) {
+            var first = roster.filter(function (x) { return norm(x.firstName) === key; });
+            if (first.length === 1) { res.status = 'matched'; res.id = first[0].id; }
+            else if (first.length > 1) { res.status = 'ambiguous'; res.candidateIds = first.map(function (x) { return x.id; }); }
+          }
+        }
+        out.push(res);
+      });
+      return out;
+    };
     // Communication groups (migration 094): the three-box group
-    // creator — ① group name ② department chooser ③ that
-    // department's people. Ticks ACCUMULATE across department
-    // switches (switching the chooser only changes who you're
-    // looking at). Shared by the Tools-bar Groups panel and the
-    // event form's "＋ New group" (managers only — the server
-    // enforces it). opts: { group: {id, name, members} | null,
-    // onSaved: fn }.
+    // creator — ① group name ② departments (MULTI-select with a
+    // search box, 2026-11-08: several departments can be ON at
+    // once) ③ the ON departments' people under department
+    // headings, with a people search that doubles as paste-a-list
+    // exact matching, plus ⬆ Upload file. Ticks ACCUMULATE —
+    // toggling departments or searching never loses a pick.
+    // Shared by the Tools-bar Groups panel and the event form's
+    // "＋ New group" (managers only — the server enforces it).
+    // opts: { group: {id, name, members} | null, onSaved: fn }.
     window.qsOpenCommGroupEditor = function (opts) {
       opts = opts || {};
       var group = opts.group || null;
@@ -65,7 +147,23 @@
         if (hasNoDept) deptChoices.push({ id: '__none__', name: 'No department' });
         var picked = new Set();
         if (group && group.members) group.members.forEach(function (mm) { picked.add(mm.userId); });
-        var curDept = deptChoices.length ? deptChoices[0].id : null;
+        // Departments are MULTI-select now (Deepika, 2026-11-08):
+        // several can be ON at once and the people list shows all of
+        // them under department headings. Chips ADD a department;
+        // the × on an ON chip removes it (at least one stays ON).
+        // Toggling departments or searching NEVER loses a pick.
+        // Default: the first department ON; editing a group
+        // pre-selects the departments of its current members.
+        var rosterDept = {};
+        members.forEach(function (mm) { rosterDept[mm.userId] = mm.departmentId || '__none__'; });
+        var onDepts = new Set();
+        if (group && group.members) group.members.forEach(function (mm) { if (rosterDept[mm.userId]) onDepts.add(rosterDept[mm.userId]); });
+        if (!onDepts.size && deptChoices.length) onDepts.add(deptChoices[0].id);
+        // Normalized roster for the shared exact matcher (upload +
+        // paste-a-list): { id, name, firstName, email }.
+        var rosterNorm = members.map(function (mm) { return { id: mm.userId, name: mm.name, firstName: mm.firstName || '', email: mm.email || '', departmentId: mm.departmentId || null }; });
+        var deptFilter = '';
+        var peopleFilter = '';
         var old = document.getElementById('cg-modal');
         if (old) old.remove();
         // Creator layout (Deepika, 2026-11-07, approved on the live
@@ -97,10 +195,18 @@
           '<div class="cg-boxes">' +
           '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
           '<input id="cg-name" type="text" maxlength="80" placeholder="e.g. Interview Panel" value="' + (group ? esc(group.name) : '') + '" style="' + IN + ';margin-top:0"></div>' +
-          '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENT</div>' +
+          '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENTS</div>' +
+          '<input id="cg-dept-search" type="text" placeholder="Search departments…" autocomplete="off" style="' + IN + ';margin-top:0;margin-bottom:0.5rem">' +
           '<div id="cg-depts" style="display:flex;gap:0.35rem;flex-wrap:wrap"></div>' +
-          '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Pick a department, tick its people below — then switch departments to add people from anywhere in the company. A group isn\'t tied to one department.</p></div>' +
+          '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Tap departments to show their people below — several can be on at once, and the × on a department hides it again. Ticks are never lost. A group isn\'t tied to one department.</p></div>' +
           '<div class="cg-box" style="' + BOX + '"><div style="' + HEAD + '" id="cg-people-head">③ PEOPLE</div>' +
+          '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem">' +
+          '<button type="button" class="btn-secondary" id="cg-upload-btn" style="padding:0.4rem 0.8rem">⬆ Upload file</button>' +
+          '<input type="file" id="cg-upload-file" accept=".csv,.txt,text/csv,text/plain" class="hidden">' +
+          '<span class="muted" style="font-size:0.82rem">CSV or TXT with an Email or Name column.</span></div>' +
+          '<div id="cg-upload-result" style="display:none;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:0.5rem 0.7rem;margin-bottom:0.5rem;font-size:0.86rem"></div>' +
+          '<input id="cg-people-search" type="text" placeholder="Search people — or paste a list of names/emails…" autocomplete="off" style="' + IN + ';margin-top:0;margin-bottom:0.5rem">' +
+          '<div id="cg-match" style="display:none"></div>' +
           '<div id="cg-people"></div></div></div>' +
           '<div id="cg-summary" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;padding:0.75rem 0.9rem;margin-bottom:0.7rem;font-size:0.9rem"></div>' +
           '<div id="cg-error" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-bottom:0.7rem;font-size:0.88rem"></div>' +
@@ -109,33 +215,105 @@
           '</div>';
         document.body.appendChild(m);
         function deptName(id) { var d = deptChoices.find(function (x) { return x.id === id; }); return d ? d.name : ''; }
+        var byIdNorm = {};
+        rosterNorm.forEach(function (x) { byIdNorm[x.id] = x; });
+        function personRowHtml(id, name, deptLabel, attr) {
+          var on = picked.has(id);
+          var ini = String(name || '?').split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+          return '<label style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.2rem;border-bottom:1px solid var(--border);cursor:pointer">' +
+            '<span style="width:2rem;height:2rem;border-radius:999px;background:#e0f2f1;color:#0e7c86;display:inline-flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex:none">' + esc(ini) + '</span>' +
+            '<span style="flex:1">' + esc(name) + (deptLabel ? ' <span class="muted" style="font-size:0.8rem">(' + esc(deptLabel) + ')</span>' : '') + '</span>' +
+            '<input type="checkbox" ' + attr + '="' + id + '"' + (on ? ' checked' : '') + ' style="width:1.3rem;height:1.3rem;accent-color:#0e7c86"></label>';
+        }
         function paintDepts() {
           var box = m.querySelector('#cg-depts');
-          box.innerHTML = deptChoices.map(function (d) {
-            var on = d.id === curDept;
-            return '<button type="button" data-cgdept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + esc(d.name) + '</button>';
+          var f = deptFilter.trim().toLowerCase();
+          var shown = deptChoices.filter(function (d) { return !f || d.name.toLowerCase().indexOf(f) >= 0; });
+          box.innerHTML = shown.map(function (d) {
+            var on = onDepts.has(d.id);
+            return '<button type="button" data-cgdept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + esc(d.name) +
+              (on && onDepts.size > 1 ? '<span data-cgdept-off="' + d.id + '" title="Hide this department" style="margin-left:0.4rem;font-weight:700">×</span>' : '') + '</button>';
           }).join('') || '<span class="muted">No departments yet.</span>';
           box.querySelectorAll('[data-cgdept]').forEach(function (chip) {
-            chip.addEventListener('click', function () { curDept = chip.getAttribute('data-cgdept'); paintDepts(); paintPeople(); });
+            chip.addEventListener('click', function (e) {
+              var offId = e.target && e.target.getAttribute ? e.target.getAttribute('data-cgdept-off') : null;
+              var id = chip.getAttribute('data-cgdept');
+              if (offId) { if (onDepts.size > 1) onDepts.delete(offId); }
+              else if (!onDepts.has(id)) onDepts.add(id);
+              paintDepts(); paintPeople();
+            });
           });
         }
+        function matchModeOn() { return /[,;\n]/.test(m.querySelector('#cg-people-search').value || ''); }
         function paintPeople() {
           var head = m.querySelector('#cg-people-head');
-          head.textContent = '③ PEOPLE IN ' + (curDept ? deptName(curDept).toUpperCase() : '—');
+          head.textContent = '③ PEOPLE';
           var box = m.querySelector('#cg-people');
-          var list = members.filter(function (mm) { return curDept === '__none__' ? !mm.departmentId : mm.departmentId === curDept; });
-          if (!list.length) { box.innerHTML = '<p class="muted" style="margin:0.2rem 0">Nobody in this department.</p>'; return; }
-          box.innerHTML = list.map(function (mm) {
-            var on = picked.has(mm.userId);
-            var ini = mm.name.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
-            return '<label style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.2rem;border-bottom:1px solid var(--border);cursor:pointer">' +
-              '<span style="width:2rem;height:2rem;border-radius:999px;background:#e0f2f1;color:#0e7c86;display:inline-flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex:none">' + esc(ini) + '</span>' +
-              '<span style="flex:1">' + esc(mm.name) + '</span>' +
-              '<input type="checkbox" data-cgperson="' + mm.userId + '"' + (on ? ' checked' : '') + ' style="width:1.3rem;height:1.3rem;accent-color:#0e7c86"></label>';
-          }).join('');
+          if (matchModeOn()) { box.innerHTML = ''; return; }
+          var f = peopleFilter.trim().toLowerCase();
+          var html = '', any = false;
+          deptChoices.forEach(function (d) {
+            if (!onDepts.has(d.id)) return;
+            var list = members.filter(function (mm) {
+              var inDept = d.id === '__none__' ? !mm.departmentId : mm.departmentId === d.id;
+              return inDept && (!f || mm.name.toLowerCase().indexOf(f) >= 0);
+            });
+            if (!list.length) return;
+            any = true;
+            html += '<div style="font-weight:700;font-size:0.78rem;letter-spacing:0.04em;color:#0e7c86;margin:0.55rem 0 0.1rem">' + esc(d.name.toUpperCase()) + '</div>';
+            html += list.map(function (mm) { return personRowHtml(mm.userId, mm.name, '', 'data-cgperson'); }).join('');
+          });
+          box.innerHTML = any ? html : '<p class="muted" style="margin:0.2rem 0">' + (f ? 'No one matches that search.' : 'Nobody in the selected departments.') + '</p>';
           box.querySelectorAll('[data-cgperson]').forEach(function (cb) {
             cb.addEventListener('change', function () {
               var id = cb.getAttribute('data-cgperson');
+              if (cb.checked) picked.add(id); else picked.delete(id);
+              paintSummary();
+            });
+          });
+        }
+        var lastMatchKey = null, lastMatchAlready = 0;
+        function paintMatch() {
+          var wrap = m.querySelector('#cg-match');
+          var raw = m.querySelector('#cg-people-search').value || '';
+          var tokens = raw.split(/[,;\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+          var results = window.qsMatchPeopleTokens(tokens, rosterNorm);
+          var key = results.map(function (r) { return r.token.toLowerCase(); }).join('|');
+          var matched = results.filter(function (r) { return r.status === 'matched'; });
+          if (key !== lastMatchKey) {
+            lastMatchKey = key;
+            lastMatchAlready = matched.filter(function (r) { return picked.has(r.id); }).length;
+            matched.forEach(function (r) { picked.add(r.id); });
+            if (matched.length) paintSummary();
+          }
+          var html = '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:0.6rem 0.7rem;margin-bottom:0.5rem">' +
+            '<div style="font-size:0.88rem"><strong>Pasted list:</strong> ' + matched.length + ' matched' +
+            (lastMatchAlready ? ' · ' + lastMatchAlready + (lastMatchAlready === 1 ? ' was' : ' were') + ' already picked' : '') + '</div>';
+          if (matched.length) html += '<button type="button" class="btn-secondary" id="cg-match-all" style="padding:0.35rem 0.75rem;margin:0.45rem 0 0.2rem">Select all ' + matched.length + ' matched</button>';
+          results.forEach(function (r) {
+            if (r.status === 'matched') {
+              var p = byIdNorm[r.id];
+              html += personRowHtml(r.id, p ? p.name : r.token, p ? deptName(p.departmentId || '__none__') : '', 'data-cgmatch');
+            } else if (r.status === 'ambiguous') {
+              html += '<div style="color:#991b1c;font-size:0.88rem;margin-top:0.45rem">Matches more than one person: ' + esc(r.token) + ' — pick below</div>';
+              (r.candidateIds || []).forEach(function (cid) {
+                var p = byIdNorm[cid];
+                html += personRowHtml(cid, p ? p.name : cid, p ? deptName(p.departmentId || '__none__') : '', 'data-cgmatch');
+              });
+            } else {
+              html += '<div style="color:#991b1c;font-size:0.88rem;margin-top:0.45rem">Not found: ' + esc(r.token) + '</div>';
+            }
+          });
+          html += '</div>';
+          wrap.innerHTML = html;
+          var allBtn = wrap.querySelector('#cg-match-all');
+          if (allBtn) allBtn.addEventListener('click', function () {
+            matched.forEach(function (r) { picked.add(r.id); });
+            paintMatch(); paintSummary();
+          });
+          wrap.querySelectorAll('[data-cgmatch]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var id = cb.getAttribute('data-cgmatch');
               if (cb.checked) picked.add(id); else picked.delete(id);
               paintSummary();
             });
@@ -151,10 +329,44 @@
             return '<span style="display:inline-flex;align-items:center;gap:0.25rem;background:#fff;border:1px solid #99f6e4;border-radius:999px;padding:0.15rem 0.55rem;margin:0.15rem 0.1rem">' + esc(mm.name) + (mm.isActive ? '' : ' <span class="muted">(inactive)</span>') + '<button type="button" data-cgremove="' + mm.userId + '" style="background:none;border:none;cursor:pointer;line-height:1;font-size:0.95rem">×</button></span>';
           }).join('');
           box.querySelectorAll('[data-cgremove]').forEach(function (b) {
-            b.addEventListener('click', function () { picked.delete(b.getAttribute('data-cgremove')); paintPeople(); paintSummary(); });
+            b.addEventListener('click', function () { picked.delete(b.getAttribute('data-cgremove')); if (matchModeOn()) paintMatch(); else paintPeople(); paintSummary(); });
           });
         }
         paintDepts(); paintPeople(); paintSummary();
+        m.querySelector('#cg-dept-search').addEventListener('input', function () { deptFilter = this.value; paintDepts(); });
+        m.querySelector('#cg-people-search').addEventListener('input', function () {
+          peopleFilter = this.value;
+          var wrap = m.querySelector('#cg-match');
+          if (matchModeOn()) { wrap.style.display = 'block'; m.querySelector('#cg-people').style.display = 'none'; paintMatch(); }
+          else { wrap.style.display = 'none'; m.querySelector('#cg-people').style.display = ''; lastMatchKey = null; paintPeople(); }
+        });
+        m.querySelector('#cg-upload-btn').addEventListener('click', function () { m.querySelector('#cg-upload-file').click(); });
+        m.querySelector('#cg-upload-file').addEventListener('change', function () {
+          var f = this.files && this.files[0];
+          this.value = '';
+          if (!f) return;
+          var reader = new FileReader();
+          reader.onload = function () {
+            var entries = window.qsParsePeopleFile(String(reader.result || ''));
+            var results = window.qsMatchPeopleTokens(entries, rosterNorm);
+            var added = 0, already = 0, notFound = [], ambiguous = [];
+            results.forEach(function (r) {
+              if (r.status === 'ambiguous') { ambiguous.push(r.token); return; }
+              if (r.status !== 'matched') { notFound.push(r.token); return; }
+              if (picked.has(r.id)) { already++; return; }
+              picked.add(r.id); added++;
+            });
+            if (matchModeOn()) paintMatch(); else paintPeople();
+            paintSummary();
+            var res = m.querySelector('#cg-upload-result');
+            res.style.display = 'block';
+            res.textContent = 'Added ' + added + (added === 1 ? ' person' : ' people') + ' from file.' +
+              (already ? ' ' + already + (already === 1 ? ' was' : ' were') + ' already in the group.' : '') +
+              (notFound.length ? ' ' + notFound.length + ' not found: ' + notFound.join(', ') : '') +
+              (ambiguous.length ? ' ' + ambiguous.length + ' not added — more than one person matches: ' + ambiguous.join(', ') : '');
+          };
+          reader.readAsText(f);
+        });
         m.querySelector('#cg-cancel').addEventListener('click', function () { m.remove(); });
         m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
         m.querySelector('#cg-save').addEventListener('click', function () {
@@ -9556,75 +9768,41 @@ window.qsNpOfferSend = function (btn) {
 
               // ---- Rotation group editor (Deepika, 2026-11-08) ----
               // Mirrors the communication-groups three-box creator:
-              // ① group name ② department chooser (a LENS ONLY —
-              // switching departments never loses picks) ③ that
-              // department's people as a multi-select tick list, boxes
-              // side by side on wide screens, stacked on phones. Two
-              // rotation differences: picks are ORDERED (the order
-              // people are picked is the order they take turns — the
-              // summary shows them numbered, in line order), and an
-              // UPLOAD FILE button in the people box adds picks from a
-              // .csv/.txt of emails/names, in file order. Modes:
+              // ① group name ② departments (MULTI-select with a
+              // search box — several ON at once, toggling never
+              // loses picks) ③ the ON departments' people as a
+              // multi-select tick list under department headings,
+              // with a people search that doubles as paste-a-list
+              // exact matching; boxes side by side on wide screens,
+              // stacked on phones. Two rotation differences: picks
+              // are ORDERED (the order people are picked is the
+              // order they take turns — the summary shows them
+              // numbered, in line order), and an UPLOAD FILE button
+              // in the people box adds picks from a .csv/.txt of
+              // emails/names, in file order. Modes:
               // create/edit (Groups tab — saves through the existing
               // POST/PUT rotation-groups path) and staged (from the
               // group-rotation modal — nothing is saved until the
               // rotation itself saves). opts: { group|null, staged,
               // onSaved, onStage }.
+              // Parser + matcher are the SHARED window.qsParsePeopleFile
+              // / window.qsMatchPeopleTokens (one implementation for
+              // both group creators, both routes — upload + paste).
+              // `members` here is the ACTIVE roster, so a deactivated
+              // person simply never matches (reported as not found).
+              function rotGroupRosterNorm() {
+                return members.map(function (u) { return { id: u.id, name: fullName(u), firstName: u.firstName || '', email: u.email || '', departmentId: u.departmentId || null }; });
+              }
               function rotGroupParsePeopleFile(text) {
-                function cellsOf(line) {
-                  return line.split(/[,\t;]/).map(function (c) { return c.trim().replace(/^"+|"+$/g, '').trim(); });
-                }
-                var lines = String(text || '').split(/\r\n|\r|\n/);
-                var first = -1;
-                for (var i = 0; i < lines.length; i++) { if (lines[i].trim()) { first = i; break; } }
-                if (first < 0) return [];
-                var head = cellsOf(lines[first]).map(function (c) { return c.toLowerCase(); });
-                var emailCol = -1, nameCol = -1;
-                head.forEach(function (c, idx) {
-                  if (emailCol < 0 && c.indexOf('email') >= 0) emailCol = idx;
-                  if (nameCol < 0 && (c === 'name' || c.indexOf('full name') >= 0 || c.indexOf('person') >= 0)) nameCol = idx;
-                });
-                var entries = [];
-                if (emailCol >= 0 || nameCol >= 0) {
-                  for (var j = first + 1; j < lines.length; j++) {
-                    if (!lines[j].trim()) continue;
-                    var cells = cellsOf(lines[j]);
-                    var v = (emailCol >= 0 && cells[emailCol]) ? cells[emailCol] : (nameCol >= 0 ? (cells[nameCol] || '') : '');
-                    if (v) entries.push(v);
-                  }
-                } else {
-                  for (var k = first; k < lines.length; k++) {
-                    cellsOf(lines[k]).forEach(function (v) { if (v) entries.push(v); });
-                  }
-                }
-                return entries;
+                return window.qsParsePeopleFile(text);
               }
               function rotGroupMatchEntry(entry) {
-                // `members` in this panel is the ACTIVE roster, so a
-                // deactivated person simply never matches (reported
-                // as not found). Email: exact (trimmed,
-                // case-insensitive). Name: EXACT against the full
-                // name, or — for a single-token entry — against the
-                // first name as stored (Deepika's rule, 2026-11-08:
-                // names like Muh are the actual names she gave those
-                // members, NOT abbreviations — never prefix-match or
-                // expand into a longer name). A non-unique exact
-                // match returns 'ambiguous' — reported, never guessed.
-                var e = String(entry || '').trim().toLowerCase().replace(/\s+/g, ' ');
-                if (!e) return null;
-                var i, u;
-                if (e.indexOf('@') >= 0) {
-                  for (i = 0; i < members.length; i++) { u = members[i]; if ((u.email || '').trim().toLowerCase() === e) return u; }
-                  return null;
-                }
-                var full = members.filter(function (x) { return fullName(x).trim().toLowerCase().replace(/\s+/g, ' ') === e; });
-                if (full.length === 1) return full[0];
-                if (full.length > 1) return 'ambiguous';
-                if (e.indexOf(' ') < 0) {
-                  var first = members.filter(function (x) { return (x.firstName || '').trim().toLowerCase() === e; });
-                  if (first.length === 1) return first[0];
-                  if (first.length > 1) return 'ambiguous';
-                }
+                var res = window.qsMatchPeopleTokens([entry], rotGroupRosterNorm());
+                if (!res.length) return null;
+                var r = res[0];
+                if (r.status === 'ambiguous') return 'ambiguous';
+                if (r.status !== 'matched') return null;
+                for (var i = 0; i < members.length; i++) { if (members[i].id === r.id) return members[i]; }
                 return null;
               }
               function openRotationGroupEditor(opts) {
@@ -9644,7 +9822,21 @@ window.qsNpOfferSend = function (btn) {
                   if (hasNoDept) deptChoices.push({ id: '__none__', name: 'No department' });
                   var pickedIds = [];
                   if (group && group.members) group.members.forEach(function (mm) { if (pickedIds.indexOf(mm.userId) < 0) pickedIds.push(mm.userId); });
-                  var curDept = deptChoices.length ? deptChoices[0].id : null;
+                  // Departments are MULTI-select (Deepika, 2026-11-08):
+                  // several can be ON at once, people shown under
+                  // department headings; chips add a department, the
+                  // × on an ON chip removes it (one always stays ON).
+                  // Toggling/searching NEVER loses a pick, and the
+                  // tick order across departments stays the turn
+                  // order. Default: first department ON; editing a
+                  // group pre-selects its members' departments.
+                  var rosterDeptRg = {};
+                  members.forEach(function (u) { rosterDeptRg[u.id] = u.departmentId || '__none__'; });
+                  var onDepts = new Set();
+                  if (group && group.members) group.members.forEach(function (mm) { if (rosterDeptRg[mm.userId]) onDepts.add(rosterDeptRg[mm.userId]); });
+                  if (!onDepts.size && deptChoices.length) onDepts.add(deptChoices[0].id);
+                  var deptFilter = '';
+                  var peopleFilter = '';
                   var old = document.getElementById('rg-modal');
                   if (old) old.remove();
                   // Same wide layout as the comm-groups creator: at
@@ -9671,15 +9863,18 @@ window.qsNpOfferSend = function (btn) {
                     '<div class="rg-boxes">' +
                     '<div class="rg-box" style="' + BOX + '"><div style="' + HEAD + '">① GROUP NAME</div>' +
                     '<input id="rg-name" type="text" maxlength="120" placeholder="e.g. Weekend Night Team" value="' + (group ? esc(group.name) : '') + '" style="' + IN + ';margin-top:0"></div>' +
-                    '<div class="rg-box" style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENT</div>' +
+                    '<div class="rg-box" style="' + BOX + '"><div style="' + HEAD + '">② DEPARTMENTS</div>' +
+                    '<input id="rg-dept-search" type="text" placeholder="Search departments…" autocomplete="off" style="' + IN + ';margin-top:0;margin-bottom:0.5rem">' +
                     '<div id="rg-depts" style="display:flex;gap:0.35rem;flex-wrap:wrap"></div>' +
-                    '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Pick a department, tick its people below — then switch departments to add people from anywhere in the company. A group isn\'t tied to one department.</p></div>' +
+                    '<p class="muted" style="margin:0.6rem 0 0;font-size:0.85rem">Tap departments to show their people below — several can be on at once, and the × on a department hides it again. Ticks are never lost, and their order is the turn order. A group isn\'t tied to one department.</p></div>' +
                     '<div class="rg-box" style="' + BOX + '"><div style="' + HEAD + '" id="rg-people-head">③ PEOPLE</div>' +
                     '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.4rem">' +
                     '<button type="button" class="btn-secondary" id="rg-upload-btn" style="padding:0.4rem 0.8rem">⬆ Upload file</button>' +
                     '<input type="file" id="rg-upload-file" accept=".csv,.txt,text/csv,text/plain" class="hidden">' +
                     '<span class="muted" style="font-size:0.82rem">CSV or TXT with an Email or Name column — matched people join in file order.</span></div>' +
                     '<div id="rg-upload-result" style="display:none;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:0.5rem 0.7rem;margin-bottom:0.5rem;font-size:0.86rem"></div>' +
+                    '<input id="rg-people-search" type="text" placeholder="Search people — or paste a list of names/emails…" autocomplete="off" style="' + IN + ';margin-top:0;margin-bottom:0.5rem">' +
+                    '<div id="rg-match" style="display:none"></div>' +
                     '<div id="rg-people"></div></div></div>' +
                     '<div id="rg-summary" style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;padding:0.75rem 0.9rem;margin-bottom:0.7rem;font-size:0.9rem"></div>' +
                     '<div id="rg-error" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#991b1c;border-radius:8px;padding:0.55rem 0.7rem;margin-bottom:0.7rem;font-size:0.88rem"></div>' +
@@ -9688,36 +9883,112 @@ window.qsNpOfferSend = function (btn) {
                     '</div>';
                   document.body.appendChild(m);
                   function deptName(id) { var d = deptChoices.find(function (x) { return x.id === id; }); return d ? d.name : ''; }
+                  function rgPersonRowHtml(u, deptLabel, attr) {
+                    var on = pickedIds.indexOf(u.id) >= 0;
+                    var nm = fullName(u);
+                    var ini = nm.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+                    return '<label style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.2rem;border-bottom:1px solid var(--border);cursor:pointer">' +
+                      '<span style="width:2rem;height:2rem;border-radius:999px;background:#e0f2f1;color:#0e7c86;display:inline-flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex:none">' + esc(ini) + '</span>' +
+                      '<span style="flex:1">' + esc(nm) + (deptLabel ? ' <span class="muted" style="font-size:0.8rem">(' + esc(deptLabel) + ')</span>' : '') + '</span>' +
+                      '<input type="checkbox" ' + attr + '="' + u.id + '"' + (on ? ' checked' : '') + ' style="width:1.3rem;height:1.3rem;accent-color:#0e7c86"></label>';
+                  }
+                  function rgTogglePick(id, on) {
+                    var ix = pickedIds.indexOf(id);
+                    if (on) { if (ix < 0) pickedIds.push(id); }
+                    else if (ix >= 0) pickedIds.splice(ix, 1);
+                  }
                   function paintDepts() {
                     var box = m.querySelector('#rg-depts');
-                    box.innerHTML = deptChoices.map(function (d) {
-                      var on = d.id === curDept;
-                      return '<button type="button" data-rgdept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + esc(d.name) + '</button>';
+                    var f = deptFilter.trim().toLowerCase();
+                    var shown = deptChoices.filter(function (d) { return !f || d.name.toLowerCase().indexOf(f) >= 0; });
+                    box.innerHTML = shown.map(function (d) {
+                      var on = onDepts.has(d.id);
+                      return '<button type="button" data-rgdept="' + d.id + '" style="border:1px solid ' + (on ? '#0e7c86' : 'var(--border)') + ';background:' + (on ? '#0e7c86' : '#fff') + ';color:' + (on ? '#fff' : 'inherit') + ';border-radius:999px;padding:0.35rem 0.8rem;font-size:0.86rem;cursor:pointer">' + esc(d.name) +
+                        (on && onDepts.size > 1 ? '<span data-rgdept-off="' + d.id + '" title="Hide this department" style="margin-left:0.4rem;font-weight:700">×</span>' : '') + '</button>';
                     }).join('') || '<span class="muted">No departments yet.</span>';
                     box.querySelectorAll('[data-rgdept]').forEach(function (chip) {
-                      chip.addEventListener('click', function () { curDept = chip.getAttribute('data-rgdept'); paintDepts(); paintPeople(); });
+                      chip.addEventListener('click', function (e) {
+                        var offId = e.target && e.target.getAttribute ? e.target.getAttribute('data-rgdept-off') : null;
+                        var id = chip.getAttribute('data-rgdept');
+                        if (offId) { if (onDepts.size > 1) onDepts.delete(offId); }
+                        else if (!onDepts.has(id)) onDepts.add(id);
+                        paintDepts(); paintPeople();
+                      });
                     });
                   }
+                  function matchModeOn() { return /[,;\n]/.test(m.querySelector('#rg-people-search').value || ''); }
                   function paintPeople() {
                     var head = m.querySelector('#rg-people-head');
-                    head.textContent = '③ PEOPLE IN ' + (curDept ? deptName(curDept).toUpperCase() : '—');
+                    head.textContent = '③ PEOPLE';
                     var box = m.querySelector('#rg-people');
-                    var list = members.filter(function (u) { return curDept === '__none__' ? !u.departmentId : u.departmentId === curDept; });
-                    if (!list.length) { box.innerHTML = '<p class="muted" style="margin:0.2rem 0">Nobody in this department.</p>'; return; }
-                    box.innerHTML = list.map(function (u) {
-                      var on = pickedIds.indexOf(u.id) >= 0;
-                      var nm = fullName(u);
-                      var ini = nm.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
-                      return '<label style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.2rem;border-bottom:1px solid var(--border);cursor:pointer">' +
-                        '<span style="width:2rem;height:2rem;border-radius:999px;background:#e0f2f1;color:#0e7c86;display:inline-flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex:none">' + esc(ini) + '</span>' +
-                        '<span style="flex:1">' + esc(nm) + '</span>' +
-                        '<input type="checkbox" data-rgperson="' + u.id + '"' + (on ? ' checked' : '') + ' style="width:1.3rem;height:1.3rem;accent-color:#0e7c86"></label>';
-                    }).join('');
+                    if (matchModeOn()) { box.innerHTML = ''; return; }
+                    var f = peopleFilter.trim().toLowerCase();
+                    var html = '', any = false;
+                    deptChoices.forEach(function (d) {
+                      if (!onDepts.has(d.id)) return;
+                      var list = members.filter(function (u) {
+                        var inDept = d.id === '__none__' ? !u.departmentId : u.departmentId === d.id;
+                        return inDept && (!f || fullName(u).toLowerCase().indexOf(f) >= 0);
+                      });
+                      if (!list.length) return;
+                      any = true;
+                      html += '<div style="font-weight:700;font-size:0.78rem;letter-spacing:0.04em;color:#0e7c86;margin:0.55rem 0 0.1rem">' + esc(d.name.toUpperCase()) + '</div>';
+                      html += list.map(function (u) { return rgPersonRowHtml(u, '', 'data-rgperson'); }).join('');
+                    });
+                    box.innerHTML = any ? html : '<p class="muted" style="margin:0.2rem 0">' + (f ? 'No one matches that search.' : 'Nobody in the selected departments.') + '</p>';
                     box.querySelectorAll('[data-rgperson]').forEach(function (cb) {
                       cb.addEventListener('change', function () {
-                        var id = cb.getAttribute('data-rgperson');
-                        if (cb.checked) { if (pickedIds.indexOf(id) < 0) pickedIds.push(id); }
-                        else { var ix = pickedIds.indexOf(id); if (ix >= 0) pickedIds.splice(ix, 1); }
+                        rgTogglePick(cb.getAttribute('data-rgperson'), cb.checked);
+                        paintSummary();
+                      });
+                    });
+                  }
+                  var lastMatchKey = null, lastMatchAlready = 0;
+                  function paintMatch() {
+                    var wrap = m.querySelector('#rg-match');
+                    var raw = m.querySelector('#rg-people-search').value || '';
+                    var tokens = raw.split(/[,;\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+                    var roster = rotGroupRosterNorm();
+                    var byId = {};
+                    members.forEach(function (u) { byId[u.id] = u; });
+                    var results = window.qsMatchPeopleTokens(tokens, roster);
+                    var key = results.map(function (r) { return r.token.toLowerCase(); }).join('|');
+                    var matched = results.filter(function (r) { return r.status === 'matched'; });
+                    if (key !== lastMatchKey) {
+                      lastMatchKey = key;
+                      lastMatchAlready = matched.filter(function (r) { return pickedIds.indexOf(r.id) >= 0; }).length;
+                      // Token order becomes pick order (the turn order).
+                      matched.forEach(function (r) { if (pickedIds.indexOf(r.id) < 0) pickedIds.push(r.id); });
+                      if (matched.length) paintSummary();
+                    }
+                    var html = '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:0.6rem 0.7rem;margin-bottom:0.5rem">' +
+                      '<div style="font-size:0.88rem"><strong>Pasted list:</strong> ' + matched.length + ' matched' +
+                      (lastMatchAlready ? ' · ' + lastMatchAlready + (lastMatchAlready === 1 ? ' was' : ' were') + ' already picked' : '') + '</div>';
+                    if (matched.length) html += '<button type="button" class="btn-secondary" id="rg-match-all" style="padding:0.35rem 0.75rem;margin:0.45rem 0 0.2rem">Select all ' + matched.length + ' matched</button>';
+                    results.forEach(function (r) {
+                      if (r.status === 'matched') {
+                        var u = byId[r.id];
+                        if (u) html += rgPersonRowHtml(u, deptName(u.departmentId || '__none__'), 'data-rgmatch');
+                      } else if (r.status === 'ambiguous') {
+                        html += '<div style="color:#991b1c;font-size:0.88rem;margin-top:0.45rem">Matches more than one person: ' + esc(r.token) + ' — pick below</div>';
+                        (r.candidateIds || []).forEach(function (cid) {
+                          var cu = byId[cid];
+                          if (cu) html += rgPersonRowHtml(cu, deptName(cu.departmentId || '__none__'), 'data-rgmatch');
+                        });
+                      } else {
+                        html += '<div style="color:#991b1c;font-size:0.88rem;margin-top:0.45rem">Not found: ' + esc(r.token) + '</div>';
+                      }
+                    });
+                    html += '</div>';
+                    wrap.innerHTML = html;
+                    var allBtn = wrap.querySelector('#rg-match-all');
+                    if (allBtn) allBtn.addEventListener('click', function () {
+                      matched.forEach(function (r) { if (pickedIds.indexOf(r.id) < 0) pickedIds.push(r.id); });
+                      paintMatch(); paintSummary();
+                    });
+                    wrap.querySelectorAll('[data-rgmatch]').forEach(function (cb) {
+                      cb.addEventListener('change', function () {
+                        rgTogglePick(cb.getAttribute('data-rgmatch'), cb.checked);
                         paintSummary();
                       });
                     });
@@ -9736,11 +10007,19 @@ window.qsNpOfferSend = function (btn) {
                       b.addEventListener('click', function () {
                         var ix = pickedIds.indexOf(b.getAttribute('data-rgremove'));
                         if (ix >= 0) pickedIds.splice(ix, 1);
-                        paintPeople(); paintSummary();
+                        if (matchModeOn()) paintMatch(); else paintPeople();
+                        paintSummary();
                       });
                     });
                   }
                   paintDepts(); paintPeople(); paintSummary();
+                  m.querySelector('#rg-dept-search').addEventListener('input', function () { deptFilter = this.value; paintDepts(); });
+                  m.querySelector('#rg-people-search').addEventListener('input', function () {
+                    peopleFilter = this.value;
+                    var wrap = m.querySelector('#rg-match');
+                    if (matchModeOn()) { wrap.style.display = 'block'; m.querySelector('#rg-people').style.display = 'none'; paintMatch(); }
+                    else { wrap.style.display = 'none'; m.querySelector('#rg-people').style.display = ''; lastMatchKey = null; paintPeople(); }
+                  });
                   m.querySelector('#rg-upload-btn').addEventListener('click', function () { m.querySelector('#rg-upload-file').click(); });
                   m.querySelector('#rg-upload-file').addEventListener('change', function () {
                     var f = this.files && this.files[0];
@@ -9757,7 +10036,8 @@ window.qsNpOfferSend = function (btn) {
                         if (pickedIds.indexOf(u.id) >= 0) { already++; return; }
                         pickedIds.push(u.id); added++;
                       });
-                      paintPeople(); paintSummary();
+                      if (matchModeOn()) paintMatch(); else paintPeople();
+                      paintSummary();
                       var res = m.querySelector('#rg-upload-result');
                       res.style.display = 'block';
                       res.textContent = 'Added ' + added + (added === 1 ? ' person' : ' people') + ' from file.' +

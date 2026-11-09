@@ -9389,12 +9389,12 @@ router.get('/comm-groups/roster', requireRole('owner', 'scheduler'), async (req:
     const { rows: depts } = await query(
       'SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
     const { rows } = await query(
-      `SELECT id, first_name, last_name, name, department_id FROM users
+      `SELECT id, first_name, last_name, name, email, department_id FROM users
        WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
       [companyId]);
     res.json({
       departments: depts.map((d: any) => ({ id: d.id, name: d.name })),
-      members: rows.map((r: any) => ({ userId: r.id, name: commGroupName(r), departmentId: r.department_id || null })),
+      members: rows.map((r: any) => ({ userId: r.id, name: commGroupName(r), departmentId: r.department_id || null, email: r.email, firstName: r.first_name })),
     });
   } catch (err) {
     console.error('[schedule] comm group roster failed:', err);
