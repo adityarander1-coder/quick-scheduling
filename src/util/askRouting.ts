@@ -86,16 +86,39 @@ export const TASK_MODE_SIGNPOST =
   'That looks like a question — flip to Ask for an answer.';
 
 // The small, finite verb list for the Ask-side signpost (Deepika's spec):
-// a message is a "bare instruction" only when one of these verbs LEADS it
-// (an optional "please" may precede) and it is not phrased as a question.
+// a message is a "bare instruction" when one of these verbs leads it (an
+// optional "please" may precede), or when it is phrased as a request —
+// "(can|could) you <verb>" / "please <verb>" — per the widening below.
 const BARE_INSTRUCTION_VERBS = new Set([
   'add', 'move', 'remove', 'delete', 'assign', 'create', 'give', 'swap',
   'change', 'set', 'put', 'schedule', 'copy', 'cancel',
 ]);
 
+// Request-phrased instructions (Deepika, 2026-11-08, widening the toggle
+// signpost): the request phrase may sit anywhere the action is asked for —
+// names can come first ("Ash, Ham, Ana … can you add them to blake group
+// in rotations") and the "can you add" clause is still the request. The
+// word right after can/could you (an optional "please" may sit between)
+// or right after please must be one of the signpost verbs, so genuine
+// questions can never match: "Can you tell me who works Friday?" (tell is
+// not in the list) and "Can you show me …?" (show is not) answer normally.
+// Built from the same verb set as the leading check, so the two paths can
+// never recognise different instructions.
+const REQUEST_SIGNPOST = new RegExp(
+  `\\b(?:can|could)\\s+you\\s+(?:please\\s+)?(${[...BARE_INSTRUCTION_VERBS].join('|')})\\b` +
+    `|\\bplease[\\s,]+(${[...BARE_INSTRUCTION_VERBS].join('|')})\\b`,
+  'i',
+);
+
 export function looksLikeBareInstruction(message: string): boolean {
   const m = (message || '').trim();
   if (!m) return false;
+  // Request-phrased instruction: checked BEFORE the question-form gate,
+  // because the polite form ends with "?" ("Could you assign …?") yet is
+  // an instruction. Question-WORD-led text is exempt first, so "Who can
+  // add a shift?" and "When can you show me …?" — where the pattern words
+  // appear inside a real question — are never signposted.
+  if (!QUESTION_WORD.test(m) && REQUEST_SIGNPOST.test(m)) return true;
   // Question-shaped text is always answered, never signposted — this also
   // covers verbs inside questions ("Who can add a shift?", "What did Sam
   // change?"), because those lead with a question word or end with "?".
