@@ -416,6 +416,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // Generate shifts from active rotations
     const { rows: rotations } = await query(
       `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+              end_date::text AS "endDate",
               group_id AS "groupId", group_ids AS "groupIds", group_shift_type_id AS "groupShiftTypeId",
               group_days AS "groupDays", turn_unit AS "turnUnit",
               turn_days AS "turnDays", week_start AS "weekStart"
@@ -592,6 +593,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
             }
             if (ms < fromMs) continue;
             if (isPaused(rot.id, dateStr)) continue;
+            if ((rot as any).endDate && dateStr > (rot as any).endDate) continue;
             const m = currentMember;
             if (!m) continue;
             // A few days off in the middle of a turn changes
@@ -650,6 +652,9 @@ router.get('/shifts', async (req: Request, res: Response) => {
       for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().slice(0, 10);
         if (d < startDate) continue;
+        // Rotation end date (migration 100): end_date is the last
+        // drawn day; dates ascend, so the loop can stop here.
+        if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
 
         const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
         const cycleDay = (daysSinceStart % cycleDays) + 1; // 1-indexed
@@ -2791,6 +2796,7 @@ router.get('/rotations', async (req: Request, res: Response) => {
     const companyId = req.session.companyId!;
     const { rows: rots } = await query(
       `SELECT r.id, r.name, r.cycle_days AS "cycleDays", r.start_date::text AS "startDate",
+              r.end_date::text AS "endDate",
               r.is_active AS "isActive",
               r.start_time::text AS "startTime", r.end_time::text AS "endTime", r.notes,
               r.group_id AS "groupId", r.group_ids AS "groupIds", rg.name AS "groupName",
@@ -2833,6 +2839,15 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
     const cd = Number(cycleDays);
     if (!name || !String(name).trim() || !Number.isInteger(cd) || cd < 1 || cd > 84 || !isValidDate(startDate)) {
       res.status(400).json({ error: 'Name, cycle length (1–84 days), and a valid start date are required.' });
+      return;
+    }
+    // Optional end date (migration 100): the rotation's last drawn
+    // day. The edit form re-creates rotations, so it passes the old
+    // rotation's end date through — an ended rotation must not
+    // silently become endless because someone edited its name.
+    const endDate = isValidDate(req.body?.endDate) ? String(req.body.endDate) : null;
+    if (endDate && endDate < startDate) {
+      res.status(400).json({ error: 'The end date must be on or after the start date.' });
       return;
     }
     // Group mode (Deepika 2026-11-04): the rotation rotates through
@@ -2904,8 +2919,8 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
     const id = crypto.randomUUID();
     await query(
       `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
-                              group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                              group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start, end_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [id, companyId, String(name).trim(), cd, startDate, req.session.userId!, st, et,
        notes ? String(notes).trim().slice(0, 500) : null,
        groupPayload ? groupPayload.groupIds[0] : null,
@@ -2914,7 +2929,7 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
        groupPayload ? groupPayload.groupDays.join(',') : null,
        groupPayload ? groupPayload.turnUnit : null,
        groupPayload ? groupPayload.turnDays : null,
-       groupPayload ? groupPayload.weekStart : null]
+       groupPayload ? groupPayload.weekStart : null, endDate]
     );
     if (Array.isArray(assignments)) {
       for (const a of assignments) {
@@ -3076,6 +3091,159 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
     res.json({ copied, skipped });
   } catch (err) {
     console.error('[schedule] copy rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---- End-old / start-new primitive (Deepika, 2026-11-09) ----
+// "Change rotation from a date" and "Swap rotations from a date"
+// share one move: the OLD rotation gets end_date = the day before
+// the chosen date (migration 100 — it stops drawing there, its past
+// untouched, its definition never mutated), and a NEW rotation with
+// the incoming pattern starts ON the chosen date. Stored/published
+// shifts are never involved — this is the pattern layer only.
+interface RotationPattern {
+  name: string;
+  cycleDays: number;
+  startTime: string | null;
+  endTime: string | null;
+  notes: string | null;
+  pairs: Array<{ cycleDay: number; shiftTypeId: string }>;
+}
+function dayBefore(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+async function readPersonPattern(q: any, rotation: any, userId: string): Promise<RotationPattern> {
+  const { rows } = await q(
+    'SELECT cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId" FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2 ORDER BY cycle_day',
+    [rotation.id, userId]
+  );
+  return {
+    name: rotation.name,
+    cycleDays: rotation.cycleDays,
+    startTime: rotation.startTime ? String(rotation.startTime) : null,
+    endTime: rotation.endTime ? String(rotation.endTime) : null,
+    notes: rotation.notes ?? null,
+    pairs: rows,
+  };
+}
+async function insertPatternRotation(tx: any, companyId: string, createdBy: string, userId: string, pattern: RotationPattern, startDate: string): Promise<string> {
+  const id = crypto.randomUUID();
+  await tx.query(
+    `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
+                            group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start, end_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
+    [id, companyId, pattern.name, pattern.cycleDays, startDate, createdBy, pattern.startTime, pattern.endTime, pattern.notes]
+  );
+  for (const p of pattern.pairs) {
+    await tx.query(
+      `INSERT INTO rotation_assignments (id, rotation_id, user_id, cycle_day, shift_type_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [crypto.randomUUID(), id, userId, p.cycleDay, p.shiftTypeId]
+    );
+  }
+  return id;
+}
+
+// POST /api/schedule/rotations/:id/change-from — switch ONE person
+// to a different rotation from a chosen date (Deepika, 2026-11-09).
+// Body: { userId, fromDate, name, cycleDays, startTime, endTime,
+// notes, assignments: [{cycleDay, shiftTypeId}] } — the client
+// builds the incoming pattern either from the usual form fields or
+// by mirroring another person's rotation (the copy-assign data).
+// The old rotation stops the day before fromDate; the new one starts
+// on fromDate with its cycle anchored there.
+router.post('/rotations/:id/change-from', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const rotId = String(req.params.id);
+    const userId = String(req.body?.userId || '');
+    const fromDate = String(req.body?.fromDate || '');
+    const { rows: rotRows } = await query(
+      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+              start_time::text AS "startTime", end_time::text AS "endTime", notes,
+              group_id AS "groupId", is_active AS "isActive"
+       FROM rotations WHERE id = $1 AND company_id = $2`,
+      [rotId, companyId]
+    );
+    if (!rotRows.length) { res.status(404).json({ error: 'That rotation no longer exists.' }); return; }
+    const rot = rotRows[0];
+    if (rot.groupId) { res.status(400).json({ error: 'That is a group rotation — changing from a date works on one person\'s rotation.' }); return; }
+    if (!rot.isActive) { res.status(400).json({ error: 'That rotation is paused. Unpause it first, or change a different one.' }); return; }
+    if (!isValidDate(fromDate)) { res.status(400).json({ error: 'Pick the date the new rotation starts.' }); return; }
+    if (fromDate < rot.startDate) {
+      res.status(400).json({ error: 'That date is before this rotation starts — edit the rotation itself instead.' });
+      return;
+    }
+    const { rows: peopleRows } = await query(
+      'SELECT DISTINCT user_id AS "userId" FROM rotation_assignments WHERE rotation_id = $1',
+      [rotId]
+    );
+    const peopleOnIt = peopleRows.map((r: any) => r.userId);
+    if (!peopleOnIt.includes(userId)) { res.status(400).json({ error: 'That person is not on this rotation.' }); return; }
+    if (peopleOnIt.length > 1) {
+      res.status(400).json({ error: 'This rotation is shared by more than one person — changing from a date works on one person\'s rotation.' });
+      return;
+    }
+    const cd = Number(req.body?.cycleDays);
+    if (!Number.isInteger(cd) || cd < 1 || cd > 84) {
+      res.status(400).json({ error: 'The new rotation needs a cycle length of 1–84 days.' });
+      return;
+    }
+    const rawPairs: any[] = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
+    const pairs: Array<{ cycleDay: number; shiftTypeId: string }> = [];
+    for (const a of rawPairs) {
+      const day = Number(a?.cycleDay);
+      if (!a?.shiftTypeId || !Number.isInteger(day) || day < 1 || day > cd) continue;
+      pairs.push({ cycleDay: day, shiftTypeId: String(a.shiftTypeId) });
+    }
+    if (!pairs.length) { res.status(400).json({ error: 'The new rotation needs at least one working day.' }); return; }
+    const typeIds = [...new Set(pairs.map((p) => p.shiftTypeId))];
+    const { rows: typeRows } = await query(
+      'SELECT id FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+      [companyId, typeIds]
+    );
+    if (typeRows.length !== typeIds.length) { res.status(400).json({ error: 'One of those shift types no longer exists.' }); return; }
+    const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const pattern: RotationPattern = {
+      name: String(req.body?.name || '').trim() || rot.name,
+      cycleDays: cd,
+      startTime: req.body?.startTime && timeRe.test(req.body.startTime) ? req.body.startTime : null,
+      endTime: req.body?.endTime && timeRe.test(req.body.endTime) ? req.body.endTime : null,
+      notes: req.body?.notes ? String(req.body.notes).trim().slice(0, 500) : null,
+      pairs,
+    };
+    const { rows: urows } = await query(
+      'SELECT first_name AS "firstName", last_name AS "lastName", is_active AS "isActive" FROM users WHERE id = $1 AND company_id = $2',
+      [userId, companyId]
+    );
+    if (!urows.length || !urows[0].isActive) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
+    const personName = `${urows[0].firstName} ${urows[0].lastName}`.trim();
+    // Department scope: ending the old rotation and starting the new
+    // one must both sit inside the scheduler's active department.
+    const scopeDepts = new Set<string>([
+      ...(await rotationRelevantDepartments(rotId)),
+      ...(await assignmentRelevantDepartments(pairs.map((p) => ({ userId, shiftTypeId: p.shiftTypeId })), companyId)),
+    ]);
+    if (!(await requireActiveDepartment(req, res, [...scopeDepts]))) return;
+
+    const endDate = dayBefore(fromDate);
+    const newRotationId = await withTransaction(async (tx) => {
+      await tx.query('UPDATE rotations SET end_date = $1 WHERE id = $2 AND company_id = $3', [endDate, rotId, companyId]);
+      return insertPatternRotation(tx, companyId, req.session.userId!, userId, pattern, fromDate);
+    });
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', rotationName: rot.name,
+      changedBy: req.session.userId!,
+      description: `Changed ${personName}'s rotation from ${fromDate}: "${rot.name}" stops ${endDate}; "${pattern.name}" starts ${fromDate}`,
+      details: { rotationId: rotId, newRotationId, kind: 'rotation', changeFromDate: fromDate },
+    });
+    res.json({ ok: true, endedRotationId: rotId, newRotationId, endDate, startDate: fromDate });
+  } catch (err) {
+    console.error('[schedule] change rotation from date failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -10884,7 +11052,7 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        WHERE company_id = $1 AND date = $2`, [companyId, date]);
     const exclSet = new Set(exclRows.map((e: any) => e.rotation_id + '|' + e.user_id + '|' + e.shift_type_id));
     const { rows: rotations } = await query(
-      `SELECT id, cycle_days, start_date::text AS start_date FROM rotations
+      `SELECT id, cycle_days, start_date::text AS start_date, end_date::text AS end_date FROM rotations
        WHERE company_id = $1 AND is_active = true`, [companyId]);
     const userPaused = new Set<string>();
     const target = new Date(date + 'T00:00:00');
@@ -10903,6 +11071,7 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
       if (paused) { for (const a of assigns) userPaused.add(a.user_id); continue; }
       const startDate = new Date(rot.start_date + 'T00:00:00');
       if (target < startDate) continue;
+      if (rot.end_date && date > String(rot.end_date)) continue; // rotation ended (migration 100)
       const daysSince = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
       const cycleDay = (daysSince % rot.cycle_days) + 1;
       for (const a of assigns) {

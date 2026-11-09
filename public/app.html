@@ -9058,6 +9058,7 @@ window.qsNpOfferSend = function (btn) {
                 </div>
                 <div class="modal-actions">
                   <button type="button" id="rot-cancel" class="btn-secondary">Cancel</button>
+                  <button type="button" id="rot-change-open" class="btn-secondary hidden">Change from a date…</button>
                   <button type="button" id="rot-del" class="btn-danger hidden">Delete</button>
                   <button type="button" id="rot-save" class="btn">Save rotation</button>
                 </div>
@@ -9096,6 +9097,56 @@ window.qsNpOfferSend = function (btn) {
                 <div class="modal-actions">
                   <button type="button" id="rcopy-cancel" class="btn-secondary">Close</button>
                   <button type="button" id="rcopy-do" class="btn">Copy rotation</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Change rotation from a date (Deepika 2026-11-09) -->
+            <div id="rchg-modal" class="modal-backdrop hidden">
+              <div class="modal">
+                <h3>Change rotation from a date</h3>
+                <div id="rchg-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <div id="rchg-current" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem"></div>
+                </div>
+                <div class="form-row">
+                  <label>New rotation starts on</label>
+                  <input type="date" id="rchg-from" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                  <p class="hint" style="margin:0.4rem 0 0">The current rotation stops the day before this date — everything before stays exactly as it was. Shifts already saved as real shifts are never touched; this changes the pattern only.</p>
+                </div>
+                <div class="form-row">
+                  <label>New rotation</label>
+                  <div style="display:flex;gap:1rem;margin:0.3rem 0 0.6rem">
+                    <label style="font-size:0.9rem"><input type="radio" name="rchg-mode" value="mirror" checked> Mirror another person's rotation</label>
+                    <label style="font-size:0.9rem"><input type="radio" name="rchg-mode" value="define"> Define it here</label>
+                  </div>
+                  <div id="rchg-mirror-row">
+                    <select id="rchg-mirror" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                  </div>
+                  <div id="rchg-define" class="hidden">
+                    <div class="form-row">
+                      <label>Pattern name</label>
+                      <input type="text" id="rchg-name" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
+                    </div>
+                    <div class="grid-2">
+                      <div class="form-row">
+                        <label>Repeats every (days)</label>
+                        <input type="number" id="rchg-cycle" min="1" max="84" value="7" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                      </div>
+                      <div class="form-row">
+                        <label>Shift type</label>
+                        <select id="rchg-type" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>Working days of the cycle</label>
+                      <div class="day-toggles" id="rchg-days"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="modal-actions">
+                  <button type="button" id="rchg-cancel" class="btn-secondary">Cancel</button>
+                  <button type="button" id="rchg-do" class="btn">Change rotation</button>
                 </div>
               </div>
             </div>
@@ -9287,6 +9338,7 @@ window.qsNpOfferSend = function (btn) {
                 var uniq = days.filter(function (d, i) { return days.indexOf(d) === i; }).length;
                 var s = uniq + ' workday' + (uniq === 1 ? '' : 's') + ' in each ' + r.cycleDays +
                   '-day cycle \u00b7 repeats from ' + (r.startDate || '\u2014');
+                if (r.endDate) s += ' \u00b7 ends ' + r.endDate;
                 if (r.startTime && r.endTime) s += ' \u00b7 ' + String(r.startTime).slice(0, 5) + '–' + String(r.endTime).slice(0, 5);
                 if (r.notes) s += ' \u00b7 ' + r.notes;
                 return s;
@@ -9489,6 +9541,7 @@ window.qsNpOfferSend = function (btn) {
                 show($('rot-copy-row'));
                 hide($('rot-error'));
                 hide($('rot-del'));
+                hide($('rot-change-open'));
                 show($('rot-modal'));
               }
 
@@ -9512,6 +9565,7 @@ window.qsNpOfferSend = function (btn) {
                 hide($('rot-copy-row'));
                 hide($('rot-error'));
                 show($('rot-del'));
+                show($('rot-change-open'));
                 show($('rot-modal'));
                 updateRotPreview();
               }
@@ -9621,6 +9675,11 @@ window.qsNpOfferSend = function (btn) {
                   }),
                 };
                 if (editingRotId) {
+                  // Preserve an end date set by Change-from-a-date:
+                  // the replacement must not silently become endless.
+                  for (var ei = 0; ei < allRots.length; ei++) {
+                    if (allRots[ei].id === editingRotId) { body.endDate = allRots[ei].endDate || null; break; }
+                  }
                   // No update endpoint: create the replacement first, then delete the old one.
                   doCreate(body, function () {
                     api('/api/schedule/rotations/' + editingRotId, { method: 'DELETE' }).then(function () {
@@ -9820,6 +9879,123 @@ window.qsNpOfferSend = function (btn) {
                 }).catch(function () {
                   $('rcopy-do').disabled = false;
                   var e3 = $('rcopy-error'); e3.textContent = 'Network error. Please try again.'; show(e3);
+                });
+              });
+
+              // ============ Change rotation from a date (2026-11-09) ============
+              // The old rotation stops the day before the chosen date;
+              // a new one starts on it (server: POST .../change-from).
+              // The new pattern mirrors another person's rotation or is
+              // defined with the usual fields, pre-filled from the
+              // current rotation so a small change is a small edit.
+              var rchgRotId = null, rchgUserId = null;
+              function renderRchgDays(selected) {
+                var n = Math.min(84, Math.max(1, parseInt($('rchg-cycle').value, 10) || 7));
+                selected = selected || [];
+                var html = '';
+                for (var d = 1; d <= n; d++) {
+                  html += '<button type="button" class="day-toggle' + (selected.indexOf(d) >= 0 ? ' on' : '') +
+                    '" data-day="' + d + '">Day ' + d + '</button>';
+                }
+                $('rchg-days').innerHTML = html;
+                $('rchg-days').querySelectorAll('.day-toggle').forEach(function (b) {
+                  b.addEventListener('click', function () { b.classList.toggle('on'); });
+                });
+              }
+              function rchgMode() {
+                var el = document.querySelector('input[name="rchg-mode"]:checked');
+                return el ? el.value : 'mirror';
+              }
+              function syncRchgMode() {
+                var mirror = rchgMode() === 'mirror';
+                if (mirror) { show($('rchg-mirror-row')); hide($('rchg-define')); }
+                else { hide($('rchg-mirror-row')); show($('rchg-define')); }
+              }
+              document.querySelectorAll('input[name="rchg-mode"]').forEach(function (rb) {
+                rb.addEventListener('change', syncRchgMode);
+              });
+              function openRchg() {
+                if (!editingRotId || !modalUserId) return;
+                var rot = null;
+                for (var i = 0; i < allRots.length; i++) if (allRots[i].id === editingRotId) rot = allRots[i];
+                var m = memberById(modalUserId);
+                if (!rot || !m) return;
+                rchgRotId = rot.id;
+                rchgUserId = modalUserId;
+                hide($('rchg-error'));
+                $('rchg-current').innerHTML = '<strong>' + esc(fullName(m)) + '</strong> — ' + esc(rot.name) + '<br>' + esc(rotSummary(rot));
+                $('rchg-from').value = new Date().toISOString().slice(0, 10);
+                // Mirror options: every per-person rotation except this one.
+                var list = rcopySources().filter(function (e) { return e.rot.id !== rot.id; });
+                $('rchg-mirror').innerHTML = list.length
+                  ? list.map(function (e) {
+                      return '<option value="' + e.rot.id + '">' + esc(fullName(e.person)) + ' — ' + esc(e.rot.name) + '</option>';
+                    }).join('')
+                  : '<option value="">— No other rotations to mirror —</option>';
+                // Define fields pre-filled from the current rotation.
+                $('rchg-name').value = rot.name || '';
+                $('rchg-cycle').value = rot.cycleDays || 7;
+                var tsel = $('rchg-type');
+                tsel.innerHTML = shiftTypes.filter(function (st) { return st.isActive; }).map(function (st) {
+                  return '<option value="' + st.id + '">' + esc(st.name) + '</option>';
+                }).join('');
+                var firstA = (rot.assignments || [])[0];
+                if (firstA) tsel.value = firstA.shiftTypeId;
+                renderRchgDays((rot.assignments || []).filter(function (a) { return a.userId === modalUserId; }).map(function (a) { return a.cycleDay; }));
+                document.querySelector('input[name="rchg-mode"][value="mirror"]').checked = true;
+                syncRchgMode();
+                hide($('rot-modal'));
+                show($('rchg-modal'));
+              }
+              $('rot-change-open').addEventListener('click', openRchg);
+              $('rchg-cancel').addEventListener('click', function () { hide($('rchg-modal')); });
+              $('rchg-modal').addEventListener('click', function (e) { if (e.target === $('rchg-modal')) hide($('rchg-modal')); });
+              $('rchg-cycle').addEventListener('change', function () {
+                var days = [];
+                $('rchg-days').querySelectorAll('.day-toggle.on').forEach(function (b) { days.push(parseInt(b.getAttribute('data-day'), 10)); });
+                renderRchgDays(days);
+              });
+              $('rchg-do').addEventListener('click', function () {
+                hide($('rchg-error'));
+                var fail = function (msg) { var e = $('rchg-error'); e.textContent = msg; show(e); };
+                if (!rchgRotId || !rchgUserId) return;
+                var fromDate = $('rchg-from').value;
+                if (!fromDate) { fail('Pick the date the new rotation starts.'); return; }
+                var body = { userId: rchgUserId, fromDate: fromDate };
+                if (rchgMode() === 'mirror') {
+                  var srcId = $('rchg-mirror').value;
+                  var srcEntry = null;
+                  rcopySources().forEach(function (e) { if (e.rot.id === srcId) srcEntry = e; });
+                  if (!srcEntry) { fail('Pick a rotation to mirror, or define the new one here.'); return; }
+                  var sr = srcEntry.rot;
+                  body.name = sr.name;
+                  body.cycleDays = sr.cycleDays;
+                  body.startTime = sr.startTime ? String(sr.startTime).slice(0, 5) : null;
+                  body.endTime = sr.endTime ? String(sr.endTime).slice(0, 5) : null;
+                  body.notes = sr.notes || null;
+                  body.assignments = (sr.assignments || []).filter(function (a) { return a.userId === srcEntry.person.id; })
+                    .map(function (a) { return { cycleDay: a.cycleDay, shiftTypeId: a.shiftTypeId }; });
+                } else {
+                  var days = [];
+                  $('rchg-days').querySelectorAll('.day-toggle.on').forEach(function (b) { days.push(parseInt(b.getAttribute('data-day'), 10)); });
+                  if (!days.length) { fail('Pick at least one day of the cycle.'); return; }
+                  if (!$('rchg-type').value) { fail('Pick a shift type.'); return; }
+                  body.name = $('rchg-name').value.trim();
+                  body.cycleDays = parseInt($('rchg-cycle').value, 10) || 7;
+                  body.assignments = days.map(function (d) { return { cycleDay: d, shiftTypeId: $('rchg-type').value }; });
+                }
+                $('rchg-do').disabled = true;
+                api('/api/schedule/rotations/' + rchgRotId + '/change-from', {
+                  method: 'POST', body: JSON.stringify(body),
+                }).then(function (r) {
+                  $('rchg-do').disabled = false;
+                  if (!r.ok) { fail((r.data && r.data.error) || 'Could not change the rotation.'); return; }
+                  hide($('rchg-modal'));
+                  pageSuccess('Rotation changed from ' + fromDate + '.');
+                  loadAll();
+                }).catch(function () {
+                  $('rchg-do').disabled = false;
+                  fail('Network error. Please try again.');
                 });
               });
 

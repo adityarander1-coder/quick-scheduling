@@ -58,6 +58,7 @@ export async function getShiftsForRange(
   // Active rotations
   const { rows: rotations } = await query(
     `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+            end_date::text AS "endDate",
             group_id AS "groupId", group_ids AS "groupIds", group_shift_type_id AS "groupShiftTypeId",
             group_days AS "groupDays", turn_unit AS "turnUnit",
             turn_days AS "turnDays", week_start AS "weekStart"
@@ -214,6 +215,7 @@ export async function getShiftsForRange(
           }
           if (ms < fromMs) continue;
           if (isPaused(rot.id, dateStr)) continue;
+          if ((rot as any).endDate && dateStr > (rot as any).endDate) continue;
           const m = currentMember;
           if (!m) continue;
           // A few days off mid-turn changes nothing (mirrors
@@ -270,6 +272,9 @@ export async function getShiftsForRange(
     for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().slice(0, 10);
       if (d < startDate) continue;
+      // Rotation end date (migration 100): end_date is the last
+      // drawn day; dates ascend, so the loop can stop here.
+      if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
 
       const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
       const cycleDay = (daysSinceStart % cycleDays) + 1;
