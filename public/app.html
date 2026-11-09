@@ -4507,11 +4507,16 @@
         window.qsToggleShiftPublish = function(sid) {
           var s = shiftById(sid);
           if (!s || !shiftEditable(s)) return;
-          var toPublished = !(s.published !== false);
+          var isRot = sid.indexOf('rot-') === 0;
+          // An occurrence is draft-at-baseline: a drawn occurrence
+          // has no stored row (a stored row suppresses it), so its
+          // toggle always publishes — the server materializes that
+          // one occurrence into a real published shift (per-shift
+          // publish, kept and made real — Deepika, 2026-11-09).
+          var toPublished = isRot ? true : !(s.published !== false);
           // Optimistic: update instantly.
           s.published = toPublished;
           renderView();
-          var isRot = sid.indexOf('rot-') === 0;
           var ep, body;
           if (isRot) {
             ep = '/api/schedule/rotation-shifts/publish-state';
@@ -4830,10 +4835,12 @@
             var nm = displayName(s);
             var isDraftShift = s.published === false || isOccShift(s);
             var editable = shiftEditable(s);
-            // Occurrences get no P/D toggle: the legacy per-shift
-            // publish flag no longer publishes them for employees —
-            // only Publish schedule does (Deepika, 2026-11-09).
-            var pubBtnHtml = isOccShift(s) ? '' :
+            // Per-shift publish stays available on occurrences too
+            // (Deepika, 2026-11-09, later same day): the toggle now
+            // materializes that one occurrence into a real published
+            // shift on the server, so the P/D button is real again.
+            // An occurrence always shows D (draft-at-baseline).
+            var pubBtnHtml =
               '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>';
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
@@ -5137,15 +5144,14 @@
             // Comment
             var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
             html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
-            // Occurrences get NO publish/draft item: the legacy
-            // sidecar toggle no longer publishes them for employees —
-            // only Publish schedule does — so offering it would
-            // promise a solid/published state that isn't real
-            // (Deepika, 2026-11-09). Stored shifts keep the toggle.
-            if (!isOccShift(s)) {
-              var isDraft = s.published === false;
-              html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
-            }
+            // Publish/draft item — occurrences included (Deepika,
+            // 2026-11-09, later same day: per-shift publish kept).
+            // An occurrence is draft-at-baseline: a drawn occurrence
+            // has no stored row (a stored row suppresses it), so its
+            // item always offers Publish — and the server now
+            // materializes just that one shift for real.
+            var isDraft = isOccShift(s) || s.published === false;
+            html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
             // Replace person — the handler opens the same all-members
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
@@ -5284,8 +5290,13 @@
               openEmployeeCommentModal(s.userId, s.date);
             } else if (act === 'toggle-publish') {
               closeShiftPopup();
-              var toPublished = !(s.published !== false);
               var isRot = s.id && s.id.indexOf('rot-') === 0;
+              // Occurrences are draft-at-baseline (a stored row
+              // would suppress the drawing), so their toggle always
+              // publishes — the server materializes that one shift
+              // (per-shift publish, kept and made real — Deepika,
+              // 2026-11-09). Same rule as qsToggleShiftPublish.
+              var toPublished = isRot ? true : !(s.published !== false);
               var ep, body;
               if (isRot) {
                 ep = '/api/schedule/rotation-shifts/publish-state';

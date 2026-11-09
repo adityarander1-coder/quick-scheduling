@@ -2276,6 +2276,16 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
 
 // POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance (owner/scheduler; department-scoped).
 // Body: { rotationId, userId, date, shiftTypeId, published }
+//
+// Per-shift publish is REAL (Deepika, 2026-11-09: the option stays,
+// and it must mean something under Pattern ≠ Schedule): publishing an
+// occurrence materializes exactly that one occurrence into a stored
+// published shift (rotation provenance set, publish_batch_id NULL —
+// not a batch) so the employee actually sees it. If a stored shift
+// already occupies the slot, THAT row is published / drafted instead —
+// never a duplicate. "Move to draft" on a never-materialized
+// occurrence keeps the legacy sidecar write (a harmless preview flag),
+// so the control is never a dead button.
 router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -2288,6 +2298,89 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       req, res,
       await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
     ))) return;
+    const wantPublished = published !== false;
+    const me = req.session.userId!;
+
+    // Bells: publish uses the same schedule_published shape Publish
+    // schedule (Step 2) sends; unpublish mirrors the manual
+    // publish-state endpoint. The acting admin is never belled.
+    const bellPublished = async () => {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'schedule_published',
+        title: `Your schedule was published: 1 shift(s), ${fmtDateLong(date)} – ${fmtDateLong(date)}`,
+        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
+        link: 'my-schedule', bundleKey: `schedule_published:${userId}`,
+        bundleTitle: 'Your schedule was published: {count} shift(s)',
+        payload: { count: 1 },
+        excludeUserId: me,
+      });
+      return names;
+    };
+    const bellUnpublished = async () => {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
+        title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
+        link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
+        bundleTitle: '{count} of your shifts were removed',
+        excludeUserId: me,
+      });
+      return names;
+    };
+
+    // A stored shift occupying the slot governs both directions:
+    // publish / draft THAT row, never a duplicate.
+    const { rows: storedRows } = await query(
+      `SELECT id, published FROM shifts
+       WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
+      [companyId, userId, date, shiftTypeId]
+    );
+    if (storedRows.length) {
+      const row = storedRows[0];
+      if ((row.published !== false) !== wantPublished) {
+        await query('UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
+          [wantPublished, row.id, companyId]);
+        const names = wantPublished ? await bellPublished() : await bellUnpublished();
+        auditLog({
+          companyId, date, action: wantPublished ? 'published' : 'unpublished',
+          personName: names.personName, shiftTypeName: names.shiftTypeName,
+          source: 'rotation', changedBy: me,
+        });
+      }
+      res.json({ ok: true, published: wantPublished, shiftId: row.id });
+      return;
+    }
+
+    if (wantPublished) {
+      // Materialize exactly this one occurrence — for a group
+      // rotation, the dealt person's occurrence — into a real
+      // published shift. The stored row then suppresses the drawn
+      // occurrence, so later re-dealing can never move it.
+      const real = await materializeRotationOccurrence(
+        companyId, `rot-${rotationId}-${userId}-${date}`,
+        { published: true, provenance: true, createdBy: me }
+      );
+      if (!real) {
+        res.status(404).json({ error: 'That rotation shift no longer exists.' });
+        return;
+      }
+      res.json({ ok: true, published: true, shiftId: real.id });
+      const names = await bellPublished();
+      const { rows: rrows } = await query(
+        'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
+        [rotationId, companyId]
+      );
+      auditLog({
+        companyId, date, action: 'published',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'rotation', rotationName: rrows[0]?.name || null, changedBy: me,
+      });
+      return;
+    }
+
+    // Move to draft, never materialized: the legacy sidecar write.
     const { rows: prevRows } = await query(
       `SELECT published FROM rotation_shift_publish
        WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
@@ -8934,8 +9027,18 @@ async function manualShift(companyId: string, shiftId: string): Promise<any | nu
  * uses — so employee requests (swap) can reference it. Returns the real
  * shift (manualShift shape), an existing manual row when the occurrence
  * was already materialized, or null when the occurrence doesn't exist.
+ *
+ * opts (per-shift publish, Deepika 2026-11-09): published forces the
+ * new row's publish state (default: the occurrence's sidecar state);
+ * provenance stamps shifts.rotation_id on the new row (publish_batch_id
+ * stays NULL — a per-shift publish is not a batch); createdBy overrides
+ * the row's creator (default: the shift's own user, as before).
  */
-async function materializeRotationOccurrence(companyId: string, rotId: string): Promise<any | null> {
+async function materializeRotationOccurrence(
+  companyId: string,
+  rotId: string,
+  opts?: { published?: boolean; provenance?: boolean; createdBy?: string }
+): Promise<any | null> {
   const date = rotId.slice(-10);
   if (!isValidDate(date)) return null;
   const all = await getShiftsForRange(query, companyId, date, date);
@@ -8955,9 +9058,12 @@ async function materializeRotationOccurrence(companyId: string, rotId: string): 
   );
   const id = crypto.randomUUID();
   await query(
-    `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [id, companyId, e.userId, e.shiftTypeId, date, null, e.published !== false, e.userId]
+    `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by, rotation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, companyId, e.userId, e.shiftTypeId, date, null,
+     opts?.published !== undefined ? opts.published : (e.published !== false),
+     opts?.createdBy || e.userId,
+     opts?.provenance ? rotationId : null]
   );
   return manualShift(companyId, id);
 }
