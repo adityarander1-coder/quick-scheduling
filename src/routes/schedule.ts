@@ -21,6 +21,7 @@ import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
+import { companyTodayStr } from '../util/notifyJobs.js';
 import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict } from '../util/shiftConflicts.js';
 import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
@@ -383,6 +384,382 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
 
 // GET /api/schedule/shifts?from=YYYY-MM-DD&to=YYYY-MM-DD — list in range.
 // Includes both manual shifts and rotation-generated shifts.
+// ---------------------------------------------------------------------------
+// Rotation drawing — THE one computation of what a pattern produces.
+// GET /shifts (the manager grid) and Publish schedule (Step 2 of
+// Pattern != Schedule) both call this, so a publish stamps exactly
+// what the grid draws: same pauses, exclusions, vacations, end dates
+// (member end_date AND rotation end_date), group dealing with the
+// line model, and stored-shift precedence (a stored shift for the
+// same person+date+type suppresses the occurrence).
+//
+// opts.collectDeparted (publish only) additionally collects, per
+// person, the occurrences their pattern would have produced AFTER
+// their last working day when that day falls inside [from, to] —
+// rule 7: those shifts open for cover instead of vanishing.
+// ---------------------------------------------------------------------------
+interface DrawOptions {
+  collectDeparted?: boolean;
+  includeInactiveAssignees?: boolean;
+  today?: string;
+}
+
+async function drawRotationOccurrences(
+  q: any,
+  companyId: string,
+  from: string,
+  to: string,
+  storedRows: Array<{ userId: string; date: string; shiftTypeId: string }>,
+  opts?: DrawOptions
+): Promise<{ occurrences: any[]; departed: any[] }> {
+  const departed: any[] = [];
+  // Generate shifts from active rotations
+  const { rows: rotations } = await q(
+    `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+            end_date::text AS "endDate",
+            group_id AS "groupId", group_ids AS "groupIds", group_shift_type_id AS "groupShiftTypeId",
+            group_days AS "groupDays", turn_unit AS "turnUnit",
+            turn_days AS "turnDays", week_start AS "weekStart"
+     FROM rotations WHERE company_id = $1 AND is_active = true`,
+    [companyId]
+  );
+
+  // Vacation ranges per person (pauses attach to the rotations a
+  // person is assigned to) — group turns skip a member who is on
+  // vacation that date, the same way their own rotation does.
+  // 'Bulk delete' pauses are NOT vacations: they are admin
+  // removals, so they must never trigger the vacation pass/cover
+  // in group rotations.
+  const { rows: vacRows } = await q(
+    `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
+     FROM rotation_pauses p
+     JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
+     WHERE p.company_id = $1 AND (p.reason IS NULL OR p.reason <> 'Bulk delete')`,
+    [companyId]
+  );
+  const vacMap = new Map<string, Array<{ start: string; end: string }>>();
+  for (const v of vacRows) {
+    if (!vacMap.has(v.userId)) vacMap.set(v.userId, []);
+    vacMap.get(v.userId)!.push({ start: v.startDate, end: v.endDate });
+  }
+  const onVacation = (userId: string, dateStr: string): boolean => {
+    const periods = vacMap.get(userId);
+    if (!periods) return false;
+    return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+  };
+
+  // Load rotation pause periods (vacations etc.)
+  const { rows: pauseRows } = await q(
+    `SELECT rotation_id AS "rotationId", start_date::text AS "startDate", end_date::text AS "endDate"
+     FROM rotation_pauses
+     WHERE company_id = $1 AND end_date >= $2 AND start_date <= $3`,
+    [companyId, from, to]
+  );
+  const pauseMap = new Map<string, Array<{ start: string; end: string }>>();
+  for (const p of pauseRows) {
+    if (!pauseMap.has(p.rotationId)) pauseMap.set(p.rotationId, []);
+    pauseMap.get(p.rotationId)!.push({ start: p.startDate, end: p.endDate });
+  }
+  const isPaused = (rotationId: string, dateStr: string): boolean => {
+    const periods = pauseMap.get(rotationId);
+    if (!periods) return false;
+    return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+  };
+
+  // Load rotation shift exclusions (deleted rotation instances)
+  const { rows: exclRows } = await q(
+    `SELECT rotation_id AS "rotationId", user_id AS "userId",
+            date::text AS "date", shift_type_id AS "shiftTypeId"
+     FROM rotation_shift_exclusions
+     WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, from, to]
+  );
+  const exclSet = new Set(exclRows.map((e: any) =>
+    `${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`
+  ));
+
+  // Load per-shift publish overrides for rotation shifts
+  const { rows: pubRows } = await q(
+    `SELECT rotation_id AS "rotationId", user_id AS "userId",
+            date::text AS "date", shift_type_id AS "shiftTypeId", published
+     FROM rotation_shift_publish
+     WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, from, to]
+  );
+  const pubMap = new Map(pubRows.map((p: any) =>
+    [`${p.rotationId}|${p.userId}|${p.date}|${p.shiftTypeId}`, p.published]
+  ));
+
+  const rotationShifts: any[] = [];
+  for (const rot of rotations) {
+    const { rows: assignments } = await q(
+      `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
+              ra.shift_type_id AS "shiftTypeId",
+              u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
+              u.is_active AS "userActive", u.end_date::text AS "userEndDate",
+              st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
+              st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
+              st.sort_order AS "sortOrder"
+       FROM rotation_assignments ra
+       JOIN users u ON u.id = ra.user_id
+       JOIN shift_types st ON st.id = ra.shift_type_id
+       WHERE ra.rotation_id = $1 ${opts && opts.includeInactiveAssignees ? '' : 'AND u.is_active = true'}`,
+      [rot.id]
+    );
+    (rot as any).assignments = assignments;
+
+    // Group rotation ("special shift", Deepika 2026-11-04): the
+    // group's members take turns in their fixed order for the
+    // rotation's shift type, on the rotation's chosen cycle days.
+    // Turns are a pure function of the date — counted from the
+    // rotation's start — so a skipped turn (vacation, manual shift)
+    // never reshuffles the order.
+    if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      // The rotation rotates through its groups in order; each
+      // group rotates its own members. Turn BLOCKS are counted by
+      // dealing (a week with no run-dates is never a block), so a
+      // one-week-on / one-week-off pattern advances people only on
+      // the weeks actually worked.
+      const groupIds = String((rot as any).groupIds || (rot as any).groupId)
+        .split(',').map((x: string) => x.trim()).filter(Boolean);
+      const groupsMembers: any[][] = [];
+      for (const gid of groupIds) {
+        const { rows: members } = await q(
+          `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
+                  u.nickname, u.end_date::text AS "userEndDate",
+                  st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
+                  st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
+                  st.sort_order AS "sortOrder"
+           FROM rotation_group_members gm
+           JOIN users u ON u.id = gm.user_id
+           JOIN shift_types st ON st.id = $2
+           WHERE gm.group_id = $1 AND u.is_active = true
+           ORDER BY gm.position`,
+          [gid, (rot as any).groupShiftTypeId]
+        );
+        groupsMembers.push(members);
+      }
+      const daySet = new Set(
+        String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
+      );
+      if (groupsMembers.length && groupsMembers.some((g) => g.length) && daySet.size) {
+        const stId = (rot as any).groupShiftTypeId as string;
+        const unit = (rot as any).turnUnit || 'shift';
+        const tDays = Math.max(1, Number((rot as any).turnDays) || 1);
+        const wStart = Number.isInteger((rot as any).weekStart) ? (rot as any).weekStart : 1;
+        const dayMs = 86400000;
+        const startMs = Date.parse(rot.startDate + 'T00:00:00Z');
+        const fromMs = Date.parse(from + 'T00:00:00Z');
+        const toMs = Date.parse(to + 'T00:00:00Z');
+        const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
+        let occ = 0;
+        let blockIdx = -1;
+        let lastKey: string | null = null;
+        // Each group is a LINE (Deepika 2026-11-04 evening): the
+        // member at the front takes the group's next turn and goes
+        // to the back of the line. If the person whose turn is
+        // starting is on vacation, the next person IN THE SAME
+        // GROUP takes the whole turn; the vacationing member keeps
+        // their place at the front and takes the next turn. Nobody
+        // is pulled from another group, and no one works two turns
+        // in a row because of a swap — the line just keeps moving.
+        // A turn is empty only if the whole group is on vacation.
+        const queues: any[][] = groupsMembers.map((g) => g.slice());
+        let currentMember: any = null;
+        for (let ms = startMs; ms <= toMs; ms += dayMs) {
+          const dayIndex = Math.floor((ms - startMs) / dayMs);
+          const cycleDay = (dayIndex % rot.cycleDays) + 1;
+          if (!daySet.has(cycleDay)) continue;
+          const dateStr = new Date(ms).toISOString().slice(0, 10);
+          let key: string;
+          if (unit === 'week') key = 'w' + Math.floor((ms - anchorMs) / (7 * dayMs));
+          else if (unit === 'days') key = 'd' + Math.floor(occ / tDays);
+          else key = 's' + occ;
+          occ++;
+          if (key !== lastKey) {
+            lastKey = key;
+            blockIdx++;
+            const gIdx = blockIdx % groupsMembers.length;
+            const q = queues[gIdx];
+            currentMember = null;
+            for (let qi = 0; qi < q.length; qi++) {
+              if (!onVacation(q[qi].userId, dateStr)) {
+                currentMember = q[qi];
+                q.splice(qi, 1);
+                q.push(currentMember);
+                break;
+              }
+            }
+          }
+          if (ms < fromMs) continue;
+          if (isPaused(rot.id, dateStr)) continue;
+          if ((rot as any).endDate && dateStr > (rot as any).endDate) continue;
+          const m = currentMember;
+          if (!m) continue;
+          // A few days off in the middle of a turn changes
+          // nothing (Deepika 2026-11-04 evening - keep it
+          // simple): those days are simply blank for an admin
+          // to fill manually. Only a vacation at the turn's
+          // start moves the turn, settled when dealt above.
+          if (onVacation(m.userId, dateStr)) continue;
+          if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
+          const hasManual = storedRows.some((s: any) =>
+            s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
+          );
+          if (hasManual) continue;
+          const exclKey = `${rot.id}|${m.userId}|${dateStr}|${stId}`;
+          if (exclSet.has(exclKey)) continue;
+          rotationShifts.push({
+            id: `rot-${rot.id}-${m.userId}-${dateStr}`,
+            date: dateStr,
+            notes: null,
+            published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
+            userId: m.userId,
+            firstName: m.firstName,
+            lastName: m.lastName,
+            nickname: m.nickname,
+            shiftTypeId: stId,
+            shiftTypeName: m.shiftTypeName,
+            shiftTypeShort: m.shiftTypeShort,
+            shiftTypeColor: m.shiftTypeColor,
+            shiftTypeTextColor: m.shiftTypeTextColor,
+            isRotation: true,
+            rotationId: rot.id,
+            rotationName: rot.name,
+            _sortOrder: m.sortOrder,
+            _special: true,
+          });
+        }
+      }
+      continue;
+    }
+
+    if (assignments.length === 0) continue;
+
+    // Build map: cycleDay -> assignments
+    const byDay = new Map<number, typeof assignments>();
+    for (const a of assignments) {
+      if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
+      byDay.get(a.cycleDay)!.push(a);
+    }
+
+    const startDate = new Date(rot.startDate + 'T00:00:00');
+    const fromDate = new Date(from + 'T00:00:00');
+    const toDate = new Date(to + 'T00:00:00');
+    const cycleDays = rot.cycleDays;
+
+    // Iterate each date in range
+    for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      if (d < startDate) continue;
+      // Rotation end date (migration 100): end_date is the last
+      // drawn day; dates ascend, so the loop can stop here.
+      if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
+
+      const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      const cycleDay = (daysSinceStart % cycleDays) + 1; // 1-indexed
+
+      const dayAssignments = byDay.get(cycleDay);
+      if (!dayAssignments) continue;
+
+      for (const a of dayAssignments) {
+        const endD = a.userEndDate ? String(a.userEndDate).slice(0, 10) : null;
+        const departedDate = !!(endD && dateStr > endD);
+        // Inactive members never draw assigned occurrences (the
+        // assignment query filters them out for the grid; publish
+        // mode loads them only to collect their departed slots).
+        if (!departedDate && a.userActive === false) continue;
+
+        // Skip if a manual shift already exists for this user/date/shiftType
+        // (manual shifts take precedence)
+        const hasManual = storedRows.some((s: any) =>
+          s.userId === a.userId && s.date === dateStr && s.shiftTypeId === a.shiftTypeId
+        );
+        if (hasManual) continue;
+
+        if (departedDate) {
+          // Rule 7 (Deepika, 2026-11-09): when a person's last
+          // working day falls inside the range being published,
+          // the shifts they WOULD have worked after it are not
+          // lost — publish collects them here so they can be
+          // stamped as open-for-cover slots. The grid never
+          // collects them (its preview draws assigned shifts only).
+          if (opts && opts.collectDeparted && endD! >= from && endD! <= to && dateStr >= (opts.today || from)) {
+            departed.push({
+              date: dateStr,
+              userId: a.userId,
+              firstName: a.firstName,
+              lastName: a.lastName,
+              nickname: a.nickname,
+              shiftTypeId: a.shiftTypeId,
+              shiftTypeName: a.shiftTypeName,
+              rotationId: rot.id,
+              rotationName: rot.name,
+              endDate: endD,
+            });
+          }
+          continue;
+        }
+
+        // Skip if date is within a pause period (vacation etc.)
+        if (isPaused(rot.id, dateStr)) continue;
+
+        // Skip if this rotation instance was deleted (exclusion)
+        const exclKey = `${rot.id}|${a.userId}|${dateStr}|${a.shiftTypeId}`;
+        if (exclSet.has(exclKey)) continue;
+
+        rotationShifts.push({
+          id: `rot-${rot.id}-${a.userId}-${dateStr}`,
+          date: dateStr,
+          notes: null,
+          published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
+          userId: a.userId,
+          firstName: a.firstName,
+          lastName: a.lastName,
+          nickname: a.nickname,
+          shiftTypeId: a.shiftTypeId,
+          shiftTypeName: a.shiftTypeName,
+          shiftTypeShort: a.shiftTypeShort,
+          shiftTypeColor: a.shiftTypeColor,
+          shiftTypeTextColor: a.shiftTypeTextColor,
+          isRotation: true,
+          rotationId: rot.id,
+          rotationName: rot.name,
+          _sortOrder: a.sortOrder,
+        });
+      }
+    }
+  }
+
+  // Special-shift precedence (Deepika 2026-11-04): a group-rotation
+  // shift takes preference over the same person's OTHER rotation
+  // shifts. A normal rotation occurrence that clashes with one of
+  // their special shifts (time overlap, or under 8 hours of rest;
+  // untimed types clash on a shared day) is not generated — the
+  // shortfall shows in Short cover like any other gap. Manual
+  // shifts are never touched.
+  if (rotationShifts.some((s: any) => s._special)) {
+    const typeTimes = await getShiftTypeTimes(q, companyId);
+    const specialsByUser = new Map<string, any[]>();
+    for (const s of rotationShifts) {
+      if (!s._special) continue;
+      if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+      specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s));
+    }
+    for (let i = rotationShifts.length - 1; i >= 0; i--) {
+      const s = rotationShifts[i];
+      if (s._special) { delete s._special; continue; }
+      const specials = specialsByUser.get(s.userId);
+      if (!specials || !specials.length) continue;
+      const timed = makeTimedShift(typeTimes, s.userId, s);
+      if (specials.some((sp: any) => !!findShiftConflict('This person', [sp], timed))) {
+        rotationShifts.splice(i, 1);
+      }
+    }
+  }
+  return { occurrences: rotationShifts, departed };
+}
+
 router.get('/shifts', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -412,323 +789,10 @@ router.get('/shifts', async (req: Request, res: Response) => {
        ORDER BY s.date, st.sort_order, u.first_name, u.last_name`,
       [companyId, from, to]
     );
-
-    // Generate shifts from active rotations
-    const { rows: rotations } = await query(
-      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
-              end_date::text AS "endDate",
-              group_id AS "groupId", group_ids AS "groupIds", group_shift_type_id AS "groupShiftTypeId",
-              group_days AS "groupDays", turn_unit AS "turnUnit",
-              turn_days AS "turnDays", week_start AS "weekStart"
-       FROM rotations WHERE company_id = $1 AND is_active = true`,
-      [companyId]
-    );
-
-    // Vacation ranges per person (pauses attach to the rotations a
-    // person is assigned to) — group turns skip a member who is on
-    // vacation that date, the same way their own rotation does.
-    // 'Bulk delete' pauses are NOT vacations: they are admin
-    // removals, so they must never trigger the vacation pass/cover
-    // in group rotations.
-    const { rows: vacRows } = await query(
-      `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
-       FROM rotation_pauses p
-       JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
-       WHERE p.company_id = $1 AND (p.reason IS NULL OR p.reason <> 'Bulk delete')`,
-      [companyId]
-    );
-    const vacMap = new Map<string, Array<{ start: string; end: string }>>();
-    for (const v of vacRows) {
-      if (!vacMap.has(v.userId)) vacMap.set(v.userId, []);
-      vacMap.get(v.userId)!.push({ start: v.startDate, end: v.endDate });
-    }
-    const onVacation = (userId: string, dateStr: string): boolean => {
-      const periods = vacMap.get(userId);
-      if (!periods) return false;
-      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
-    };
-
-    // Load rotation pause periods (vacations etc.)
-    const { rows: pauseRows } = await query(
-      `SELECT rotation_id AS "rotationId", start_date::text AS "startDate", end_date::text AS "endDate"
-       FROM rotation_pauses
-       WHERE company_id = $1 AND end_date >= $2 AND start_date <= $3`,
-      [companyId, from, to]
-    );
-    const pauseMap = new Map<string, Array<{ start: string; end: string }>>();
-    for (const p of pauseRows) {
-      if (!pauseMap.has(p.rotationId)) pauseMap.set(p.rotationId, []);
-      pauseMap.get(p.rotationId)!.push({ start: p.startDate, end: p.endDate });
-    }
-    const isPaused = (rotationId: string, dateStr: string): boolean => {
-      const periods = pauseMap.get(rotationId);
-      if (!periods) return false;
-      return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
-    };
-
-    // Load rotation shift exclusions (deleted rotation instances)
-    const { rows: exclRows } = await query(
-      `SELECT rotation_id AS "rotationId", user_id AS "userId",
-              date::text AS "date", shift_type_id AS "shiftTypeId"
-       FROM rotation_shift_exclusions
-       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-      [companyId, from, to]
-    );
-    const exclSet = new Set(exclRows.map((e: any) =>
-      `${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`
-    ));
-
-    // Load per-shift publish overrides for rotation shifts
-    const { rows: pubRows } = await query(
-      `SELECT rotation_id AS "rotationId", user_id AS "userId",
-              date::text AS "date", shift_type_id AS "shiftTypeId", published
-       FROM rotation_shift_publish
-       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-      [companyId, from, to]
-    );
-    const pubMap = new Map(pubRows.map((p: any) =>
-      [`${p.rotationId}|${p.userId}|${p.date}|${p.shiftTypeId}`, p.published]
-    ));
-
-    const rotationShifts: any[] = [];
-    for (const rot of rotations) {
-      const { rows: assignments } = await query(
-        `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
-                ra.shift_type_id AS "shiftTypeId",
-                u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
-                u.is_active AS "userActive", u.end_date::text AS "userEndDate",
-                st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
-                st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
-                st.sort_order AS "sortOrder"
-         FROM rotation_assignments ra
-         JOIN users u ON u.id = ra.user_id
-         JOIN shift_types st ON st.id = ra.shift_type_id
-         WHERE ra.rotation_id = $1 AND u.is_active = true`,
-        [rot.id]
-      );
-      (rot as any).assignments = assignments;
-
-      // Group rotation ("special shift", Deepika 2026-11-04): the
-      // group's members take turns in their fixed order for the
-      // rotation's shift type, on the rotation's chosen cycle days.
-      // Turns are a pure function of the date — counted from the
-      // rotation's start — so a skipped turn (vacation, manual shift)
-      // never reshuffles the order.
-      if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
-        // The rotation rotates through its groups in order; each
-        // group rotates its own members. Turn BLOCKS are counted by
-        // dealing (a week with no run-dates is never a block), so a
-        // one-week-on / one-week-off pattern advances people only on
-        // the weeks actually worked.
-        const groupIds = String((rot as any).groupIds || (rot as any).groupId)
-          .split(',').map((x: string) => x.trim()).filter(Boolean);
-        const groupsMembers: any[][] = [];
-        for (const gid of groupIds) {
-          const { rows: members } = await query(
-            `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
-                    u.nickname, u.end_date::text AS "userEndDate",
-                    st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
-                    st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
-                    st.sort_order AS "sortOrder"
-             FROM rotation_group_members gm
-             JOIN users u ON u.id = gm.user_id
-             JOIN shift_types st ON st.id = $2
-             WHERE gm.group_id = $1 AND u.is_active = true
-             ORDER BY gm.position`,
-            [gid, (rot as any).groupShiftTypeId]
-          );
-          groupsMembers.push(members);
-        }
-        const daySet = new Set(
-          String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
-        );
-        if (groupsMembers.length && groupsMembers.some((g) => g.length) && daySet.size) {
-          const stId = (rot as any).groupShiftTypeId as string;
-          const unit = (rot as any).turnUnit || 'shift';
-          const tDays = Math.max(1, Number((rot as any).turnDays) || 1);
-          const wStart = Number.isInteger((rot as any).weekStart) ? (rot as any).weekStart : 1;
-          const dayMs = 86400000;
-          const startMs = Date.parse(rot.startDate + 'T00:00:00Z');
-          const fromMs = Date.parse(from + 'T00:00:00Z');
-          const toMs = Date.parse(to + 'T00:00:00Z');
-          const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
-          let occ = 0;
-          let blockIdx = -1;
-          let lastKey: string | null = null;
-          // Each group is a LINE (Deepika 2026-11-04 evening): the
-          // member at the front takes the group's next turn and goes
-          // to the back of the line. If the person whose turn is
-          // starting is on vacation, the next person IN THE SAME
-          // GROUP takes the whole turn; the vacationing member keeps
-          // their place at the front and takes the next turn. Nobody
-          // is pulled from another group, and no one works two turns
-          // in a row because of a swap — the line just keeps moving.
-          // A turn is empty only if the whole group is on vacation.
-          const queues: any[][] = groupsMembers.map((g) => g.slice());
-          let currentMember: any = null;
-          for (let ms = startMs; ms <= toMs; ms += dayMs) {
-            const dayIndex = Math.floor((ms - startMs) / dayMs);
-            const cycleDay = (dayIndex % rot.cycleDays) + 1;
-            if (!daySet.has(cycleDay)) continue;
-            const dateStr = new Date(ms).toISOString().slice(0, 10);
-            let key: string;
-            if (unit === 'week') key = 'w' + Math.floor((ms - anchorMs) / (7 * dayMs));
-            else if (unit === 'days') key = 'd' + Math.floor(occ / tDays);
-            else key = 's' + occ;
-            occ++;
-            if (key !== lastKey) {
-              lastKey = key;
-              blockIdx++;
-              const gIdx = blockIdx % groupsMembers.length;
-              const q = queues[gIdx];
-              currentMember = null;
-              for (let qi = 0; qi < q.length; qi++) {
-                if (!onVacation(q[qi].userId, dateStr)) {
-                  currentMember = q[qi];
-                  q.splice(qi, 1);
-                  q.push(currentMember);
-                  break;
-                }
-              }
-            }
-            if (ms < fromMs) continue;
-            if (isPaused(rot.id, dateStr)) continue;
-            if ((rot as any).endDate && dateStr > (rot as any).endDate) continue;
-            const m = currentMember;
-            if (!m) continue;
-            // A few days off in the middle of a turn changes
-            // nothing (Deepika 2026-11-04 evening - keep it
-            // simple): those days are simply blank for an admin
-            // to fill manually. Only a vacation at the turn's
-            // start moves the turn, settled when dealt above.
-            if (onVacation(m.userId, dateStr)) continue;
-            if (m.userEndDate && dateStr > String(m.userEndDate).slice(0, 10)) continue;
-            const hasManual = rows.some((s: any) =>
-              s.userId === m.userId && s.date === dateStr && s.shiftTypeId === stId
-            );
-            if (hasManual) continue;
-            const exclKey = `${rot.id}|${m.userId}|${dateStr}|${stId}`;
-            if (exclSet.has(exclKey)) continue;
-            rotationShifts.push({
-              id: `rot-${rot.id}-${m.userId}-${dateStr}`,
-              date: dateStr,
-              notes: null,
-              published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
-              userId: m.userId,
-              firstName: m.firstName,
-              lastName: m.lastName,
-              nickname: m.nickname,
-              shiftTypeId: stId,
-              shiftTypeName: m.shiftTypeName,
-              shiftTypeShort: m.shiftTypeShort,
-              shiftTypeColor: m.shiftTypeColor,
-              shiftTypeTextColor: m.shiftTypeTextColor,
-              isRotation: true,
-              rotationId: rot.id,
-              rotationName: rot.name,
-              _sortOrder: m.sortOrder,
-              _special: true,
-            });
-          }
-        }
-        continue;
-      }
-
-      if (assignments.length === 0) continue;
-
-      // Build map: cycleDay -> assignments
-      const byDay = new Map<number, typeof assignments>();
-      for (const a of assignments) {
-        if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
-        byDay.get(a.cycleDay)!.push(a);
-      }
-
-      const startDate = new Date(rot.startDate + 'T00:00:00');
-      const fromDate = new Date(from + 'T00:00:00');
-      const toDate = new Date(to + 'T00:00:00');
-      const cycleDays = rot.cycleDays;
-
-      // Iterate each date in range
-      for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().slice(0, 10);
-        if (d < startDate) continue;
-        // Rotation end date (migration 100): end_date is the last
-        // drawn day; dates ascend, so the loop can stop here.
-        if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
-
-        const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-        const cycleDay = (daysSinceStart % cycleDays) + 1; // 1-indexed
-
-        const dayAssignments = byDay.get(cycleDay);
-        if (!dayAssignments) continue;
-
-        for (const a of dayAssignments) {
-          // Skip if employee has ended before this date
-          if (a.userEndDate && dateStr > String(a.userEndDate).slice(0, 10)) continue;
-
-          // Skip if a manual shift already exists for this user/date/shiftType
-          // (manual shifts take precedence)
-          const hasManual = rows.some((s: any) =>
-            s.userId === a.userId && s.date === dateStr && s.shiftTypeId === a.shiftTypeId
-          );
-          if (hasManual) continue;
-
-          // Skip if date is within a pause period (vacation etc.)
-          if (isPaused(rot.id, dateStr)) continue;
-
-          // Skip if this rotation instance was deleted (exclusion)
-          const exclKey = `${rot.id}|${a.userId}|${dateStr}|${a.shiftTypeId}`;
-          if (exclSet.has(exclKey)) continue;
-
-          rotationShifts.push({
-            id: `rot-${rot.id}-${a.userId}-${dateStr}`,
-            date: dateStr,
-            notes: null,
-            published: pubMap.has(exclKey) ? pubMap.get(exclKey) : true,
-            userId: a.userId,
-            firstName: a.firstName,
-            lastName: a.lastName,
-            nickname: a.nickname,
-            shiftTypeId: a.shiftTypeId,
-            shiftTypeName: a.shiftTypeName,
-            shiftTypeShort: a.shiftTypeShort,
-            shiftTypeColor: a.shiftTypeColor,
-            shiftTypeTextColor: a.shiftTypeTextColor,
-            isRotation: true,
-            rotationId: rot.id,
-            rotationName: rot.name,
-            _sortOrder: a.sortOrder,
-          });
-        }
-      }
-    }
-
-    // Special-shift precedence (Deepika 2026-11-04): a group-rotation
-    // shift takes preference over the same person's OTHER rotation
-    // shifts. A normal rotation occurrence that clashes with one of
-    // their special shifts (time overlap, or under 8 hours of rest;
-    // untimed types clash on a shared day) is not generated — the
-    // shortfall shows in Short cover like any other gap. Manual
-    // shifts are never touched.
-    if (rotationShifts.some((s: any) => s._special)) {
-      const typeTimes = await getShiftTypeTimes(query, companyId);
-      const specialsByUser = new Map<string, any[]>();
-      for (const s of rotationShifts) {
-        if (!s._special) continue;
-        if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
-        specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s));
-      }
-      for (let i = rotationShifts.length - 1; i >= 0; i--) {
-        const s = rotationShifts[i];
-        if (s._special) { delete s._special; continue; }
-        const specials = specialsByUser.get(s.userId);
-        if (!specials || !specials.length) continue;
-        const timed = makeTimedShift(typeTimes, s.userId, s);
-        if (specials.some((sp: any) => !!findShiftConflict('This person', [sp], timed))) {
-          rotationShifts.splice(i, 1);
-        }
-      }
-    }
+    // Generate shifts from active rotations — the drawing lives in
+    // drawRotationOccurrences (shared with Publish schedule, Step 2,
+    // so a publish stamps exactly what this grid draws).
+    const { occurrences: rotationShifts } = await drawRotationOccurrences(query, companyId, from, to, rows);
 
     // Merge and sort.
     // Manual shifts are NEVER hidden — a vacation pause suppresses only
@@ -3427,6 +3491,659 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Publish schedule (Deepika, 2026-11-09 — Step 2 of Pattern ≠ Schedule,
+// the easy way). A rotation is a PATTERN: it only draws a draft preview
+// for managers. Publishing stamps a chosen range of that drawing into
+// REAL shifts (published, with batch + rotation provenance), which is
+// the moment employees see them. Design (her Option 1, approved
+// 2026-11-09): one "Publish schedule" action on the Schedule page
+// stamps ALL patterns in the departments in view for an admin-picked
+// range — presets or custom, no fixed horizon.
+//
+// Rules baked in here:
+// - Stored shifts always win: an occurrence a stored shift already
+//   covers is never duplicated or overwritten.
+// - Pattern-changed republish: if a pattern changed since its shifts
+//   were stamped, the preview lists the person under Changes
+//   ("Removes N · Adds M"). Removes ONLY ever target batch-created
+//   shifts and ONLY dates >= today — the past is truth, hand-made
+//   shifts are never touched — and confirm applies exactly the plan
+//   the dialog showed (re-validated inside the transaction).
+// - Rule 7: a per-person pattern whose person's last working day
+//   falls inside the range stamps the shifts they would have worked
+//   after it as OPEN-for-cover slots (extra_open_slots — the form
+//   Short cover, pickup links and gap offers already consume), with
+//   a per-batch ledger so re-publishes and undos reconcile exactly.
+//   Group rotations are excluded: groups re-deal their own turns.
+// - A batch can be undone: its future shifts are deleted, its past
+//   shifts stay forever, its opened slots are taken back.
+// ---------------------------------------------------------------------------
+
+/** Department ids per shift type (join table + legacy column). */
+async function shiftTypeDeptMap(companyId: string): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  const { rows } = await query(
+    `SELECT shift_type_id AS "typeId", department_id AS "deptId" FROM (
+       SELECT std.shift_type_id, std.department_id
+       FROM shift_type_departments std
+       JOIN shift_types st ON st.id = std.shift_type_id
+       WHERE st.company_id = $1
+       UNION
+       SELECT id, department_id FROM shift_types
+       WHERE company_id = $1 AND department_id IS NOT NULL
+     ) x`,
+    [companyId]
+  );
+  for (const r of rows) {
+    if (!map.has(r.typeId)) map.set(r.typeId, []);
+    map.get(r.typeId)!.push(r.deptId);
+  }
+  return map;
+}
+
+/**
+ * Resolve the publish scope from the departments the admin has in
+ * view. Returns { ok: false } after sending an error response.
+ * depts = null means "unrestricted" (owner, no filter).
+ */
+async function resolvePublishScope(
+  req: Request, res: Response, requested: any
+): Promise<{ ok: boolean; depts: Set<string> | null }> {
+  const companyId = req.session.companyId!;
+  const { rows: deptRows } = await query('SELECT id FROM departments WHERE company_id = $1', [companyId]);
+  const companyDepts = new Set<string>(deptRows.map((r: any) => r.id));
+  const wanted: string[] = Array.isArray(requested)
+    ? [...new Set(requested.filter((x: any) => typeof x === 'string' && companyDepts.has(x)))]
+    : [];
+  if (req.session.role === 'owner') {
+    return { ok: true, depts: wanted.length ? new Set(wanted) : null };
+  }
+  // Scheduler: publishing writes shifts, so it is limited to the
+  // departments they can EDIT (not merely view).
+  const access = await getDepartmentAccess(req.session.userId!, companyId);
+  const edit = new Set(access.edit);
+  if (!edit.size) {
+    res.status(403).json({ error: 'You have no departments you can edit.' });
+    return { ok: false, depts: null };
+  }
+  if (wanted.length) {
+    if (wanted.some((d) => !edit.has(d))) {
+      res.status(403).json({ error: 'You can only publish departments you can edit.' });
+      return { ok: false, depts: null };
+    }
+    return { ok: true, depts: new Set(wanted) };
+  }
+  return { ok: true, depts: edit };
+}
+
+function publishTypeInScope(
+  typeDepts: Map<string, string[]>, typeId: string,
+  depts: Set<string> | null, isOwner: boolean
+): boolean {
+  const ds = typeDepts.get(typeId) || [];
+  // Unassigned types belong to no department: they are in scope only
+  // for an owner publishing with NO department filter (everything in
+  // view). Under any explicit filter they are not in view, and a
+  // scheduler never stamps them (house rule: unassigned = owner-only).
+  if (!ds.length) return depts === null && isOwner;
+  if (depts === null) return true;
+  return ds.some((d) => depts.has(d));
+}
+
+const pubKey = (u: string, d: string, t: string) => `${u}|${d}|${t}`;
+
+/**
+ * Compute the publish plan for a range: what confirming WOULD do.
+ * Adds = pattern occurrences not already covered by a stored shift
+ * (stored always wins — the drawing suppresses them itself) and not
+ * already batch-stamped. Removes = batch-stamped shifts, dates >=
+ * today only, that the current pattern no longer draws.
+ */
+async function computePublishPlan(
+  companyId: string, from: string, to: string, today: string,
+  depts: Set<string> | null, isOwner: boolean
+) {
+  const typeDepts = await shiftTypeDeptMap(companyId);
+  const inScope = (t: string) => publishTypeInScope(typeDepts, t, depts, isOwner);
+
+  const { rows: stored } = await query(
+    `SELECT id, user_id AS "userId", date::text AS date,
+            shift_type_id AS "shiftTypeId", publish_batch_id AS "publishBatchId"
+     FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, from, to]
+  );
+  const handmade = stored.filter((s: any) => !s.publishBatchId);
+  const batchShifts = stored.filter((s: any) => s.publishBatchId);
+
+  // The drawing runs against hand-made stored shifts only: a batch
+  // shift must not suppress its own occurrence (it IS that
+  // occurrence, published), or the diff would read it as a remove.
+  const { occurrences, departed } = await drawRotationOccurrences(
+    query, companyId, from, to, handmade,
+    { collectDeparted: true, includeInactiveAssignees: true, today }
+  );
+
+  const batchByKey = new Map<string, any>(batchShifts.map((s: any) => [pubKey(s.userId, s.date, s.shiftTypeId), s]));
+  const desiredByKey = new Map<string, any>();
+  for (const o of occurrences) {
+    if (inScope(o.shiftTypeId)) desiredByKey.set(pubKey(o.userId, o.date, o.shiftTypeId), o);
+  }
+
+  const batchPeople = new Set<string>(batchShifts.map((s: any) => s.userId));
+  const adds: any[] = [];
+  for (const [k, o] of desiredByKey) {
+    if (batchByKey.has(k)) continue;
+    // Someone already published in this range keeps their past
+    // exactly as recorded: a pattern change adds and removes only
+    // from today on. Never-published ground backfills whole.
+    if (batchPeople.has(o.userId) && o.date < today) continue;
+    adds.push({
+      userId: o.userId, date: o.date, shiftTypeId: o.shiftTypeId, rotationId: o.rotationId,
+      firstName: o.firstName, lastName: o.lastName, nickname: o.nickname,
+    });
+  }
+  const removes: any[] = [];
+  for (const s of batchShifts) {
+    if (s.date < today) continue;              // the past is truth — never removed
+    if (!inScope(s.shiftTypeId)) continue;
+    if (!desiredByKey.has(pubKey(s.userId, s.date, s.shiftTypeId))) removes.push(s);
+  }
+
+  // --- Rule 7: departed people's would-be shifts open for cover ---
+  const desiredOpens = new Map<string, { rotationId: string; date: string; shiftTypeId: string; count: number; people: Map<string, { userId: string; name: string; endDate: string; count: number }> }>();
+  for (const d of departed) {
+    if (!inScope(d.shiftTypeId)) continue;
+    const k = `${d.rotationId}|${d.date}|${d.shiftTypeId}`;
+    if (!desiredOpens.has(k)) {
+      desiredOpens.set(k, { rotationId: d.rotationId, date: d.date, shiftTypeId: d.shiftTypeId, count: 0, people: new Map() });
+    }
+    const slot = desiredOpens.get(k)!;
+    slot.count++;
+    const nm = d.nickname || `${d.firstName || ''} ${d.lastName || ''}`.trim();
+    if (!slot.people.has(d.userId)) slot.people.set(d.userId, { userId: d.userId, name: nm, endDate: d.endDate, count: 0 });
+    slot.people.get(d.userId)!.count++;
+  }
+  const { rows: ledgerRows } = await query(
+    `SELECT l.rotation_id AS "rotationId", l.date::text AS date, l.shift_type_id AS "shiftTypeId",
+            COALESCE(SUM(l.count), 0)::int AS n
+     FROM publish_batch_open_slots l
+     JOIN publish_batches b ON b.id = l.batch_id
+     WHERE l.company_id = $1 AND b.undone_at IS NULL AND l.date >= $2 AND l.date <= $3
+     GROUP BY l.rotation_id, l.date, l.shift_type_id`,
+    [companyId, from, to]
+  );
+  const existingOpens = new Map<string, number>();
+  for (const r of ledgerRows) {
+    if (inScope(r.shiftTypeId)) existingOpens.set(`${r.rotationId}|${r.date}|${r.shiftTypeId}`, r.n);
+  }
+  const opens: any[] = [];   // { rotationId, date, shiftTypeId, count (net new), desired (total wanted) }
+  const closes: any[] = [];  // { rotationId, date, shiftTypeId, count } — no longer produced
+  for (const [k, slot] of desiredOpens) {
+    const already = existingOpens.get(k) || 0;
+    if (slot.count > already) opens.push({ rotationId: slot.rotationId, date: slot.date, shiftTypeId: slot.shiftTypeId, count: slot.count - already, desired: slot.count });
+    if (already > slot.count) closes.push({ rotationId: slot.rotationId, date: slot.date, shiftTypeId: slot.shiftTypeId, count: already - slot.count });
+  }
+  for (const [k, n] of existingOpens) {
+    if (!desiredOpens.has(k)) {
+      const [rotationId, date, shiftTypeId] = k.split('|');
+      closes.push({ rotationId, date, shiftTypeId, count: n });
+    }
+  }
+  // Per-departed-person display lines (desired in range + how many are new).
+  const openPeople = new Map<string, { userId: string; name: string; endDate: string; count: number; newCount: number }>();
+  for (const slot of desiredOpens.values()) {
+    const already = existingOpens.get(`${slot.rotationId}|${slot.date}|${slot.shiftTypeId}`) || 0;
+    let newLeft = Math.max(0, slot.count - already);
+    for (const p of slot.people.values()) {
+      if (!openPeople.has(p.userId)) openPeople.set(p.userId, { userId: p.userId, name: p.name, endDate: p.endDate, count: 0, newCount: 0 });
+      const line = openPeople.get(p.userId)!;
+      line.count += p.count;
+      const take = Math.min(newLeft, p.count);
+      line.newCount += take;
+      newLeft -= take;
+    }
+  }
+
+  return { adds, removes, opens, closes, batchPeople, openPeople: [...openPeople.values()], typeDepts };
+}
+
+// POST /api/schedule/publish/preview — compute the plan, write NOTHING.
+router.post('/publish/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const from = String(req.body?.from || '');
+    const to = String(req.body?.to || '');
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Pick a valid date range to publish.' });
+      return;
+    }
+    if ((Date.parse(to) - Date.parse(from)) / 86400000 > 366) {
+      res.status(400).json({ error: 'Publish at most a year at a time.' });
+      return;
+    }
+    const scope = await resolvePublishScope(req, res, req.body?.departmentIds);
+    if (!scope.ok) return;
+    const today = await companyTodayStr(companyId);
+    const plan = await computePublishPlan(companyId, from, to, today, scope.depts, req.session.role === 'owner');
+
+    // Display aggregates: fresh adds per department (people with no
+    // batch presence in the range), changes per person with batch
+    // presence, rule-7 lines.
+    const { rows: deptRows } = await query('SELECT id, name FROM departments WHERE company_id = $1', [companyId]);
+    const deptName = new Map<string, string>(deptRows.map((d: any) => [d.id, d.name]));
+    const userIds = [...new Set([
+      ...plan.adds.map((a: any) => a.userId),
+      ...plan.removes.map((r: any) => r.userId),
+    ])];
+    const nameOf = new Map<string, string>();
+    if (userIds.length) {
+      const { rows: urows } = await query(
+        'SELECT id, first_name AS "firstName", last_name AS "lastName", nickname FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, userIds]
+      );
+      for (const u of urows) nameOf.set(u.id, u.nickname || `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'Team member');
+    }
+    const freshByDept = new Map<string, number>();
+    let freshAdds = 0;
+    const changeMap = new Map<string, { userId: string; name: string; removes: number; adds: number }>();
+    const changeLine = (uid: string) => {
+      if (!changeMap.has(uid)) changeMap.set(uid, { userId: uid, name: nameOf.get(uid) || 'Team member', removes: 0, adds: 0 });
+      return changeMap.get(uid)!;
+    };
+    for (const a of plan.adds) {
+      if (plan.batchPeople.has(a.userId)) { changeLine(a.userId).adds++; continue; }
+      freshAdds++;
+      const ds = plan.typeDepts.get(a.shiftTypeId) || [];
+      const targets = ds.length ? ds : [''];
+      for (const d of targets) freshByDept.set(d, (freshByDept.get(d) || 0) + 1);
+    }
+    for (const r of plan.removes) changeLine(r.userId).removes++;
+    const changes = [...changeMap.values()].filter((c) => c.removes > 0 || c.adds > 0);
+    changes.sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({
+      from, to, today,
+      totalAdds: plan.adds.length,
+      totalRemoves: plan.removes.length,
+      freshAdds,
+      departments: [...freshByDept.entries()].map(([id, count]) => ({
+        id: id || null, name: id ? (deptName.get(id) || 'Department') : 'No department', count,
+      })).sort((a, b) => b.count - a.count),
+      changes,
+      openForCover: plan.openPeople.sort((a, b) => a.name.localeCompare(b.name)),
+      opensTotal: plan.opens.reduce((n, o) => n + o.count, 0),
+      closesTotal: plan.closes.reduce((n, c) => n + c.count, 0),
+      plan: {
+        adds: plan.adds.map((a: any) => ({ userId: a.userId, date: a.date, shiftTypeId: a.shiftTypeId, rotationId: a.rotationId })),
+        removes: plan.removes.map((r: any) => r.id),
+        opens: plan.opens,
+        closes: plan.closes,
+      },
+    });
+  } catch (err) {
+    console.error('[schedule] publish preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/publish — apply EXACTLY the confirmed plan
+// (re-validated inside one transaction), stamp provenance, notify.
+router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const from = String(req.body?.from || '');
+    const to = String(req.body?.to || '');
+    const planIn = req.body?.plan || {};
+    if (!isValidDate(from) || !isValidDate(to) || from > to) {
+      res.status(400).json({ error: 'Pick a valid date range to publish.' });
+      return;
+    }
+    const addsIn: any[] = Array.isArray(planIn.adds) ? planIn.adds : [];
+    const removesIn: string[] = Array.isArray(planIn.removes) ? planIn.removes.filter((x: any) => typeof x === 'string') : [];
+    const opensIn: any[] = Array.isArray(planIn.opens) ? planIn.opens : [];
+    const closesIn: any[] = Array.isArray(planIn.closes) ? planIn.closes : [];
+    if (addsIn.length > 20000 || removesIn.length > 20000) {
+      res.status(400).json({ error: 'That publish is too large — narrow the range.' });
+      return;
+    }
+    if (!addsIn.length && !removesIn.length && !opensIn.length && !closesIn.length) {
+      res.status(400).json({ error: 'There is nothing to publish in that range.' });
+      return;
+    }
+    const scope = await resolvePublishScope(req, res, req.body?.departmentIds);
+    if (!scope.ok) return;
+    const isOwner = req.session.role === 'owner';
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const inScope = (t: string) => publishTypeInScope(typeDepts, t, scope.depts, isOwner);
+    const today = await companyTodayStr(companyId);
+    const batchId = crypto.randomUUID();
+    const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+    const bump = (m: Map<string, any>, uid: string, date: string) => {
+      const t = m.get(uid) || { count: 0, firstDate: date, lastDate: date };
+      t.count++;
+      if (date < t.firstDate) t.firstDate = date;
+      if (date > t.lastDate) t.lastDate = date;
+      m.set(uid, t);
+    };
+    let added = 0, removed = 0, opened = 0, closed = 0;
+
+    await withTransaction(async (tx) => {
+      await tx.query(
+        `INSERT INTO publish_batches (id, company_id, created_by, range_start, range_end)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [batchId, companyId, req.session.userId!, from, to]
+      );
+      // Removes: only rows that are STILL batch-created, in scope,
+      // and not in the past — exactly what the dialog promised. The
+      // scope filter is applied to the candidate ids BEFORE the
+      // delete, so an out-of-scope row is never touched.
+      if (removesIn.length) {
+        const { rows: cand } = await tx.query(
+          `SELECT id, shift_type_id AS "shiftTypeId" FROM shifts
+           WHERE id = ANY($1::uuid[]) AND company_id = $2 AND publish_batch_id IS NOT NULL AND date >= $3::date`,
+          [removesIn, companyId, today]
+        );
+        const okIds = cand.filter((r: any) => inScope(r.shiftTypeId)).map((r: any) => r.id);
+        if (okIds.length) {
+          const { rows: del } = await tx.query(
+            `DELETE FROM shifts WHERE id = ANY($1::uuid[]) RETURNING user_id AS "userId", date::text AS date`,
+            [okIds]
+          );
+          for (const r of del) { removed++; bump(removedByUser, r.userId, r.date); }
+        }
+      }
+      // Adds: insert as published, provenance set; a slot a stored
+      // shift already covers is skipped by the unique constraint.
+      for (const a of addsIn) {
+        if (!a || !isValidDate(a.date) || a.date < from || a.date > to) continue;
+        if (!inScope(String(a.shiftTypeId || ''))) continue;
+        const { rows: ins } = await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by, publish_batch_id, rotation_id)
+           VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8)
+           ON CONFLICT (company_id, user_id, date, shift_type_id) DO NOTHING
+           RETURNING user_id AS "userId", date::text AS date`,
+          [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, a.date, req.session.userId!, batchId, a.rotationId || null]
+        );
+        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date); }
+      }
+      // Opens (rule 7): aggregate per date+type into extra_open_slots
+      // (the shared representation) + ledger rows for this batch.
+      // The plan carries both the net-new count and the DESIRED total
+      // per slot; the grant is re-netted against the live ledger
+      // inside the transaction, so confirming a stale plan can never
+      // double-open a slot another publish already opened.
+      const openAgg = new Map<string, number>();
+      for (const o of opensIn) {
+        if (!o || !isValidDate(o.date) || o.date < from || o.date > to || !(Number(o.count) > 0)) continue;
+        if (!inScope(String(o.shiftTypeId || ''))) continue;
+        const { rows: led } = await tx.query(
+          `SELECT COALESCE(SUM(l.count), 0)::int AS n FROM publish_batch_open_slots l
+           JOIN publish_batches b ON b.id = l.batch_id
+           WHERE l.company_id = $1 AND b.undone_at IS NULL AND l.rotation_id = $2 AND l.date = $3 AND l.shift_type_id = $4`,
+          [companyId, o.rotationId, o.date, o.shiftTypeId]
+        );
+        const already = led[0]?.n || 0;
+        const desired = Number(o.desired) > 0 ? Number(o.desired) : already + Number(o.count);
+        const grant = Math.max(0, Math.min(Number(o.count), desired - already));
+        if (!grant) continue;
+        await tx.query(
+          `INSERT INTO publish_batch_open_slots (batch_id, company_id, rotation_id, date, shift_type_id, count)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (batch_id, rotation_id, date, shift_type_id)
+           DO UPDATE SET count = publish_batch_open_slots.count + EXCLUDED.count`,
+          [batchId, companyId, o.rotationId, o.date, o.shiftTypeId, grant]
+        );
+        const k = `${o.date}|${o.shiftTypeId}`;
+        openAgg.set(k, (openAgg.get(k) || 0) + grant);
+        opened += grant;
+      }
+      for (const [k, n] of openAgg) {
+        const [date, shiftTypeId] = k.split('|');
+        await tx.query(
+          `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (company_id, date, shift_type_id)
+           DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+          [companyId, date, shiftTypeId, n, req.session.userId!]
+        );
+      }
+      // Closes: take back previously opened slots the pattern no
+      // longer produces (ledger first, then the physical slots).
+      for (const c of closesIn) {
+        if (!c || !isValidDate(c.date) || !(Number(c.count) > 0)) continue;
+        if (!inScope(String(c.shiftTypeId || ''))) continue;
+        let remaining = Number(c.count);
+        const { rows: led } = await tx.query(
+          `SELECT l.id, l.count FROM publish_batch_open_slots l
+           JOIN publish_batches b ON b.id = l.batch_id
+           WHERE l.company_id = $1 AND b.undone_at IS NULL AND l.rotation_id = $2 AND l.date = $3 AND l.shift_type_id = $4
+           ORDER BY l.created_at ASC`,
+          [companyId, c.rotationId, c.date, c.shiftTypeId]
+        );
+        for (const row of led) {
+          if (remaining <= 0) break;
+          const take = Math.min(row.count, remaining);
+          if (take >= row.count) await tx.query('DELETE FROM publish_batch_open_slots WHERE id = $1', [row.id]);
+          else await tx.query('UPDATE publish_batch_open_slots SET count = count - $1 WHERE id = $2', [take, row.id]);
+          for (let i = 0; i < take; i++) {
+            if (await consumeExtraOpenSlot(tx.query, companyId, c.date, c.shiftTypeId)) closed++;
+          }
+          remaining -= take;
+        }
+      }
+    });
+
+    await auditLog({
+      companyId, date: today, action: 'published', category: 'schedule',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Published schedule ${from} – ${to}: ${added} shift(s) stamped, ${removed} replaced away, ${opened} opened for cover`,
+      details: { batchId, from, to, added, removed, opened, closed },
+    });
+    res.json({ ok: true, batchId, added, removed, opened, closed });
+
+    // Notify affected people (never the acting admin about their own
+    // action) — same shapes as bulk publish/unpublish.
+    for (const [uid, t] of addedByUser) {
+      notify({
+        companyId, userIds: [uid], category: 'schedule', type: 'schedule_published',
+        title: `Your schedule was published: ${t.count} shift(s), ${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)}`,
+        body: `${t.count} of your shifts between ${fmtDateLong(t.firstDate)} and ${fmtDateLong(t.lastDate)} are now published.`,
+        link: 'my-schedule', bundleKey: `schedule_published:${uid}`,
+        bundleTitle: 'Your schedule was published: {count} shift(s)',
+        payload: { count: t.count },
+        excludeUserId: req.session.userId!,
+      });
+    }
+    for (const [uid, t] of removedByUser) {
+      notify({
+        companyId, userIds: [uid], category: 'schedule', type: 'shift_removed',
+        title: `${t.count} of your shifts were unpublished (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
+        body: `${t.count} of your published shifts were removed when the schedule was republished.`,
+        link: 'my-schedule', bundleKey: `shift_removed:${uid}`,
+        bundleTitle: '{count} of your shifts were removed',
+        payload: { count: t.count },
+        excludeUserId: req.session.userId!,
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] publish failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/publish/batches — recent publish batches (for the
+// dialog's history + undo).
+router.get('/publish/batches', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rows } = await query(
+      `SELECT b.id, b.range_start::text AS "rangeStart", b.range_end::text AS "rangeEnd",
+              b.created_at AS "createdAt", b.undone_at AS "undoneAt",
+              COALESCE(u.nickname, NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), 'Manager') AS "createdByName",
+              (SELECT COUNT(*)::int FROM shifts s WHERE s.publish_batch_id = b.id) AS "shiftCount",
+              (SELECT COALESCE(SUM(count), 0)::int FROM publish_batch_open_slots l WHERE l.batch_id = b.id) AS "openCount"
+       FROM publish_batches b
+       LEFT JOIN users u ON u.id = b.created_by
+       WHERE b.company_id = $1
+       ORDER BY b.created_at DESC LIMIT 20`,
+      [companyId]
+    );
+    let batches = rows;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      const edit = new Set(access.edit);
+      const typeDepts = await shiftTypeDeptMap(companyId);
+      const touches = (typeId: string) => (typeDepts.get(typeId) || []).some((d) => edit.has(d));
+      const filtered: any[] = [];
+      for (const b of batches) {
+        const { rows: tids } = await query(
+          `SELECT DISTINCT shift_type_id AS t FROM shifts WHERE publish_batch_id = $1
+           UNION SELECT DISTINCT shift_type_id FROM publish_batch_open_slots WHERE batch_id = $1`,
+          [b.id]
+        );
+        if (tids.some((r: any) => touches(r.t))) filtered.push(b);
+      }
+      batches = filtered;
+    }
+    res.json({ batches });
+  } catch (err) {
+    console.error('[schedule] publish batches failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/publish/batches/:id/undo — take back a batch:
+// its FUTURE shifts are deleted (past shifts stay forever), its
+// opened slots are taken back, and the batch is marked undone.
+router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const batchId = String(req.params.id);
+    const { rows: brows } = await query(
+      'SELECT id, undone_at AS "undoneAt", range_start::text AS "rangeStart", range_end::text AS "rangeEnd" FROM publish_batches WHERE id = $1 AND company_id = $2',
+      [batchId, companyId]
+    );
+    if (!brows.length) { res.status(404).json({ error: 'That publish no longer exists.' }); return; }
+    if (brows[0].undoneAt) { res.status(400).json({ error: 'That publish was already undone.' }); return; }
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      const edit = new Set(access.edit);
+      const typeDepts = await shiftTypeDeptMap(companyId);
+      const { rows: tids } = await query(
+        `SELECT DISTINCT shift_type_id AS t FROM shifts WHERE publish_batch_id = $1
+         UNION SELECT DISTINCT shift_type_id FROM publish_batch_open_slots WHERE batch_id = $1`,
+        [batchId]
+      );
+      const outside = tids.some((r: any) => !(typeDepts.get(r.t) || []).some((d) => edit.has(d)));
+      if (outside) { res.status(403).json({ error: 'That publish touches departments you cannot edit.' }); return; }
+    }
+    const today = await companyTodayStr(companyId);
+    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+    let removedShifts = 0, closedSlots = 0;
+    await withTransaction(async (tx) => {
+      const { rows: del } = await tx.query(
+        `DELETE FROM shifts WHERE publish_batch_id = $1 AND company_id = $2 AND date >= $3::date
+         RETURNING user_id AS "userId", date::text AS date`,
+        [batchId, companyId, today]
+      );
+      for (const r of del) {
+        removedShifts++;
+        const t = removedByUser.get(r.userId) || { count: 0, firstDate: r.date, lastDate: r.date };
+        t.count++;
+        if (r.date < t.firstDate) t.firstDate = r.date;
+        if (r.date > t.lastDate) t.lastDate = r.date;
+        removedByUser.set(r.userId, t);
+      }
+      const { rows: led } = await tx.query(
+        'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM publish_batch_open_slots WHERE batch_id = $1 AND company_id = $2',
+        [batchId, companyId]
+      );
+      for (const row of led) {
+        for (let i = 0; i < row.count; i++) {
+          if (await consumeExtraOpenSlot(tx.query, companyId, row.date, row.shiftTypeId)) closedSlots++;
+        }
+      }
+      await tx.query('DELETE FROM publish_batch_open_slots WHERE batch_id = $1', [batchId]);
+      await tx.query('UPDATE publish_batches SET undone_at = now() WHERE id = $1', [batchId]);
+    });
+    await auditLog({
+      companyId, date: today, action: 'deleted', category: 'schedule',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Undid a schedule publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${removedShifts} future shift(s) removed, ${closedSlots} open slot(s) taken back; past shifts kept`,
+      details: { batchId, removedShifts, closedSlots },
+    });
+    res.json({ ok: true, removedShifts, closedSlots });
+    for (const [uid, t] of removedByUser) {
+      notify({
+        companyId, userIds: [uid], category: 'schedule', type: 'shift_removed',
+        title: `${t.count} of your shifts were unpublished (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
+        body: `${t.count} of your published shifts were removed when a publish was undone.`,
+        link: 'my-schedule', bundleKey: `shift_removed:${uid}`,
+        bundleTitle: '{count} of your shifts were removed',
+        payload: { count: t.count },
+        excludeUserId: req.session.userId!,
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] publish undo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/publish/coverage — per-department published-through
+// dates for the Schedule page nudge strip.
+router.get('/publish/coverage', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const { rows: deptRows } = await query('SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name', [companyId]);
+    const through = new Map<string, string>(); // typeId -> max stamped date (live batches)
+    const { rows: trows } = await query(
+      `SELECT s.shift_type_id AS "typeId", MAX(s.date)::text AS "maxDate"
+       FROM shifts s JOIN publish_batches b ON b.id = s.publish_batch_id
+       WHERE s.company_id = $1 AND b.undone_at IS NULL
+       GROUP BY s.shift_type_id`,
+      [companyId]
+    );
+    for (const r of trows) through.set(r.typeId, r.maxDate);
+    const patternTypes = new Set<string>();
+    const { rows: prows } = await query(
+      `SELECT DISTINCT ra.shift_type_id AS t FROM rotation_assignments ra
+       JOIN rotations r ON r.id = ra.rotation_id
+       WHERE r.company_id = $1 AND r.is_active = true
+       UNION
+       SELECT DISTINCT group_shift_type_id FROM rotations
+       WHERE company_id = $1 AND is_active = true AND group_shift_type_id IS NOT NULL`,
+      [companyId]
+    );
+    for (const r of prows) patternTypes.add(r.t);
+    let visibleDepts = new Set<string>(deptRows.map((d: any) => d.id));
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      visibleDepts = new Set(access.view);
+    }
+    const out = deptRows.filter((d: any) => visibleDepts.has(d.id)).map((d: any) => {
+      let publishedThrough: string | null = null;
+      let hasActivePatterns = false;
+      for (const [typeId, ds] of typeDepts) {
+        if (!ds.includes(d.id)) continue;
+        if (patternTypes.has(typeId)) hasActivePatterns = true;
+        const td = through.get(typeId);
+        if (td && (!publishedThrough || td > publishedThrough)) publishedThrough = td;
+      }
+      return { departmentId: d.id, name: d.name, publishedThrough, hasActivePatterns };
+    });
+    res.json({ coverage: out });
+  } catch (err) {
+    console.error('[schedule] publish coverage failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 
 // DELETE /api/schedule/rotations/:id (owner/scheduler; department-scoped).
 router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {

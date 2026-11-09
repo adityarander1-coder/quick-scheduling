@@ -2361,6 +2361,7 @@
             </label>
           </div>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
+          <button type="button" id="sched-publish-btn" class="btn" title="Rotations only draw a draft — publishing stamps a range into real shifts your team can see">📣 Publish schedule</button>
         </div>
 
         <div id="sched-range-picker" class="range-picker hidden">
@@ -2373,6 +2374,8 @@
       <div class="legend hidden" id="sched-legend"></div>
 
       <!-- publish bar removed per Deepika 2026-10-08 -->
+
+      <div id="sched-publish-strip" class="hidden" style="background:#fff7e6;border:1px solid #f0d9a8;border-radius:12px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-size:0.9rem"></div>
 
       <div id="sched-block-panel" class="hidden" style="background:#f5f3ff;border:1.5px solid #7c3aed;border-radius:12px;padding:12px 14px;margin:0 0 14px">
         <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
@@ -2444,6 +2447,29 @@
           <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
             <button type="button" id="sbimp-cancel" class="btn-secondary">Cancel</button>
             <button type="button" id="sbimp-add" class="btn" disabled>Add shifts</button>
+          </div>
+        </div>
+      </div>
+      <div id="sched-publish-modal" class="modal-backdrop hidden">
+        <div class="modal" style="max-width:640px;width:94vw">
+          <h3>📣 Publish schedule</h3>
+          <p style="font-size:0.88rem;color:var(--dim);margin:4px 0 10px">Rotations only draw a draft. Publishing stamps the shifts for the range below into <strong>real shifts</strong> — that's when your team sees them. It covers every rotation pattern in the departments you're viewing. Nothing is written until you press Publish, and past shifts are never changed.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:0.92rem">
+            <label><input type="radio" name="pub-range" value="4w" checked style="width:auto"> Next 4 weeks</label>
+            <label><input type="radio" name="pub-range" value="3m" style="width:auto"> Next 3 months</label>
+            <label><input type="radio" name="pub-range" value="custom" style="width:auto"> Custom</label>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;margin-top:10px;font-size:0.92rem">
+            <label>From <input type="date" id="pub-from" disabled></label>
+            <label>To <input type="date" id="pub-to" disabled></label>
+          </div>
+          <div id="pub-status" style="font-size:0.9rem;margin-top:10px"></div>
+          <div id="pub-summary" style="margin-top:6px"></div>
+          <div id="pub-history"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+            <button type="button" id="pub-cancel" class="btn-secondary">Close</button>
+            <button type="button" id="pub-preview" class="btn-secondary">Preview</button>
+            <button type="button" id="pub-confirm" class="btn hidden">Publish</button>
           </div>
         </div>
       </div>
@@ -2902,6 +2928,7 @@
             }
             renderView();
             renderPublishBar();
+            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
           }).catch(function () { pageError('Could not load the schedule.'); });
         }
 
@@ -4519,6 +4546,153 @@
           // Publish bar removed 2026-10-08 — no-op kept for callers.
           return;
         }
+
+        // --- Publish schedule (Step 2 of Pattern != Schedule, Deepika
+        // 2026-11-09): patterns draw drafts; publishing stamps a range
+        // into real shifts. The strip nudges when a department in view
+        // is running out of published coverage.
+        var pubPlan = null;
+        function pubTodayStr() { return fmtDate(new Date()); }
+        function pubAddDays(dateStr, n) { var d = parseDate(dateStr); d.setDate(d.getDate() + n); return fmtDate(d); }
+        function pubFmtDay(dateStr) { return parseDate(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+        window.qsRenderPublishStrip = function () {
+          var strip = $('sched-publish-strip');
+          if (!strip || !sched.canEdit) return;
+          api('/api/schedule/publish/coverage').then(function (r) {
+            if (!r.ok || !r.data || !r.data.coverage) { hide(strip); return; }
+            var horizon = pubAddDays(pubTodayStr(), 14);
+            var inView = {};
+            (sched.departments || []).forEach(function (d) { inView[d.id] = true; });
+            var lines = [];
+            r.data.coverage.forEach(function (c) {
+              if (!c.hasActivePatterns) return;
+              if (!inView[c.departmentId]) return;
+              if (sched.deptFilters.length && sched.deptFilters.indexOf(c.departmentId) === -1) return;
+              if (c.publishedThrough && c.publishedThrough >= horizon) return;
+              if (c.publishedThrough) lines.push('<div style="margin:2px 0">📣 <b>' + esc(c.name) + '</b> is published through <b>' + pubFmtDay(c.publishedThrough) + '</b> — <button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.85rem" onclick="window.qsOpenPublish()">Publish more</button></div>');
+              else lines.push('<div style="margin:2px 0">📣 <b>' + esc(c.name) + '</b> has rotations but nothing published yet — <button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.85rem" onclick="window.qsOpenPublish()">Publish</button></div>');
+            });
+            if (!lines.length) { hide(strip); strip.innerHTML = ''; return; }
+            strip.innerHTML = lines.join('');
+            show(strip);
+          }).catch(function () { /* the nudge is decoration — never break the page */ });
+        };
+        window.qsOpenPublish = function () {
+          pubPlan = null;
+          var t = pubTodayStr();
+          $('pub-from').value = t;
+          $('pub-to').value = pubAddDays(t, 27);
+          document.querySelectorAll('input[name="pub-range"]').forEach(function (r) { r.checked = r.value === '4w'; });
+          $('pub-from').disabled = true; $('pub-to').disabled = true;
+          $('pub-status').textContent = '';
+          $('pub-summary').innerHTML = '';
+          hide($('pub-confirm'));
+          pubLoadHistory();
+          show($('sched-publish-modal'));
+        };
+        function pubRangeChanged() {
+          var sel = document.querySelector('input[name="pub-range"]:checked');
+          var v = sel ? sel.value : 'custom';
+          var t = pubTodayStr();
+          if (v === '4w') { $('pub-from').value = t; $('pub-to').value = pubAddDays(t, 27); }
+          if (v === '3m') { var d = parseDate(t); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); $('pub-from').value = t; $('pub-to').value = fmtDate(d); }
+          var custom = v === 'custom';
+          $('pub-from').disabled = !custom; $('pub-to').disabled = !custom;
+          pubPlan = null; $('pub-summary').innerHTML = ''; hide($('pub-confirm'));
+        }
+        function pubLoadHistory() {
+          api('/api/schedule/publish/batches').then(function (r) {
+            var el = $('pub-history');
+            if (!el) return;
+            if (!r.ok || !r.data || !r.data.batches || !r.data.batches.length) { el.innerHTML = ''; return; }
+            var h = '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px"><div style="font-weight:700;font-size:0.9rem;margin-bottom:6px">Recent publishes</div>';
+            r.data.batches.slice(0, 8).forEach(function (b) {
+              var when = new Date(b.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+              h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.87rem;padding:3px 0;flex-wrap:wrap"><span>' + pubFmtDay(b.rangeStart) + ' – ' + pubFmtDay(b.rangeEnd) + '</span><span style="color:var(--dim)">by ' + esc(b.createdByName || 'Manager') + ' · ' + when + ' · ' + b.shiftCount + ' shift' + (b.shiftCount === 1 ? '' : 's') + (b.openCount ? ' · ' + b.openCount + ' open' : '') + '</span>' +
+                (b.undoneAt ? '<span style="color:var(--dim)">(undone)</span>' : '<button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.82rem" onclick="window.qsUndoPublish(\'' + b.id + '\')">Undo</button>') + '</div>';
+            });
+            el.innerHTML = h + '</div>';
+          }).catch(function () { /* history is decoration */ });
+        }
+        window.qsUndoPublish = function (batchId) {
+          if (!window.confirm('Undo this publish? Its future shifts will be removed (past shifts stay).')) return;
+          api('/api/schedule/publish/batches/' + batchId + '/undo', { method: 'POST', body: '{}' }).then(function (r) {
+            var st = $('pub-status');
+            if (!r.ok) { if (st) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not undo that publish.'; } return; }
+            if (st) { st.style.color = '#15803d'; st.textContent = '✓ Publish undone — ' + r.data.removedShifts + ' future shift(s) removed.'; }
+            pubLoadHistory();
+            loadAll();
+          });
+        };
+        function pubDoPreview() {
+          var from = $('pub-from').value, to = $('pub-to').value;
+          var st = $('pub-status');
+          if (!from || !to || from > to) { st.style.color = '#c92a2a'; st.textContent = 'Pick a valid date range.'; return; }
+          st.style.color = 'var(--dim)'; st.textContent = 'Checking…';
+          $('pub-summary').innerHTML = ''; hide($('pub-confirm')); pubPlan = null;
+          api('/api/schedule/publish/preview', { method: 'POST', body: JSON.stringify({ from: from, to: to, departmentIds: sched.deptFilters || [] }) }).then(function (r) {
+            if (!r.ok) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not check that range.'; return; }
+            st.textContent = '';
+            var d = r.data;
+            pubPlan = { from: d.from, to: d.to, plan: d.plan };
+            var h = '';
+            if (!d.totalAdds && !d.changes.length && !d.opensTotal && !d.closesTotal) {
+              h = '<p style="font-size:0.92rem;margin:6px 0">Everything in this range is already published — nothing new to stamp.</p>';
+            } else {
+              if (d.freshAdds) {
+                h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + d.freshAdds + ' new shift' + (d.freshAdds === 1 ? '' : 's') + ' to add</b>';
+                d.departments.forEach(function (dp) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(dp.name) + ': ' + dp.count + '</div>'; });
+                h += '</div>';
+              }
+              if (d.changes.length) {
+                h += '<div style="font-size:0.92rem;margin:8px 0"><b>Pattern changes</b> — these people\'s patterns changed since their shifts were published:</div>';
+                d.changes.forEach(function (c) {
+                  var bits = [];
+                  if (c.removes) bits.push('Removes ' + c.removes);
+                  if (c.adds) bits.push('Adds ' + c.adds);
+                  h += '<div style="font-size:0.9rem">' + esc(c.name) + ' — ' + bits.join(' · ') + '</div>';
+                });
+              }
+              d.openForCover.forEach(function (p) {
+                h += '<div style="font-size:0.9rem;margin:4px 0">🩹 <b>' + p.newCount + ' shift' + (p.newCount === 1 ? '' : 's') + ' open for cover</b> after ' + esc(p.name) + '\'s last day (' + pubFmtDay(p.endDate) + ')' + (p.count > p.newCount ? ' <span style="color:var(--dim)">(' + (p.count - p.newCount) + ' already open)</span>' : '') + '</div>';
+              });
+              if (d.closesTotal) h += '<div style="font-size:0.9rem;margin:4px 0">' + d.closesTotal + ' previously opened cover slot' + (d.closesTotal === 1 ? '' : 's') + ' close' + (d.closesTotal === 1 ? '' : 's') + ' (pattern changed).</div>';
+              h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">Past shifts are never changed. People get a notification when their shifts publish or are removed.</p>';
+            }
+            $('pub-summary').innerHTML = h;
+            if (d.totalAdds || d.changes.length || d.opensTotal || d.closesTotal) show($('pub-confirm'));
+          }).catch(function () { st.style.color = '#c92a2a'; st.textContent = 'Could not check that range.'; });
+        }
+        function pubDoConfirm() {
+          if (!pubPlan) return;
+          var st = $('pub-status');
+          var btn = $('pub-confirm');
+          btn.disabled = true;
+          st.style.color = 'var(--dim)'; st.textContent = 'Publishing…';
+          api('/api/schedule/publish', { method: 'POST', body: JSON.stringify({ from: pubPlan.from, to: pubPlan.to, departmentIds: sched.deptFilters || [], plan: pubPlan.plan }) }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not publish.'; return; }
+            st.style.color = '#15803d';
+            st.textContent = '✓ Published — ' + r.data.added + ' shift(s) stamped' + (r.data.removed ? ', ' + r.data.removed + ' replaced away' : '') + (r.data.opened ? ', ' + r.data.opened + ' opened for cover' : '') + '.';
+            pubPlan = null;
+            hide($('pub-confirm'));
+            $('pub-summary').innerHTML = '';
+            pubLoadHistory();
+            loadAll();
+          }).catch(function () { btn.disabled = false; st.style.color = '#c92a2a'; st.textContent = 'Could not publish.'; });
+        }
+        (function wirePublish() {
+          var b = $('sched-publish-btn');
+          if (b) b.addEventListener('click', function () { window.qsOpenPublish(); });
+          var c = $('pub-cancel');
+          if (c) c.addEventListener('click', function () { hide($('sched-publish-modal')); });
+          var p = $('pub-preview');
+          if (p) p.addEventListener('click', pubDoPreview);
+          var cf = $('pub-confirm');
+          if (cf) cf.addEventListener('click', pubDoConfirm);
+          document.querySelectorAll('input[name="pub-range"]').forEach(function (r) { r.addEventListener('change', pubRangeChanged); });
+          ['pub-from', 'pub-to'].forEach(function (id) { var el = $(id); if (el) el.addEventListener('change', function () { pubPlan = null; hide($('pub-confirm')); }); });
+        })();
 
         function visibleDates() {
           var r = viewRange();
