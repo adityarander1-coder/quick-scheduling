@@ -738,11 +738,40 @@ async function drawRotationOccurrences(
   // untimed types clash on a shared day) is not generated — the
   // shortfall shows in Short cover like any other gap. Manual
   // shifts are never touched.
-  if (rotationShifts.some((s: any) => s._special)) {
+  //
+  // Published group-origin STORED rows are specials too (fix,
+  // Deepika 2026-11-09): once a group shift is stamped (Publish
+  // schedule batch or per-shift publish) it becomes a stored row,
+  // and stored rows otherwise take no part in this pass — worse,
+  // the same-type hasManual check removes the drawn special itself,
+  // so publishing a Swing rotation silently brought the person's
+  // clashing Day drafts back on every later read. A stored row
+  // joins the suppressors when it is published AND its provenance
+  // rotation is a group rotation (the same test that marks drawn
+  // occurrences special). Hand-made rows (rotation_id NULL) and
+  // per-person-origin rows never suppress. The day before the
+  // range is included: an overnight special starting D-1 still
+  // occupies D's morning.
+  const storedSpecialFrom = new Date(Date.parse(from + 'T00:00:00Z') - 86400000)
+    .toISOString().slice(0, 10);
+  const { rows: storedSpecials } = await q(
+    `SELECT s.user_id AS "userId", s.date::text AS date, s.shift_type_id AS "shiftTypeId"
+     FROM shifts s
+     JOIN rotations r ON r.id = s.rotation_id
+     WHERE s.company_id = $1 AND s.published = true
+       AND r.group_id IS NOT NULL AND r.group_shift_type_id IS NOT NULL
+       AND s.date >= $2 AND s.date <= $3`,
+    [companyId, storedSpecialFrom, to]
+  );
+  if (rotationShifts.some((s: any) => s._special) || storedSpecials.length) {
     const typeTimes = await getShiftTypeTimes(q, companyId);
     const specialsByUser = new Map<string, any[]>();
     for (const s of rotationShifts) {
       if (!s._special) continue;
+      if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+      specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s));
+    }
+    for (const s of storedSpecials) {
       if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
       specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s));
     }
@@ -11972,6 +12001,36 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        ORDER BY st.name, u.last_name, u.first_name`, [companyId, date]);
     const manualKeys = new Set(manualRows.map((r: any) => r.user_id + '|' + r.shift_type_id));
 
+    // Published group-origin stored shifts suppress clashing drawn
+    // per-person occurrences here too (same fix as the grid, Deepika
+    // 2026-11-09): this handler never draws group occurrences, so a
+    // stamped Swing shift is the only form the special takes — and
+    // without this pass it suppressed nothing, leaving the person
+    // listed on a Day shift the grid no longer shows. Yesterday's
+    // rows are included: an overnight special starting D-1 still
+    // occupies D's morning. Hand-made and per-person-origin stored
+    // rows never suppress.
+    const prevDate = new Date(Date.parse(date + 'T00:00:00Z') - 86400000)
+      .toISOString().slice(0, 10);
+    const { rows: storedSpecials } = await query(
+      `SELECT sh.user_id AS "userId", sh.date::text AS date, sh.shift_type_id AS "shiftTypeId"
+       FROM shifts sh
+       JOIN rotations r ON r.id = sh.rotation_id
+       WHERE sh.company_id = $1 AND sh.published = true
+         AND r.group_id IS NOT NULL AND r.group_shift_type_id IS NOT NULL
+         AND sh.date >= $2 AND sh.date <= $3`,
+      [companyId, prevDate, date]
+    );
+    const specialTypeTimes = storedSpecials.length
+      ? await getShiftTypeTimes(query, companyId) : null;
+    const specialsByUser = new Map<string, any[]>();
+    if (specialTypeTimes) {
+      for (const s of storedSpecials) {
+        if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+        specialsByUser.get(s.userId)!.push(makeTimedShift(specialTypeTimes, s.userId, s));
+      }
+    }
+
     // 2) Rotation-generated shifts for the day (same rules as GET /shifts).
     const { rows: pauseRows } = await query(
       `SELECT rotation_id, start_date::text AS start_date, end_date::text AS end_date
@@ -12009,6 +12068,11 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
         if (a.end_date && date > String(a.end_date).slice(0, 10)) continue;
         if (exclSet.has(rot.id + '|' + a.user_id + '|' + a.shift_type_id)) continue;
         if (manualKeys.has(a.user_id + '|' + a.shift_type_id)) continue; // manual takes precedence
+        const specials = specialsByUser.get(a.user_id);
+        if (specials && specials.length && specialTypeTimes) {
+          const timed = makeTimedShift(specialTypeTimes, a.user_id, { date, shiftTypeId: a.shift_type_id });
+          if (specials.some((sp: any) => !!findShiftConflict('This person', [sp], timed))) continue;
+        }
         addShift(a, a.shift_type_id, a.shift_name, a.department_id, a.department_name);
       }
     }

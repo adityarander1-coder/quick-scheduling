@@ -333,11 +333,38 @@ export async function getShiftsForRange(
   // shift takes preference over the same person's OTHER rotation
   // shifts — a clashing normal occurrence is not generated. Manual
   // shifts are never touched.
-  if (rotationShifts.some((s) => s._special)) {
+  //
+  // Published group-origin STORED rows are specials too (fix,
+  // Deepika 2026-11-09, mirrors schedule.ts): once a group shift is
+  // stamped it becomes a stored row and otherwise takes no part in
+  // this pass, so publishing a Swing rotation brought the person's
+  // clashing Day drafts back on every later read. A stored row
+  // joins the suppressors when it is published AND its provenance
+  // rotation is a group rotation. Hand-made rows (rotation_id NULL)
+  // and per-person-origin rows never suppress. The day before the
+  // range is included: an overnight special starting D-1 still
+  // occupies D's morning (single-day consumers like Short cover's
+  // gap counts depend on this).
+  const storedSpecialFrom = new Date(Date.parse(from + 'T00:00:00Z') - 86400000)
+    .toISOString().slice(0, 10);
+  const { rows: storedSpecials } = await query(
+    `SELECT s.user_id AS "userId", s.date::text AS date, s.shift_type_id AS "shiftTypeId"
+     FROM shifts s
+     JOIN rotations r ON r.id = s.rotation_id
+     WHERE s.company_id = $1 AND s.published = true
+       AND r.group_id IS NOT NULL AND r.group_shift_type_id IS NOT NULL
+       AND s.date >= $2 AND s.date <= $3`,
+    [companyId, storedSpecialFrom, to]
+  );
+  if (rotationShifts.some((s) => s._special) || storedSpecials.length) {
     const typeTimes = await getShiftTypeTimes(query, companyId);
     const specialsByUser = new Map<string, any[]>();
     for (const s of rotationShifts) {
       if (!s._special || !s.userId || !s.shiftTypeId) continue;
+      if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
+      specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s as any));
+    }
+    for (const s of storedSpecials) {
       if (!specialsByUser.has(s.userId)) specialsByUser.set(s.userId, []);
       specialsByUser.get(s.userId)!.push(makeTimedShift(typeTimes, s.userId, s as any));
     }
