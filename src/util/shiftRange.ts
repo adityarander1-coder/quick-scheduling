@@ -30,8 +30,18 @@ export async function getShiftsForRange(
   query: QueryFn,
   companyId: string,
   from: string,
-  to: string
+  to: string,
+  opts?: { employeeView?: boolean }
 ): Promise<ShiftEntry[]> {
+  // Employee view (Deepika, 2026-11-09 — Step 1 of pattern ≠ schedule):
+  // an employee sees a shift ONLY when it is published. Rotation
+  // occurrences are an admin preview until a publish stamps them into
+  // real shifts, so they are withheld entirely, and draft stored
+  // shifts are withheld too. The full computation still runs (pause
+  // bookkeeping feeds the stored-shift filtering below); only the
+  // returned set narrows. Manager-facing callers omit the option and
+  // get exactly what they have always gotten.
+  const employeeView = !!opts?.employeeView;
   // Manual shifts
   const { rows: manualRows } = await query(
     `SELECT s.date::text AS date,
@@ -302,6 +312,7 @@ export async function getShiftsForRange(
   };
   const visibleManual: ShiftEntry[] = manualRows
     .filter((s: any) => !s.userId || !isUserPaused(s.userId, s.date))
+    .filter((s: any) => !employeeView || s.published)
     .map((s: any) => ({
       id: `manual-${s.date}-${s.userId}`,
       date: s.date,
@@ -338,7 +349,7 @@ export async function getShiftsForRange(
     }
   }
 
-  return [...visibleManual, ...rotationShifts].sort((a, b) => {
+  return [...visibleManual, ...(employeeView ? [] : rotationShifts)].sort((a, b) => {
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
     return a.personName.localeCompare(b.personName);
   });

@@ -423,7 +423,16 @@ export async function processScheduleEmail(
     if (question) {
       try {
         const { querySchedule } = await import('./scheduleQuery.js');
-        const { answer, found } = await querySchedule(query, companyId, question);
+        // Employee askers get the employee view (Deepika, 2026-11-09
+        // — Step 1 of pattern ≠ schedule): published stored shifts
+        // only, no rotation preview and no drafts. Owners/schedulers
+        // keep the full picture. An unresolved asker (the staff lock
+        // above makes this unlikely) fails closed to the employee
+        // view.
+        const { findUserByAnyEmail } = await import('./formLinks.js');
+        const asker = await findUserByAnyEmail(query, companyId, sender.address);
+        const { answer, found } = await querySchedule(query, companyId, question,
+          { employeeView: !asker || asker.role === 'employee' });
         const { sendMail } = await import('./mailer.js');
 
         // Clean address from the one ingest parse (batch 1) — the staff

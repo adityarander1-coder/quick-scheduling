@@ -386,6 +386,12 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
 router.get('/shifts', async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // Employee view (Deepika, 2026-11-09 — Step 1 of pattern ≠
+    // schedule): an employee sees a shift ONLY when it is published.
+    // Rotation occurrences are an admin preview until a publish
+    // stamps them into real shifts, and draft stored shifts are not
+    // shown either. Owner/scheduler responses are unchanged.
+    const employeeView = req.session.role === 'employee';
     const from = String(req.query.from || '');
     const to = String(req.query.to || '');
     if (!isValidDate(from) || !isValidDate(to)) {
@@ -726,7 +732,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // existed in the data: the person looked unscheduled, yet pickups
     // on those dates collided with the invisible shifts. Deepika hit
     // exactly that on her vacation dates, 2026-11-03.)
-    const visibleManual = rows;
+    const visibleManual = employeeView ? rows.filter((s: any) => s.published) : rows;
 
     // Closed shifts (manually marked unavailable)
     const { rows: closedShifts } = await query(
@@ -742,7 +748,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId, from, to]
     );
 
-    const all = [...visibleManual, ...rotationShifts];
+    const all = employeeView ? [...visibleManual] : [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       const soA = a._sortOrder ?? 999;
@@ -10639,6 +10645,11 @@ router.get('/day-shifts', requireRole('owner', 'scheduler', 'employee'), async (
     };
     const out: any[] = [];
     for (const s of range as any[]) {
+      // Employee view (Deepika, 2026-11-09 — Step 1 of pattern ≠
+      // schedule): employees pull only their own PUBLISHED stored
+      // shifts into an event — rotation occurrences are an admin
+      // preview and drafts are not theirs to act on yet.
+      if (req.session.role === 'employee' && (s.isRotation || !s.published)) continue;
       if (req.session.role === 'employee' && s.userId !== req.session.userId) continue;
       if (!inScope(s.shiftTypeId || null)) continue;
       const tt = s.shiftTypeId ? times.get(s.shiftTypeId) : undefined;

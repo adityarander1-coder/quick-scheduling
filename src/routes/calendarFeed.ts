@@ -264,10 +264,14 @@ calendarFeedPublicRouter.get('/:token.ics', async (req: Request, res: Response) 
     const stamp = dtStampNow();
     const events: FeedEvent[] = [];
 
-    // --- Shifts: same generation + published flags My Schedule uses
-    // (getShiftsForRange is the shared read path); staff see published
-    // only, so the feed carries published shifts only.
-    const allShifts = await getShiftsForRange(query, companyId, from, to);
+    // --- Shifts: staff see published only (Deepika, 2026-11-09 —
+    // Step 1 of pattern ≠ schedule). The feed is an employee surface,
+    // so it asks the shared read path for the employee view: stored
+    // published shifts only — rotation occurrences stay an admin
+    // preview until a publish stamps them into real shifts. Stored
+    // shift UIDs below derive from user/type/date, so they are
+    // unchanged by this.
+    const allShifts = await getShiftsForRange(query, companyId, from, to, { employeeView: true });
     const typeTimes = await getShiftTypeTimes(query, companyId);
     for (const s of allShifts) {
       if (s.userId !== userId || !s.published) continue;

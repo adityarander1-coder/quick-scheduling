@@ -14,7 +14,8 @@ interface Question {
 export async function querySchedule(
   query: (text: string, params: any[]) => Promise<{ rows: any[] }>,
   companyId: string,
-  q: Question
+  q: Question,
+  opts?: { employeeView?: boolean }
 ): Promise<{ answer: string; found: boolean }> {
   const kind = q.kind || 'general';
 
@@ -27,8 +28,10 @@ export async function querySchedule(
     endDate = today;
   }
 
-  // Get all shifts (manual + rotation) for the range
-  let shifts = await getShiftsForRange(query, companyId, startDate!, endDate!);
+  // Get all shifts (manual + rotation) for the range. An employee
+  // asker gets the employee view (Deepika, 2026-11-09 — Step 1 of
+  // pattern ≠ schedule): published stored shifts only.
+  let shifts = await getShiftsForRange(query, companyId, startDate!, endDate!, opts);
 
   // Filter by person if specified
   if (q.person) {
