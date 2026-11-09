@@ -2944,6 +2944,142 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
   }
 });
 
+// POST /api/schedule/rotations/copy — copy ONE person's per-person
+// rotation pattern to other people (Deepika, 2026-11-08: copy-from-
+// standard ONLY). Body: { sourceRotationId, standardUserId,
+// targetUserIds: [...], startDate }. Each copy is a NEW, independent
+// rotation row for that person (same name, cycle, times, notes and
+// the standard's cycle-day/shift-type pattern; start date = the
+// admin's pick, pre-filled client-side with the standard's so cycles
+// stay in sync). Pauses, exclusions and publish overrides belong to
+// the source rotation id and are NOT copied. A target who already
+// runs the same pattern is SKIPPED and NAMED in the result — pattern
+// identity is cycle length + start/end times + the set of
+// (cycle day, shift type) pairs; the start date is NOT part of the
+// identity (it is a phase choice, and this flow exists to align it).
+router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { sourceRotationId, standardUserId } = req.body ?? {};
+    const startDate = String(req.body?.startDate || '');
+    const rawTargets: any[] = Array.isArray(req.body?.targetUserIds) ? req.body.targetUserIds : [];
+    const targetUserIds: string[] = [...new Set(rawTargets.map((x: any) => String(x)))];
+    if (!sourceRotationId || !standardUserId || !targetUserIds.length || !isValidDate(startDate)) {
+      res.status(400).json({ error: 'Pick a rotation to copy, at least one person to copy to, and a valid start date.' });
+      return;
+    }
+    const { rows: srcRows } = await query(
+      `SELECT id, name, cycle_days AS "cycleDays", start_time::text AS "startTime",
+              end_time::text AS "endTime", notes, group_id AS "groupId", is_active AS "isActive"
+       FROM rotations WHERE id = $1 AND company_id = $2`,
+      [String(sourceRotationId), companyId]
+    );
+    if (!srcRows.length) {
+      res.status(404).json({ error: 'That rotation no longer exists.' });
+      return;
+    }
+    const src = srcRows[0];
+    if (src.groupId) {
+      res.status(400).json({ error: 'That is a group rotation — copying works on one person\'s rotation. Pick a person as the standard.' });
+      return;
+    }
+    if (!src.isActive) {
+      res.status(400).json({ error: 'That rotation is paused. Unpause it first, or copy a different one.' });
+      return;
+    }
+    const { rows: stdRows } = await query(
+      `SELECT user_id AS "userId", cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId"
+       FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2 ORDER BY cycle_day`,
+      [src.id, String(standardUserId)]
+    );
+    if (!stdRows.length) {
+      res.status(400).json({ error: 'That person is not on this rotation — pick them as the standard from their own rotation.' });
+      return;
+    }
+    const { rows: stdUserRows } = await query(
+      'SELECT first_name AS "firstName", last_name AS "lastName" FROM users WHERE id = $1 AND company_id = $2',
+      [String(standardUserId), companyId]
+    );
+    const stdName = stdUserRows.length ? `${stdUserRows[0].firstName} ${stdUserRows[0].lastName}`.trim() : 'the standard';
+    const normTime = (t: any) => (t ? String(t).slice(0, 5) : '');
+    const patternKey = (cycleDays: number, st: any, et: any, pairs: Array<{ cycleDay: number; shiftTypeId: string }>) =>
+      `${cycleDays}|${normTime(st)}|${normTime(et)}|` +
+      pairs.map((p) => `${p.cycleDay}|${p.shiftTypeId}`).sort().join(',');
+    const srcKey = patternKey(src.cycleDays, src.startTime, src.endTime, stdRows);
+
+    // Decide per target first (skip decisions need reads only), so
+    // the department-scope check covers exactly what will be created.
+    type Decision = { userId: string; name: string; skip: string | null };
+    const decisions: Decision[] = [];
+    for (const uid of targetUserIds) {
+      const { rows: urows } = await query(
+        'SELECT first_name AS "firstName", last_name AS "lastName", is_active AS "isActive" FROM users WHERE id = $1 AND company_id = $2',
+        [uid, companyId]
+      );
+      if (!urows.length || !urows[0].isActive) {
+        decisions.push({ userId: uid, name: urows.length ? `${urows[0].firstName} ${urows[0].lastName}`.trim() : 'Unknown person', skip: 'not an active team member' });
+        continue;
+      }
+      const name = `${urows[0].firstName} ${urows[0].lastName}`.trim();
+      const { rows: theirRots } = await query(
+        `SELECT r.id, r.cycle_days AS "cycleDays", r.start_time::text AS "startTime", r.end_time::text AS "endTime"
+         FROM rotations r
+         WHERE r.company_id = $1 AND r.group_id IS NULL AND r.is_active = true
+           AND EXISTS (SELECT 1 FROM rotation_assignments ra WHERE ra.rotation_id = r.id AND ra.user_id = $2)`,
+        [companyId, uid]
+      );
+      let already = false;
+      for (const tr of theirRots) {
+        const { rows: theirPairs } = await query(
+          'SELECT cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId" FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2',
+          [tr.id, uid]
+        );
+        if (patternKey(tr.cycleDays, tr.startTime, tr.endTime, theirPairs) === srcKey) { already = true; break; }
+      }
+      decisions.push({ userId: uid, name, skip: already ? 'already has this rotation' : null });
+    }
+
+    const toCreate = decisions.filter((d) => !d.skip);
+    if (toCreate.length) {
+      const scopePairs: Array<{ userId: string; shiftTypeId: string }> = [];
+      for (const d of toCreate) for (const p of stdRows) scopePairs.push({ userId: d.userId, shiftTypeId: p.shiftTypeId });
+      if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
+    }
+
+    const copied: Array<{ userId: string; name: string; rotationId: string }> = [];
+    const skipped: Array<{ userId: string; name: string; reason: string }> = [];
+    for (const d of decisions) {
+      if (d.skip) { skipped.push({ userId: d.userId, name: d.name, reason: d.skip }); continue; }
+      const id = crypto.randomUUID();
+      await query(
+        `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
+                                group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
+        [id, companyId, src.name, src.cycleDays, startDate, req.session.userId!, src.startTime, src.endTime, src.notes]
+      );
+      for (const p of stdRows) {
+        await query(
+          `INSERT INTO rotation_assignments (id, rotation_id, user_id, cycle_day, shift_type_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [crypto.randomUUID(), id, d.userId, p.cycleDay, p.shiftTypeId]
+        );
+      }
+      await auditLog({
+        companyId, date: todayStr(), action: 'created', category: 'settings',
+        source: 'manual', rotationName: src.name,
+        changedBy: req.session.userId!,
+        description: `Copied rotation "${src.name}" from ${stdName} to ${d.name}`,
+        details: { rotationId: id, kind: 'rotation', copiedFromRotationId: src.id, copiedFromUserId: String(standardUserId) },
+      });
+      copied.push({ userId: d.userId, name: d.name, rotationId: id });
+    }
+    res.json({ copied, skipped });
+  } catch (err) {
+    console.error('[schedule] copy rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/rotations/:id/apply — generate shifts from rotation
 // over a date range (owner/scheduler; department-scoped). Skips dates that already have the
 // same user+shift-type assigned.

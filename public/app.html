@@ -8955,6 +8955,10 @@ window.qsNpOfferSend = function (btn) {
             <div id="rottab-rot-list">
             <div id="rot-group-section"></div>
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
+            <div style="margin-bottom:0.8rem">
+              <button type="button" class="btn-secondary" id="rot-copy-open">⇄ Copy a rotation to people</button>
+              <span style="color:var(--dim);font-size:0.85rem;margin-left:0.5rem">Set a pattern up once on one person, then copy it to everyone who works the same pattern.</span>
+            </div>
             <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
             <div id="rot-emp-list"></div>
             </div>
@@ -9056,6 +9060,42 @@ window.qsNpOfferSend = function (btn) {
                   <button type="button" id="rot-cancel" class="btn-secondary">Cancel</button>
                   <button type="button" id="rot-del" class="btn-danger hidden">Delete</button>
                   <button type="button" id="rot-save" class="btn">Save rotation</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Copy a rotation to people (copy-from-standard, Deepika 2026-11-08) -->
+            <div id="rcopy-modal" class="modal-backdrop hidden">
+              <div class="modal">
+                <h3>Copy a rotation to people</h3>
+                <div id="rcopy-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <label>Copy from — person &amp; pattern</label>
+                  <select id="rcopy-source" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                </div>
+                <div class="form-row">
+                  <label>Copies start on</label>
+                  <input type="date" id="rcopy-start" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                  <p class="hint" style="margin:0.4rem 0 0">Pre-filled with the original's start date so everyone's cycles stay in step. Each copy is independent afterwards. Vacations, one-off changes and draft/publish tweaks on the original are not copied.</p>
+                </div>
+                <div class="form-row">
+                  <label>People to copy to</label>
+                  <input type="text" id="rcopy-search" placeholder="Search people…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem" autocomplete="off">
+                  <div id="rcopy-people" style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem"></div>
+                </div>
+                <div class="form-row">
+                  <label>…or paste a list of names or emails</label>
+                  <textarea id="rcopy-paste" rows="3" placeholder="One name per line, or separated by commas" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></textarea>
+                  <button type="button" class="btn-secondary" id="rcopy-match" style="margin-top:0.4rem">Add from list</button>
+                  <div id="rcopy-match-report" style="font-size:0.85rem;margin-top:0.4rem"></div>
+                </div>
+                <div class="form-row">
+                  <div id="rcopy-confirm" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem"></div>
+                </div>
+                <div id="rcopy-result" class="hidden" style="font-size:0.9rem;margin-bottom:0.6rem"></div>
+                <div class="modal-actions">
+                  <button type="button" id="rcopy-cancel" class="btn-secondary">Close</button>
+                  <button type="button" id="rcopy-do" class="btn">Copy rotation</button>
                 </div>
               </div>
             </div>
@@ -9597,6 +9637,189 @@ window.qsNpOfferSend = function (btn) {
                 api('/api/schedule/rotations/' + editingRotId, { method: 'DELETE' }).then(function (r) {
                   if (r.ok) { hide($('rot-modal')); pageSuccess('Rotation deleted.'); loadAll(); }
                   else { var e = $('rot-error'); e.textContent = (r.data && r.data.error) || 'Could not delete.'; show(e); }
+                });
+              });
+
+              // ============ Copy a rotation to people (2026-11-09) ============
+              // Copy-from-standard ONLY (Deepika 2026-11-08): pick one
+              // person's per-person rotation, pick the people, pick the
+              // copies' start date. People who already run the same
+              // pattern are skipped and NAMED — the confirm box below
+              // previews that split and the server decides it for real.
+              var rcopyPicked = {}; // userId -> true; never lost while searching/pasting
+
+              function rcopySources() {
+                var out = [];
+                allRots.forEach(function (r) {
+                  if (r.groupId || r.isActive === false) return;
+                  var a0 = (r.assignments || [])[0];
+                  if (!a0) return;
+                  var m = memberById(a0.userId);
+                  if (!m) return;
+                  out.push({ rot: r, person: m });
+                });
+                return out;
+              }
+              function rcopySourceRot() {
+                var id = $('rcopy-source').value;
+                var list = rcopySources();
+                for (var i = 0; i < list.length; i++) if (list[i].rot.id === id) return list[i];
+                return null;
+              }
+              // Pattern identity mirrors the server: cycle length +
+              // times + the person's (cycle day, shift type) set. The
+              // start date is NOT identity — it is a phase choice.
+              function rcopyPatternKey(r, userId) {
+                var pairs = (r.assignments || []).filter(function (a) { return a.userId === userId; })
+                  .map(function (a) { return a.cycleDay + '|' + a.shiftTypeId; }).sort().join(',');
+                return (r.cycleDays || 0) + '|' + (r.startTime ? String(r.startTime).slice(0, 5) : '') + '|' +
+                  (r.endTime ? String(r.endTime).slice(0, 5) : '') + '|' + pairs;
+              }
+              function rcopyAlready(userId, srcKey) {
+                return allRots.some(function (r) {
+                  if (r.groupId || r.isActive === false) return false;
+                  if (!(r.assignments || []).some(function (a) { return a.userId === userId; })) return false;
+                  return rcopyPatternKey(r, userId) === srcKey;
+                });
+              }
+              function renderRcopyPeople() {
+                var src = rcopySourceRot();
+                var stdId = src ? src.person.id : null;
+                var q = ($('rcopy-search').value || '').toLowerCase();
+                var html = '';
+                members.forEach(function (m) {
+                  if (m.id === stdId) return;
+                  if (q && fullName(m).toLowerCase().indexOf(q) < 0 && (m.email || '').toLowerCase().indexOf(q) < 0) return;
+                  var on = !!rcopyPicked[m.id];
+                  html += '<label style="display:flex;gap:0.5rem;align-items:center;padding:0.25rem 0;cursor:pointer">' +
+                    '<input type="checkbox" data-rcopy-user="' + m.id + '"' + (on ? ' checked' : '') + '> ' +
+                    esc(fullName(m)) + '</label>';
+                });
+                $('rcopy-people').innerHTML = html || '<span style="color:var(--dim)">No one else to copy to.</span>';
+                $('rcopy-people').querySelectorAll('input[data-rcopy-user]').forEach(function (cb) {
+                  cb.addEventListener('change', function () {
+                    var uid = cb.getAttribute('data-rcopy-user');
+                    if (cb.checked) rcopyPicked[uid] = true; else delete rcopyPicked[uid];
+                    updateRcopyConfirm();
+                  });
+                });
+              }
+              function updateRcopyConfirm() {
+                var box = $('rcopy-confirm');
+                var src = rcopySourceRot();
+                var ids = Object.keys(rcopyPicked);
+                if (!src) { box.innerHTML = 'Pick a rotation to copy first.'; $('rcopy-do').disabled = true; return; }
+                var key = rcopyPatternKey(src.rot, src.person.id);
+                var will = [], skip = [];
+                ids.forEach(function (uid) {
+                  var m = memberById(uid);
+                  if (!m) return;
+                  if (rcopyAlready(uid, key)) skip.push(fullName(m)); else will.push(fullName(m));
+                });
+                var h = '<strong>' + esc(fullName(src.person)) + ' — ' + esc(src.rot.name) + '</strong><br>';
+                h += will.length
+                  ? 'Will receive a copy: ' + esc(will.join(', '))
+                  : 'No one new will receive a copy.';
+                if (skip.length) h += '<br>Skipped — already has this rotation: ' + esc(skip.join(', '));
+                box.innerHTML = h;
+                $('rcopy-do').disabled = !will.length;
+              }
+              function openRcopy() {
+                rcopyPicked = {};
+                $('rcopy-paste').value = '';
+                $('rcopy-match-report').innerHTML = '';
+                hide($('rcopy-result'));
+                hide($('rcopy-error'));
+                var list = rcopySources();
+                var sel = $('rcopy-source');
+                if (!list.length) {
+                  sel.innerHTML = '<option value="">— No per-person rotations yet —</option>';
+                } else {
+                  sel.innerHTML = list.map(function (e) {
+                    return '<option value="' + e.rot.id + '">' + esc(fullName(e.person)) + ' — ' + esc(e.rot.name) + '</option>';
+                  }).join('');
+                }
+                var src = rcopySourceRot();
+                $('rcopy-start').value = src ? (src.rot.startDate || '') : '';
+                renderRcopyPeople();
+                updateRcopyConfirm();
+                show($('rcopy-modal'));
+              }
+              $('rot-copy-open').addEventListener('click', openRcopy);
+              $('rcopy-cancel').addEventListener('click', function () { hide($('rcopy-modal')); });
+              $('rcopy-modal').addEventListener('click', function (e) { if (e.target === $('rcopy-modal')) hide($('rcopy-modal')); });
+              $('rcopy-source').addEventListener('change', function () {
+                var src = rcopySourceRot();
+                if (src) {
+                  $('rcopy-start').value = src.rot.startDate || '';
+                  delete rcopyPicked[src.person.id];
+                }
+                renderRcopyPeople();
+                updateRcopyConfirm();
+              });
+              $('rcopy-search').addEventListener('input', renderRcopyPeople);
+              $('rcopy-match').addEventListener('click', function () {
+                var tokens = String($('rcopy-paste').value || '').split(/[\n,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+                var report = $('rcopy-match-report');
+                if (!tokens.length) { report.innerHTML = '<span style="color:var(--dim)">Paste at least one name or email.</span>'; return; }
+                var roster = members.map(function (m) {
+                  return { id: m.id, name: fullName(m), firstName: m.firstName || '', email: m.email || '' };
+                });
+                var results = window.qsMatchPeopleTokens(tokens, roster);
+                var added = 0, lines = [];
+                results.forEach(function (r) {
+                  if (r.status === 'matched') {
+                    var src = rcopySourceRot();
+                    if (src && src.person.id === r.id) { lines.push(esc(r.token) + ' is the standard — not copied to themselves.'); return; }
+                    if (!rcopyPicked[r.id]) { rcopyPicked[r.id] = true; added++; }
+                    else lines.push(esc(r.token) + ' is already picked.');
+                  } else if (r.status === 'ambiguous') {
+                    var cands = (r.candidateIds || []).map(function (id) { var cm = memberById(id); return cm ? fullName(cm) : ''; }).filter(Boolean);
+                    lines.push('Matches more than one person: <strong>' + esc(r.token) + '</strong> — pick below (' + esc(cands.join(' / ')) + ')');
+                  } else {
+                    lines.push('Not found: <strong>' + esc(r.token) + '</strong>');
+                  }
+                });
+                if (added) lines.unshift('Added ' + added + ' from the list.');
+                report.innerHTML = lines.join('<br>');
+                renderRcopyPeople();
+                updateRcopyConfirm();
+              });
+              $('rcopy-do').addEventListener('click', function () {
+                var src = rcopySourceRot();
+                var ids = Object.keys(rcopyPicked);
+                hide($('rcopy-error'));
+                if (!src || !ids.length) return;
+                if (!$('rcopy-start').value) {
+                  var e = $('rcopy-error'); e.textContent = 'Pick the copies\' start date.'; show(e); return;
+                }
+                $('rcopy-do').disabled = true;
+                api('/api/schedule/rotations/copy', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    sourceRotationId: src.rot.id,
+                    standardUserId: src.person.id,
+                    targetUserIds: ids,
+                    startDate: $('rcopy-start').value,
+                  }),
+                }).then(function (r) {
+                  $('rcopy-do').disabled = false;
+                  if (!r.ok) {
+                    var e2 = $('rcopy-error'); e2.textContent = (r.data && r.data.error) || 'Could not copy.'; show(e2); return;
+                  }
+                  var copied = (r.data && r.data.copied) || [];
+                  var skipped = (r.data && r.data.skipped) || [];
+                  var h = '';
+                  if (copied.length) h += 'Copied to: ' + esc(copied.map(function (c) { return c.name; }).join(', ')) + '<br>';
+                  if (skipped.length) h += 'Skipped: ' + skipped.map(function (s) { return esc(s.name) + ' (' + esc(s.reason) + ')'; }).join(', ');
+                  $('rcopy-result').innerHTML = h || 'Nothing was copied.';
+                  show($('rcopy-result'));
+                  pageSuccess(copied.length ? 'Rotation copied to ' + copied.length + (copied.length === 1 ? ' person.' : ' people.') : 'No copies were made.');
+                  rcopyPicked = {};
+                  loadAll().then(function () { renderRcopyPeople(); updateRcopyConfirm(); });
+                }).catch(function () {
+                  $('rcopy-do').disabled = false;
+                  var e3 = $('rcopy-error'); e3.textContent = 'Network error. Please try again.'; show(e3);
                 });
               });
 
