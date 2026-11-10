@@ -3160,6 +3160,12 @@
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
           var draftTag = published ? '' : '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>';
+          // A published shift's NAME box carries the shift colour at
+          // the open slot's tint (Deepika, 2026-11-09, mock approved):
+          // colour in BOTH boxes for published shifts. Drafts and
+          // occurrences get no name-box background — byte-identical
+          // to before, so the grey family is untouched.
+          var nmBg = published ? 'background:' + tint(color, 82) + ';' : '';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
@@ -3185,7 +3191,7 @@
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + note + qsCoverBadge(s) + cBtn + '</div>' +
+            '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + note + qsCoverBadge(s) + cBtn + '</div>' +
             '</div>';
         }
 
@@ -16959,10 +16965,15 @@ window.qsNpOfferSend = function (btn) {
           var nm = displayName(s);
           var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
           var draftTag = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
+          // Same approved look as the Schedule grid (Deepika,
+          // 2026-11-09): a published shift's name box takes the open
+          // slot's tint of the shift colour; drafts and occurrences
+          // keep the plain name box, unchanged.
+          var nmBg = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '' : 'background:' + tint(color, 82) + ';';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var html = '<div class="shift-grid">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
-            '<div class="shift-nm" style="border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
+            '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
           if (isMine(s)) {
             // Swap works for rotation shifts too (server materializes the
