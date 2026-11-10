@@ -9170,8 +9170,9 @@ window.qsNpOfferSend = function (btn) {
             <div id="rot-group-section"></div>
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
             <div style="margin-bottom:0.8rem">
-              <button type="button" class="btn-secondary" id="rot-copy-open">⇄ Copy a rotation to people</button>
-              <button type="button" class="btn-secondary" id="rswap-open">⇄ Swap rotations from a date</button>
+              <button type="button" class="btn" id="rot-copy-open">⇄ Copy a rotation to people</button>
+              <button type="button" class="btn" id="rswap-open">⇄ Swap rotations from a date</button>
+              <button type="button" class="btn" id="rpair-open">👥 Pair people on a pattern</button>
               <span style="color:var(--dim);font-size:0.85rem;margin-left:0.5rem">Set a pattern up once on one person, then copy it to everyone who works the same pattern.</span>
             </div>
             <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
@@ -9295,9 +9296,13 @@ window.qsNpOfferSend = function (btn) {
                   <p class="hint" style="margin:0.4rem 0 0">Pre-filled with the original's start date so everyone's cycles stay in step. Each copy is independent afterwards. Vacations, one-off changes and draft/publish tweaks on the original are not copied.</p>
                 </div>
                 <div class="form-row">
-                  <label style="display:flex;gap:0.5rem;align-items:center;cursor:pointer">
-                    <input type="checkbox" id="rcopy-invert"> Assign the inverse — they work the days the source doesn't
-                  </label>
+                  <div style="display:flex;gap:0.5rem;align-items:center">
+                    <label style="display:flex;gap:0.5rem;align-items:center;cursor:pointer">
+                      <input type="checkbox" id="rcopy-invert"> Assign the inverse — they work the days the source doesn't
+                    </label>
+                    <button type="button" id="rcopy-invert-info-btn" title="What the inverse does" aria-label="What the inverse does" style="background:none;border:none;cursor:pointer;font-size:1rem;line-height:1;padding:0.1rem">ℹ️</button>
+                  </div>
+                  <p class="hint hidden" id="rcopy-invert-info" style="margin:0.4rem 0 0">Inverse gives the other person the days this pattern does NOT work, inside the same cycle. Example: 7 days on / 7 days off — the other person gets the 7 off days as their working week. If the pattern works Mon–Fri every week, the inverse is Sat–Sun every week. For the same days on alternate weeks, use Pairing instead.</p>
                   <p class="hint hidden" id="rcopy-invert-note" style="margin:0.4rem 0 0"></p>
                 </div>
                 <div class="form-row">
@@ -9318,6 +9323,37 @@ window.qsNpOfferSend = function (btn) {
                 <div class="modal-actions">
                   <button type="button" id="rcopy-cancel" class="btn-secondary">Close</button>
                   <button type="button" id="rcopy-do" class="btn">Copy rotation</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pair people on a pattern (Deepika 2026-11-09) -->
+            <div id="rpair-modal" class="modal-backdrop hidden">
+              <div class="modal">
+                <h3>Pair people on a pattern <button type="button" id="rpair-info-btn" title="How pairing works" aria-label="How pairing works" style="background:none;border:none;cursor:pointer;font-size:1rem;line-height:1;padding:0.1rem">ℹ️</button></h3>
+                <p class="hint hidden" id="rpair-info" style="margin:0 0 0.8rem">Pairing connects people to one pattern and deals its working turns between them, in order. Example: the pattern works 1 week, off 1 week — the first person takes week 1, the second takes week 3, the first takes week 5. If the pattern works every week, they alternate every week and the slot is never empty. What the pair's calendar looks like depends on the pattern you set.</p>
+                <div id="rpair-error" class="alert alert-error hidden"></div>
+                <div class="form-row">
+                  <label>Pattern — from person &amp; pattern</label>
+                  <select id="rpair-source" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                </div>
+                <div class="form-row">
+                  <label>The pair starts on</label>
+                  <input type="date" id="rpair-start" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                  <p class="hint" style="margin:0.4rem 0 0">Pre-filled with the original's start date so the pair runs in step with the pattern. The pair is its own rotation afterwards — find it with the group rotations, and the people under Groups.</p>
+                </div>
+                <div class="form-row">
+                  <label>People in the pair — tick in turn order</label>
+                  <input type="text" id="rpair-search" placeholder="Search people…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem" autocomplete="off">
+                  <div id="rpair-people" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem"></div>
+                </div>
+                <div class="form-row">
+                  <div id="rpair-confirm" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 0.8rem;font-size:0.9rem"></div>
+                </div>
+                <div id="rpair-result" class="hidden" style="font-size:0.9rem;margin-bottom:0.6rem"></div>
+                <div class="modal-actions">
+                  <button type="button" id="rpair-cancel" class="btn-secondary">Close</button>
+                  <button type="button" id="rpair-do" class="btn">Pair them</button>
                 </div>
               </div>
             </div>
@@ -10101,6 +10137,7 @@ window.qsNpOfferSend = function (btn) {
                 $('rcopy-invert').checked = false;
                 hide($('rcopy-result'));
                 hide($('rcopy-error'));
+                hide($('rcopy-invert-info'));
                 var list = rcopySources();
                 var sel = $('rcopy-source');
                 if (!list.length) {
@@ -10131,6 +10168,7 @@ window.qsNpOfferSend = function (btn) {
                 updateRcopyConfirm();
               });
               $('rcopy-invert').addEventListener('change', updateRcopyConfirm);
+              $('rcopy-invert-info-btn').addEventListener('click', function () { $('rcopy-invert-info').classList.toggle('hidden'); });
               $('rcopy-search').addEventListener('input', renderRcopyPeople);
               $('rcopy-match').addEventListener('click', function () {
                 var tokens = String($('rcopy-paste').value || '').split(/[\n,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
@@ -10195,6 +10233,130 @@ window.qsNpOfferSend = function (btn) {
                 }).catch(function () {
                   $('rcopy-do').disabled = false;
                   var e3 = $('rcopy-error'); e3.textContent = 'Network error. Please try again.'; show(e3);
+                });
+              });
+
+              // ============ Pair people on a pattern (2026-11-09) ============
+              // Connect 2+ people to ONE pattern (server: POST
+              // /rotations/pair). The pattern's turns are dealt
+              // between them IN PICK ORDER — the pattern's own shape
+              // decides the calendar, there is no mode to choose.
+              // The server creates a rotation group (the turn-line
+              // kind) plus a group rotation cloned from the template;
+              // both stay manageable in the usual places afterwards.
+              var rpairOrder = []; // userIds in tick order — the dealing order
+              function rpairSourceRot() {
+                var id = $('rpair-source').value;
+                var list = rcopySources();
+                for (var i = 0; i < list.length; i++) if (list[i].rot.id === id) return list[i];
+                return null;
+              }
+              function renderRpairPeople() {
+                var q = ($('rpair-search').value || '').toLowerCase();
+                var html = '';
+                members.forEach(function (m) {
+                  if (q && fullName(m).toLowerCase().indexOf(q) < 0 && (m.email || '').toLowerCase().indexOf(q) < 0) return;
+                  var pos = rpairOrder.indexOf(m.id);
+                  html += '<label style="display:flex;gap:0.5rem;align-items:center;padding:0.25rem 0;cursor:pointer">' +
+                    '<input type="checkbox" data-rpair-user="' + m.id + '"' + (pos >= 0 ? ' checked' : '') + '> ' +
+                    (pos >= 0 ? '<strong>' + (pos + 1) + '.</strong> ' : '') + esc(fullName(m)) + '</label>';
+                });
+                $('rpair-people').innerHTML = html || '<span style="color:var(--dim)">No one matches.</span>';
+                $('rpair-people').querySelectorAll('input[data-rpair-user]').forEach(function (cb) {
+                  cb.addEventListener('change', function () {
+                    var uid = cb.getAttribute('data-rpair-user');
+                    var i = rpairOrder.indexOf(uid);
+                    if (cb.checked && i < 0) rpairOrder.push(uid);
+                    if (!cb.checked && i >= 0) rpairOrder.splice(i, 1);
+                    renderRpairPeople();
+                    updateRpairConfirm();
+                  });
+                });
+              }
+              function updateRpairConfirm() {
+                var box = $('rpair-confirm');
+                var src = rpairSourceRot();
+                if (!src) { box.innerHTML = 'Pick a pattern first.'; $('rpair-do').disabled = true; return; }
+                var h = '<strong>' + esc(fullName(src.person)) + ' — ' + esc(src.rot.name) + '</strong><br>';
+                if (rpairOrder.length < 2) {
+                  h += 'Tick at least two people, in the order they should take turns.';
+                  $('rpair-do').disabled = true;
+                } else {
+                  h += 'Turns go in this order: ' + rpairOrder.map(function (uid, i) {
+                    var m = memberById(uid);
+                    return (i + 1) + '. ' + esc(m ? fullName(m) : '');
+                  }).join(' &nbsp;·&nbsp; ');
+                  if (rpairOrder.indexOf(src.person.id) >= 0) {
+                    h += '<br>' + esc(fullName(src.person)) + '\'s own pattern stops the day before the pair starts — the pair takes over from there. Everything before stays exactly as it was.';
+                  }
+                  $('rpair-do').disabled = false;
+                }
+                box.innerHTML = h;
+              }
+              function openRpair() {
+                rpairOrder = [];
+                $('rpair-search').value = '';
+                hide($('rpair-result'));
+                hide($('rpair-error'));
+                hide($('rpair-info'));
+                var list = rcopySources();
+                var sel = $('rpair-source');
+                if (!list.length) {
+                  sel.innerHTML = '<option value="">— No per-person rotations yet —</option>';
+                } else {
+                  sel.innerHTML = list.map(function (e) {
+                    return '<option value="' + e.rot.id + '">' + esc(fullName(e.person)) + ' — ' + esc(e.rot.name) + '</option>';
+                  }).join('');
+                }
+                var src = rpairSourceRot();
+                $('rpair-start').value = src ? (src.rot.startDate || '') : '';
+                renderRpairPeople();
+                updateRpairConfirm();
+                show($('rpair-modal'));
+              }
+              $('rpair-info-btn').addEventListener('click', function () { $('rpair-info').classList.toggle('hidden'); });
+              $('rpair-open').addEventListener('click', openRpair);
+              $('rpair-cancel').addEventListener('click', function () { hide($('rpair-modal')); });
+              $('rpair-modal').addEventListener('click', function (e) { if (e.target === $('rpair-modal')) hide($('rpair-modal')); });
+              $('rpair-source').addEventListener('change', function () {
+                var src = rpairSourceRot();
+                if (src) $('rpair-start').value = src.rot.startDate || '';
+                updateRpairConfirm();
+              });
+              $('rpair-search').addEventListener('input', renderRpairPeople);
+              $('rpair-do').addEventListener('click', function () {
+                var src = rpairSourceRot();
+                hide($('rpair-error'));
+                if (!src || rpairOrder.length < 2) return;
+                if (!$('rpair-start').value) {
+                  var e = $('rpair-error'); e.textContent = 'Pick the pair\'s start date.'; show(e); return;
+                }
+                $('rpair-do').disabled = true;
+                api('/api/schedule/rotations/pair', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    templateRotationId: src.rot.id,
+                    standardUserId: src.person.id,
+                    memberUserIds: rpairOrder.slice(),
+                    startDate: $('rpair-start').value,
+                  }),
+                }).then(function (r) {
+                  $('rpair-do').disabled = false;
+                  if (!r.ok) {
+                    var e2 = $('rpair-error'); e2.textContent = (r.data && r.data.error) || 'Could not pair them.'; show(e2); return;
+                  }
+                  var paired = r.data && r.data.paired;
+                  var skipped = (r.data && r.data.skipped) || [];
+                  var h = '';
+                  if (paired) h += 'Paired as the group <strong>' + esc(paired.groupName || '') + '</strong> — they take the pattern\'s turns in order from here on.';
+                  if (skipped.length) h += 'Not paired: ' + skipped.map(function (s) { return esc(s.reason); }).join(', ') + '.';
+                  $('rpair-result').innerHTML = h || 'Nothing was paired.';
+                  show($('rpair-result'));
+                  if (paired) pageSuccess('Paired — they take the pattern\'s turns in order.');
+                  loadAll();
+                }).catch(function () {
+                  $('rpair-do').disabled = false;
+                  var e3 = $('rpair-error'); e3.textContent = 'Network error. Please try again.'; show(e3);
                 });
               });
 

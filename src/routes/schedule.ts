@@ -3375,6 +3375,245 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
   }
 });
 
+// POST /api/schedule/rotations/pair — PAIR people on a pattern
+// (Deepika, 2026-11-09: "if I connect them or pair them they fill
+// one week one person and then both off next week and other person
+// picks up the third week and first person picks the 5th week" —
+// "it just depends on the pattern how we set it"). Body:
+// { templateRotationId, standardUserId, memberUserIds: [...],
+// startDate }. Pairing connects two or more people to ONE pattern:
+// a ROTATION GROUP (the ordered turn-line kind — never a
+// communication group) is created with the people in pick order,
+// and a GROUP ROTATION cloned from the template is pointed at it,
+// so the existing group dealing hands the pattern's turns to the
+// people in order. There is no mode switch: the pattern's own
+// shape decides the calendar — a week-on/week-off pattern deals
+// A wk1, nobody wk2, B wk3, nobody wk4, A wk5; an every-week
+// pattern deals A wk1, B wk2, A wk3 with no empty week. A turn is
+// one aligned pattern week when the pattern is week-shaped
+// (turnUnit 'week', the unit the group-rotation form preserves);
+// otherwise a turn is one pass through the pattern's working days
+// (turnUnit 'days', one turn per cycle).
+// When the standard is one of the paired people, their own solo
+// pattern would keep drawing on top of the pair (they would work
+// the other person's weeks too), so pairing ENDS the template
+// rotation the day before the pair starts — the change-from-date
+// rule: its past is untouched, its definition is never mutated,
+// and it can be reopened by clearing the end date. The dialog
+// states this before confirming.
+router.post('/rotations/pair', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { templateRotationId, standardUserId } = req.body ?? {};
+    const rawMembers: any[] = Array.isArray(req.body?.memberUserIds) ? req.body.memberUserIds : [];
+    const memberUserIds: string[] = [...new Set(rawMembers.map((x: any) => String(x)))];
+    if (!templateRotationId || !standardUserId) {
+      res.status(400).json({ error: 'Pick a pattern to pair people on.' });
+      return;
+    }
+    if (memberUserIds.length < 2) {
+      res.status(400).json({ error: 'Pick at least two people to pair — they take the pattern\'s turns between them.' });
+      return;
+    }
+    const { rows: tplRows } = await query(
+      `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+              start_time::text AS "startTime", end_time::text AS "endTime", notes,
+              group_id AS "groupId", is_active AS "isActive", end_date::text AS "endDate"
+       FROM rotations WHERE id = $1 AND company_id = $2`,
+      [String(templateRotationId), companyId]
+    );
+    if (!tplRows.length) {
+      res.status(404).json({ error: 'That rotation no longer exists.' });
+      return;
+    }
+    const tpl = tplRows[0];
+    if (tpl.groupId) {
+      res.status(400).json({ error: 'That is a group rotation — pairing works on one person\'s rotation. Pick a person as the standard.' });
+      return;
+    }
+    if (!tpl.isActive) {
+      res.status(400).json({ error: 'That rotation is paused. Unpause it first, or pair on a different one.' });
+      return;
+    }
+    const startDate = isValidDate(req.body?.startDate) ? String(req.body.startDate) : String(tpl.startDate);
+    const { rows: stdRows } = await query(
+      `SELECT user_id AS "userId", cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId"
+       FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2 ORDER BY cycle_day`,
+      [tpl.id, String(standardUserId)]
+    );
+    if (!stdRows.length) {
+      res.status(400).json({ error: 'That person is not on this rotation — pick them as the standard from their own rotation.' });
+      return;
+    }
+    // A group rotation carries ONE shift type, so the standard's
+    // pattern must be single-type (the same shape inverse copy
+    // requires, for the same reason).
+    const typeIds = [...new Set(stdRows.map((p: any) => String(p.shiftTypeId)))];
+    if (typeIds.length > 1) {
+      res.status(400).json({ error: 'Pairing needs a pattern with a single shift type — that one uses more than one, and a pair takes its turns on one shift.' });
+      return;
+    }
+    const groupShiftTypeId = typeIds[0];
+    const workDays: number[] = [...new Set(stdRows.map((p: any) => Number(p.cycleDay)))].sort((a, b) => a - b);
+    const { rows: stdUserRows } = await query(
+      'SELECT first_name AS "firstName", last_name AS "lastName" FROM users WHERE id = $1 AND company_id = $2',
+      [String(standardUserId), companyId]
+    );
+    const stdName = stdUserRows.length ? `${stdUserRows[0].firstName} ${stdUserRows[0].lastName}`.trim() : 'the standard';
+
+    // The people, in pick order — the line they will take turns in.
+    const members: Array<{ id: string; name: string; firstName: string }> = [];
+    for (const uid of memberUserIds) {
+      const { rows: urows } = await query(
+        'SELECT first_name AS "firstName", last_name AS "lastName", is_active AS "isActive" FROM users WHERE id = $1 AND company_id = $2',
+        [uid, companyId]
+      );
+      if (!urows.length) {
+        res.status(400).json({ error: 'One of the people picked is no longer on your team — reopen the list and try again.' });
+        return;
+      }
+      const nm = `${urows[0].firstName} ${urows[0].lastName}`.trim();
+      if (!urows[0].isActive) {
+        res.status(400).json({ error: `${nm} is not an active team member — take them off the list and try again.` });
+        return;
+      }
+      members.push({ id: uid, name: nm, firstName: String(urows[0].firstName || nm) });
+    }
+    // Eligibility + department scope, exactly as a group rotation
+    // created through the form is checked.
+    const { rows: trows } = await query(
+      'SELECT eligible_job_role_ids AS "eligibleIds" FROM shift_types WHERE id = $1 AND company_id = $2',
+      [groupShiftTypeId, companyId]
+    );
+    if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
+    for (const m of members) {
+      const elig = await checkShiftEligibility(companyId, m.id, trows[0].eligibleIds);
+      if (!elig.ok) {
+        res.status(400).json({
+          error: `${m.name} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
+        });
+        return;
+      }
+    }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments(members.map((m) => ({ userId: m.id, shiftTypeId: groupShiftTypeId })), companyId)
+    ))) return;
+
+    // Turn shape from the pattern (see the header comment).
+    const daySet = new Set(workDays);
+    let weekAligned = tpl.cycleDays % 7 === 0;
+    if (weekAligned) {
+      for (let w = 0; w < tpl.cycleDays / 7 && weekAligned; w++) {
+        let inCount = 0;
+        for (let d = w * 7 + 1; d <= w * 7 + 7; d++) if (daySet.has(d)) inCount++;
+        if (inCount !== 0 && inCount !== 7) weekAligned = false;
+      }
+    }
+    let turnUnit: string, turnDays: number, weekStart: number;
+    if (weekAligned) {
+      turnUnit = 'week';
+      turnDays = 1;
+      weekStart = new Date(Date.parse(startDate + 'T00:00:00Z')).getUTCDay();
+    } else {
+      turnUnit = 'days';
+      turnDays = Math.min(7, Math.max(1, workDays.length));
+      weekStart = 1;
+    }
+    const normTime = (t: any) => (t ? String(t).slice(0, 5) : '');
+    const groupDaysStr = workDays.join(',');
+
+    // Already paired on this pattern? An existing line with exactly
+    // these people in this order, already running this pattern.
+    const { rows: allGroups } = await query(
+      'SELECT id, name FROM rotation_groups WHERE company_id = $1',
+      [companyId]
+    );
+    let groupId: string | null = null;
+    let groupName: string | null = null;
+    for (const g of allGroups) {
+      const { rows: ms } = await query(
+        'SELECT user_id AS "userId" FROM rotation_group_members WHERE group_id = $1 ORDER BY position',
+        [g.id]
+      );
+      if (ms.length !== memberUserIds.length) continue;
+      if (!ms.every((m: any, i: number) => String(m.userId) === memberUserIds[i])) continue;
+      const { rows: matchRots } = await query(
+        `SELECT id FROM rotations WHERE company_id = $1 AND group_shift_type_id = $2
+           AND cycle_days = $3 AND group_days = $4
+           AND COALESCE(start_time::text, '') = COALESCE($5, '') AND COALESCE(end_time::text, '') = COALESCE($6, '')
+           AND (group_id::text = $7 OR group_ids = $7)`,
+        [companyId, groupShiftTypeId, tpl.cycleDays, groupDaysStr, tpl.startTime, tpl.endTime, g.id]
+      );
+      if (matchRots.length) {
+        res.json({ paired: null, skipped: [{ reason: 'already paired on this pattern' }] });
+        return;
+      }
+      groupId = g.id;
+      groupName = g.name;
+      break;
+    }
+
+    if (!groupId) {
+      // Name the line after its people: "Wal & Wil", "Wal, Wil & Swa".
+      const firsts = members.map((m) => m.firstName);
+      groupName = (firsts.length === 2
+        ? `${firsts[0]} & ${firsts[1]}`
+        : `${firsts.slice(0, -1).join(', ')} & ${firsts[firsts.length - 1]}`).slice(0, 120);
+      groupId = crypto.randomUUID();
+      await query(
+        'INSERT INTO rotation_groups (id, company_id, name) VALUES ($1, $2, $3)',
+        [groupId, companyId, groupName]
+      );
+      for (let i = 0; i < members.length; i++) {
+        await query(
+          'INSERT INTO rotation_group_members (group_id, user_id, position) VALUES ($1, $2, $3)',
+          [groupId, members[i].id, i + 1]
+        );
+      }
+    }
+
+    const rotationId = crypto.randomUUID();
+    await query(
+      `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
+                              group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [rotationId, companyId, tpl.name, tpl.cycleDays, startDate, req.session.userId!,
+       tpl.startTime, tpl.endTime, tpl.notes,
+       groupId, groupId, groupShiftTypeId, groupDaysStr, turnUnit, turnDays, weekStart]
+    );
+
+    // The standard is in the pair: their solo template stops the
+    // day before the pair starts (see the header comment). An end
+    // date already earlier than that is left as it is.
+    let templateEnded = false;
+    if (memberUserIds.includes(String(standardUserId))) {
+      const stopDate = dayBefore(startDate);
+      if (!tpl.endDate || String(tpl.endDate) > stopDate) {
+        await query('UPDATE rotations SET end_date = $1 WHERE id = $2', [stopDate, tpl.id]);
+        templateEnded = true;
+      }
+    }
+
+    await auditLog({
+      companyId, date: todayStr(), action: 'created', category: 'settings',
+      source: 'manual', rotationName: tpl.name,
+      changedBy: req.session.userId!,
+      description: `Paired ${members.map((m) => m.name).join(', ')} on "${tpl.name}" — they take its turns in that order` +
+        (templateEnded ? `; ${stdName}'s own pattern stops the day before the pair starts` : ''),
+      details: {
+        rotationId, groupId, kind: 'rotation', paired: true,
+        pairedFromRotationId: tpl.id, pairedFromUserId: String(standardUserId),
+        memberUserIds, templateEnded,
+      },
+    });
+    res.status(201).json({ paired: { groupId, groupName, rotationId }, skipped: [] });
+  } catch (err) {
+    console.error('[schedule] pair on rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // ---- End-old / start-new primitive (Deepika, 2026-11-09) ----
 // "Change rotation from a date" and "Swap rotations from a date"
 // share one move: the OLD rotation gets end_date = the day before
