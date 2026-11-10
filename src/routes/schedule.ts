@@ -3197,20 +3197,29 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
 // POST /api/schedule/rotations/copy — copy ONE person's per-person
 // rotation pattern to other people (Deepika, 2026-11-08: copy-from-
 // standard ONLY). Body: { sourceRotationId, standardUserId,
-// targetUserIds: [...], startDate }. Each copy is a NEW, independent
-// rotation row for that person (same name, cycle, times, notes and
-// the standard's cycle-day/shift-type pattern; start date = the
-// admin's pick, pre-filled client-side with the standard's so cycles
-// stay in sync). Pauses, exclusions and publish overrides belong to
-// the source rotation id and are NOT copied. A target who already
-// runs the same pattern is SKIPPED and NAMED in the result — pattern
-// identity is cycle length + start/end times + the set of
+// targetUserIds: [...], startDate, invert? }. Each copy is a NEW,
+// independent rotation row for that person (same name, cycle, times,
+// notes and the standard's cycle-day/shift-type pattern; start date
+// = the admin's pick, pre-filled client-side with the standard's so
+// cycles stay in sync). Pauses, exclusions and publish overrides
+// belong to the source rotation id and are NOT copied. A target who
+// already runs the same pattern is SKIPPED and NAMED in the result —
+// pattern identity is cycle length + start/end times + the set of
 // (cycle day, shift type) pairs; the start date is NOT part of the
 // identity (it is a phase choice, and this flow exists to align it).
+// INVERSE (Deepika, 2026-11-09 — "I cover a week, there is another
+// person who covers the other week"): with invert: true the target
+// receives the COMPLEMENT of the standard's days — same cycle, same
+// start, same times, same single shift type — so the pair tiles the
+// cycle with no overlap and no gap. Only a single-type pattern has
+// a well-defined inverse; the identity/skip test below runs on the
+// EFFECTIVE (possibly complemented) set, so holding the as-is
+// pattern never blocks an inverse copy, and vice versa.
 router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const { sourceRotationId, standardUserId } = req.body ?? {};
+    const invert = req.body?.invert === true;
     const startDate = String(req.body?.startDate || '');
     const rawTargets: any[] = Array.isArray(req.body?.targetUserIds) ? req.body.targetUserIds : [];
     const targetUserIds: string[] = [...new Set(rawTargets.map((x: any) => String(x)))];
@@ -3255,7 +3264,30 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
     const patternKey = (cycleDays: number, st: any, et: any, pairs: Array<{ cycleDay: number; shiftTypeId: string }>) =>
       `${cycleDays}|${normTime(st)}|${normTime(et)}|` +
       pairs.map((p) => `${p.cycleDay}|${p.shiftTypeId}`).sort().join(',');
-    const srcKey = patternKey(src.cycleDays, src.startTime, src.endTime, stdRows);
+    // The EFFECTIVE pattern: the standard's own days as-is, or —
+    // inverse — every cycle day the standard does NOT work, in the
+    // standard's single shift type. Eligibility is refused up front
+    // (nothing is decided or created for anyone): a mixed-type
+    // pattern's days can't be flipped into one type, and a pattern
+    // that works every day of its cycle has no complement.
+    let effPairs: Array<{ cycleDay: number; shiftTypeId: string }> = stdRows;
+    if (invert) {
+      const types = [...new Set(stdRows.map((p: any) => String(p.shiftTypeId)))];
+      if (types.length > 1) {
+        res.status(400).json({ error: 'The inverse needs a pattern with a single shift type — that one uses more than one, so its days can\'t be flipped.' });
+        return;
+      }
+      const worked = new Set(stdRows.map((p: any) => Number(p.cycleDay)));
+      if (worked.size >= src.cycleDays) {
+        res.status(400).json({ error: 'That pattern works every day of its cycle — there is no inverse to copy.' });
+        return;
+      }
+      effPairs = [];
+      for (let d = 1; d <= src.cycleDays; d++) {
+        if (!worked.has(d)) effPairs.push({ cycleDay: d, shiftTypeId: types[0] });
+      }
+    }
+    const srcKey = patternKey(src.cycleDays, src.startTime, src.endTime, effPairs);
 
     // Decide per target first (skip decisions need reads only), so
     // the department-scope check covers exactly what will be created.
@@ -3303,7 +3335,7 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
     const toCreate = decisions.filter((d) => !d.skip);
     if (toCreate.length) {
       const scopePairs: Array<{ userId: string; shiftTypeId: string }> = [];
-      for (const d of toCreate) for (const p of stdRows) scopePairs.push({ userId: d.userId, shiftTypeId: p.shiftTypeId });
+      for (const d of toCreate) for (const p of effPairs) scopePairs.push({ userId: d.userId, shiftTypeId: p.shiftTypeId });
       if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
     }
 
@@ -3318,7 +3350,7 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
         [id, companyId, src.name, src.cycleDays, startDate, req.session.userId!, src.startTime, src.endTime, src.notes]
       );
-      for (const p of stdRows) {
+      for (const p of effPairs) {
         await query(
           `INSERT INTO rotation_assignments (id, rotation_id, user_id, cycle_day, shift_type_id)
            VALUES ($1, $2, $3, $4, $5)`,
@@ -3329,8 +3361,10 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
         companyId, date: todayStr(), action: 'created', category: 'settings',
         source: 'manual', rotationName: src.name,
         changedBy: req.session.userId!,
-        description: `Copied rotation "${src.name}" from ${stdName} to ${d.name}`,
-        details: { rotationId: id, kind: 'rotation', copiedFromRotationId: src.id, copiedFromUserId: String(standardUserId) },
+        description: invert
+          ? `Copied rotation "${src.name}" from ${stdName} to ${d.name} — inverse (the days ${stdName} doesn't work)`
+          : `Copied rotation "${src.name}" from ${stdName} to ${d.name}`,
+        details: { rotationId: id, kind: 'rotation', copiedFromRotationId: src.id, copiedFromUserId: String(standardUserId), ...(invert ? { inverse: true } : {}) },
       });
       copied.push({ userId: d.userId, name: d.name, rotationId: id });
     }

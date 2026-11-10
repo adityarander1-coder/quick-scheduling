@@ -9295,6 +9295,12 @@ window.qsNpOfferSend = function (btn) {
                   <p class="hint" style="margin:0.4rem 0 0">Pre-filled with the original's start date so everyone's cycles stay in step. Each copy is independent afterwards. Vacations, one-off changes and draft/publish tweaks on the original are not copied.</p>
                 </div>
                 <div class="form-row">
+                  <label style="display:flex;gap:0.5rem;align-items:center;cursor:pointer">
+                    <input type="checkbox" id="rcopy-invert"> Assign the inverse — they work the days the source doesn't
+                  </label>
+                  <p class="hint hidden" id="rcopy-invert-note" style="margin:0.4rem 0 0"></p>
+                </div>
+                <div class="form-row">
                   <label>People to copy to</label>
                   <input type="text" id="rcopy-search" placeholder="Search people…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.5rem" autocomplete="off">
                   <div id="rcopy-people" style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem"></div>
@@ -9875,6 +9881,22 @@ window.qsNpOfferSend = function (btn) {
                 $(id).addEventListener('change', updateRotPreview);
                 $(id).addEventListener('input', updateRotPreview);
               });
+              // Pull the picked type's Settings times into the time
+              // fields (Deepika 2026-11-09): picking Night NP fills
+              // its Settings times (say 19:00–07:00). The fields stay
+              // fully editable — this fires ONLY on the type pick's
+              // change event, so opening the form (new, edit or
+              // copy-from) never touches the times already there, and
+              // a time the admin typed is only replaced when they
+              // change the type pick itself.
+              $('rot-shifttype').addEventListener('change', function () {
+                var st = null;
+                for (var ti = 0; ti < shiftTypes.length; ti++) if (shiftTypes[ti].id === this.value) { st = shiftTypes[ti]; break; }
+                if (!st) return;
+                if (st.startTime) $('rot-start-time').value = String(st.startTime).slice(0, 5);
+                if (st.endTime) $('rot-end-time').value = String(st.endTime).slice(0, 5);
+                updateRotPreview();
+              });
               function updateRotPreview() {
                 var days = collectDays().sort(function (a, b) { return a - b; });
                 var st = $('rot-shifttype');
@@ -9982,6 +10004,46 @@ window.qsNpOfferSend = function (btn) {
                 return (r.cycleDays || 0) + '|' + (r.startTime ? String(r.startTime).slice(0, 5) : '') + '|' +
                   (r.endTime ? String(r.endTime).slice(0, 5) : '') + '|' + pairs;
               }
+              // Inverse copy (Deepika 2026-11-09): the target works
+              // the days the standard does NOT. Mirrors the server's
+              // rules: only a single-type pattern has an inverse,
+              // and a pattern that works every day of its cycle has
+              // none. rcopyEffectiveKey keys the EFFECTIVE pattern
+              // (complement when the toggle is on) so the confirm
+              // box's already-has preview matches the server's test.
+              function rcopyInvertProblem(src) {
+                var pairs = (src.rot.assignments || []).filter(function (a) { return a.userId === src.person.id; });
+                var types = {}, days = {};
+                pairs.forEach(function (a) { types[a.shiftTypeId] = true; days[a.cycleDay] = true; });
+                if (Object.keys(types).length > 1) return 'mixed';
+                if (Object.keys(days).length >= (src.rot.cycleDays || 0)) return 'full';
+                return '';
+              }
+              function rcopyEffectiveKey(src) {
+                var cb = $('rcopy-invert');
+                if (!cb || !cb.checked) return rcopyPatternKey(src.rot, src.person.id);
+                var pairs = (src.rot.assignments || []).filter(function (a) { return a.userId === src.person.id; });
+                var typeId = pairs.length ? pairs[0].shiftTypeId : '';
+                var on = {};
+                pairs.forEach(function (a) { on[a.cycleDay] = true; });
+                var comp = [];
+                for (var d = 1; d <= (src.rot.cycleDays || 0); d++) if (!on[d]) comp.push(d + '|' + typeId);
+                return (src.rot.cycleDays || 0) + '|' + (src.rot.startTime ? String(src.rot.startTime).slice(0, 5) : '') + '|' +
+                  (src.rot.endTime ? String(src.rot.endTime).slice(0, 5) : '') + '|' + comp.sort().join(',');
+              }
+              function updateRcopyInvertGate() {
+                var cb = $('rcopy-invert'), note = $('rcopy-invert-note');
+                if (!cb || !note) return;
+                var src = rcopySourceRot();
+                if (!src) { cb.checked = false; cb.disabled = true; hide(note); return; }
+                var problem = rcopyInvertProblem(src);
+                if (!problem) { cb.disabled = false; hide(note); return; }
+                cb.checked = false; cb.disabled = true;
+                note.textContent = problem === 'mixed'
+                  ? 'The inverse isn\'t available for this pattern — it needs a pattern with a single shift type.'
+                  : 'The inverse isn\'t available for this pattern — it works every day of its cycle, so there is no inverse.';
+                show(note);
+              }
               function rcopyAlready(userId, srcKey) {
                 return allRots.some(function (r) {
                   if (r.groupId || r.isActive === false) return false;
@@ -10016,7 +10078,7 @@ window.qsNpOfferSend = function (btn) {
                 var src = rcopySourceRot();
                 var ids = Object.keys(rcopyPicked);
                 if (!src) { box.innerHTML = 'Pick a rotation to copy first.'; $('rcopy-do').disabled = true; return; }
-                var key = rcopyPatternKey(src.rot, src.person.id);
+                var key = rcopyEffectiveKey(src);
                 var will = [], skip = [];
                 ids.forEach(function (uid) {
                   var m = memberById(uid);
@@ -10024,6 +10086,7 @@ window.qsNpOfferSend = function (btn) {
                   if (rcopyAlready(uid, key)) skip.push(fullName(m)); else will.push(fullName(m));
                 });
                 var h = '<strong>' + esc(fullName(src.person)) + ' — ' + esc(src.rot.name) + '</strong><br>';
+                if ($('rcopy-invert') && $('rcopy-invert').checked) h += 'Inverse copy — they work the days ' + esc(fullName(src.person)) + ' doesn\'t.<br>';
                 h += will.length
                   ? 'Will receive a copy: ' + esc(will.join(', '))
                   : 'No one new will receive a copy.';
@@ -10035,6 +10098,7 @@ window.qsNpOfferSend = function (btn) {
                 rcopyPicked = {};
                 $('rcopy-paste').value = '';
                 $('rcopy-match-report').innerHTML = '';
+                $('rcopy-invert').checked = false;
                 hide($('rcopy-result'));
                 hide($('rcopy-error'));
                 var list = rcopySources();
@@ -10048,6 +10112,7 @@ window.qsNpOfferSend = function (btn) {
                 }
                 var src = rcopySourceRot();
                 $('rcopy-start').value = src ? (src.rot.startDate || '') : '';
+                updateRcopyInvertGate();
                 renderRcopyPeople();
                 updateRcopyConfirm();
                 show($('rcopy-modal'));
@@ -10061,9 +10126,11 @@ window.qsNpOfferSend = function (btn) {
                   $('rcopy-start').value = src.rot.startDate || '';
                   delete rcopyPicked[src.person.id];
                 }
+                updateRcopyInvertGate();
                 renderRcopyPeople();
                 updateRcopyConfirm();
               });
+              $('rcopy-invert').addEventListener('change', updateRcopyConfirm);
               $('rcopy-search').addEventListener('input', renderRcopyPeople);
               $('rcopy-match').addEventListener('click', function () {
                 var tokens = String($('rcopy-paste').value || '').split(/[\n,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
@@ -10108,6 +10175,7 @@ window.qsNpOfferSend = function (btn) {
                     standardUserId: src.person.id,
                     targetUserIds: ids,
                     startDate: $('rcopy-start').value,
+                    invert: !!($('rcopy-invert') && $('rcopy-invert').checked),
                   }),
                 }).then(function (r) {
                   $('rcopy-do').disabled = false;
