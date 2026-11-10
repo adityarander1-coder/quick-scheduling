@@ -1047,3 +1047,99 @@ Rules:
   }
   return out;
 }
+
+export interface ShiftPdfRow {
+  date: string; person: string; shiftType: string; start: string; end: string;
+}
+
+/**
+ * Read a rota PDF (the Schedule page's "⬆ Upload schedule" door,
+ * Deepika 2026-11-10) and extract every shift assignment as a raw
+ * row in the upload template's columns. Layouts are arbitrary —
+ * list tables, people × date grid rotas with the shift name or code
+ * in each cell, multi-page sheets with repeated headers — so the AI
+ * reads it like a person would and normalizes. It transcribes ONLY
+ * what the document states: a field the document doesn't show comes
+ * back blank, never invented. The rows feed the shift-import
+ * preview pipeline (exact name/type matching, duplicate and clash
+ * flags, nothing created until the admin confirms), so a shaky read
+ * surfaces there — never as a wrong shift. Mirrors
+ * parseSessionSchedulePdf's call pattern (model discovery, 503
+ * backoff, usage logging, outage hooks).
+ */
+export async function parseShiftSchedulePdf(input: {
+  pdfBase64: string;
+  filename: string;
+  today: string;
+  shiftTypeNames: string[];
+  members: string[];
+}): Promise<ShiftPdfRow[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('AI is not configured (GEMINI_API_KEY missing).');
+  const prompt = `You read a work schedule / rota document (a PDF) and extract every shift assignment it lists. Today is ${input.today}. File: ${input.filename}
+
+Return ONLY a JSON object: {"shifts": [{"date": "YYYY-MM-DD", "person": "...", "shiftType": "...", "start": "...", "end": "..."}]}
+
+The columns are: date, person (the team member working the shift), shiftType (the shift, as printed), start, end.
+
+Rules:
+- Extract what the document STATES, exactly as printed — never invent a time or a shift the document does not show. When the document doesn't show a field for a shift, return "" for that field.
+- Layouts vary. In a list/table, each row is one shift. In a grid rota (people down one side, dates across the top, a shift name or code in each cell), each filled cell is one shift: its person is the row's person, its date is the column's date, and its shiftType is the text in the cell. If the grid runs the other way (dates down the side, people across the top), read it that way instead.
+- If a legend, heading, or note defines a shift's times or full name (e.g. "Night: 7 PM – 7 AM"), apply that to the shifts it defines. Otherwise leave start/end "".
+- Headers that repeat on every page are not shifts. Skip page numbers, totals, legends themselves, and footers.
+- Dates: return YYYY-MM-DD. Use the year the document prints; if it prints only a month and day, use the year that makes the date closest to today.
+- Times: transcribe as printed (e.g. "7:00 AM" or "19:00"). If the document prints a range like "7a–7p" for a shift, split it into start "7:00 AM" and end "7:00 PM".
+- Shift type: prefer one of this company's shift types when the document's wording matches one: ${input.shiftTypeNames.join(', ') || '(none)'}. Otherwise transcribe the document's own wording or code exactly as printed (e.g. "D").
+- Person names: transcribe exactly as printed. This team's members are: ${input.members.join(', ') || '(none)'} — when a printed name clearly refers to one of them, use that member's exact spelling.
+- If the document contains no shift assignments at all, return {"shifts": []}.`;
+  const parts: any[] = [
+    { text: prompt },
+    { inlineData: { mimeType: 'application/pdf', data: input.pdfBase64 } },
+  ];
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise(r => setTimeout(r, attempt * 8000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
+  }
+  const data: any = await res.json();
+  logGeminiUsage(model, data);
+  geminiCallSucceeded();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('The AI did not return readable shifts.');
+  const parsed = JSON.parse(jsonMatch[0]) as { shifts?: any[] };
+  const str = (v: any, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const out: ShiftPdfRow[] = [];
+  for (const s of Array.isArray(parsed.shifts) ? parsed.shifts : []) {
+    out.push({
+      date: str(s?.date, 40),
+      person: str(s?.person, 300),
+      shiftType: str(s?.shiftType, 200),
+      start: str(s?.start, 40),
+      end: str(s?.end, 40),
+    });
+  }
+  return out;
+}

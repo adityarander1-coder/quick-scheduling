@@ -19,10 +19,10 @@ import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, todayStr } from '../util/audit.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
-import { parseScheduleDocument, parseSessionSchedulePdf, isGeminiConfigured } from '../util/gemini';
+import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { companyTodayStr } from '../util/notifyJobs.js';
-import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict } from '../util/shiftConflicts.js';
+import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict, loadTimedShifts } from '../util/shiftConflicts.js';
 import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '../util/requestActionEmails.js';
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
@@ -14960,6 +14960,511 @@ router.post('/session-import', requireRole('owner', 'scheduler'), async (req: Re
   } catch (err) {
     console.error('[schedule] session import failed:', err);
     res.status(500).json({ error: 'Something went wrong importing those events. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SCHEDULE (SHIFT) UPLOAD — the "⬆ Upload schedule" door on the
+// Schedule page (Deepika, 2026-11-10): a rota spreadsheet on the
+// template below, or a PDF in any layout read by the AI, becomes
+// real stored shifts. Mirrors the session import's shape: a preview
+// endpoint parses + validates and saves NOTHING; the import
+// endpoint creates only the rows the admin confirmed. Matching is
+// strict — a person matches on their full name or their stored
+// first name exactly (never a prefix, never a guess) and a shift
+// matches on its exact type name; anything else comes back as a
+// question with a picker. Duplicates (against stored shifts or
+// within the file) and clashes (overlap / under 8 hours' rest, via
+// findShiftConflict) are flagged and left out by default. Created
+// shifts are ordinary stored shifts (rotation_id NULL); the
+// confirm step's publish tick decides published vs draft, per
+// upload (Deepika's rule, 2026-11-10).
+// ---------------------------------------------------------------------------
+
+const SHIFT_IMPORT_MAX_ROWS = 500;
+const SHIFT_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+const SHIFT_IMPORT_MAX_PDF_PAGES = 25;
+const SHIFT_IMPORT_HEADERS = ['Date', 'Person', 'Shift type', 'Start', 'End'];
+const SHIFT_IMPORT_PDF_REFUSAL = "We couldn't read that PDF reliably — nothing was imported. Try the spreadsheet template instead.";
+
+// GET /api/schedule/shift-import/template — the blank sheet: the
+// exact column headers plus two example rows and nothing else.
+router.get('/shift-import/template', requireRole('owner', 'scheduler'), async (_req: Request, res: Response) => {
+  const lines = [
+    SHIFT_IMPORT_HEADERS.join(','),
+    '2027-03-08,Jane Smith,Day,7:00 AM,7:00 PM',
+    '2027-03-09,Jane Smith,Night,7:00 PM,7:00 AM',
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="shift-schedule-template.csv"');
+  res.send(lines.join('\r\n') + '\r\n');
+});
+
+type ShImpCol = 'date' | 'person' | 'shifttype' | 'start' | 'end';
+function shImpColKind(header: string): ShImpCol | null {
+  const t = header.toLowerCase().replace(/[^a-z]/g, '');
+  if (t === 'date' || t === 'day') return 'date';
+  if (t === 'person' || t === 'teammember' || t === 'member' || t === 'employee' || t === 'name' || t === 'staff' || t === 'provider') return 'person';
+  if (t === 'shifttype' || t === 'shift' || t === 'type' || t === 'assignment' || t === 'duty') return 'shifttype';
+  if (t === 'start' || t === 'starttime' || t === 'from') return 'start';
+  if (t === 'end' || t === 'endtime' || t === 'to' || t === 'until') return 'end';
+  return null;
+}
+
+interface ShImpMember { id: string; name: string; email: string; }
+interface ShImpType { id: string; name: string; startTime: string | null; endTime: string | null; }
+interface ShImpQuestion {
+  id: string; kind: 'date' | 'person' | 'shifttype' | 'start' | 'end' | 'duplicate';
+  prompt: string; value?: string;
+  candidates?: Array<{ id: string; name: string; email: string }>;
+}
+
+// Load the reference data a preview/import matches against: the
+// active team and the active shift types (with their set times).
+async function shImpRefs(companyId: string) {
+  const { rows: userRows } = await query(
+    `SELECT id, first_name, last_name, email FROM users WHERE company_id = $1 AND is_active = true ORDER BY first_name, last_name`,
+    [companyId]);
+  const members: ShImpMember[] = userRows.map((u: any) => ({
+    id: String(u.id),
+    name: `${u.first_name || ''} ${u.last_name || ''}`.trim() || String(u.email || ''),
+    email: String(u.email || ''),
+  }));
+  const byFullName = new Map<string, ShImpMember[]>();
+  const byFirstName = new Map<string, ShImpMember[]>();
+  const byEmail = new Map<string, ShImpMember>();
+  const pushName = (map: Map<string, ShImpMember[]>, key: string, m: ShImpMember) => {
+    if (!key) return;
+    const arr = map.get(key) || [];
+    if (!arr.find((x) => x.id === m.id)) arr.push(m);
+    map.set(key, arr);
+  };
+  userRows.forEach((u: any, i: number) => {
+    const m = members[i];
+    if (m.email) byEmail.set(m.email.toLowerCase(), m);
+    pushName(byFullName, m.name.toLowerCase(), m);
+    pushName(byFirstName, String(u.first_name || '').trim().toLowerCase(), m);
+  });
+  const { rows: typeRows } = await query(
+    `SELECT id, name, start_time, end_time FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name`,
+    [companyId]);
+  const types: ShImpType[] = typeRows.map((r: any) => ({
+    id: String(r.id),
+    name: String(r.name),
+    startTime: sessImpTime(r.start_time),
+    endTime: sessImpTime(r.end_time),
+  }));
+  const typeByName = new Map<string, ShImpType>();
+  for (const t of types) {
+    const key = t.name.toLowerCase();
+    if (!typeByName.has(key)) typeByName.set(key, t);
+  }
+  return { members, byFullName, byFirstName, byEmail, types, typeByName };
+}
+
+// Match one sheet name/email against the active members — EXACT
+// only: the full name, the stored first name, or the email. Never
+// a prefix, never a guess.
+function shImpMatchPerson(text: string, refs: { byFullName: Map<string, ShImpMember[]>; byFirstName: Map<string, ShImpMember[]>; byEmail: Map<string, ShImpMember> }):
+  { one: ShImpMember } | { many: ShImpMember[] } | { none: true } {
+  const t = String(text || '').trim();
+  if (!t) return { none: true };
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) {
+    const m = refs.byEmail.get(t.toLowerCase());
+    if (m) return { one: m };
+  }
+  const lt = t.toLowerCase();
+  const full = refs.byFullName.get(lt) || [];
+  if (full.length === 1) return { one: full[0] };
+  if (full.length > 1) return { many: full };
+  const first = refs.byFirstName.get(lt) || [];
+  if (first.length === 1) return { one: first[0] };
+  if (first.length > 1) return { many: first };
+  return { none: true };
+}
+
+function shImpAddDays(dateStr: string, n: number): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// "07:00" → "7:00 AM" for preview notes.
+function shImpClock(hhmm: string): string {
+  const h = parseInt(hhmm.slice(0, 2), 10);
+  const ap = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${hhmm.slice(3, 5)} ${ap}`;
+}
+
+// The scheduler's active department for a bulk write, resolved the
+// same way block-assign resolves it (null = owner, no scoping).
+// Sends the 403 itself and returns undefined when it must stop.
+async function shImpSchedulerDept(req: Request, res: Response, companyId: string): Promise<string | null | undefined> {
+  if (req.session.role !== 'scheduler') return null;
+  const access = await getDepartmentAccess(req.session.userId!, companyId);
+  const rawHeader = req.headers['x-active-department'];
+  const header = String(Array.isArray(rawHeader) ? rawHeader[0] : (rawHeader ?? '')).trim();
+  if (header) {
+    if (!access.edit.includes(header)) {
+      res.status(403).json({ error: 'You do not have edit access to the active department.' });
+      return undefined;
+    }
+    return header;
+  }
+  if (access.edit.length === 1) return access.edit[0];
+  res.status(403).json({ error: 'Select an active department to make changes.' });
+  return undefined;
+}
+
+// POST /api/schedule/shift-import/preview — parse + validate the
+// rota and report per-row questions. Saves NOTHING.
+router.post('/shift-import/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const filename = String(b.filename || 'upload.csv');
+    const dataBase64 = String(b.dataBase64 || '');
+    if (!dataBase64) { res.status(400).json({ error: 'No file was uploaded.' }); return; }
+    const buf = Buffer.from(dataBase64, 'base64');
+    if (!buf.length) { res.status(400).json({ error: 'That file is empty.' }); return; }
+    if (buf.length > SHIFT_IMPORT_MAX_BYTES) { res.status(413).json({ error: 'That file is over 8 MB — please upload a smaller sheet.' }); return; }
+    // A PDF goes through the AI read first (its rows become a grid
+    // in the template's columns); every step after this — header
+    // mapping, per-row questions, exact matching — is shared.
+    let grid: any[][];
+    let pdfRefs: Awaited<ReturnType<typeof shImpRefs>> | null = null;
+    const isPdf = filename.toLowerCase().endsWith('.pdf') || buf.subarray(0, 4).toString('latin1') === '%PDF';
+    if (isPdf) {
+      if (buf.subarray(0, 4).toString('latin1') !== '%PDF') {
+        res.status(400).json({ error: "That file doesn't look like a readable PDF — nothing was imported. Try the spreadsheet template instead." });
+        return;
+      }
+      const pages = sessImpPdfPages(buf);
+      if (pages > SHIFT_IMPORT_MAX_PDF_PAGES) {
+        res.status(400).json({ error: `That PDF has ${pages} pages — the limit is ${SHIFT_IMPORT_MAX_PDF_PAGES} pages per upload. Please split it into smaller files.` });
+        return;
+      }
+      pdfRefs = await shImpRefs(companyId);
+      let shifts: Awaited<ReturnType<typeof parseShiftSchedulePdf>>;
+      try {
+        shifts = await parseShiftSchedulePdf({
+          pdfBase64: buf.toString('base64'),
+          filename,
+          today: todayStr(),
+          shiftTypeNames: pdfRefs.types.map((t) => t.name),
+          members: pdfRefs.members.map((m) => m.name),
+        });
+      } catch (err) {
+        console.error('[schedule] shift import PDF read failed:', err);
+        res.status(400).json({ error: SHIFT_IMPORT_PDF_REFUSAL });
+        return;
+      }
+      if (!shifts.length) {
+        res.status(400).json({ error: "We couldn't find any shifts in that PDF — nothing was imported. Try the spreadsheet template instead." });
+        return;
+      }
+      if (shifts.length > SHIFT_IMPORT_MAX_ROWS) {
+        res.status(400).json({ error: `That PDF has ${shifts.length} shifts — the limit is ${SHIFT_IMPORT_MAX_ROWS} per upload. Please split it into smaller files.` });
+        return;
+      }
+      grid = [
+        SHIFT_IMPORT_HEADERS,
+        ...shifts.map((s) => [s.date, s.person, s.shiftType, s.start, s.end]),
+      ];
+    } else {
+      const parsed = sessImpGrid(filename, buf);
+      if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
+      grid = parsed.grid;
+    }
+    // Find the header row within the first 5 rows.
+    let headerIdx = -1;
+    let colMap: Partial<Record<ShImpCol, number>> = {};
+    for (let i = 0; i < Math.min(grid.length, 5); i++) {
+      const map: Partial<Record<ShImpCol, number>> = {};
+      (grid[i] || []).forEach((cell: any, j: number) => {
+        const k = shImpColKind(String(cell ?? ''));
+        if (k && map[k] === undefined) map[k] = j;
+      });
+      if (map.date !== undefined && map.person !== undefined && map.shifttype !== undefined) { headerIdx = i; colMap = map; break; }
+    }
+    if (headerIdx < 0) {
+      res.status(400).json({ error: `That sheet's columns don't match the template. Expected columns: ${SHIFT_IMPORT_HEADERS.join(', ')}.` });
+      return;
+    }
+    const dataRows = grid.slice(headerIdx + 1).filter((r: any[]) => (r || []).some((c: any) => String(c ?? '').trim() !== ''));
+    if (!dataRows.length) { res.status(400).json({ error: 'That sheet has no shifts in it yet.' }); return; }
+    if (dataRows.length > SHIFT_IMPORT_MAX_ROWS) {
+      res.status(400).json({ error: `That sheet has ${dataRows.length} shifts — the limit is ${SHIFT_IMPORT_MAX_ROWS} per upload. Please split it into smaller sheets.` });
+      return;
+    }
+    const refs = pdfRefs ?? (await shImpRefs(companyId));
+    const cellAt = (r: any[], col: ShImpCol): any => (colMap[col] === undefined ? '' : (r || [])[colMap[col]!]);
+    // Parse every date up front: duplicates and clash checks need
+    // the sheet's whole date range.
+    const parsedDates: string[] = [];
+    for (const r of dataRows) {
+      const d = importCellDate(cellAt(r, 'date'));
+      if (d) parsedDates.push(d);
+    }
+    const minDate = parsedDates.length ? parsedDates.reduce((a, c) => (c < a ? c : a)) : null;
+    const maxDate = parsedDates.length ? parsedDates.reduce((a, c) => (c > a ? c : a)) : null;
+    // Stored shifts already on the sheet's dates (duplicate keys).
+    const existingKeys = new Set<string>();
+    if (minDate && maxDate) {
+      const { rows: exRows } = await query(
+        `SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date FROM shifts
+         WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+        [companyId, minDate, maxDate]);
+      for (const r of exRows as any[]) existingKeys.add(`${r.userId}|${r.date}|${r.shiftTypeId}`);
+    }
+    // Timed picture of what everyone already works (stored +
+    // rotation-drawn) for the clash checks.
+    const typeTimes = await getShiftTypeTimes(query, companyId);
+    const timedExisting = (minDate && maxDate)
+      ? await loadTimedShifts(query, companyId, shImpAddDays(minDate, -2), shImpAddDays(maxDate, 2))
+      : [];
+    const seenFileKeys = new Map<string, number>();
+    const acceptedByUser = new Map<string, any[]>();
+    const out: any[] = [];
+    dataRows.forEach((r: any[], idx: number) => {
+      const questions: ShImpQuestion[] = [];
+      let qn = 0;
+      const ask = (q: Omit<ShImpQuestion, 'id'>) => { questions.push({ id: 'q' + (++qn), ...q }); };
+      const dateRaw = sessImpCellText(cellAt(r, 'date'));
+      const date = importCellDate(cellAt(r, 'date')) || null;
+      if (!date) ask({ kind: 'date', prompt: dateRaw ? `The date "${dateRaw}" isn't readable.` : 'This shift has no date.', value: '' });
+      // Person — exact match or a question.
+      const personText = sessImpCellText(cellAt(r, 'person'));
+      let person: ShImpMember | null = null;
+      if (!personText) {
+        ask({ kind: 'person', prompt: 'This shift has no team member named.', value: '' });
+      } else {
+        const hit = shImpMatchPerson(personText, refs);
+        if ('one' in hit) person = hit.one;
+        else if ('many' in hit) ask({ kind: 'person', prompt: `More than one team member matches "${personText}". Who did you mean?`, value: personText, candidates: hit.many });
+        else ask({ kind: 'person', prompt: `"${personText}" isn't on your team. Who did you mean?`, value: personText });
+      }
+      // Shift type — exact name or a question.
+      const shiftTypeText = sessImpCellText(cellAt(r, 'shifttype'));
+      let shiftType: ShImpType | null = null;
+      if (!shiftTypeText) {
+        ask({ kind: 'shifttype', prompt: 'This shift has no shift type named.', value: '' });
+      } else {
+        const hit = refs.typeByName.get(shiftTypeText.toLowerCase());
+        if (hit) shiftType = hit;
+        else ask({ kind: 'shifttype', prompt: `"${shiftTypeText}" isn't one of your shift types. Which shift is it?`, value: shiftTypeText });
+      }
+      // Sheet times — read for the cross-check against the type's
+      // set times (a stored shift always uses the type's times).
+      const startRaw = sessImpTimeCellText(cellAt(r, 'start'));
+      const endRaw = sessImpTimeCellText(cellAt(r, 'end'));
+      const startTime = sessImpTime(startRaw);
+      const endTime = sessImpTime(endRaw);
+      if (startRaw && !startTime) ask({ kind: 'start', prompt: `The start time "${startRaw}" isn't readable.`, value: '' });
+      if (endRaw && !endTime) ask({ kind: 'end', prompt: `The end time "${endRaw}" isn't readable.`, value: '' });
+      let timeNote: string | null = null;
+      if (startTime && endTime && shiftType && shiftType.startTime && shiftType.endTime &&
+          (startTime !== shiftType.startTime || endTime !== shiftType.endTime)) {
+        timeNote = `The sheet says ${shImpClock(startTime)} – ${shImpClock(endTime)}; ${shiftType.name}'s set times are ${shImpClock(shiftType.startTime)} – ${shImpClock(shiftType.endTime)}, so the shift will use the set times.`;
+      }
+      // Duplicate + clash — only decidable once person, type and
+      // date are all resolved.
+      let conflict: string | null = null;
+      if (person && shiftType && date) {
+        const key = `${person.id}|${date}|${shiftType.id}`;
+        if (existingKeys.has(key)) {
+          ask({ kind: 'duplicate', prompt: `${person.name} already has ${shiftType.name} on this date.` });
+        } else if (seenFileKeys.has(key)) {
+          ask({ kind: 'duplicate', prompt: `This row repeats row ${seenFileKeys.get(key)} in the file.` });
+        } else {
+          const proposed = makeTimedShift(typeTimes, person.id, { date, shiftTypeId: shiftType.id, shiftTypeName: shiftType.name });
+          const existing = [
+            ...timedExisting.filter((s: any) => s.userId === person.id),
+            ...(acceptedByUser.get(person.id) || []),
+          ];
+          conflict = findShiftConflict(person.name, existing, proposed);
+          if (!conflict) {
+            const arr = acceptedByUser.get(person.id) || [];
+            arr.push(proposed);
+            acceptedByUser.set(person.id, arr);
+          }
+        }
+        seenFileKeys.set(key, idx + 1);
+      }
+      const blocking = questions.some((q) => q.kind !== 'duplicate');
+      out.push({
+        row: idx + 1,
+        date, dateText: dateRaw,
+        personText, person: person ? { userId: person.id, name: person.name } : null,
+        shiftTypeText, shiftType: shiftType ? { id: shiftType.id, name: shiftType.name } : null,
+        startTime, endTime, startText: startRaw, endText: endRaw,
+        timeNote, conflict,
+        status: conflict ? 'conflict' : (blocking ? 'needs_info' : (questions.length ? 'duplicate' : 'ready')),
+        questions,
+      });
+    });
+    res.json({
+      ok: true,
+      total: out.length,
+      people: refs.members.map((m) => ({ id: m.id, name: m.name, email: m.email })),
+      types: refs.types.map((t) => ({ id: t.id, name: t.name, startTime: t.startTime, endTime: t.endTime })),
+      rows: out,
+    });
+  } catch (err) {
+    console.error('[schedule] shift import preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong reading that sheet. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-import/check-row — after the admin fixes
+// a row's person, type or date in the preview, re-run just the
+// duplicate + clash checks for that one resolved row.
+router.post('/shift-import/check-row', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const userId = String(b.userId || '');
+    const shiftTypeId = String(b.shiftTypeId || '');
+    const date = String(b.date || '');
+    if (!isValidDate(date)) { res.status(400).json({ error: 'The date is missing or unreadable.' }); return; }
+    const { rows: urows } = await query(
+      `SELECT id, first_name, last_name FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`, [userId, companyId]);
+    if (!urows.length) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
+    const { rows: trows } = await query(
+      'SELECT id, name FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true', [shiftTypeId, companyId]);
+    if (!trows.length) { res.status(400).json({ error: 'That shift type is not available.' }); return; }
+    const { rows: dup } = await query(
+      'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
+      [companyId, userId, date, shiftTypeId]);
+    const personName = `${urows[0].first_name || ''} ${urows[0].last_name || ''}`.trim();
+    const conflict = await checkShiftConflict(query, companyId, {
+      userId, personName,
+      proposed: { date, shiftTypeId, shiftTypeName: String(trows[0].name) },
+    });
+    res.json({ ok: true, duplicate: dup.length > 0, conflict });
+  } catch (err) {
+    console.error('[schedule] shift import check-row failed:', err);
+    res.status(500).json({ error: 'Something went wrong checking that row. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-import — create the confirmed rows as
+// ordinary stored shifts. Every row is re-validated here (member,
+// type, department scope for schedulers, job-role eligibility,
+// duplicate, clash — against stored/rotation shifts AND the rows
+// created earlier in this same import); a row that fails lands in
+// `failed` with its reason and the rest still import. `publish`
+// (the confirm step's tick, default on) decides whether the new
+// shifts are published or drafts.
+router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const rowsIn = Array.isArray(b.rows) ? b.rows : [];
+    if (!rowsIn.length) { res.status(400).json({ error: 'There are no shifts to import.' }); return; }
+    if (rowsIn.length > SHIFT_IMPORT_MAX_ROWS) {
+      res.status(400).json({ error: `Too many shifts in one import — the limit is ${SHIFT_IMPORT_MAX_ROWS}.` });
+      return;
+    }
+    const publish = b.publish !== false;
+    const activeDept = await shImpSchedulerDept(req, res, companyId);
+    if (activeDept === undefined) return;
+    const validDates: string[] = rowsIn.map((r: any) => String(r?.date || '')).filter((d: string) => isValidDate(d));
+    const typeTimes = await getShiftTypeTimes(query, companyId);
+    const timedExisting = validDates.length
+      ? await loadTimedShifts(query, companyId,
+          shImpAddDays(validDates.reduce((a, c) => (c < a ? c : a)), -2),
+          shImpAddDays(validDates.reduce((a, c) => (c > a ? c : a)), 2))
+      : [];
+    const acceptedByUser = new Map<string, any[]>();
+    const failed: Array<{ row: number; reason: string }> = [];
+    const createdByUser = new Map<string, { count: number; shiftTypeId: string; firstDate: string; lastDate: string }>();
+    let imported = 0;
+    for (const r of rowsIn) {
+      const rowNo = Number(r?.row) || 0;
+      const fail = (reason: string) => { failed.push({ row: rowNo, reason }); };
+      const userId = String(r?.userId || '');
+      const shiftTypeId = String(r?.shiftTypeId || '');
+      const date = String(r?.date || '');
+      if (!isValidDate(date)) { fail('The date is missing or unreadable.'); continue; }
+      // Guard before the id lookups: a malformed id would make Postgres
+      // throw (invalid uuid syntax) and fail the WHOLE import — a bad
+      // row must land in the failed list instead.
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRe.test(userId)) { fail('That person could not be matched to the team.'); continue; }
+      if (!uuidRe.test(shiftTypeId)) { fail('That shift type could not be matched.'); continue; }
+      const { rows: urows } = await query(
+        `SELECT id, first_name, last_name FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`, [userId, companyId]);
+      if (!urows.length) { fail('That person is not an active team member.'); continue; }
+      const personName = `${urows[0].first_name || ''} ${urows[0].last_name || ''}`.trim();
+      const { rows: trows } = await query(
+        'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true', [shiftTypeId, companyId]);
+      if (!trows.length) { fail('That shift type is not available.'); continue; }
+      const typeName = String(trows[0].name);
+      if (activeDept) {
+        const relevant = await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId);
+        if (!relevant.length || !relevant.includes(activeDept)) { fail('This shift belongs to a different department.'); continue; }
+      }
+      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      if (!eligibility.ok) { fail(eligibility.error); continue; }
+      const { rows: dup } = await query(
+        'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
+        [companyId, userId, date, shiftTypeId]);
+      if (dup.length) { fail(`${personName} already has ${typeName} on this date.`); continue; }
+      const proposed = makeTimedShift(typeTimes, userId, { date, shiftTypeId, shiftTypeName: typeName });
+      const existing = [
+        ...timedExisting.filter((s: any) => s.userId === userId),
+        ...(acceptedByUser.get(userId) || []),
+      ];
+      const conflict = findShiftConflict(personName, existing, proposed);
+      if (conflict) { fail(conflict); continue; }
+      try {
+        await query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [crypto.randomUUID(), companyId, userId, shiftTypeId, date, null, publish, req.session.userId!]
+        );
+      } catch (err: any) {
+        if (err?.code === '23505') { fail(`${personName} already has ${typeName} on this date.`); continue; }
+        throw err;
+      }
+      const arr = acceptedByUser.get(userId) || [];
+      arr.push(proposed);
+      acceptedByUser.set(userId, arr);
+      imported++;
+      auditLog({
+        companyId, date, action: 'created',
+        personName, shiftTypeName: typeName,
+        source: 'manual', changedBy: req.session.userId!,
+      });
+      const tally = createdByUser.get(userId) || { count: 0, shiftTypeId, firstDate: date, lastDate: date };
+      tally.count++;
+      if (date < tally.firstDate) tally.firstDate = date;
+      if (date > tally.lastDate) tally.lastDate = date;
+      createdByUser.set(userId, tally);
+    }
+    res.json({ ok: true, imported, failed, published: publish });
+    // Notify each member who received published shifts (drafts stay
+    // silent) — one bundled bell per person, like block-assign.
+    if (publish) {
+      for (const [uid, tally] of createdByUser) {
+        const names = await shiftDisplayNames(companyId, uid, tally.shiftTypeId);
+        notify({
+          companyId, userIds: [uid], category: 'schedule', type: 'shift_assigned',
+          title: tally.count === 1
+            ? `New shift: ${names.shiftTypeName} on ${fmtDateLong(tally.firstDate)}`
+            : `You were assigned ${tally.count} shifts: ${names.shiftTypeName}, ${fmtDateLong(tally.firstDate)} – ${fmtDateLong(tally.lastDate)}`,
+          body: `${tally.count} ${names.shiftTypeName} shift(s) between ${fmtDateLong(tally.firstDate)} and ${fmtDateLong(tally.lastDate)}.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${uid}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          payload: { count: tally.count },
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[schedule] shift import failed:', err);
+    res.status(500).json({ error: 'Something went wrong importing those shifts. Please try again.' });
   }
 });
 

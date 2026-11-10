@@ -2361,6 +2361,7 @@
             </label>
           </div>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
+          <button type="button" id="sched-upload-btn" class="btn-secondary" title="Add many shifts at once from a spreadsheet or a PDF rota — you check every row before anything is saved">⬆ Upload schedule</button>
           <button type="button" id="sched-publish-btn" class="btn" title="Rotations only draw a draft — publishing stamps a range into real shifts your team can see">📣 Publish schedule</button>
         </div>
 
@@ -6049,6 +6050,439 @@
         if ($('sbimp-cancel')) $('sbimp-cancel').addEventListener('click', function () { hide($('sched-import-modal')); });
         if ($('sbimp-file')) $('sbimp-file').addEventListener('change', function () { sbImpHandleFile($('sbimp-file').files[0]); });
         if ($('sbimp-add')) $('sbimp-add').addEventListener('click', sbImpConfirm);
+        // ---------------------------------------------------------------
+        // ⬆ Upload schedule (Deepika, 2026-11-10): the checked rota
+        // upload. A spreadsheet on the template — or a PDF in any
+        // layout, read by the AI — is checked by the server first
+        // (nothing is saved): names and shift types match exactly or
+        // come back as questions, duplicates and clashes are flagged
+        // and left out unless fixed, and Import creates only the
+        // ready rows as stored shifts, published or draft per the
+        // confirm step's tick.
+        // ---------------------------------------------------------------
+        var shiState = null;
+        var SHI_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        function shiFmtDate(d) {
+          if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return d || '—';
+          var p = d.split('-');
+          return SHI_MONTHS[parseInt(p[1], 10) - 1] + ' ' + parseInt(p[2], 10);
+        }
+        function shiFmtTime(t) {
+          if (!t || !/^\d{2}:\d{2}$/.test(t)) return t || '—';
+          var h = parseInt(t.slice(0, 2), 10), m = t.slice(3, 5);
+          var ap = h >= 12 ? 'PM' : 'AM'; h = h % 12; if (h === 0) h = 12;
+          return h + ':' + m + ' ' + ap;
+        }
+        function shiClose() {
+          var m = document.getElementById('shi-modal');
+          if (m) m.remove();
+          shiState = null;
+        }
+        function shiCard() { return document.getElementById('shi-card'); }
+        function shiOpen() {
+          shiClose();
+          shiState = { fileName: '', b64: '', rows: null, people: [], types: [], drafts: {} };
+          var wrap = document.createElement('div');
+          wrap.id = 'shi-modal';
+          wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:1500;padding:1rem');
+          wrap.innerHTML = '<div id="shi-card" role="dialog" aria-label="Upload a schedule" style="background:var(--surface);color:var(--text);border-radius:16px;padding:1.4rem;width:100%;max-width:560px;max-height:92vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)"></div>';
+          document.body.appendChild(wrap);
+          wrap.addEventListener('click', function (ev) { if (ev.target === wrap) shiClose(); });
+          shiRenderStep1('');
+        }
+        function shiRenderStep1(statusMsg) {
+          var card = shiCard(); if (!card || !shiState) return;
+          card.style.maxWidth = '560px';
+          var chosen = shiState.fileName
+            ? '<div style="font-weight:700">' + esc(shiState.fileName) + '</div><div style="font-size:0.82rem;color:var(--muted)">Click or drop another file to change it</div>'
+            : '<div style="font-size:1.6rem">📄</div><div style="font-weight:700;margin-top:0.2rem">Drop your rota here</div><div style="font-size:0.82rem;color:var(--muted)">.csv, .xlsx or .pdf — up to 500 shifts</div>';
+          card.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+              '<div><div style="font-size:1.25rem;font-weight:800">⬆ Upload a schedule</div>' +
+              '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">Add many shifts at once from a spreadsheet — or a PDF rota in any layout, which is read into the same check-it-first preview.</div></div>' +
+              '<button type="button" id="shi-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+            '</div>' +
+            '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:1rem">' +
+              '<div style="font-weight:700">1 · Start from the template</div>' +
+              '<div style="font-size:0.88rem;color:var(--muted);margin:0.25rem 0 0.6rem">One shift per row. Columns: Date · Person · Shift type · Start · End. Shifts use the times set on each shift type in Settings — the Start and End columns are checked against them. A PDF doesn\'t need the template: the AI reads its layout as-is.</div>' +
+              '<button type="button" id="shi-template" class="btn-secondary" style="border-radius:9px;padding:0.45rem 0.8rem">⬇ Download the template (.csv)</button>' +
+            '</div>' +
+            '<div id="shi-drop" style="border:1.5px dashed var(--border);border-radius:12px;padding:1.1rem 1rem;margin-top:0.9rem;text-align:center;cursor:pointer">' +
+              '<div style="font-weight:700;margin-bottom:0.5rem;text-align:left">2 · Add your file</div>' + chosen +
+              '<div style="margin-top:0.7rem"><span class="btn" style="border-radius:9px;padding:0.45rem 0.9rem;display:inline-block">Choose file</span></div>' +
+              '<input type="file" id="shi-file" accept=".csv,.xlsx,.pdf" style="display:none">' +
+            '</div>' +
+            '<div id="shi-status" style="min-height:1.2rem;font-size:0.88rem;margin-top:0.6rem;color:#b91c1c">' + esc(statusMsg || '') + '</div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:0.4rem">' +
+              '<button type="button" id="shi-cancel" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">Cancel</button>' +
+              '<button type="button" id="shi-next" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (shiState.b64 ? '' : 'disabled') + '>Next: check it →</button>' +
+            '</div>';
+          document.getElementById('shi-x').addEventListener('click', shiClose);
+          document.getElementById('shi-cancel').addEventListener('click', shiClose);
+          document.getElementById('shi-template').addEventListener('click', function () {
+            fetch('/api/schedule/shift-import/template', { credentials: 'same-origin' }).then(function (r) { return r.blob(); }).then(function (blob) {
+              var a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = 'shift-schedule-template.csv';
+              document.body.appendChild(a); a.click(); a.remove();
+              setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+            }).catch(function () { var st = document.getElementById('shi-status'); if (st) st.textContent = 'Could not download the template.'; });
+          });
+          var drop = document.getElementById('shi-drop');
+          var input = document.getElementById('shi-file');
+          drop.addEventListener('click', function () { input.click(); });
+          input.addEventListener('change', function () { if (input.files && input.files[0]) shiReadFile(input.files[0]); });
+          drop.addEventListener('dragover', function (ev) { ev.preventDefault(); drop.style.borderColor = 'var(--teal, #0e7490)'; });
+          drop.addEventListener('dragleave', function () { drop.style.borderColor = 'var(--border)'; });
+          drop.addEventListener('drop', function (ev) {
+            ev.preventDefault(); drop.style.borderColor = 'var(--border)';
+            if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0]) shiReadFile(ev.dataTransfer.files[0]);
+          });
+          document.getElementById('shi-next').addEventListener('click', shiPreview);
+        }
+        function shiReadFile(file) {
+          var st = document.getElementById('shi-status');
+          if (!/\.(csv|xlsx|pdf)$/i.test(file.name)) { if (st) st.textContent = 'Please choose a .csv, .xlsx or .pdf file.'; return; }
+          if (file.size > 8 * 1024 * 1024) { if (st) st.textContent = 'That file is over 8 MB — please upload a smaller file.'; return; }
+          var rd = new FileReader();
+          rd.onload = function () {
+            var res = String(rd.result || '');
+            shiState.fileName = file.name;
+            shiState.b64 = res.indexOf(',') >= 0 ? res.split(',')[1] : res;
+            shiRenderStep1('');
+          };
+          rd.onerror = function () { if (st) st.textContent = 'Could not read that file.'; };
+          rd.readAsDataURL(file);
+        }
+        function shiPreview() {
+          if (!shiState || !shiState.b64) return;
+          var st = document.getElementById('shi-status');
+          var next = document.getElementById('shi-next');
+          if (next) { next.disabled = true; next.textContent = /\.pdf$/i.test(shiState.fileName || '') ? 'Reading the PDF…' : 'Checking…'; }
+          if (st) st.textContent = '';
+          api('/api/schedule/shift-import/preview', {
+            method: 'POST',
+            body: JSON.stringify({ filename: shiState.fileName, dataBase64: shiState.b64 })
+          }).then(function (r) {
+            if (!r.ok) { shiRenderStep1((r.data && r.data.error) || 'That sheet could not be checked.'); return; }
+            shiState.people = r.data.people || [];
+            shiState.types = r.data.types || [];
+            shiState.drafts = {};
+            shiState.rows = (r.data.rows || []).map(function (row) {
+              // Split the server's duplicate flag out of the question
+              // list: a duplicate is a state of the row, fixed by
+              // changing the row (or skipping it), not an answer.
+              var qs = [];
+              (row.questions || []).forEach(function (q) {
+                if (q.kind === 'duplicate') {
+                  if (/repeats row/i.test(q.prompt || '')) { var m = /repeats row (\d+)/i.exec(q.prompt); row.dupOf = m ? Number(m[1]) : null; }
+                  else row.duplicateExisting = true;
+                  row.dupPrompt = q.prompt;
+                } else { q.answered = false; qs.push(q); }
+              });
+              row.questions = qs;
+              return row;
+            });
+            shiRenderPreview();
+          }).catch(function () { shiRenderStep1('Could not check that sheet — please try again.'); });
+        }
+        function shiRowStatus(row) {
+          if (row.skip) return 'skipped';
+          var open = (row.questions || []).filter(function (q) { return !q.answered; });
+          if (open.length) return 'needs_info';
+          if (row.conflict) return 'conflict';
+          if (row.duplicateExisting || row.dupOf) return 'duplicate';
+          return 'ready';
+        }
+        function shiCounts() {
+          var c = { ready: 0, needs: 0, out: 0, skipped: 0 };
+          (shiState.rows || []).forEach(function (row) {
+            var s = shiRowStatus(row);
+            if (s === 'ready') c.ready++;
+            else if (s === 'skipped') c.skipped++;
+            else if (s === 'needs_info') c.needs++;
+            else c.out++;
+          });
+          return c;
+        }
+        function shiHarvest() {
+          var card = shiCard(); if (!card) return;
+          card.querySelectorAll('[id^="shiq-"], [id^="shif-"]').forEach(function (el) {
+            shiState.drafts[el.id] = el.value;
+          });
+        }
+        function shiPersonOptions(list, selectedId, withBlank) {
+          var out = withBlank ? '<option value="">Choose…</option>' : '';
+          return out + (list || []).map(function (p) {
+            return '<option value="' + esc(p.id) + '"' + (String(p.id) === String(selectedId || '') ? ' selected' : '') + '>' + esc(p.name) + (p.email ? ' (' + esc(p.email) + ')' : '') + '</option>';
+          }).join('');
+        }
+        function shiTypeOptions(selectedId, withBlank) {
+          var out = withBlank ? '<option value="">Choose…</option>' : '';
+          return out + (shiState.types || []).map(function (tp) {
+            return '<option value="' + esc(tp.id) + '"' + (String(tp.id) === String(selectedId || '') ? ' selected' : '') + '>' + esc(tp.name) + '</option>';
+          }).join('');
+        }
+        function shiQuestionHtml(row, q) {
+          var cid = 'shiq-' + row.row + '-' + q.id;
+          var draft = shiState.drafts[cid];
+          var btn = 'border-radius:8px;padding:0.35rem 0.7rem;font-size:0.85rem';
+          var head = '<div style="font-weight:700;margin-bottom:0.4rem">❓ ' + esc(q.prompt) + '</div>';
+          var ctl = '';
+          if (q.kind === 'date') {
+            ctl = '<input type="date" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (row.date || q.value || '')) + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"> <button type="button" class="btn" style="' + btn + '" data-shiq="' + q.id + '" data-shirow="' + row.row + '" data-shiact="apply">Save</button>';
+          } else if (q.kind === 'person') {
+            var opts = (q.candidates && q.candidates.length) ? q.candidates : shiState.people;
+            ctl = '<select id="' + cid + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:280px">' + shiPersonOptions(opts, draft, true) + '</select> ' +
+              '<button type="button" class="btn" style="' + btn + '" data-shiq="' + q.id + '" data-shirow="' + row.row + '" data-shiact="apply">Use this person</button>';
+          } else if (q.kind === 'shifttype') {
+            ctl = '<select id="' + cid + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:280px">' + shiTypeOptions(draft, true) + '</select> ' +
+              '<button type="button" class="btn" style="' + btn + '" data-shiq="' + q.id + '" data-shirow="' + row.row + '" data-shiact="apply">Use this shift</button>';
+          } else if (q.kind === 'start' || q.kind === 'end') {
+            ctl = '<input type="time" id="' + cid + '" value="' + esc(draft !== undefined ? draft : (q.value || '')) + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px"> ' +
+              '<button type="button" class="btn" style="' + btn + '" data-shiq="' + q.id + '" data-shirow="' + row.row + '" data-shiact="apply">Save</button> ' +
+              '<button type="button" class="btn-secondary" style="' + btn + '" data-shiq="' + q.id + '" data-shirow="' + row.row + '" data-shiact="clear">Clear it</button>' +
+              '<span style="font-size:0.82rem;color:var(--muted)">(the shift uses its type\'s set times either way)</span>';
+          }
+          var err = q.error ? '<div style="color:#b91c1c;font-size:0.85rem;margin-top:0.35rem">' + esc(q.error) + '</div>' : '';
+          var skip = ' <button type="button" class="btn-secondary" style="' + btn + '" data-shirow="' + row.row + '" data-shiact="skip">Skip this row</button>';
+          return '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:0.6rem 0.8rem;margin:0.3rem 0">' + head +
+            '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">' + ctl + skip + '</div>' + err + '</div>';
+        }
+        // The fix strip on a duplicate / clash row: change any of
+        // date / person / shift and re-check against the schedule.
+        function shiFixHtml(row) {
+          var reason = row.conflict ? row.conflict : (row.dupPrompt || 'This shift is a duplicate.');
+          var btn = 'border-radius:8px;padding:0.35rem 0.7rem;font-size:0.85rem';
+          var dv = shiState.drafts['shif-' + row.row + '-date'];
+          var pv = shiState.drafts['shif-' + row.row + '-person'];
+          var tv = shiState.drafts['shif-' + row.row + '-type'];
+          return '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:0.6rem 0.8rem;margin:0.3rem 0">' +
+            '<div style="font-weight:700;margin-bottom:0.4rem">⛔ ' + esc(reason) + '</div>' +
+            '<div style="font-size:0.86rem;color:var(--muted);margin-bottom:0.45rem">This row is left out. Change the date, person or shift and re-check — or skip it.</div>' +
+            '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">' +
+              '<input type="date" id="shif-' + row.row + '-date" value="' + esc(dv !== undefined ? dv : (row.date || '')) + '" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px">' +
+              '<select id="shif-' + row.row + '-person" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:240px">' + shiPersonOptions(shiState.people, pv !== undefined ? pv : (row.person ? row.person.userId : ''), true) + '</select>' +
+              '<select id="shif-' + row.row + '-type" style="padding:0.4rem;border:1px solid var(--border);border-radius:8px;max-width:200px">' + shiTypeOptions(tv !== undefined ? tv : (row.shiftType ? row.shiftType.id : ''), true) + '</select>' +
+              '<button type="button" class="btn" style="' + btn + '" data-shirow="' + row.row + '" data-shiact="recheck">Re-check</button>' +
+              '<button type="button" class="btn-secondary" style="' + btn + '" data-shirow="' + row.row + '" data-shiact="skip">Skip this row</button>' +
+            '</div>' +
+            (row.fixError ? '<div style="color:#b91c1c;font-size:0.85rem;margin-top:0.35rem">' + esc(row.fixError) + '</div>' : '') +
+          '</div>';
+        }
+        function shiRenderPreview() {
+          var card = shiCard(); if (!card || !shiState) return;
+          card.style.maxWidth = '880px';
+          var c = shiCounts();
+          var rowsHtml = (shiState.rows || []).map(function (row) {
+            var s = shiRowStatus(row);
+            var pill = s === 'ready' ? '<span style="background:#dcfce7;color:#15803d;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Ready</span>'
+              : s === 'skipped' ? '<span style="background:#e5e7eb;color:#4b5563;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Skipped</span>'
+              : s === 'conflict' ? '<span style="background:#fee2e2;color:#b91c1c;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Clashes</span>'
+              : s === 'duplicate' ? '<span style="background:#fee2e2;color:#b91c1c;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Duplicate</span>'
+              : '<span style="background:#fef3c7;color:#b45309;border-radius:999px;padding:0.12rem 0.6rem;font-size:0.8rem;font-weight:700">Needs info</span>';
+            var bg = (s === 'needs_info' || s === 'conflict' || s === 'duplicate') ? ' style="background:#fffbeb"' : '';
+            var personLabel = row.person ? row.person.name : (row.personText || '—');
+            var typeLabel = row.shiftType ? row.shiftType.name : (row.shiftTypeText || '—');
+            var timeTxt = '—';
+            if (row.startTime && row.endTime) timeTxt = shiFmtTime(row.startTime) + ' – ' + shiFmtTime(row.endTime);
+            else if (row.shiftType) {
+              var tp = (shiState.types || []).find(function (x) { return String(x.id) === String(row.shiftType.id); });
+              if (tp && tp.startTime && tp.endTime) timeTxt = shiFmtTime(tp.startTime) + ' – ' + shiFmtTime(tp.endTime);
+            }
+            var html = '<tr' + bg + '><td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border);white-space:nowrap">' + esc(row.date ? shiFmtDate(row.date) : (row.dateText || '—')) + '</td>' +
+              '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + esc(personLabel) + '</td>' +
+              '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + esc(typeLabel) + '</td>' +
+              '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border);white-space:nowrap">' + esc(timeTxt) + '</td>' +
+              '<td style="padding:0.45rem 0.6rem;border-bottom:1px solid var(--border)">' + pill + '</td></tr>';
+            if (row.timeNote && s !== 'skipped') {
+              html += '<tr><td colspan="5" style="padding:0.25rem 0.6rem;border-bottom:1px solid var(--border);color:var(--muted);font-size:0.85rem">⚠ ' + esc(row.timeNote) + '</td></tr>';
+            }
+            if (row.skip) {
+              html += '<tr><td colspan="5" style="padding:0.3rem 0.6rem;border-bottom:1px solid var(--border);color:var(--muted);font-size:0.87rem">This row will be skipped. <button type="button" class="btn-secondary" style="border-radius:8px;padding:0.25rem 0.6rem;font-size:0.82rem" data-shirow="' + row.row + '" data-shiact="restore">Restore</button></td></tr>';
+            } else {
+              var open = (row.questions || []).filter(function (q) { return !q.answered; });
+              if (open.length) {
+                html += '<tr><td colspan="5" style="padding:0.2rem 0.6rem 0.6rem;border-bottom:1px solid var(--border)">' +
+                  open.map(function (q) { return shiQuestionHtml(row, q); }).join('') + '</td></tr>';
+              } else if (s === 'conflict' || s === 'duplicate') {
+                html += '<tr><td colspan="5" style="padding:0.2rem 0.6rem 0.6rem;border-bottom:1px solid var(--border)">' + shiFixHtml(row) + '</td></tr>';
+              }
+            }
+            return html;
+          }).join('');
+          card.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+              '<div style="font-size:1.25rem;font-weight:800">Check your upload — ' + (shiState.rows || []).length + ' shifts</div>' +
+              '<button type="button" id="shi-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+            '</div>' +
+            '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:0.55rem 0.9rem;margin-top:0.8rem;font-size:0.92rem">✓ <b>' + c.ready + ' ready</b> · ⚠ <b>' + c.needs + ' need info</b> · ⛔ <b>' + c.out + ' clash or duplicate</b>' + (c.skipped ? ' · ' + c.skipped + ' skipped' : '') + ' · Nothing is saved until you confirm.</div>' +
+            '<div style="overflow:auto;margin-top:0.8rem"><table style="width:100%;border-collapse:collapse;font-size:0.92rem"><thead><tr>' +
+              '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Date</th>' +
+              '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Person</th>' +
+              '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Shift</th>' +
+              '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Time</th>' +
+              '<th style="text-align:left;padding:0.4rem 0.6rem;border-bottom:2px solid var(--border)">Status</th>' +
+            '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+            '<div id="shi-import-err" style="color:#b91c1c;font-size:0.88rem;min-height:1.1rem;margin-top:0.5rem"></div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.6rem;margin-top:0.4rem;flex-wrap:wrap">' +
+              '<label style="display:flex;align-items:center;gap:0.45rem;font-size:0.92rem;cursor:pointer"><input type="checkbox" id="shi-publish" checked style="width:auto"> <span><b>Publish these shifts now</b> — your team can see them. Untick to save them as drafts instead.</span></label>' +
+              '<div style="display:flex;gap:0.6rem"><button type="button" id="shi-back" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">← Back</button>' +
+              '<button type="button" id="shi-import" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (c.ready ? '' : 'disabled') + '>Import ' + c.ready + ' shifts</button></div>' +
+            '</div>' +
+            '<div style="color:var(--muted);font-size:0.87rem;margin-top:0.3rem">Rows that still need info, clash, or duplicate won\'t be imported.</div>';
+          document.getElementById('shi-x').addEventListener('click', shiClose);
+          document.getElementById('shi-back').addEventListener('click', function () { shiHarvest(); shiRenderStep1(''); });
+          document.getElementById('shi-import').addEventListener('click', shiImport);
+          card.querySelectorAll('[data-shiact]').forEach(function (btn) {
+            btn.addEventListener('click', function () { shiAction(btn); });
+          });
+        }
+        function shiFindRow(n) { return (shiState.rows || []).find(function (r) { return r.row === Number(n); }); }
+        // In-file duplicates, recomputed from the rows' current
+        // identities: the first live row with a (person, date, type)
+        // owns it; later ones point at it.
+        function shiRefreshDups() {
+          var seen = {};
+          (shiState.rows || []).forEach(function (row) {
+            if (row.skip) { row.dupOf = null; return; }
+            if (!row.person || !row.shiftType || !row.date) { row.dupOf = null; return; }
+            var key = row.person.userId + '|' + row.date + '|' + row.shiftType.id;
+            if (seen[key] && seen[key] !== row.row) {
+              row.dupOf = seen[key];
+              row.dupPrompt = 'This row repeats row ' + seen[key] + ' in the file.';
+            } else {
+              if (!seen[key]) seen[key] = row.row;
+              if (row.dupOf && seen[key] === row.row) row.dupOf = null;
+            }
+          });
+        }
+        // Re-run the server's duplicate + clash checks for one
+        // resolved row, then refresh the preview.
+        function shiRecheck(row, done) {
+          if (!row.person || !row.shiftType || !row.date) { if (done) done(); return; }
+          api('/api/schedule/shift-import/check-row', {
+            method: 'POST',
+            body: JSON.stringify({ userId: row.person.userId, shiftTypeId: row.shiftType.id, date: row.date })
+          }).then(function (r) {
+            if (r.ok && r.data) {
+              row.duplicateExisting = !!r.data.duplicate;
+              if (row.duplicateExisting) row.dupPrompt = row.person.name + ' already has ' + row.shiftType.name + ' on this date.';
+              row.conflict = r.data.conflict || null;
+            }
+            shiRefreshDups();
+            if (done) done();
+          }).catch(function () { if (done) done(); });
+        }
+        function shiAction(btn) {
+          var row = shiFindRow(btn.getAttribute('data-shirow'));
+          if (!row) return;
+          var act = btn.getAttribute('data-shiact');
+          shiHarvest();
+          if (act === 'skip') { row.skip = true; shiRefreshDups(); shiRenderPreview(); return; }
+          if (act === 'restore') { row.skip = false; shiRefreshDups(); shiRenderPreview(); return; }
+          if (act === 'recheck') {
+            var dv = String((document.getElementById('shif-' + row.row + '-date') || {}).value || '');
+            var pv = String((document.getElementById('shif-' + row.row + '-person') || {}).value || '');
+            var tv = String((document.getElementById('shif-' + row.row + '-type') || {}).value || '');
+            row.fixError = '';
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dv) || !pv || !tv) { row.fixError = 'Pick a date, a person and a shift first.'; shiRenderPreview(); return; }
+            var p = shiState.people.find(function (x) { return String(x.id) === pv; });
+            var tp = shiState.types.find(function (x) { return String(x.id) === tv; });
+            if (!p || !tp) { row.fixError = 'Pick a person and a shift first.'; shiRenderPreview(); return; }
+            row.date = dv;
+            row.person = { userId: p.id, name: p.name };
+            row.shiftType = { id: tp.id, name: tp.name };
+            row.conflict = null; row.duplicateExisting = false; row.dupOf = null;
+            shiRecheck(row, function () { shiRenderPreview(); });
+            return;
+          }
+          var q = (row.questions || []).find(function (x) { return x.id === btn.getAttribute('data-shiq'); });
+          if (!q) return;
+          var cid = 'shiq-' + row.row + '-' + q.id;
+          var el = document.getElementById(cid);
+          var v = el ? String(el.value || '').trim() : '';
+          q.error = '';
+          if (act === 'clear') {
+            if (q.kind === 'start') row.startTime = null;
+            if (q.kind === 'end') row.endTime = null;
+            q.answered = true;
+            shiRenderPreview();
+            return;
+          }
+          if (act === 'apply') {
+            var identityTouched = false;
+            if (q.kind === 'date') {
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { q.error = 'Pick a date.'; shiRenderPreview(); return; }
+              row.date = v; identityTouched = true;
+            } else if (q.kind === 'person') {
+              var pp = shiState.people.find(function (x) { return String(x.id) === v; }) || (q.candidates || []).find(function (x) { return String(x.id) === v; });
+              if (!pp) { q.error = 'Pick a person.'; shiRenderPreview(); return; }
+              row.person = { userId: pp.id, name: pp.name }; identityTouched = true;
+            } else if (q.kind === 'shifttype') {
+              var tt = shiState.types.find(function (x) { return String(x.id) === v; });
+              if (!tt) { q.error = 'Pick a shift type.'; shiRenderPreview(); return; }
+              row.shiftType = { id: tt.id, name: tt.name }; identityTouched = true;
+            } else if (q.kind === 'start') {
+              if (!/^\d{2}:\d{2}$/.test(v)) { q.error = 'Pick a start time.'; shiRenderPreview(); return; }
+              row.startTime = v;
+            } else if (q.kind === 'end') {
+              if (!/^\d{2}:\d{2}$/.test(v)) { q.error = 'Pick an end time.'; shiRenderPreview(); return; }
+              row.endTime = v;
+            }
+            q.answered = true;
+            if (identityTouched && row.person && row.shiftType && row.date) {
+              shiRecheck(row, function () { shiRenderPreview(); });
+            } else {
+              shiRefreshDups();
+              shiRenderPreview();
+            }
+          }
+        }
+        function shiImport() {
+          if (!shiState) return;
+          var errEl = document.getElementById('shi-import-err');
+          var pubEl = document.getElementById('shi-publish');
+          var publish = !pubEl || pubEl.checked;
+          var payload = (shiState.rows || []).filter(function (row) { return shiRowStatus(row) === 'ready'; }).map(function (row) {
+            return { row: row.row, userId: row.person.userId, shiftTypeId: row.shiftType.id, date: row.date };
+          });
+          if (!payload.length) { if (errEl) errEl.textContent = 'No rows are ready to import yet.'; return; }
+          var btn = document.getElementById('shi-import');
+          if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+          api('/api/schedule/shift-import', {
+            method: 'POST',
+            body: JSON.stringify({ publish: publish, rows: payload })
+          }).then(function (r) {
+            if (!r.ok) {
+              if (errEl) errEl.textContent = (r.data && r.data.error) || 'The import failed.';
+              if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+              return;
+            }
+            shiRenderResult(r.data, publish);
+          }).catch(function () {
+            if (errEl) errEl.textContent = 'The import failed — please try again.';
+            if (btn) { btn.disabled = false; }
+          });
+        }
+        function shiRenderResult(data, publish) {
+          var card = shiCard(); if (!card || !shiState) return;
+          card.style.maxWidth = '560px';
+          var skipped = (shiState.rows || []).length - shiCounts().ready;
+          var failed = data.failed || [];
+          var failHtml = failed.length
+            ? '<div style="margin-top:0.8rem"><div style="font-weight:700;color:#b91c1c">Didn\'t import:</div><ul style="margin:0.3rem 0 0 1.1rem;padding:0">' +
+              failed.map(function (f) { return '<li>Row ' + esc(String(f.row)) + ' — ' + esc(f.reason || '') + '</li>'; }).join('') + '</ul></div>'
+            : '';
+          card.innerHTML =
+            '<div style="font-size:1.25rem;font-weight:800">Import done</div>' +
+            '<div style="margin-top:0.5rem;font-size:1rem">Imported <b>' + data.imported + '</b> shifts ' + (publish ? '(published — your team can see them)' : '(saved as drafts)') + ' · ' + skipped + ' skipped · <b>' + failed.length + '</b> failed</div>' +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule now.</div>' + failHtml +
+            '<div style="display:flex;justify-content:flex-end;margin-top:1.1rem"><button type="button" id="shi-done" class="btn" style="border-radius:10px;padding:0.55rem 1.1rem">Close</button></div>';
+          document.getElementById('shi-done').addEventListener('click', function () { shiClose(); loadAll(); });
+        }
+        var shiBtn = $('sched-upload-btn');
+        if (shiBtn) shiBtn.addEventListener('click', shiOpen);
         if ($('sbp-rshift')) $('sbp-rshift').addEventListener('change', syncBlockPanel);
         if ($('sbp-ruser')) $('sbp-ruser').addEventListener('change', syncBlockPanel);
         var evtTgl = $('sched-events-toggle');
