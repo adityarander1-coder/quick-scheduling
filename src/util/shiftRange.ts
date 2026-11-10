@@ -276,7 +276,9 @@ export async function getShiftsForRange(
       // drawn day; dates ascend, so the loop can stop here.
       if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
 
-      const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      // UTC day count — see drawRotationOccurrences in schedule.ts
+      // (local-midnight spans lag one day after spring-forward).
+      const daysSinceStart = Math.floor((Date.parse(dateStr + 'T00:00:00Z') - Date.parse(rot.startDate + 'T00:00:00Z')) / 86400000);
       const cycleDay = (daysSinceStart % cycleDays) + 1;
 
       const dayAssignments = byDay.get(cycleDay);

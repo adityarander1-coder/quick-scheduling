@@ -656,7 +656,13 @@ async function drawRotationOccurrences(
       // drawn day; dates ascend, so the loop can stop here.
       if ((rot as any).endDate && dateStr > (rot as any).endDate) break;
 
-      const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      // Whole days from the rotation start to this date, counted in
+      // UTC (Deepika, 2026-11-09 — Wal): the old code divided the span
+      // between two LOCAL midnights by 24h, and the 23-hour
+      // spring-forward day made the count lag by one from then on, so
+      // every pattern slipped a day after the March clock change.
+      // UTC day counts are exact in any server timezone.
+      const daysSinceStart = Math.floor((Date.parse(dateStr + 'T00:00:00Z') - Date.parse(rot.startDate + 'T00:00:00Z')) / 86400000);
       const cycleDay = (daysSinceStart % cycleDays) + 1; // 1-indexed
 
       const dayAssignments = byDay.get(cycleDay);
@@ -2681,7 +2687,8 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
       for (const dateStr of dates) {
         const d = new Date(dateStr + 'T00:00:00');
         if (d < startDate) continue;
-        const daysSinceStart = Math.floor((d.getTime() - startDate.getTime()) / 86400000);
+        // UTC day count (2026-11-09) — same rule as drawRotationOccurrences.
+        const daysSinceStart = Math.floor((Date.parse(dateStr + 'T00:00:00Z') - Date.parse(rot.startDate + 'T00:00:00Z')) / 86400000);
         const cycleDay = (daysSinceStart % rot.cycleDays) + 1;
         const dayAssignments = byDay.get(cycleDay);
         if (!dayAssignments) continue;
@@ -3102,6 +3109,42 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
     const st = startTime && timeRe.test(startTime) ? startTime : null;
     const et = endTime && timeRe.test(endTime) ? endTime : null;
+    // Assignment honesty (Deepika, 2026-11-09 — Wil): the old insert
+    // loop skipped out-of-cycle days and swallowed insert errors, so
+    // a save could report success with ZERO days stored and the
+    // person drew nothing, forever. Validate up front instead — a
+    // 201 from this endpoint now guarantees every supplied pattern
+    // day was stored. (The web forms cannot produce these shapes:
+    // their day toggles only ever offer days inside the cycle, and
+    // group saves send no assignments at all.)
+    const suppliedAssignments: any[] = Array.isArray(assignments) ? assignments : [];
+    const cleanAssignments: Array<{ userId: string; cycleDay: number; shiftTypeId: string }> = [];
+    if (suppliedAssignments.length) {
+      const badDays: number[] = [];
+      let missingRef = false;
+      const seenAssign = new Set<string>();
+      for (const a of suppliedAssignments) {
+        const day = Number(a?.cycleDay);
+        if (!a?.userId || !a?.shiftTypeId) { missingRef = true; continue; }
+        if (!Number.isInteger(day) || day < 1 || day > cd) {
+          if (Number.isFinite(day)) badDays.push(day); else missingRef = true;
+          continue;
+        }
+        const akey = `${a.userId}|${day}|${a.shiftTypeId}`;
+        if (seenAssign.has(akey)) continue; // same assignment stated twice — one row is the truth
+        seenAssign.add(akey);
+        cleanAssignments.push({ userId: String(a.userId), cycleDay: day, shiftTypeId: String(a.shiftTypeId) });
+      }
+      if (badDays.length) {
+        const dayList = [...new Set(badDays)].sort((x, y) => x - y).join(', ');
+        res.status(400).json({ error: `Day${badDays.length > 1 ? 's' : ''} ${dayList} of the pattern fall outside the ${cd}-day cycle — nothing was saved. Fix the days or make the cycle longer.` });
+        return;
+      }
+      if (missingRef || !cleanAssignments.length) {
+        res.status(400).json({ error: 'Some pattern days are missing a person or a shift type — nothing was saved.' });
+        return;
+      }
+    }
     const id = crypto.randomUUID();
     await query(
       `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
@@ -3117,17 +3160,23 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
        groupPayload ? groupPayload.turnDays : null,
        groupPayload ? groupPayload.weekStart : null, endDate]
     );
-    if (Array.isArray(assignments)) {
-      for (const a of assignments) {
-        const day = Number(a.cycleDay);
-        if (!a.userId || !a.shiftTypeId || !Number.isInteger(day) || day < 1 || day > cd) continue;
+    if (cleanAssignments.length) {
+      let insertFailed = false;
+      for (const a of cleanAssignments) {
         try {
           await query(
             `INSERT INTO rotation_assignments (id, rotation_id, user_id, cycle_day, shift_type_id)
              VALUES ($1, $2, $3, $4, $5)`,
-            [crypto.randomUUID(), id, a.userId, day, a.shiftTypeId]
+            [crypto.randomUUID(), id, a.userId, a.cycleDay, a.shiftTypeId]
           );
-        } catch { /* skip duplicates/invalid refs */ }
+        } catch { insertFailed = true; break; }
+      }
+      if (insertFailed) {
+        // Roll the whole create back (assignments cascade) — a
+        // half-saved pattern is the same silent trap as a lost one.
+        await query('DELETE FROM rotations WHERE id = $1', [id]);
+        res.status(400).json({ error: 'A person or shift type in this pattern no longer exists — nothing was saved. Reopen the form and try again.' });
+        return;
       }
     }
     // Audit: rotation created.
@@ -3223,21 +3272,32 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
       }
       const name = `${urows[0].firstName} ${urows[0].lastName}`.trim();
       const { rows: theirRots } = await query(
-        `SELECT r.id, r.cycle_days AS "cycleDays", r.start_time::text AS "startTime", r.end_time::text AS "endTime"
+        `SELECT r.id, r.cycle_days AS "cycleDays", r.start_time::text AS "startTime", r.end_time::text AS "endTime",
+                r.end_date::text AS "endDate"
          FROM rotations r
          WHERE r.company_id = $1 AND r.group_id IS NULL AND r.is_active = true
            AND EXISTS (SELECT 1 FROM rotation_assignments ra WHERE ra.rotation_id = r.id AND ra.user_id = $2)`,
         [companyId, uid]
       );
-      let already = false;
+      let already: string | null = null;
       for (const tr of theirRots) {
         const { rows: theirPairs } = await query(
           'SELECT cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId" FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2',
           [tr.id, uid]
         );
-        if (patternKey(tr.cycleDays, tr.startTime, tr.endTime, theirPairs) === srcKey) { already = true; break; }
+        if (patternKey(tr.cycleDays, tr.startTime, tr.endTime, theirPairs) !== srcKey) continue;
+        const trEnd = tr.endDate ? String(tr.endDate) : null;
+        // A twin that ENDED before the new copies start does not
+        // count as having the pattern (Deepika, 2026-11-09 — Wil):
+        // skipping him left him with nothing after the end date
+        // while the result claimed he already had the rotation.
+        if (trEnd && trEnd < startDate) continue;
+        already = trEnd
+          ? `already has this rotation (it ends on ${trEnd})`
+          : 'already has this rotation';
+        if (!trEnd) break; // open-ended twin — the plain case decides it
       }
-      decisions.push({ userId: uid, name, skip: already ? 'already has this rotation' : null });
+      decisions.push({ userId: uid, name, skip: already });
     }
 
     const toCreate = decisions.filter((d) => !d.skip);
@@ -12061,7 +12121,8 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
       const startDate = new Date(rot.start_date + 'T00:00:00');
       if (target < startDate) continue;
       if (rot.end_date && date > String(rot.end_date)) continue; // rotation ended (migration 100)
-      const daysSince = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
+      // UTC day count (2026-11-09) — same rule as drawRotationOccurrences.
+      const daysSince = Math.floor((Date.parse(date + 'T00:00:00Z') - Date.parse(rot.start_date + 'T00:00:00Z')) / 86400000);
       const cycleDay = (daysSince % rot.cycle_days) + 1;
       for (const a of assigns) {
         if (a.cycle_day !== cycleDay) continue;

@@ -3944,10 +3944,12 @@
           var r = viewRange();
           var html = '<div class="week-grid">';
           var ndays = 0;
-          for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
-            var dd = new Date(ms);
-            var ds = fmtDate(new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()));
-            html += dayRowHtml(ds);
+          // Calendar stepping, never +86400000 ms (2026-11-09 — the
+          // fall "extra day"): across the 25-hour fall-back day a
+          // fixed ms step lands at 23:00 the day before, so that
+          // date rendered TWICE and the range's last day vanished.
+          for (var dd = parseDate(r.from), lastD = parseDate(r.to); dd <= lastD; dd.setDate(dd.getDate() + 1)) {
+            html += dayRowHtml(fmtDate(dd));
             ndays++;
           }
           html += '</div>';
@@ -4717,9 +4719,9 @@
         function visibleDates() {
           var r = viewRange();
           var dates = [];
-          for (var ms = Date.parse(r.from + 'T00:00:00'); ms <= Date.parse(r.to + 'T00:00:00'); ms += 86400000) {
-            var d = new Date(ms);
-            dates.push(fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate())));
+          // Calendar stepping (2026-11-09) — same fall-back fix as renderWeek.
+          for (var d = parseDate(r.from), lastD = parseDate(r.to); d <= lastD; d.setDate(d.getDate() + 1)) {
+            dates.push(fmtDate(d));
           }
           return dates;
         }
@@ -9722,6 +9724,17 @@ window.qsNpOfferSend = function (btn) {
 
               function fillShiftTypes(selectedId) {
                 var ts = $('rot-shifttype'); ts.innerHTML = '';
+                // NEW rotation (nothing preselected): start on a
+                // placeholder so the type is always a deliberate pick
+                // (2026-11-09 — a pattern silently landed on Night NP
+                // because the box sat on the first listed type). The
+                // save guard already refuses an empty value. Edit and
+                // copy-from pass a real id and keep their preselection.
+                if (!selectedId) {
+                  var ph = document.createElement('option');
+                  ph.value = ''; ph.textContent = 'Pick a shift type'; ph.selected = true;
+                  ts.appendChild(ph);
+                }
                 shiftTypes.forEach(function (st) {
                   if (!st.isActive) return;
                   // Department scope: only shift types in the active department are assignable.
@@ -9865,7 +9878,7 @@ window.qsNpOfferSend = function (btn) {
               function updateRotPreview() {
                 var days = collectDays().sort(function (a, b) { return a - b; });
                 var st = $('rot-shifttype');
-                var stName = st.options[st.selectedIndex] ? st.options[st.selectedIndex].text : 'shift';
+                var stName = (st.value && st.options[st.selectedIndex]) ? st.options[st.selectedIndex].text : 'shift';
                 var cycle = parseInt($('rot-cycle').value, 10) || 7;
                 var startDate = $('rot-start').value;
                 var startTime = $('rot-start-time').value || '';
@@ -10954,7 +10967,7 @@ window.qsNpOfferSend = function (btn) {
                   var d = new Date(start); d.setDate(d.getDate() + i);
                   if (days.indexOf((i % cycle) + 1) < 0) continue;
                   var key;
-                  if (grotUnit === 'week') key = 'w' + Math.floor((d.getTime() - anchor.getTime()) / (7 * 86400000));
+                  if (grotUnit === 'week') key = 'w' + Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())) / (7 * 86400000));
                   else if (grotUnit === 'days2') key = 'd' + Math.floor(occ / 2);
                   else if (grotUnit === 'days3') key = 'd' + Math.floor(occ / 3);
                   else key = 's' + occ;
