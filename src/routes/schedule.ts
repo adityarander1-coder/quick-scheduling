@@ -2311,13 +2311,215 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
-// RETIRED 2026-11-10 (Deepika's one-button consolidation): the two
-// per-shift publish-state endpoints — POST /shifts/:id/publish-state
-// and POST /rotation-shifts/publish-state — were removed together
-// with their UI controls (the P/D buttons, the per-date pill and the
-// shift-menu item). Stored shifts' published flag now flips only
-// through the Bulk Actions publish door (and Undo), or at creation
-// time. materializeRotationOccurrence stays: swap-from-date uses it.
+// POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift (owner/scheduler; department-scoped).
+router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { published } = req.body ?? {};
+    const { rows: srows } = await query(
+      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
+       FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
+      [req.params.id, companyId]
+    );
+    if (srows.length) {
+      if (!(await requireActiveDepartment(
+        req, res,
+        await assignmentRelevantDepartments(
+          [{ userId: srows[0].userId, shiftTypeId: srows[0].shiftTypeId }], companyId)
+      ))) return;
+    }
+    const { rowCount } = await query(
+      'UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
+      [published !== false, req.params.id, companyId]
+    );
+    if (!rowCount) {
+      res.status(404).json({ error: 'Shift not found.' });
+      return;
+    }
+    res.json({ ok: true, published: published !== false });
+    if (srows.length) {
+      const s = srows[0];
+      const names = await shiftDisplayNames(companyId, s.userId, s.shiftTypeId);
+      auditLog({
+        companyId, date: s.date,
+        action: published !== false ? 'published' : 'unpublished',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'manual', changedBy: req.session.userId!,
+      });
+      if (published !== false && !s.published) {
+        notify({
+          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_assigned',
+          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} is now published.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${s.userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: req.session.userId!,
+        });
+      } else if (published === false && s.published) {
+        notify({
+          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} was moved back to draft.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${s.userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[schedule] shift publish-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance (owner/scheduler; department-scoped).
+// Body: { rotationId, userId, date, shiftTypeId, published }
+//
+// Per-shift publish is REAL (Deepika, 2026-11-09: the option stays,
+// and it must mean something under Pattern ≠ Schedule): publishing an
+// occurrence materializes exactly that one occurrence into a stored
+// published shift (rotation provenance set, publish_batch_id NULL —
+// not a batch) so the employee actually sees it. If a stored shift
+// already occupies the slot, THAT row is published / drafted instead —
+// never a duplicate. "Move to draft" on a never-materialized
+// occurrence keeps the legacy sidecar write (a harmless preview flag),
+// so the control is never a dead button.
+router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { rotationId, userId, date, shiftTypeId, published } = req.body ?? {};
+    if (!rotationId || !userId || !date || !shiftTypeId) {
+      res.status(400).json({ error: 'rotationId, userId, date, and shiftTypeId are required.' });
+      return;
+    }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
+    ))) return;
+    const wantPublished = published !== false;
+    const me = req.session.userId!;
+
+    // Bells: publish uses the same schedule_published shape Publish
+    // schedule (Step 2) sends; unpublish mirrors the manual
+    // publish-state endpoint. The acting admin is never belled.
+    const bellPublished = async () => {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'schedule_published',
+        title: `Your schedule was published: 1 shift(s), ${fmtDateLong(date)} – ${fmtDateLong(date)}`,
+        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
+        link: 'my-schedule', bundleKey: `schedule_published:${userId}`,
+        bundleTitle: 'Your schedule was published: {count} shift(s)',
+        payload: { count: 1 },
+        excludeUserId: me,
+      });
+      return names;
+    };
+    const bellUnpublished = async () => {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      notify({
+        companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
+        title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
+        link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
+        bundleTitle: '{count} of your shifts were removed',
+        excludeUserId: me,
+      });
+      return names;
+    };
+
+    // A stored shift occupying the slot governs both directions:
+    // publish / draft THAT row, never a duplicate.
+    const { rows: storedRows } = await query(
+      `SELECT id, published FROM shifts
+       WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
+      [companyId, userId, date, shiftTypeId]
+    );
+    if (storedRows.length) {
+      const row = storedRows[0];
+      if ((row.published !== false) !== wantPublished) {
+        await query('UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
+          [wantPublished, row.id, companyId]);
+        const names = wantPublished ? await bellPublished() : await bellUnpublished();
+        auditLog({
+          companyId, date, action: wantPublished ? 'published' : 'unpublished',
+          personName: names.personName, shiftTypeName: names.shiftTypeName,
+          source: 'rotation', changedBy: me,
+        });
+      }
+      res.json({ ok: true, published: wantPublished, shiftId: row.id });
+      return;
+    }
+
+    if (wantPublished) {
+      // Materialize exactly this one occurrence — for a group
+      // rotation, the dealt person's occurrence — into a real
+      // published shift. The stored row then suppresses the drawn
+      // occurrence, so later re-dealing can never move it.
+      const real = await materializeRotationOccurrence(
+        companyId, `rot-${rotationId}-${userId}-${date}`,
+        { published: true, provenance: true, createdBy: me }
+      );
+      if (!real) {
+        res.status(404).json({ error: 'That rotation shift no longer exists.' });
+        return;
+      }
+      res.json({ ok: true, published: true, shiftId: real.id });
+      const names = await bellPublished();
+      const { rows: rrows } = await query(
+        'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
+        [rotationId, companyId]
+      );
+      auditLog({
+        companyId, date, action: 'published',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'rotation', rotationName: rrows[0]?.name || null, changedBy: me,
+      });
+      return;
+    }
+
+    // Move to draft, never materialized: the legacy sidecar write.
+    const { rows: prevRows } = await query(
+      `SELECT published FROM rotation_shift_publish
+       WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
+      [companyId, rotationId, userId, date, shiftTypeId]
+    );
+    const wasPublished = prevRows.length ? prevRows[0].published !== false : true;
+    await query(
+      `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (company_id, rotation_id, user_id, date, shift_type_id)
+       DO UPDATE SET published = EXCLUDED.published`,
+      [companyId, rotationId, userId, date, shiftTypeId, published !== false]
+    );
+    res.json({ ok: true, published: published !== false });
+    if (wasPublished !== (published !== false)) {
+      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      if (published !== false) {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
+          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
+          link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
+          bundleTitle: 'You were assigned {count} new shifts',
+          excludeUserId: req.session.userId!,
+        });
+      } else {
+        notify({
+          companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
+          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
+          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
+          link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
+          bundleTitle: '{count} of your shifts were removed',
+          excludeUserId: req.session.userId!,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[schedule] rotation shift publish-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
 
 // DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance (owner/scheduler; department-scoped).
 // Body: { rotationId, userId, date, shiftTypeId }

@@ -1994,8 +1994,7 @@
         /* Shift actions button (Variant B — Deepika, 2026-11-07): a round
            soft-grey button with a solid down triangle, at the end of the name
            cell. It opens the shift popup, which now carries Highlight,
-           comment, replace, Make calendar event and Delete. (The
-           publish item was removed 2026-11-10 — Bulk Actions only.) */
+           comment, publish, replace, Make calendar event and Delete. */
         #tab-schedule .shift-menu-btn { position: absolute; top: 3px; right: 4px; width: 27px; height: 27px; border-radius: 50%; border: 1px solid #d3dae1; background: #edf0f3; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         #tab-schedule .shift-menu-btn:hover { background: #dde4ea; }
         #tab-schedule .shift-menu-btn svg { display: block; }
@@ -2787,9 +2786,7 @@
         function commentsFor(dateStr) {
           return sched.comments.filter(function (c) { return c.date === dateStr; });
         }
-        // isPublished(dateStr) — the legacy schedule_days flag reader —
-        // was removed with the P/D pill (Deepika, 2026-11-10); nothing
-        // in the UI reads the day flag any more.
+        function isPublished(dateStr) { return !!sched.days[dateStr]; }
 
         function viewRange() {
           var a = new Date(sched.anchorDate);
@@ -3122,13 +3119,16 @@
         // The per-date P/D publish pill was REMOVED (Deepika,
         // 2026-11-10): it flipped only the legacy schedule_days flag
         // and published nothing — the same dead end as the old bulk
-        // door. Publishing happens only in Bulk Actions now.
+        // door. Whole-date publishing lives in Bulk Actions now;
+        // individual shifts keep their own publish/draft control.
 
         // Pattern ≠ Schedule (Deepika, 2026-11-09): a rotation
         // occurrence is draft-at-baseline — only Publish schedule
         // turns a pattern into real shifts — so for presentation an
-        // occurrence always renders like a stored draft: grey with a
-        // "(draft)" label. ("If its unpublished it has to show grey.")
+        // occurrence always renders like a stored draft: grey.
+        // ("If its unpublished it has to show grey.") The "(draft)"
+        // text label that used to accompany the grey was removed
+        // 2026-11-10 (Deepika) — colour alone carries it.
         function isOccShift(s) {
           return !!(s && (s.isRotation || String(s.id).indexOf('rot-') === 0));
         }
@@ -3139,7 +3139,8 @@
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
-          var draftTag = published ? '' : '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>';
+          // No "(draft)" text label any more (Deepika, 2026-11-10):
+          // the grey colour alone carries the meaning.
           // A published shift's NAME box carries the shift colour at
           // the open slot's tint (Deepika, 2026-11-09, mock approved):
           // colour in BOTH boxes for published shifts. Drafts and
@@ -3155,9 +3156,8 @@
             // ONE actions button (Variant B — Deepika, 2026-11-07): a
             // round soft-grey button with a solid down triangle, at the end of
             // the name cell. It opens the shift popup, which now carries
-            // Highlight, comment, replace, Make calendar event
-            // and Delete — the old 🎨/💬/🔄/🗑 box buttons are gone,
-            // and the publish item was removed 2026-11-10.
+            // Highlight, comment, publish, replace, Make calendar event
+            // and Delete — the old 🎨/💬/🔄/🗑 box buttons are gone.
             // Shown on view-only boxes too: the popup then offers
             // Highlight only, since highlighting is personal and changes
             // nothing for anyone else (Deepika, 2026-10-31).
@@ -3171,7 +3171,7 @@
             }
           }
           return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
-            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + '</div></div>' +
             '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + note + qsCoverBadge(s) + cBtn + '</div>' +
             '</div>';
         }
@@ -3377,7 +3377,7 @@
           }
           if (closedDays.length === 7) out += '<div style="color:#9ca3af;font-weight:700">Closed all week</div>';
           else if (closedDays.length) out += '<div style="color:#9ca3af;font-size:0.76rem;font-weight:600">Closed ' + sbDayRuns(closedDays, wk.dates) + '</div>';
-          if (anyDraft) out += '<div style="color:#6b7280;font-size:0.76rem;font-weight:700">(draft)</div>';
+
           if (!out) out = '<div style="color:#9ca3af">—</div>';
           return out;
         }
@@ -3404,7 +3404,7 @@
             var note = g.idxs.length === 7 ? '' : ' <span class="sbw-part">(' + sbDayRuns(g.idxs, wk.dates) + ')</span>';
             return '<div class="sbw-emp"><span class="sbw-sw" style="background:' + esc((st && st.color) || '#637a8e') + '"></span><span>' + esc(st ? st.name : 'Shift') + note + '</span></div>';
           }).join('');
-          if (anyDraft) out += '<div style="color:#6b7280;font-size:0.76rem;font-weight:700">(draft)</div>';
+
           return out;
         }
 
@@ -4157,14 +4157,10 @@
             var mds = fmtDate(md);
             if (mi >= 35 && md.getMonth() !== first.getMonth()) break;
             var mcls = 'mini-day' + (md.getMonth() !== first.getMonth() ? ' other' : '') + (mds === todayStr ? ' today' : '');
-            // Tint by REAL shift state (the legacy day-flag tint went
-            // with the P/D pill, 2026-11-10): green = the day has a
-            // stored published shift, gray = it has shifts/patterns
-            // but nothing published yet, plain = nothing scheduled.
+            // Color by publish state: green = published, gray = has schedule but draft, plain = no schedule.
             if (md.getMonth() === first.getMonth()) {
-              var mShifts = shiftsFor(mds);
-              if (mShifts.some(function (x) { return !isOccShift(x) && x.published !== false; })) mcls += ' pub';
-              else if (mShifts.length) mcls += ' draft';
+              if (isPublished(mds)) mcls += ' pub';
+              else if (shiftsFor(mds).length) mcls += ' draft';
             }
             html += '<div class="' + mcls + '" data-date="' + mds + '">' + md.getDate() + '</div>';
           }
@@ -4471,13 +4467,32 @@
             } }
           ]);
         };
-        // Per-shift publish/draft toggling was REMOVED (Deepika,
-        // 2026-11-10 — reversing her 2026-11-09 keep decision as part
-        // of the one-button consolidation): the P/D buttons and ▼-menu
-        // item are gone, the two per-shift publish-state endpoints are
-        // retired server-side, and publishing happens only through
-        // Bulk Actions (plus creation-time choices). Draft/published
-        // states themselves are unchanged.
+        window.qsToggleShiftPublish = function(sid) {
+          var s = shiftById(sid);
+          if (!s || !shiftEditable(s)) return;
+          var isRot = sid.indexOf('rot-') === 0;
+          // An occurrence is draft-at-baseline: a drawn occurrence
+          // has no stored row (a stored row suppresses it), so its
+          // toggle always publishes — the server materializes that
+          // one occurrence into a real published shift (per-shift
+          // publish, kept and made real — Deepika, 2026-11-09).
+          var toPublished = isRot ? true : !(s.published !== false);
+          // Optimistic: update instantly.
+          s.published = toPublished;
+          renderView();
+          var ep, body;
+          if (isRot) {
+            ep = '/api/schedule/rotation-shifts/publish-state';
+            body = { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, published: toPublished };
+          } else {
+            ep = '/api/schedule/shifts/' + sid + '/publish-state';
+            body = { published: toPublished };
+          }
+          api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            if (r.ok) { pageSuccess(toPublished ? 'Shift published.' : 'Shift moved to draft.'); refreshShifts(); }
+            else { pageError('Could not update. Refreshing.'); refreshShifts(); }
+          }).catch(function () { pageError('Could not update. Refreshing.'); refreshShifts(); });
+        };
         window.qsDoReplace = function(sid, newUserId) {
           hide($('action-dialog'));
           var s = shiftById(sid);
@@ -4671,14 +4686,19 @@
             var nm = displayName(s);
             var isDraftShift = s.published === false || isOccShift(s);
             var editable = shiftEditable(s);
-            // The per-shift P/D button that used to sit in this row
-            // was removed (Deepika, 2026-11-10): the (draft) label
-            // still shows the state; publishing is Bulk Actions only.
+            // Per-shift publish stays available on occurrences too
+            // (Deepika, 2026-11-09, later same day): the toggle now
+            // materializes that one occurrence into a real published
+            // shift on the server, so the P/D button is real again.
+            // An occurrence always shows D (draft-at-baseline).
+            var pubBtnHtml =
+              '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>';
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
-              esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
+              esc(st ? st.name : '') + '</span>' + qsCoverBadge(s) +
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
+                pubBtnHtml +
                 '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
@@ -4899,9 +4919,53 @@
           paShift = null;
         }
 
-        // openRotationShiftDialog (a rotation-shift dialog whose main
-        // action was the per-shift publish toggle) was removed with
-        // that feature (Deepika, 2026-11-10); it had no callers left.
+        // Simple dialog for rotation shifts: publish/draft toggle and delete.
+        function openRotationShiftDialog(s) {
+          var nm = displayName(s);
+          var st = shiftTypeById(s.shiftTypeId);
+          var isDraft = s.published === false;
+          showDialog(nm + ' \u2014 ' + fmtLong(s.date),
+            '<p style="color:var(--dim);font-size:13px">This shift comes from a rotation' + (st ? ' (' + esc(st.name) + ')' : '') + '. You can publish/draft it or remove this occurrence.</p>',
+            [
+              { label: 'Cancel' },
+              {
+                label: isDraft ? 'Publish' : 'Move to draft',
+                onClick: function () {
+                  api('/api/schedule/rotation-shifts/publish-state', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      rotationId: s.rotationId,
+                      userId: s.userId,
+                      date: s.date,
+                      shiftTypeId: s.shiftTypeId,
+                      published: isDraft
+                    })
+                  }).then(function (r) {
+                    if (r.ok) { pageSuccess(isDraft ? 'Published.' : 'Moved to draft.'); loadShifts(); }
+                    else pageError('Could not update.');
+                  });
+                }
+              },
+              {
+                label: 'Delete', danger: true,
+                onClick: function () {
+                  if (!confirm('Remove this rotation shift on ' + fmtLong(s.date) + '?')) return;
+                  api('/api/schedule/rotation-shifts/delete', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      rotationId: s.rotationId,
+                      userId: s.userId,
+                      date: s.date,
+                      shiftTypeId: s.shiftTypeId
+                    })
+                  }).then(function (r) {
+                    if (r.ok) { pageSuccess('Shift removed.'); loadShifts(); }
+                    else pageError('Could not delete.');
+                  });
+                }
+              }
+            ]);
+        }
         var popupShift = null;
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
@@ -4931,10 +4995,14 @@
             // Comment
             var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
             html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
-            // No publish/draft item here any more (removed 2026-11-10,
-            // Deepika's one-button consolidation): publishing is done
-            // only from Bulk Actions. The menu keeps Highlight,
-            // comment, Replace person, Make calendar event, Delete.
+            // Publish/draft item — occurrences included (Deepika,
+            // 2026-11-09, later same day: per-shift publish kept).
+            // An occurrence is draft-at-baseline: a drawn occurrence
+            // has no stored row (a stored row suppresses it), so its
+            // item always offers Publish — and the server now
+            // materializes just that one shift for real.
+            var isDraft = isOccShift(s) || s.published === false;
+            html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
             // Replace person — the handler opens the same all-members
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
@@ -5071,6 +5139,26 @@
             if (act === 'comment') {
               closeShiftPopup();
               openEmployeeCommentModal(s.userId, s.date);
+            } else if (act === 'toggle-publish') {
+              closeShiftPopup();
+              var isRot = s.id && s.id.indexOf('rot-') === 0;
+              // Occurrences are draft-at-baseline (a stored row
+              // would suppress the drawing), so their toggle always
+              // publishes — the server materializes that one shift
+              // (per-shift publish, kept and made real — Deepika,
+              // 2026-11-09). Same rule as qsToggleShiftPublish.
+              var toPublished = isRot ? true : !(s.published !== false);
+              var ep, body;
+              if (isRot) {
+                ep = '/api/schedule/rotation-shifts/publish-state';
+                body = { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, published: toPublished };
+              } else {
+                ep = '/api/schedule/shifts/' + s.id + '/publish-state';
+                body = { published: toPublished };
+              }
+              api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                if (r.ok) { s.published = toPublished; renderView(); }
+              });
             } else if (act === 'replace') {
               // Same dialog as the old box 🔄: every team member with
               // Off/Working badges (qsReplaceShift handles rotation
@@ -17095,8 +17183,8 @@ window.qsNpOfferSend = function (btn) {
           var st = stById(s.shiftTypeId);
           var nm = st ? st.name : 'Shift';
           var times = st && st.startTime ? ' ' + fmtTime(st.startTime) + '–' + fmtTime(st.endTime) : '';
-          var draft = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? ' (draft)' : '';
-          return nm + times + draft;
+          // No ' (draft)' suffix (Deepika, 2026-11-10) — grey carries it.
+          return nm + times;
         }
         function memberDeptId(userId) {
           for (var i = 0; i < members.length; i++) {
@@ -17595,7 +17683,7 @@ window.qsNpOfferSend = function (btn) {
           var label = st ? st.name : 'Shift';
           var nm = displayName(s);
           var youTag = isMine(s) ? ' <span style="font-size:10px;font-weight:800;color:#fff;background:var(--accent);border-radius:6px;padding:2px 6px;margin-left:6px">YOU</span>' : '';
-          var draftTag = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '<span style="display:block;font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '';
+          // No "(draft)" text label (Deepika, 2026-11-10).
           // Same approved look as the Schedule grid (Deepika,
           // 2026-11-09): a published shift's name box takes the open
           // slot's tint of the shift colour; drafts and occurrences
@@ -17603,7 +17691,7 @@ window.qsNpOfferSend = function (btn) {
           var nmBg = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '' : 'background:' + tint(color, 82) + ';';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var html = '<div class="shift-grid">' +
-            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + draftTag + '</div></div>' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + '</div></div>' +
             '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
           if (isMine(s)) {
