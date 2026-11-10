@@ -8169,18 +8169,30 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   const { rows: stRows } = await query(
     'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
   const { rows: uRows } = await query(
-    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name,
+            first_name, last_name, nickname
      FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
   const { rows: dRows } = await query(
     'SELECT name FROM departments WHERE company_id = $1', [companyId]);
   const today = new Date().toISOString().slice(0, 10);
-  const { buildSessionContext } = await import('../util/emailPoller.js');
+  const { buildSessionContext, buildScheduleContext } = await import('../util/emailPoller.js');
   const sessionCtx = await buildSessionContext(query, companyId, today);
+  const scheduleCtx = await buildScheduleContext(query, companyId, today);
   const { getShiftTypeRules } = await import('../util/planExecutor.js');
   const ctx: any = {
     shiftTypes: stRows.map((r: any) => r.name),
     shiftTypeRules: await getShiftTypeRules(companyId),
     members: uRows.map((r: any) => r.name),
+    // Same structured roster + authoritative schedule the email
+    // planner gets (Deepika, 2026-11-10): the planner plans against
+    // the real schedule on this path too, not blind.
+    memberDetails: uRows.map((r: any) => {
+      const full = `${r.first_name || ''} ${r.last_name || ''}`.trim().replace(/\s+/g, ' ');
+      const bits = [`first name: ${r.first_name || ''}`];
+      if (r.nickname && r.nickname !== full) bits.push(`known as: ${r.nickname}`);
+      return `${full} (${bits.join('; ')})`;
+    }),
+    schedule: scheduleCtx.scheduleLines,
     today,
     history,
     ...sessionCtx,
@@ -8219,6 +8231,23 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   }
   if ((plan as any).needsClarification) {
     problems.push({ text: (plan as any).needsClarification, options: [] });
+  }
+  // Exact-name + workability gate (Deepika, 2026-11-10 — same gate
+  // the email path runs in processScheduleEmail): once the plan is
+  // complete and its names read exactly, verify it against the REAL
+  // schedule — a move/swap's from-person must actually hold that
+  // shift (stored or pattern-drawn), and nobody may be given a shift
+  // that overlaps or breaks the 8-hour rest rule. A failure becomes
+  // the clarification, naming the actual holder or the conflict.
+  if (plan.changes?.length && !problems.length) {
+    try {
+      const { gatePlanChanges } = await import('../util/planGate.js');
+      const gate = await gatePlanChanges(query, companyId, plan.changes);
+      if (!gate.ok) problems.push({ text: gate.question, options: [] });
+    } catch (gateErr: any) {
+      console.error('[schedule] plan gate failed to run:', gateErr?.message);
+      problems.push({ text: 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?', options: [] });
+    }
   }
   if (!plan.changes?.length || problems.length) {
     if (!problems.length) {

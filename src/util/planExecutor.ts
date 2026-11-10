@@ -79,26 +79,51 @@ interface ExecuteResult {
   personDisplay?: string;
 }
 
-/** Find a user ID by fuzzy name match. */
+/**
+ * Find a user ID by EXACT name match (Deepika, 2026-11-10 — the
+ * "Kum" → Binod Kumar incident: the old resolver accepted substring
+ * matches, so "kum" silently resolved to the first "Kumar" on the
+ * roster). Resolution order, mirroring findDepartment's
+ * don't-guess standard:
+ *   1. exact full name, or exact nickname — when unique;
+ *   2. a UNIQUE first name;
+ *   3. a UNIQUE last name.
+ * A substring-only match, or any tie, returns null so the change
+ * fails with a plain "not guessing" error instead of acting on the
+ * wrong person. Deterministic ORDER BY throughout. (Plan creation
+ * is gated even earlier by planGate.ts, which rewrites plan names
+ * to canonical full names — this resolver is the second line.)
+ */
 async function findUser(companyId: string, name: string): Promise<{ id: string; display: string } | null> {
   const { rows } = await query(
     `SELECT id, first_name, last_name, nickname FROM users
-     WHERE company_id = $1 AND is_active = true`,
+     WHERE company_id = $1 AND is_active = true
+     ORDER BY lower(first_name), lower(last_name), created_at`,
     [companyId]
   );
-  const lower = name.toLowerCase().trim();
-  for (const u of rows) {
-    const names = [
-      u.nickname?.toLowerCase(),
-      `${u.first_name} ${u.last_name}`.toLowerCase().trim(),
-      u.first_name.toLowerCase(),
-      u.last_name?.toLowerCase(),
-    ].filter(Boolean);
-    if (names.some(n => n === lower || (n.length >= 3 && lower.includes(n)) || (lower.length >= 3 && n.includes(lower)))) {
-      return { id: u.id, display: u.nickname || `${u.first_name} ${u.last_name || ''}`.trim() };
-    }
-  }
+  const lower = (name || '').toLowerCase().trim().replace(/\s+/g, ' ');
+  if (!lower) return null;
+  const full = (u: any) => `${u.first_name} ${u.last_name || ''}`.toLowerCase().trim().replace(/\s+/g, ' ');
+  const found = (u: any) => ({ id: u.id as string, display: u.nickname || `${u.first_name} ${u.last_name || ''}`.trim() });
+  const unique = (hits: any[]) => (hits.length === 1 ? found(hits[0]) : null);
+  // 1. Exact full name or exact nickname.
+  const exactFull = rows.filter((u: any) => full(u) === lower);
+  if (exactFull.length) return unique(exactFull);
+  const exactNick = rows.filter((u: any) => u.nickname && u.nickname.toLowerCase().trim() === lower);
+  if (exactNick.length) return unique(exactNick);
+  // 2. Unique first name. A tie is ambiguous — never fall through
+  //    to a different interpretation of the same word.
+  const firsts = rows.filter((u: any) => (u.first_name || '').toLowerCase() === lower);
+  if (firsts.length) return unique(firsts);
+  // 3. Unique last name.
+  const lasts = rows.filter((u: any) => u.last_name && u.last_name.toLowerCase() === lower);
+  if (lasts.length) return unique(lasts);
   return null;
+}
+
+/** The executor's person-resolution failure line (Deepika, 2026-11-10). */
+function noExactMatch(name: string): string {
+  return `No team member matches "${name}" exactly — not guessing. Use the full name as it appears on the team list.`;
 }
 
 /** Find a shift type ID by fuzzy name match. */
@@ -864,7 +889,7 @@ export async function executePlan(
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
         const user = await findUser(companyId, change.person);
         const st = await findShiftType(companyId, change.shiftType);
-        if (!user) throw new Error(`Person not found: ${change.person}`);
+        if (!user) throw new Error(noExactMatch(change.person));
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
         const inserted = await query(
@@ -884,7 +909,7 @@ export async function executePlan(
         const { expandRecurring } = await import('./planHelpers.js');
         const user = await findUser(companyId, change.person);
         const st = await findShiftType(companyId, change.shiftType);
-        if (!user) throw new Error(`Person not found: ${change.person}`);
+        if (!user) throw new Error(noExactMatch(change.person));
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         const dates = expandRecurring(change.startDate, change.intervalWeeks, !!change.weekendsOff, change.untilDate);
         const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
@@ -905,8 +930,8 @@ export async function executePlan(
         // half-applied swap is impossible.
         const fromUser = await findUser(companyId, change.fromPerson);
         const toUser = await findUser(companyId, change.toPerson);
-        if (!fromUser) throw new Error(`Person not found: ${change.fromPerson}`);
-        if (!toUser) throw new Error(`Person not found: ${change.toPerson}`);
+        if (!fromUser) throw new Error(noExactMatch(change.fromPerson));
+        if (!toUser) throw new Error(noExactMatch(change.toPerson));
         const fromDate = change.fromDate || change.date;
         const toDate = change.toDate || change.date;
         if (!fromDate || !toDate) throw new Error('Swap needs a date (or fromDate/toDate).');
@@ -990,7 +1015,7 @@ export async function executePlan(
         }
       } else if (change.action === 'unassign' && change.person && change.date) {
         const user = await findUser(companyId, change.person);
-        if (!user) throw new Error(`Person not found: ${change.person}`);
+        if (!user) throw new Error(noExactMatch(change.person));
         let q = 'DELETE FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3';
         const params: any[] = [companyId, user.id, change.date];
         let shiftTypeId: string | null = null;
@@ -1017,31 +1042,51 @@ export async function executePlan(
         } else {
           results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
         }
-      } else if (change.action === 'move' && change.fromPerson && change.toPerson && change.date) {
-        // Move = unassign fromPerson + assign toPerson (same shift type).
+      } else if (change.action === 'move' && change.fromPerson && change.toPerson && (change.date || change.fromDate)) {
+        // Move = unassign fromPerson + assign toPerson (same shift
+        // type). The source side resolves exactly like a swap side
+        // (resolveSwapSide): a stored row is deleted; a ROTATION-drawn
+        // occurrence is excluded for fromPerson and re-created as a
+        // stored row for toPerson (Deepika, 2026-11-10 — previously
+        // move threw "rotation-generated shifts need the scheduler",
+        // so even a perfectly-named plan could not move a rotation
+        // day, while unassign/swap already handled them). One
+        // transaction so a half-applied move is impossible.
         const fromUser = await findUser(companyId, change.fromPerson);
         const toUser = await findUser(companyId, change.toPerson);
-        if (!fromUser) throw new Error(`Person not found: ${change.fromPerson}`);
-        if (!toUser) throw new Error(`Person not found: ${change.toPerson}`);
-        // Find the shift to move.
-        let shiftQ = 'SELECT shift_type_id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 LIMIT 1';
-        const shiftParams: any[] = [companyId, fromUser.id, change.date];
-        if (change.shiftType) {
-          const st = await findShiftType(companyId, change.shiftType);
-          if (st) { shiftQ = 'SELECT shift_type_id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1'; shiftParams.push(st.id); }
-        }
-        const { rows: srows } = await query(shiftQ, shiftParams);
-        if (!srows.length) throw new Error(`No shift found for ${fromUser.display} on ${change.date}. Only manually-assigned shifts can be moved — rotation-generated shifts need the scheduler.`);
-        const shiftTypeId = srows[0].shift_type_id;
-        await query('DELETE FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
-          [companyId, fromUser.id, change.date, shiftTypeId]);
-        const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
-        await query(
-          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
-           VALUES ($1, $2, $3, $4, $5, true, $6) ON CONFLICT DO NOTHING`,
-          [uuidv4(), companyId, toUser.id, shiftTypeId, change.date, createdBy]
-        );
-        results.push({ action: 'move', success: true, message: `Moved ${fromUser.display} → ${toUser.display} on ${change.date}` });
+        if (!fromUser) throw new Error(noExactMatch(change.fromPerson));
+        if (!toUser) throw new Error(noExactMatch(change.toPerson));
+        const date = (change.date || change.fromDate)!;
+        const side = await resolveSwapSide(companyId, fromUser.id, date, change.shiftType);
+        if (!side) throw new Error(noShiftFoundMsg(fromUser.display, date, change.shiftType));
+        const typeId = side.kind === 'manual' ? side.row.shift_type_id : side.shiftTypeId;
+        const typeName = side.kind === 'manual' ? side.row.shift_type_name : side.shiftTypeName;
+        const { withTransaction } = await import('../db.js');
+        await withTransaction(async (tx) => {
+          if (side.kind === 'manual') {
+            const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [side.row.id, companyId]);
+            if (del.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${date} — it may have changed.`);
+          } else {
+            const ins = await tx.query(
+              `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+               VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+              [companyId, side.rotationId, fromUser.id, date, side.shiftTypeId]
+            );
+            if (ins.rowCount === 0) throw new Error(`${fromUser.display}'s shift on ${date} may have changed — please review and try again.`);
+          }
+          const ins2 = await tx.query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+            [crypto.randomUUID(), companyId, toUser.id, typeId, date,
+             side.kind === 'manual' ? side.row.notes : null,
+             side.kind === 'manual' ? side.row.published : true, createdBy]
+          );
+          if (ins2.rowCount === 0) throw new Error(`Could not place ${toUser.display} on ${typeName} on ${date} — conflicting shift exists.`);
+        });
+        results.push({
+          action: 'move', success: true,
+          message: `Moved ${fromUser.display} → ${toUser.display} on ${date}${side.kind === 'rotation' ? ' (rotation day)' : ''}`,
+        });
       } else if (change.action === 'add_job_role' && change.jobRoleName && change.department) {
         const { rows: depts } = await query(
           'SELECT id, name FROM departments WHERE company_id = $1',
@@ -1144,7 +1189,7 @@ export async function executePlan(
         results.push({ action: 'add_team_member', success: true, message: `Added team member ${change.firstName} ${change.lastName}${change.department ? ` to ${change.department}` : ''}` });
       } else if (change.action === 'update_team_member' && change.person) {
         const member = await findMember(companyId, change.person);
-        if (!member) throw new Error(`Team member not found: ${change.person}`);
+        if (!member) throw new Error(noExactMatch(change.person));
         const updates: string[] = [];
         const params: any[] = [];
         let pi = 1;
@@ -1233,7 +1278,7 @@ export async function executePlan(
         // Speaker 1 via insertSession.
         const organizingDeptId = await resolveOrganizingDeptE(companyId, createdBy, dash.id);
         const presenter = change.presenter ? await findUser(companyId, change.presenter) : null;
-        if (change.presenter && !presenter) throw new Error(`Person not found: ${change.presenter}`);
+        if (change.presenter && !presenter) throw new Error(noExactMatch(change.presenter));
         // A supervisor on the change is IGNORED, never an error:
         // supervisors were retired (Deepika, 2026-11-07), and a plan
         // written before that (or by the AI from an old email) must
@@ -1276,7 +1321,7 @@ export async function executePlan(
         if (change.title !== undefined && change.title !== sess.title) f.title = change.title;
         if (change.presenter !== undefined) {
           const p = change.presenter ? await findUser(companyId, change.presenter) : null;
-          if (change.presenter && !p) throw new Error(`Person not found: ${change.presenter}`);
+          if (change.presenter && !p) throw new Error(noExactMatch(change.presenter));
           f.presenterId = p?.id ?? null;
         }
         // change.supervisor is deliberately NOT applied (retired

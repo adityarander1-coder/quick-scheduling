@@ -259,6 +259,115 @@ export async function buildSessionContext(
 }
 
 /**
+ * Schedule context for the planner (Deepika, 2026-11-10): who actually
+ * holds each shift over the coming weeks — stored shifts AND
+ * pattern-drawn occurrences, read through getShiftsForRange, the same
+ * source the grid uses — plus a per-person pivot so the planner can
+ * see who is working vs off around any day it touches.
+ *
+ * Why: per Deepika's Nov 8 decision the planner receives the company's
+ * roster AND schedule inside each request (and forgets it after); the
+ * schedule half was never built, so the planner proposed changes
+ * blind — the Nov 10 incident, where it invented a "move" from a man
+ * who was not on that day's schedule at all.
+ *
+ * Bounds (chosen to keep the prompt sane for a hospital roster): the
+ * day-by-day view covers [today-1, today+60]; the per-person pivot
+ * covers the next 21 days in detail. Both are character-capped; when a
+ * cap bites, the lines say the list was cut. Best-effort: any failure
+ * returns empty lines and planning continues (the deterministic gate
+ * in planGate.ts still verifies every plan against the live data).
+ */
+export async function buildScheduleContext(
+  query: QueryFn, companyId: string, today: string
+): Promise<{ scheduleLines: string[] }> {
+  const out = { scheduleLines: [] as string[] };
+  try {
+    const { getShiftsForRange } = await import('./shiftRange.js');
+    const shiftDay = (ds: string, n: number) => {
+      const d = new Date(ds + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const entries = await getShiftsForRange(query, companyId, shiftDay(today, -1), shiftDay(today, 60));
+
+    // Staffing targets → open slots: a type staffed below its target
+    // on a date has that many open slots that day.
+    const targets = new Map<string, number>();
+    try {
+      const { rows: trows } = await query(
+        'SELECT shift_type_id, target_count FROM staffing_targets WHERE company_id = $1',
+        [companyId]
+      );
+      for (const r of trows) {
+        targets.set(r.shift_type_id, Math.max(targets.get(r.shift_type_id) || 0, Number(r.target_count) || 0));
+      }
+    } catch { /* targets are an enhancement, not a requirement */ }
+
+    // (a) Day-by-day holders.
+    const byDate = new Map<string, Map<string, { name: string; people: string[] }>>();
+    for (const e of entries) {
+      if (!byDate.has(e.date)) byDate.set(e.date, new Map());
+      const byType = byDate.get(e.date)!;
+      if (!byType.has(e.shiftTypeId!)) byType.set(e.shiftTypeId!, { name: e.shiftTypeName, people: [] });
+      byType.get(e.shiftTypeId!)!.people.push(e.personName);
+    }
+    const dayLines: string[] = [];
+    for (const date of [...byDate.keys()].sort()) {
+      const byType = byDate.get(date)!;
+      const parts: string[] = [];
+      for (const [typeId, t] of byType) {
+        parts.push(`${t.name}: ${t.people.join(', ')}`);
+        const target = targets.get(typeId) || 0;
+        if (target > t.people.length) parts.push(`${t.name} OPEN ×${target - t.people.length}`);
+      }
+      for (const [typeId, target] of targets) {
+        if (target > 0 && !byType.has(typeId)) {
+          const nameRow = entries.find((e) => e.shiftTypeId === typeId);
+          // Only list fully-open types we have a name for.
+          if (nameRow) parts.push(`${nameRow.shiftTypeName} OPEN ×${target}`);
+        }
+      }
+      const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
+      dayLines.push(`${date} (${dow}): ${parts.join('; ')}`);
+    }
+
+    // (b) Per-person pivot, next 21 days: the planner sees each
+    // person's actual working pattern around "now", so "Bon is off
+    // Dec 2" is readable straight off the context.
+    const pivotTo = shiftDay(today, 21);
+    const byPerson = new Map<string, string[]>();
+    for (const e of entries) {
+      if (e.date < today || e.date > pivotTo) continue;
+      if (!byPerson.has(e.personName)) byPerson.set(e.personName, []);
+      byPerson.get(e.personName)!.push(`${e.date.slice(5)} ${e.shiftTypeName}`);
+    }
+    const personLines: string[] = [];
+    for (const name of [...byPerson.keys()].sort()) {
+      const items = byPerson.get(name)!;
+      const shown = items.slice(0, 25);
+      personLines.push(`${name} works: ${shown.join('; ')}${items.length > shown.length ? `; …and ${items.length - shown.length} more` : ''}`);
+    }
+
+    const lines: string[] = [];
+    let chars = 0;
+    const push = (line: string) => {
+      if (chars + line.length > 16000) return false;
+      lines.push(line); chars += line.length + 1; return true;
+    };
+    for (const l of dayLines) if (!push(l)) { push('…(schedule list cut for length)'); break; }
+    if (personLines.length) {
+      if (push('Per person, next 21 days:')) {
+        for (const l of personLines) if (!push(l)) { push('…(per-person list cut for length)'); break; }
+      }
+    }
+    out.scheduleLines = lines;
+  } catch { /* context is best-effort; the gate still verifies */ }
+  return out;
+}
+
+/**
  * Process ONE schedule email into a pending plan (shared engine).
  * Used by the Gmail IMAP poller AND the inbound-address webhook, so both
  * paths behave identically. Never modifies the schedule directly — it
@@ -375,7 +484,9 @@ export async function processScheduleEmail(
 
     // Get company context (shift types and team members) for Gemini
     const membersResult = await query(
-      `SELECT COALESCE(nickname, first_name || ' ' || last_name) as name FROM users WHERE company_id = $1 AND is_active = true`,
+      `SELECT COALESCE(nickname, first_name || ' ' || last_name) as name,
+              first_name, last_name, nickname
+       FROM users WHERE company_id = $1 AND is_active = true`,
       [companyId]
     );
     const shiftTypesResult = await query(
@@ -383,6 +494,15 @@ export async function processScheduleEmail(
       [companyId]
     );
     const members = membersResult.rows.map(r => r.name);
+    // Structured roster for the planner (Deepika, 2026-11-10): full
+    // name plus its parts and the known-as name, so an exact copy is
+    // possible and a fragment visibly matches nobody's full name.
+    const memberDetails = membersResult.rows.map((r) => {
+      const full = `${r.first_name || ''} ${r.last_name || ''}`.trim().replace(/\s+/g, ' ');
+      const bits = [`first name: ${r.first_name || ''}`];
+      if (r.nickname && r.nickname !== full) bits.push(`known as: ${r.nickname}`);
+      return `${full} (${bits.join('; ')})`;
+    });
     const shiftTypes = shiftTypesResult.rows.map(r => r.name);
     const today = new Date().toISOString().split('T')[0];
 
@@ -392,6 +512,7 @@ export async function processScheduleEmail(
     // past unclear wording that was later resolved, so the same
     // wording is understood the first time.
     const sessionCtx = await buildSessionContext(query, companyId, today);
+    const scheduleCtx = await buildScheduleContext(query, companyId, today);
     const { getShiftTypeRules } = await import('./planExecutor.js');
     const { getRelevantExamples } = await import('./emailLearning.js');
     const examples = await getRelevantExamples(query, companyId, `${email.subject}\n${effectiveBody}`);
@@ -399,6 +520,8 @@ export async function processScheduleEmail(
       shiftTypes,
       shiftTypeRules: await getShiftTypeRules(companyId),
       members,
+      memberDetails,
+      schedule: scheduleCtx.scheduleLines,
       today,
       ...sessionCtx,
       attachmentText: attachmentText || undefined,
@@ -491,9 +614,31 @@ export async function processScheduleEmail(
     const incomplete = plan.changes
       .map((c: any, i: number) => ({ i, problems: changeProblems(c) }))
       .filter((x: any) => x.problems.length > 0);
-    const needsInfo = incomplete.length > 0 || plan.needsClarification || plan.confidence === 'low';
+    // Exact-name + workability gate (Deepika, 2026-11-10 — the
+    // "Kum" → Binod Kumar incident): every person the planner named
+    // must resolve EXACTLY against the roster, a move/swap's
+    // from-person must actually hold that shift in the real schedule,
+    // and nobody may be given a shift that overlaps or breaks the
+    // 8-hour rest rule. A failure here does NOT create a plan — it
+    // becomes the clarification question below, naming the candidates
+    // or the actual holder. (The in-app Task path runs the same gate
+    // in finalizeTaskPlan; the form path never needs it — its names
+    // come from picked IDs.)
+    let gateQuestion: string | null = null;
+    try {
+      const { gatePlanChanges } = await import('./planGate.js');
+      const gate = await gatePlanChanges(query, companyId, plan.changes);
+      if (!gate.ok) gateQuestion = gate.question;
+    } catch (gateErr: any) {
+      // Fail closed: an unverifiable plan must not become approvable.
+      console.log(`[email-poll] Message ${sourceId}: plan gate failed to run: ${gateErr.message}`);
+      gateQuestion = 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?';
+    }
+    const needsInfo = incomplete.length > 0 || plan.needsClarification || plan.confidence === 'low' || !!gateQuestion;
     if (needsInfo) {
-      const detail = incomplete.length
+      const detail = gateQuestion
+        ? gateQuestion
+        : incomplete.length
         ? incomplete.map((x: any) => `Change ${x.i + 1} (${plan.changes[x.i].action || 'unknown'}): ${x.problems.join(', ')}`).join('; ')
         : (plan.needsClarification || 'I could not understand the requested change well enough to build it.');
       // The clarification email carries a generated Message-ID so the
@@ -689,8 +834,8 @@ export async function notifyPlanApprovers(
       : null;
     const planMail = (approveUrl: string, rejectUrl: string) => ({
       subject: `New schedule change plan: ${(plan.summary || '').substring(0, 60)}`,
-      text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${ctx.fromLine}${ccLine}\nSubject: ${ctx.subject}\n\nWhat they asked:\n${ctx.body}\n\nChanges to apply:\n${ctx.changeList}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}`,
-      html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${ctx.fromLine}${ctx.cc ? `<br>Cc: ${ctx.cc}` : ''}<br>Subject: ${ctx.subject}</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.changeList)}</pre><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p>`,
+      text: `${outageNote ? outageNote + '\n\n' : ''}A new schedule change plan is ready for your approval.\n\nSummary: ${plan.summary}\n\nFrom: ${ctx.fromLine}${ccLine}\nSubject: ${ctx.subject}\n\nWhat they asked:\n${ctx.body}\n\nChanges to apply:\n${ctx.changeList}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nOr review in the app: ${baseUrl}\n\nPlease don't reply to this email — replies to it aren't read. To correct this plan, Reject it and ask for a new request.`,
+      html: `${outageNote ? `<p><strong>${escHtml(outageNote)}</strong></p>` : ''}<p>A new schedule change plan is ready for your approval.</p><p><strong>Summary:</strong> ${plan.summary}</p><p>From: ${ctx.fromLine}${ctx.cc ? `<br>Cc: ${ctx.cc}` : ''}<br>Subject: ${ctx.subject}</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(ctx.changeList)}</pre><p><a href="${approveUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Approve & Apply</a><a href="${rejectUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reject</a></p><p><a href="${baseUrl}">Or review in the app</a></p><p>Please don't reply to this email — replies to it aren't read. To correct this plan, Reject it and ask for a new request.</p>`,
     });
 
     // One token pair per approver (deduped by email address).
@@ -1009,8 +1154,8 @@ export async function createPendingPlanFromChanges(
           to: reqEmail,
           cc: ccList.length ? ccList : undefined,
           subject: `Request received: ${plan.summary.substring(0, 60)}`,
-          text: `Hi,\n\n${nextStep}\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected.${input.requesterFooter ? `\n\n${input.requesterFooter.text}` : ''}\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>${escHtml(nextStep)}</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected.</p>${input.requesterFooter ? input.requesterFooter.html : ''}<p>— Quick Scheduling</p>`,
+          text: `Hi,\n\n${nextStep}\n\nSummary: ${plan.summary}\n\nRequested changes:\n${changeList}\n\nYou'll get another email once it's approved or rejected. Please don't reply to this email — replies to it aren't read. If anything above is wrong, ask a scheduler to reject this plan, then send a new request (the form is fastest).${input.requesterFooter ? `\n\n${input.requesterFooter.text}` : ''}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>${escHtml(nextStep)}</p><p><strong>Summary:</strong> ${plan.summary}</p><p><strong>Requested changes:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${changeList}</pre><p>You'll get another email once it's approved or rejected. Please don't reply to this email — replies to it aren't read. If anything above is wrong, ask a scheduler to reject this plan, then send a new request (the form is fastest).</p>${input.requesterFooter ? input.requesterFooter.html : ''}<p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
