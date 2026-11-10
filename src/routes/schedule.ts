@@ -2311,215 +2311,13 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
-// POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift (owner/scheduler; department-scoped).
-router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.session.companyId!;
-    const { published } = req.body ?? {};
-    const { rows: srows } = await query(
-      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
-       FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
-      [req.params.id, companyId]
-    );
-    if (srows.length) {
-      if (!(await requireActiveDepartment(
-        req, res,
-        await assignmentRelevantDepartments(
-          [{ userId: srows[0].userId, shiftTypeId: srows[0].shiftTypeId }], companyId)
-      ))) return;
-    }
-    const { rowCount } = await query(
-      'UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
-      [published !== false, req.params.id, companyId]
-    );
-    if (!rowCount) {
-      res.status(404).json({ error: 'Shift not found.' });
-      return;
-    }
-    res.json({ ok: true, published: published !== false });
-    if (srows.length) {
-      const s = srows[0];
-      const names = await shiftDisplayNames(companyId, s.userId, s.shiftTypeId);
-      auditLog({
-        companyId, date: s.date,
-        action: published !== false ? 'published' : 'unpublished',
-        personName: names.personName, shiftTypeName: names.shiftTypeName,
-        source: 'manual', changedBy: req.session.userId!,
-      });
-      if (published !== false && !s.published) {
-        notify({
-          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_assigned',
-          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
-          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} is now published.`,
-          link: 'my-schedule', bundleKey: `shift_assigned:${s.userId}`,
-          bundleTitle: 'You were assigned {count} new shifts',
-          excludeUserId: req.session.userId!,
-        });
-      } else if (published === false && s.published) {
-        notify({
-          companyId, userIds: [s.userId], category: 'schedule', type: 'shift_removed',
-          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(s.date)}`,
-          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(s.date)} was moved back to draft.`,
-          link: 'my-schedule', bundleKey: `shift_removed:${s.userId}`,
-          bundleTitle: '{count} of your shifts were removed',
-          excludeUserId: req.session.userId!,
-        });
-      }
-    }
-  } catch (err) {
-    console.error('[schedule] shift publish-state failed:', err);
-    res.status(500).json({ error: 'Something went wrong. Please try again.' });
-  }
-});
-
-// POST /api/schedule/rotation-shifts/publish-state — publish/unpublish one rotation shift instance (owner/scheduler; department-scoped).
-// Body: { rotationId, userId, date, shiftTypeId, published }
-//
-// Per-shift publish is REAL (Deepika, 2026-11-09: the option stays,
-// and it must mean something under Pattern ≠ Schedule): publishing an
-// occurrence materializes exactly that one occurrence into a stored
-// published shift (rotation provenance set, publish_batch_id NULL —
-// not a batch) so the employee actually sees it. If a stored shift
-// already occupies the slot, THAT row is published / drafted instead —
-// never a duplicate. "Move to draft" on a never-materialized
-// occurrence keeps the legacy sidecar write (a harmless preview flag),
-// so the control is never a dead button.
-router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.session.companyId!;
-    const { rotationId, userId, date, shiftTypeId, published } = req.body ?? {};
-    if (!rotationId || !userId || !date || !shiftTypeId) {
-      res.status(400).json({ error: 'rotationId, userId, date, and shiftTypeId are required.' });
-      return;
-    }
-    if (!(await requireActiveDepartment(
-      req, res,
-      await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
-    ))) return;
-    const wantPublished = published !== false;
-    const me = req.session.userId!;
-
-    // Bells: publish uses the same schedule_published shape Publish
-    // schedule (Step 2) sends; unpublish mirrors the manual
-    // publish-state endpoint. The acting admin is never belled.
-    const bellPublished = async () => {
-      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
-      notify({
-        companyId, userIds: [userId], category: 'schedule', type: 'schedule_published',
-        title: `Your schedule was published: 1 shift(s), ${fmtDateLong(date)} – ${fmtDateLong(date)}`,
-        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
-        link: 'my-schedule', bundleKey: `schedule_published:${userId}`,
-        bundleTitle: 'Your schedule was published: {count} shift(s)',
-        payload: { count: 1 },
-        excludeUserId: me,
-      });
-      return names;
-    };
-    const bellUnpublished = async () => {
-      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
-      notify({
-        companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
-        title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
-        body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
-        link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
-        bundleTitle: '{count} of your shifts were removed',
-        excludeUserId: me,
-      });
-      return names;
-    };
-
-    // A stored shift occupying the slot governs both directions:
-    // publish / draft THAT row, never a duplicate.
-    const { rows: storedRows } = await query(
-      `SELECT id, published FROM shifts
-       WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
-      [companyId, userId, date, shiftTypeId]
-    );
-    if (storedRows.length) {
-      const row = storedRows[0];
-      if ((row.published !== false) !== wantPublished) {
-        await query('UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
-          [wantPublished, row.id, companyId]);
-        const names = wantPublished ? await bellPublished() : await bellUnpublished();
-        auditLog({
-          companyId, date, action: wantPublished ? 'published' : 'unpublished',
-          personName: names.personName, shiftTypeName: names.shiftTypeName,
-          source: 'rotation', changedBy: me,
-        });
-      }
-      res.json({ ok: true, published: wantPublished, shiftId: row.id });
-      return;
-    }
-
-    if (wantPublished) {
-      // Materialize exactly this one occurrence — for a group
-      // rotation, the dealt person's occurrence — into a real
-      // published shift. The stored row then suppresses the drawn
-      // occurrence, so later re-dealing can never move it.
-      const real = await materializeRotationOccurrence(
-        companyId, `rot-${rotationId}-${userId}-${date}`,
-        { published: true, provenance: true, createdBy: me }
-      );
-      if (!real) {
-        res.status(404).json({ error: 'That rotation shift no longer exists.' });
-        return;
-      }
-      res.json({ ok: true, published: true, shiftId: real.id });
-      const names = await bellPublished();
-      const { rows: rrows } = await query(
-        'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
-        [rotationId, companyId]
-      );
-      auditLog({
-        companyId, date, action: 'published',
-        personName: names.personName, shiftTypeName: names.shiftTypeName,
-        source: 'rotation', rotationName: rrows[0]?.name || null, changedBy: me,
-      });
-      return;
-    }
-
-    // Move to draft, never materialized: the legacy sidecar write.
-    const { rows: prevRows } = await query(
-      `SELECT published FROM rotation_shift_publish
-       WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id = $5`,
-      [companyId, rotationId, userId, date, shiftTypeId]
-    );
-    const wasPublished = prevRows.length ? prevRows[0].published !== false : true;
-    await query(
-      `INSERT INTO rotation_shift_publish (company_id, rotation_id, user_id, date, shift_type_id, published)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (company_id, rotation_id, user_id, date, shift_type_id)
-       DO UPDATE SET published = EXCLUDED.published`,
-      [companyId, rotationId, userId, date, shiftTypeId, published !== false]
-    );
-    res.json({ ok: true, published: published !== false });
-    if (wasPublished !== (published !== false)) {
-      const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
-      if (published !== false) {
-        notify({
-          companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
-          title: `Shift published: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
-          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} is now published.`,
-          link: 'my-schedule', bundleKey: `shift_assigned:${userId}`,
-          bundleTitle: 'You were assigned {count} new shifts',
-          excludeUserId: req.session.userId!,
-        });
-      } else {
-        notify({
-          companyId, userIds: [userId], category: 'schedule', type: 'shift_removed',
-          title: `Shift unpublished: ${names.shiftTypeName} on ${fmtDateLong(date)}`,
-          body: `Your ${names.shiftTypeName} shift on ${fmtDateLong(date)} was moved back to draft.`,
-          link: 'my-schedule', bundleKey: `shift_removed:${userId}`,
-          bundleTitle: '{count} of your shifts were removed',
-          excludeUserId: req.session.userId!,
-        });
-      }
-    }
-  } catch (err) {
-    console.error('[schedule] rotation shift publish-state failed:', err);
-    res.status(500).json({ error: 'Something went wrong. Please try again.' });
-  }
-});
+// RETIRED 2026-11-10 (Deepika's one-button consolidation): the two
+// per-shift publish-state endpoints — POST /shifts/:id/publish-state
+// and POST /rotation-shifts/publish-state — were removed together
+// with their UI controls (the P/D buttons, the per-date pill and the
+// shift-menu item). Stored shifts' published flag now flips only
+// through the Bulk Actions publish door (and Undo), or at creation
+// time. materializeRotationOccurrence stays: swap-from-date uses it.
 
 // DELETE /api/schedule/rotation-shifts — delete a rotation-generated shift instance (owner/scheduler; department-scoped).
 // Body: { rotationId, userId, date, shiftTypeId }
@@ -4122,14 +3920,19 @@ const pubKey = (u: string, d: string, t: string) => `${u}|${d}|${t}`;
  */
 async function computePublishPlan(
   companyId: string, from: string, to: string, today: string,
-  depts: Set<string> | null, isOwner: boolean
+  depts: Set<string> | null, isOwner: boolean,
+  extra?: { typeIds?: Set<string> | null; userIds?: Set<string> | null }
 ) {
+  const typeIds = extra?.typeIds || null;
+  const userIds = extra?.userIds || null;
   const typeDepts = await shiftTypeDeptMap(companyId);
-  const inScope = (t: string) => publishTypeInScope(typeDepts, t, depts, isOwner);
+  const inScope = (t: string) =>
+    publishTypeInScope(typeDepts, t, depts, isOwner) && (!typeIds || typeIds.has(t));
 
   const { rows: stored } = await query(
     `SELECT id, user_id AS "userId", date::text AS date,
-            shift_type_id AS "shiftTypeId", publish_batch_id AS "publishBatchId"
+            shift_type_id AS "shiftTypeId", publish_batch_id AS "publishBatchId",
+            published
      FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
     [companyId, from, to]
   );
@@ -4147,6 +3950,7 @@ async function computePublishPlan(
   const batchByKey = new Map<string, any>(batchShifts.map((s: any) => [pubKey(s.userId, s.date, s.shiftTypeId), s]));
   const desiredByKey = new Map<string, any>();
   for (const o of occurrences) {
+    if (userIds && !userIds.has(o.userId)) continue;
     if (inScope(o.shiftTypeId)) desiredByKey.set(pubKey(o.userId, o.date, o.shiftTypeId), o);
   }
 
@@ -4166,13 +3970,23 @@ async function computePublishPlan(
   const removes: any[] = [];
   for (const s of batchShifts) {
     if (s.date < today) continue;              // the past is truth — never removed
+    if (userIds && !userIds.has(s.userId)) continue;
     if (!inScope(s.shiftTypeId)) continue;
     if (!desiredByKey.has(pubKey(s.userId, s.date, s.shiftTypeId))) removes.push(s);
   }
 
+  // Stored DRAFT flips (unified publish door, Deepika 2026-11-10):
+  // hand-made draft shifts in scope publish alongside the stamps —
+  // the flip the old Bulk Actions door did, folded into the batch
+  // (migration 102's ledger) so Undo can flip back exactly its own.
+  const flips = stored.filter((s: any) =>
+    !s.publishBatchId && s.published === false && inScope(s.shiftTypeId) &&
+    (!userIds || userIds.has(s.userId)));
+
   // --- Rule 7: departed people's would-be shifts open for cover ---
   const desiredOpens = new Map<string, { rotationId: string; date: string; shiftTypeId: string; count: number; people: Map<string, { userId: string; name: string; endDate: string; count: number }> }>();
   for (const d of departed) {
+    if (userIds && !userIds.has(d.userId)) continue;
     if (!inScope(d.shiftTypeId)) continue;
     const k = `${d.rotationId}|${d.date}|${d.shiftTypeId}`;
     if (!desiredOpens.has(k)) {
@@ -4225,7 +4039,52 @@ async function computePublishPlan(
     }
   }
 
-  return { adds, removes, opens, closes, batchPeople, openPeople: [...openPeople.values()], typeDepts };
+  return { adds, removes, opens, closes, flips, batchPeople, openPeople: [...openPeople.values()], typeDepts };
+}
+
+/**
+ * Optional people/type narrowing for the unified publish door
+ * (Bulk Actions, Deepika 2026-11-10). shiftTypeIds must ALL belong
+ * to the company — an unknown type id is a client bug, answered
+ * 400, never silently ignored. userIds narrow the publish to those
+ * people when at least one valid company member is named. Absent
+ * or empty means "no narrowing" (everyone / every type in scope).
+ * Returns null after sending an error response.
+ */
+async function parsePublishFilters(
+  req: Request, res: Response, companyId: string
+): Promise<{ typeIds: Set<string> | null; userIds: Set<string> | null } | null> {
+  let typeIds: Set<string> | null = null;
+  if (Array.isArray(req.body?.shiftTypeIds) && req.body.shiftTypeIds.length) {
+    const wanted = [...new Set(req.body.shiftTypeIds.filter((x: any) => typeof x === 'string'))] as string[];
+    if (wanted.length) {
+      const { rows } = await query(
+        'SELECT id FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, wanted]
+      );
+      if (rows.length !== wanted.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return null;
+      }
+      typeIds = new Set(wanted);
+    }
+  }
+  let userIds: Set<string> | null = null;
+  if (Array.isArray(req.body?.userIds) && req.body.userIds.length) {
+    const wanted = [...new Set(req.body.userIds.filter((x: any) => typeof x === 'string'))] as string[];
+    if (wanted.length) {
+      const { rows } = await query(
+        'SELECT id FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, wanted]
+      );
+      if (!rows.length) {
+        res.status(400).json({ error: 'No team members found.' });
+        return null;
+      }
+      userIds = new Set(rows.map((r: any) => r.id));
+    }
+  }
+  return { typeIds, userIds };
 }
 
 // POST /api/schedule/publish/preview — compute the plan, write NOTHING.
@@ -4244,8 +4103,10 @@ router.post('/publish/preview', requireRole('owner', 'scheduler'), async (req: R
     }
     const scope = await resolvePublishScope(req, res, req.body?.departmentIds);
     if (!scope.ok) return;
+    const filters = await parsePublishFilters(req, res, companyId);
+    if (!filters) return;
     const today = await companyTodayStr(companyId);
-    const plan = await computePublishPlan(companyId, from, to, today, scope.depts, req.session.role === 'owner');
+    const plan = await computePublishPlan(companyId, from, to, today, scope.depts, req.session.role === 'owner', filters);
 
     // Display aggregates: fresh adds per department (people with no
     // batch presence in the range), changes per person with batch
@@ -4255,6 +4116,7 @@ router.post('/publish/preview', requireRole('owner', 'scheduler'), async (req: R
     const userIds = [...new Set([
       ...plan.adds.map((a: any) => a.userId),
       ...plan.removes.map((r: any) => r.userId),
+      ...plan.flips.map((f: any) => f.userId),
     ])];
     const nameOf = new Map<string, string>();
     if (userIds.length) {
@@ -4281,11 +4143,19 @@ router.post('/publish/preview', requireRole('owner', 'scheduler'), async (req: R
     for (const r of plan.removes) changeLine(r.userId).removes++;
     const changes = [...changeMap.values()].filter((c) => c.removes > 0 || c.adds > 0);
     changes.sort((a, b) => a.name.localeCompare(b.name));
+    const flipMap = new Map<string, { userId: string; name: string; count: number }>();
+    for (const f of plan.flips) {
+      if (!flipMap.has(f.userId)) flipMap.set(f.userId, { userId: f.userId, name: nameOf.get(f.userId) || 'Team member', count: 0 });
+      flipMap.get(f.userId)!.count++;
+    }
+    const flipPeople = [...flipMap.values()].sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({
       from, to, today,
       totalAdds: plan.adds.length,
       totalRemoves: plan.removes.length,
+      totalFlips: plan.flips.length,
+      flipPeople,
       freshAdds,
       departments: [...freshByDept.entries()].map(([id, count]) => ({
         id: id || null, name: id ? (deptName.get(id) || 'Department') : 'No department', count,
@@ -4299,6 +4169,7 @@ router.post('/publish/preview', requireRole('owner', 'scheduler'), async (req: R
         removes: plan.removes.map((r: any) => r.id),
         opens: plan.opens,
         closes: plan.closes,
+        flips: plan.flips.map((f: any) => f.id),
       },
     });
   } catch (err) {
@@ -4323,19 +4194,23 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     const removesIn: string[] = Array.isArray(planIn.removes) ? planIn.removes.filter((x: any) => typeof x === 'string') : [];
     const opensIn: any[] = Array.isArray(planIn.opens) ? planIn.opens : [];
     const closesIn: any[] = Array.isArray(planIn.closes) ? planIn.closes : [];
-    if (addsIn.length > 20000 || removesIn.length > 20000) {
+    const flipsIn: string[] = Array.isArray(planIn.flips) ? planIn.flips.filter((x: any) => typeof x === 'string') : [];
+    if (addsIn.length > 20000 || removesIn.length > 20000 || flipsIn.length > 20000) {
       res.status(400).json({ error: 'That publish is too large — narrow the range.' });
       return;
     }
-    if (!addsIn.length && !removesIn.length && !opensIn.length && !closesIn.length) {
+    if (!addsIn.length && !removesIn.length && !opensIn.length && !closesIn.length && !flipsIn.length) {
       res.status(400).json({ error: 'There is nothing to publish in that range.' });
       return;
     }
     const scope = await resolvePublishScope(req, res, req.body?.departmentIds);
     if (!scope.ok) return;
+    const filters = await parsePublishFilters(req, res, companyId);
+    if (!filters) return;
     const isOwner = req.session.role === 'owner';
     const typeDepts = await shiftTypeDeptMap(companyId);
-    const inScope = (t: string) => publishTypeInScope(typeDepts, t, scope.depts, isOwner);
+    const inScope = (t: string) =>
+      publishTypeInScope(typeDepts, t, scope.depts, isOwner) && (!filters.typeIds || filters.typeIds.has(t));
     const today = await companyTodayStr(companyId);
     const batchId = crypto.randomUUID();
     const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
@@ -4347,7 +4222,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       if (date > t.lastDate) t.lastDate = date;
       m.set(uid, t);
     };
-    let added = 0, removed = 0, opened = 0, closed = 0;
+    let added = 0, removed = 0, opened = 0, closed = 0, flipped = 0;
 
     await withTransaction(async (tx) => {
       await tx.query(
@@ -4361,11 +4236,13 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // delete, so an out-of-scope row is never touched.
       if (removesIn.length) {
         const { rows: cand } = await tx.query(
-          `SELECT id, shift_type_id AS "shiftTypeId" FROM shifts
+          `SELECT id, user_id AS "userId", shift_type_id AS "shiftTypeId" FROM shifts
            WHERE id = ANY($1::uuid[]) AND company_id = $2 AND publish_batch_id IS NOT NULL AND date >= $3::date`,
           [removesIn, companyId, today]
         );
-        const okIds = cand.filter((r: any) => inScope(r.shiftTypeId)).map((r: any) => r.id);
+        const okIds = cand.filter((r: any) =>
+          inScope(r.shiftTypeId) && (!filters.userIds || filters.userIds.has(r.userId))
+        ).map((r: any) => r.id);
         if (okIds.length) {
           const { rows: del } = await tx.query(
             `DELETE FROM shifts WHERE id = ANY($1::uuid[]) RETURNING user_id AS "userId", date::text AS date`,
@@ -4378,6 +4255,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // shift already covers is skipped by the unique constraint.
       for (const a of addsIn) {
         if (!a || !isValidDate(a.date) || a.date < from || a.date > to) continue;
+        if (filters.userIds && !filters.userIds.has(String(a.userId || ''))) continue;
         if (!inScope(String(a.shiftTypeId || ''))) continue;
         const { rows: ins } = await tx.query(
           `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by, publish_batch_id, rotation_id)
@@ -4387,6 +4265,30 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
           [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, a.date, req.session.userId!, batchId, a.rotationId || null]
         );
         if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date); }
+      }
+      // Flips: hand-made draft shifts the plan named become
+      // published — re-validated like everything else (still a
+      // draft, still hand-made, inside the range, in scope) and
+      // ledgered to this batch so Undo flips back exactly its own.
+      if (flipsIn.length) {
+        const { rows: cand } = await tx.query(
+          `SELECT id, user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts
+           WHERE id = ANY($1::uuid[]) AND company_id = $2 AND published = false AND publish_batch_id IS NULL
+             AND date >= $3::date AND date <= $4::date`,
+          [flipsIn, companyId, from, to]
+        );
+        for (const f of cand) {
+          if (!inScope(f.shiftTypeId)) continue;
+          if (filters.userIds && !filters.userIds.has(f.userId)) continue;
+          await tx.query('UPDATE shifts SET published = true WHERE id = $1', [f.id]);
+          await tx.query(
+            `INSERT INTO publish_batch_flips (batch_id, company_id, shift_id) VALUES ($1, $2, $3)
+             ON CONFLICT (batch_id, shift_id) DO NOTHING`,
+            [batchId, companyId, f.id]
+          );
+          flipped++;
+          bump(addedByUser, f.userId, f.date);
+        }
       }
       // Opens (rule 7): aggregate per date+type into extra_open_slots
       // (the shared representation) + ledger rows for this batch.
@@ -4458,10 +4360,10 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     await auditLog({
       companyId, date: today, action: 'published', category: 'schedule',
       source: 'manual', changedBy: req.session.userId!,
-      description: `Published schedule ${from} – ${to}: ${added} shift(s) stamped, ${removed} replaced away, ${opened} opened for cover`,
-      details: { batchId, from, to, added, removed, opened, closed },
+      description: `Published schedule ${from} – ${to}: ${added} shift(s) stamped, ${flipped} draft(s) flipped to published, ${removed} replaced away, ${opened} opened for cover`,
+      details: { batchId, from, to, added, removed, opened, closed, flipped },
     });
-    res.json({ ok: true, batchId, added, removed, opened, closed });
+    res.json({ ok: true, batchId, added, removed, opened, closed, flipped });
 
     // Notify affected people (never the acting admin about their own
     // action) — same shapes as bulk publish/unpublish.
@@ -4503,6 +4405,7 @@ router.get('/publish/batches', requireRole('owner', 'scheduler'), async (req: Re
               b.created_at AS "createdAt", b.undone_at AS "undoneAt",
               COALESCE(u.nickname, NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), 'Manager') AS "createdByName",
               (SELECT COUNT(*)::int FROM shifts s WHERE s.publish_batch_id = b.id) AS "shiftCount",
+              (SELECT COUNT(*)::int FROM publish_batch_flips f WHERE f.batch_id = b.id) AS "flipCount",
               (SELECT COALESCE(SUM(count), 0)::int FROM publish_batch_open_slots l WHERE l.batch_id = b.id) AS "openCount"
        FROM publish_batches b
        LEFT JOIN users u ON u.id = b.created_by
@@ -4553,7 +4456,9 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       const typeDepts = await shiftTypeDeptMap(companyId);
       const { rows: tids } = await query(
         `SELECT DISTINCT shift_type_id AS t FROM shifts WHERE publish_batch_id = $1
-         UNION SELECT DISTINCT shift_type_id FROM publish_batch_open_slots WHERE batch_id = $1`,
+         UNION SELECT DISTINCT shift_type_id FROM publish_batch_open_slots WHERE batch_id = $1
+         UNION SELECT DISTINCT s.shift_type_id FROM publish_batch_flips f
+           JOIN shifts s ON s.id = f.shift_id WHERE f.batch_id = $1`,
         [batchId]
       );
       const outside = tids.some((r: any) => !(typeDepts.get(r.t) || []).some((d) => edit.has(d)));
@@ -4561,7 +4466,7 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
     }
     const today = await companyTodayStr(companyId);
     const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
-    let removedShifts = 0, closedSlots = 0;
+    let removedShifts = 0, closedSlots = 0, unflipped = 0;
     await withTransaction(async (tx) => {
       const { rows: del } = await tx.query(
         `DELETE FROM shifts WHERE publish_batch_id = $1 AND company_id = $2 AND date >= $3::date
@@ -4586,15 +4491,33 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
         }
       }
       await tx.query('DELETE FROM publish_batch_open_slots WHERE batch_id = $1', [batchId]);
+      // Flips this batch made are flipped back — future ones only,
+      // the same past-is-truth rule as the stamped shifts.
+      const { rows: unfl } = await tx.query(
+        `UPDATE shifts s SET published = false FROM publish_batch_flips f
+         WHERE f.batch_id = $1 AND s.id = f.shift_id AND s.company_id = $2
+           AND s.published = true AND s.date >= $3::date
+         RETURNING s.user_id AS "userId", s.date::text AS date`,
+        [batchId, companyId, today]
+      );
+      for (const r of unfl) {
+        unflipped++;
+        const t = removedByUser.get(r.userId) || { count: 0, firstDate: r.date, lastDate: r.date };
+        t.count++;
+        if (r.date < t.firstDate) t.firstDate = r.date;
+        if (r.date > t.lastDate) t.lastDate = r.date;
+        removedByUser.set(r.userId, t);
+      }
+      await tx.query('DELETE FROM publish_batch_flips WHERE batch_id = $1', [batchId]);
       await tx.query('UPDATE publish_batches SET undone_at = now() WHERE id = $1', [batchId]);
     });
     await auditLog({
       companyId, date: today, action: 'deleted', category: 'schedule',
       source: 'manual', changedBy: req.session.userId!,
-      description: `Undid a schedule publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${removedShifts} future shift(s) removed, ${closedSlots} open slot(s) taken back; past shifts kept`,
-      details: { batchId, removedShifts, closedSlots },
+      description: `Undid a schedule publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${removedShifts} future shift(s) removed, ${unflipped} flipped draft(s) returned to draft, ${closedSlots} open slot(s) taken back; past shifts kept`,
+      details: { batchId, removedShifts, closedSlots, unflipped },
     });
-    res.json({ ok: true, removedShifts, closedSlots });
+    res.json({ ok: true, removedShifts, closedSlots, unflipped });
     for (const [uid, t] of removedByUser) {
       notify({
         companyId, userIds: [uid], category: 'schedule', type: 'shift_removed',

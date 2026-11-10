@@ -1994,7 +1994,8 @@
         /* Shift actions button (Variant B — Deepika, 2026-11-07): a round
            soft-grey button with a solid down triangle, at the end of the name
            cell. It opens the shift popup, which now carries Highlight,
-           comment, publish, replace, Make calendar event and Delete. */
+           comment, replace, Make calendar event and Delete. (The
+           publish item was removed 2026-11-10 — Bulk Actions only.) */
         #tab-schedule .shift-menu-btn { position: absolute; top: 3px; right: 4px; width: 27px; height: 27px; border-radius: 50%; border: 1px solid #d3dae1; background: #edf0f3; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
         #tab-schedule .shift-menu-btn:hover { background: #dde4ea; }
         #tab-schedule .shift-menu-btn svg { display: block; }
@@ -2362,7 +2363,7 @@
           </div>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
           <button type="button" id="sched-upload-btn" class="btn-secondary" title="Add many shifts at once from a spreadsheet or a PDF rota — you check every row before anything is saved">⬆ Upload schedule</button>
-          <button type="button" id="sched-publish-btn" class="btn" title="Rotations only draw a draft — publishing stamps a range into real shifts your team can see">📣 Publish schedule</button>
+          <!-- Publish moved into Bulk Actions (Deepika, 2026-11-10: one publish button — "I will use the publish button in bulk action"). The coverage strip below still nudges and links there via qsOpenPublish. -->
         </div>
 
         <div id="sched-range-picker" class="range-picker hidden">
@@ -2448,29 +2449,6 @@
           <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
             <button type="button" id="sbimp-cancel" class="btn-secondary">Cancel</button>
             <button type="button" id="sbimp-add" class="btn" disabled>Add shifts</button>
-          </div>
-        </div>
-      </div>
-      <div id="sched-publish-modal" class="modal-backdrop hidden">
-        <div class="modal" style="max-width:640px;width:94vw">
-          <h3>📣 Publish schedule</h3>
-          <p style="font-size:0.88rem;color:var(--dim);margin:4px 0 10px">Rotations only draw a draft. Publishing stamps the shifts for the range below into <strong>real shifts</strong> — that's when your team sees them. It covers every rotation pattern in the departments you're viewing. Nothing is written until you press Publish, and past shifts are never changed.</p>
-          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:0.92rem">
-            <label><input type="radio" name="pub-range" value="4w" checked style="width:auto"> Next 4 weeks</label>
-            <label><input type="radio" name="pub-range" value="3m" style="width:auto"> Next 3 months</label>
-            <label><input type="radio" name="pub-range" value="custom" style="width:auto"> Custom</label>
-          </div>
-          <div style="display:flex;gap:12px;align-items:center;margin-top:10px;font-size:0.92rem">
-            <label>From <input type="date" id="pub-from" disabled></label>
-            <label>To <input type="date" id="pub-to" disabled></label>
-          </div>
-          <div id="pub-status" style="font-size:0.9rem;margin-top:10px"></div>
-          <div id="pub-summary" style="margin-top:6px"></div>
-          <div id="pub-history"></div>
-          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
-            <button type="button" id="pub-cancel" class="btn-secondary">Close</button>
-            <button type="button" id="pub-preview" class="btn-secondary">Preview</button>
-            <button type="button" id="pub-confirm" class="btn hidden">Publish</button>
           </div>
         </div>
       </div>
@@ -2809,7 +2787,9 @@
         function commentsFor(dateStr) {
           return sched.comments.filter(function (c) { return c.date === dateStr; });
         }
-        function isPublished(dateStr) { return !!sched.days[dateStr]; }
+        // isPublished(dateStr) — the legacy schedule_days flag reader —
+        // was removed with the P/D pill (Deepika, 2026-11-10); nothing
+        // in the UI reads the day flag any more.
 
         function viewRange() {
           var a = new Date(sched.anchorDate);
@@ -3139,11 +3119,10 @@
           }
         }
 
-        function statusPillHtml(dateStr) {
-          var pub = isPublished(dateStr);
-          return '<span class="status-pill ' + (pub ? 'status-published' : 'status-draft') + '" data-date="' + dateStr + '" title="' + (pub ? 'Published — click to move to draft' : 'Draft — click to publish') + '">' +
-            (pub ? 'P' : 'D') + '</span>';
-        }
+        // The per-date P/D publish pill was REMOVED (Deepika,
+        // 2026-11-10): it flipped only the legacy schedule_days flag
+        // and published nothing — the same dead end as the old bulk
+        // door. Publishing happens only in Bulk Actions now.
 
         // Pattern ≠ Schedule (Deepika, 2026-11-09): a rotation
         // occurrence is draft-at-baseline — only Publish schedule
@@ -3176,8 +3155,9 @@
             // ONE actions button (Variant B — Deepika, 2026-11-07): a
             // round soft-grey button with a solid down triangle, at the end of
             // the name cell. It opens the shift popup, which now carries
-            // Highlight, comment, publish, replace, Make calendar event
-            // and Delete — the old 🎨/💬/🔄/🗑 box buttons are gone.
+            // Highlight, comment, replace, Make calendar event
+            // and Delete — the old 🎨/💬/🔄/🗑 box buttons are gone,
+            // and the publish item was removed 2026-11-10.
             // Shown on view-only boxes too: the popup then offers
             // Highlight only, since highlighting is personal and changes
             // nothing for anyone else (Deepika, 2026-10-31).
@@ -3311,7 +3291,7 @@
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + dateStr + '" title="View details & notes">' +
             '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
-          html += '<div class="day-row-actions">' + statusPillHtml(dateStr) +
+          html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
           html += '<div class="day-row-body">' + dashEventBoxesHtml(dateStr);
@@ -4000,7 +3980,7 @@
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + ds + '" title="View details & notes">' +
             '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
-          html += '<div class="day-row-actions">' + statusPillHtml(ds) +
+          html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
           html += '<div class="day-row-body">' + dashEventBoxesHtml(ds);
@@ -4060,7 +4040,7 @@
         }
 
         function monthDayInner(ds, d, headHtml) {
-          var html = '<div class="day-num">' + headHtml + statusPillHtml(ds) + '</div>';
+          var html = '<div class="day-num">' + headHtml + '</div>';
           var devs = dashEventsFor(ds);
           devs.forEach(function (e) {
             var ec = window.qsKindColor ? window.qsKindColor(e.kind, e.dashboardId) : (e.kind === 'event' ? '#7c3aed' : '#00796b');
@@ -4152,11 +4132,9 @@
           }
           html += '</div>';
           el.innerHTML = html;
-          bindStatusPills(el);
           bindMonthNav(el);
           el.querySelectorAll('.day-box').forEach(function (box) {
             box.addEventListener('click', function (e) {
-              if (e.target.closest('.status-pill')) return;
               openDayModal(box.getAttribute('data-date'));
             });
           });
@@ -4179,10 +4157,14 @@
             var mds = fmtDate(md);
             if (mi >= 35 && md.getMonth() !== first.getMonth()) break;
             var mcls = 'mini-day' + (md.getMonth() !== first.getMonth() ? ' other' : '') + (mds === todayStr ? ' today' : '');
-            // Color by publish state: green = published, gray = has schedule but draft, plain = no schedule.
+            // Tint by REAL shift state (the legacy day-flag tint went
+            // with the P/D pill, 2026-11-10): green = the day has a
+            // stored published shift, gray = it has shifts/patterns
+            // but nothing published yet, plain = nothing scheduled.
             if (md.getMonth() === first.getMonth()) {
-              if (isPublished(mds)) mcls += ' pub';
-              else if (shiftsFor(mds).length) mcls += ' draft';
+              var mShifts = shiftsFor(mds);
+              if (mShifts.some(function (x) { return !isOccShift(x) && x.published !== false; })) mcls += ' pub';
+              else if (mShifts.length) mcls += ' draft';
             }
             html += '<div class="' + mcls + '" data-date="' + mds + '">' + md.getDate() + '</div>';
           }
@@ -4199,8 +4181,7 @@
             var cls = 'month-strip-day' + (today ? ' today' : '');
             html += '<div class="' + cls + '" data-date="' + ds + '">';
             html += '<div class="strip-day-head"><span class="strip-dow">' + dayNames[d.getDay()] + '</span>' +
-              '<span class="strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span>' +
-              statusPillHtml(ds) + '</div>';
+              '<span class="strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span></div>';
             var dayShifts = shiftsFor(ds);
             dayShifts.forEach(function (s) { html += monthChipHtml(s); });
             var openTotal = 0;
@@ -4214,11 +4195,9 @@
           }
           html += '</div></div>';
           el.innerHTML = html;
-          bindStatusPills(el);
           bindMonthNav(el);
           el.querySelectorAll('.month-strip-day').forEach(function (box) {
             box.addEventListener('click', function (e) {
-              if (e.target.closest('.status-pill')) return;
               openDayModal(box.getAttribute('data-date'));
             });
           });
@@ -4241,28 +4220,7 @@
           } catch (e) {}
         }
 
-        function bindStatusPills(scope) {
-          scope.querySelectorAll('.status-pill').forEach(function (p) {
-            p.addEventListener('click', function (e) {
-              e.stopPropagation();
-              if (!sched.canEdit) return;
-              var ds = p.getAttribute('data-date');
-              var pub = isPublished(ds);
-              var endpoint = pub ? '/api/schedule/days/unpublish' : '/api/schedule/days/publish';
-              // Optimistic: flip the pill instantly.
-              if (pub) delete sched.days[ds]; else sched.days[ds] = sched.days[ds] || {};
-              renderView();
-              renderPublishBar();
-              api(endpoint, { method: 'POST', body: JSON.stringify({ dates: [ds] }) }).then(function (r) {
-                if (r.ok) { pageSuccess(pub ? 'Moved to draft.' : 'Published.'); }
-                else { pageError((r.data && r.data.error) || 'Could not update.'); loadAll(); }
-              }).catch(function () { pageError('Could not update.'); loadAll(); });
-            });
-          });
-        }
-
         function bindDayRows(scope) {
-          bindStatusPills(scope);
           scope.querySelectorAll('.add-shift-btn').forEach(function (b) {
             b.addEventListener('click', function (e) {
               e.stopPropagation();
@@ -4513,32 +4471,13 @@
             } }
           ]);
         };
-        window.qsToggleShiftPublish = function(sid) {
-          var s = shiftById(sid);
-          if (!s || !shiftEditable(s)) return;
-          var isRot = sid.indexOf('rot-') === 0;
-          // An occurrence is draft-at-baseline: a drawn occurrence
-          // has no stored row (a stored row suppresses it), so its
-          // toggle always publishes — the server materializes that
-          // one occurrence into a real published shift (per-shift
-          // publish, kept and made real — Deepika, 2026-11-09).
-          var toPublished = isRot ? true : !(s.published !== false);
-          // Optimistic: update instantly.
-          s.published = toPublished;
-          renderView();
-          var ep, body;
-          if (isRot) {
-            ep = '/api/schedule/rotation-shifts/publish-state';
-            body = { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, published: toPublished };
-          } else {
-            ep = '/api/schedule/shifts/' + sid + '/publish-state';
-            body = { published: toPublished };
-          }
-          api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-            if (r.ok) { pageSuccess(toPublished ? 'Shift published.' : 'Shift moved to draft.'); refreshShifts(); }
-            else { pageError('Could not update. Refreshing.'); refreshShifts(); }
-          }).catch(function () { pageError('Could not update. Refreshing.'); refreshShifts(); });
-        };
+        // Per-shift publish/draft toggling was REMOVED (Deepika,
+        // 2026-11-10 — reversing her 2026-11-09 keep decision as part
+        // of the one-button consolidation): the P/D buttons and ▼-menu
+        // item are gone, the two per-shift publish-state endpoints are
+        // retired server-side, and publishing happens only through
+        // Bulk Actions (plus creation-time choices). Draft/published
+        // states themselves are unchanged.
         window.qsDoReplace = function(sid, newUserId) {
           hide($('action-dialog'));
           var s = shiftById(sid);
@@ -4570,11 +4509,12 @@
           return;
         }
 
-        // --- Publish schedule (Step 2 of Pattern != Schedule, Deepika
-        // 2026-11-09): patterns draw drafts; publishing stamps a range
-        // into real shifts. The strip nudges when a department in view
-        // is running out of published coverage.
-        var pubPlan = null;
+        // --- Publish (Step 2 of Pattern != Schedule, Deepika
+        // 2026-11-09; unified door 2026-11-10): publishing itself
+        // lives in Bulk Actions now — one publish button. What stays
+        // here is the coverage strip: it nudges when a department in
+        // view is running out of published coverage, and its button
+        // takes the manager to the Bulk Actions publish panel.
         function pubTodayStr() { return fmtDate(new Date()); }
         function pubAddDays(dateStr, n) { var d = parseDate(dateStr); d.setDate(d.getDate() + n); return fmtDate(d); }
         function pubFmtDay(dateStr) { return parseDate(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
@@ -4601,121 +4541,8 @@
           }).catch(function () { /* the nudge is decoration — never break the page */ });
         };
         window.qsOpenPublish = function () {
-          pubPlan = null;
-          var t = pubTodayStr();
-          $('pub-from').value = t;
-          $('pub-to').value = pubAddDays(t, 27);
-          document.querySelectorAll('input[name="pub-range"]').forEach(function (r) { r.checked = r.value === '4w'; });
-          $('pub-from').disabled = true; $('pub-to').disabled = true;
-          $('pub-status').textContent = '';
-          $('pub-summary').innerHTML = '';
-          hide($('pub-confirm'));
-          pubLoadHistory();
-          show($('sched-publish-modal'));
+          window.location.hash = '#bulk';
         };
-        function pubRangeChanged() {
-          var sel = document.querySelector('input[name="pub-range"]:checked');
-          var v = sel ? sel.value : 'custom';
-          var t = pubTodayStr();
-          if (v === '4w') { $('pub-from').value = t; $('pub-to').value = pubAddDays(t, 27); }
-          if (v === '3m') { var d = parseDate(t); d.setMonth(d.getMonth() + 3); d.setDate(d.getDate() - 1); $('pub-from').value = t; $('pub-to').value = fmtDate(d); }
-          var custom = v === 'custom';
-          $('pub-from').disabled = !custom; $('pub-to').disabled = !custom;
-          pubPlan = null; $('pub-summary').innerHTML = ''; hide($('pub-confirm'));
-        }
-        function pubLoadHistory() {
-          api('/api/schedule/publish/batches').then(function (r) {
-            var el = $('pub-history');
-            if (!el) return;
-            if (!r.ok || !r.data || !r.data.batches || !r.data.batches.length) { el.innerHTML = ''; return; }
-            var h = '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px"><div style="font-weight:700;font-size:0.9rem;margin-bottom:6px">Recent publishes</div>';
-            r.data.batches.slice(0, 8).forEach(function (b) {
-              var when = new Date(b.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-              h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.87rem;padding:3px 0;flex-wrap:wrap"><span>' + pubFmtDay(b.rangeStart) + ' – ' + pubFmtDay(b.rangeEnd) + '</span><span style="color:var(--dim)">by ' + esc(b.createdByName || 'Manager') + ' · ' + when + ' · ' + b.shiftCount + ' shift' + (b.shiftCount === 1 ? '' : 's') + (b.openCount ? ' · ' + b.openCount + ' open' : '') + '</span>' +
-                (b.undoneAt ? '<span style="color:var(--dim)">(undone)</span>' : '<button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.82rem" onclick="window.qsUndoPublish(\'' + b.id + '\')">Undo</button>') + '</div>';
-            });
-            el.innerHTML = h + '</div>';
-          }).catch(function () { /* history is decoration */ });
-        }
-        window.qsUndoPublish = function (batchId) {
-          if (!window.confirm('Undo this publish? Its future shifts will be removed (past shifts stay).')) return;
-          api('/api/schedule/publish/batches/' + batchId + '/undo', { method: 'POST', body: '{}' }).then(function (r) {
-            var st = $('pub-status');
-            if (!r.ok) { if (st) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not undo that publish.'; } return; }
-            if (st) { st.style.color = '#15803d'; st.textContent = '✓ Publish undone — ' + r.data.removedShifts + ' future shift(s) removed.'; }
-            pubLoadHistory();
-            loadAll();
-          });
-        };
-        function pubDoPreview() {
-          var from = $('pub-from').value, to = $('pub-to').value;
-          var st = $('pub-status');
-          if (!from || !to || from > to) { st.style.color = '#c92a2a'; st.textContent = 'Pick a valid date range.'; return; }
-          st.style.color = 'var(--dim)'; st.textContent = 'Checking…';
-          $('pub-summary').innerHTML = ''; hide($('pub-confirm')); pubPlan = null;
-          api('/api/schedule/publish/preview', { method: 'POST', body: JSON.stringify({ from: from, to: to, departmentIds: sched.deptFilters || [] }) }).then(function (r) {
-            if (!r.ok) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not check that range.'; return; }
-            st.textContent = '';
-            var d = r.data;
-            pubPlan = { from: d.from, to: d.to, plan: d.plan };
-            var h = '';
-            if (!d.totalAdds && !d.changes.length && !d.opensTotal && !d.closesTotal) {
-              h = '<p style="font-size:0.92rem;margin:6px 0">Everything in this range is already published — nothing new to stamp.</p>';
-            } else {
-              if (d.freshAdds) {
-                h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + d.freshAdds + ' new shift' + (d.freshAdds === 1 ? '' : 's') + ' to add</b>';
-                d.departments.forEach(function (dp) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(dp.name) + ': ' + dp.count + '</div>'; });
-                h += '</div>';
-              }
-              if (d.changes.length) {
-                h += '<div style="font-size:0.92rem;margin:8px 0"><b>Pattern changes</b> — these people\'s patterns changed since their shifts were published:</div>';
-                d.changes.forEach(function (c) {
-                  var bits = [];
-                  if (c.removes) bits.push('Removes ' + c.removes);
-                  if (c.adds) bits.push('Adds ' + c.adds);
-                  h += '<div style="font-size:0.9rem">' + esc(c.name) + ' — ' + bits.join(' · ') + '</div>';
-                });
-              }
-              d.openForCover.forEach(function (p) {
-                h += '<div style="font-size:0.9rem;margin:4px 0">🩹 <b>' + p.newCount + ' shift' + (p.newCount === 1 ? '' : 's') + ' open for cover</b> after ' + esc(p.name) + '\'s last day (' + pubFmtDay(p.endDate) + ')' + (p.count > p.newCount ? ' <span style="color:var(--dim)">(' + (p.count - p.newCount) + ' already open)</span>' : '') + '</div>';
-              });
-              if (d.closesTotal) h += '<div style="font-size:0.9rem;margin:4px 0">' + d.closesTotal + ' previously opened cover slot' + (d.closesTotal === 1 ? '' : 's') + ' close' + (d.closesTotal === 1 ? '' : 's') + ' (pattern changed).</div>';
-              h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">Past shifts are never changed. People get a notification when their shifts publish or are removed.</p>';
-            }
-            $('pub-summary').innerHTML = h;
-            if (d.totalAdds || d.changes.length || d.opensTotal || d.closesTotal) show($('pub-confirm'));
-          }).catch(function () { st.style.color = '#c92a2a'; st.textContent = 'Could not check that range.'; });
-        }
-        function pubDoConfirm() {
-          if (!pubPlan) return;
-          var st = $('pub-status');
-          var btn = $('pub-confirm');
-          btn.disabled = true;
-          st.style.color = 'var(--dim)'; st.textContent = 'Publishing…';
-          api('/api/schedule/publish', { method: 'POST', body: JSON.stringify({ from: pubPlan.from, to: pubPlan.to, departmentIds: sched.deptFilters || [], plan: pubPlan.plan }) }).then(function (r) {
-            btn.disabled = false;
-            if (!r.ok) { st.style.color = '#c92a2a'; st.textContent = (r.data && r.data.error) || 'Could not publish.'; return; }
-            st.style.color = '#15803d';
-            st.textContent = '✓ Published — ' + r.data.added + ' shift(s) stamped' + (r.data.removed ? ', ' + r.data.removed + ' replaced away' : '') + (r.data.opened ? ', ' + r.data.opened + ' opened for cover' : '') + '.';
-            pubPlan = null;
-            hide($('pub-confirm'));
-            $('pub-summary').innerHTML = '';
-            pubLoadHistory();
-            loadAll();
-          }).catch(function () { btn.disabled = false; st.style.color = '#c92a2a'; st.textContent = 'Could not publish.'; });
-        }
-        (function wirePublish() {
-          var b = $('sched-publish-btn');
-          if (b) b.addEventListener('click', function () { window.qsOpenPublish(); });
-          var c = $('pub-cancel');
-          if (c) c.addEventListener('click', function () { hide($('sched-publish-modal')); });
-          var p = $('pub-preview');
-          if (p) p.addEventListener('click', pubDoPreview);
-          var cf = $('pub-confirm');
-          if (cf) cf.addEventListener('click', pubDoConfirm);
-          document.querySelectorAll('input[name="pub-range"]').forEach(function (r) { r.addEventListener('change', pubRangeChanged); });
-          ['pub-from', 'pub-to'].forEach(function (id) { var el = $(id); if (el) el.addEventListener('change', function () { pubPlan = null; hide($('pub-confirm')); }); });
-        })();
 
         function visibleDates() {
           var r = viewRange();
@@ -4844,19 +4671,14 @@
             var nm = displayName(s);
             var isDraftShift = s.published === false || isOccShift(s);
             var editable = shiftEditable(s);
-            // Per-shift publish stays available on occurrences too
-            // (Deepika, 2026-11-09, later same day): the toggle now
-            // materializes that one occurrence into a real published
-            // shift on the server, so the P/D button is real again.
-            // An occurrence always shows D (draft-at-baseline).
-            var pubBtnHtml =
-              '<button type="button" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsToggleShiftPublish(\'' + s.id + '\');renderDayModal()" style="width:26px;height:26px;border-radius:50%;border:none;background:' + (isDraftShift ? '#9ca3af' : '#00a9a4') + ';color:#fff;cursor:pointer;font-size:12px;font-weight:800" title="' + (isDraftShift ? 'Draft — click to publish' : 'Published — click to move to draft') + '">' + (isDraftShift ? 'D' : 'P') + '</button>';
+            // The per-shift P/D button that used to sit in this row
+            // was removed (Deepika, 2026-11-10): the (draft) label
+            // still shows the state; publishing is Bulk Actions only.
             html += '<div class="dm-shift-row" data-shift-id="' + s.id + '"' + (editable ? ' onclick="window.qsEditShift(\'' + s.id + '\')"' : '') + '><span class="shift-color-bar" style="background:' +
               esc(isDraftShift ? '#9ca3af' : (st ? st.color : '#64748b')) + '"></span><span><strong>' + esc(nm) + '</strong> \u2014 ' +
               esc(st ? st.name : '') + (isDraftShift ? ' <span style="font-size:0.7rem;font-weight:700;color:#6b7280">(draft)</span>' : '') + '</span>' + qsCoverBadge(s) +
               (editable ?
                 '<span style="margin-left:auto;display:flex;gap:6px;align-items:center">' +
-                pubBtnHtml +
                 '<button type="button" class="shift-del-m" data-shift-id="' + s.id + '" onclick="event.stopPropagation();window.qsDeleteShift(\'' + s.id + '\');renderDayModal()" style="width:22px;height:22px;border-radius:50%;border:1px solid #f0c4bb;background:#fff;cursor:pointer;font-size:11px;color:#bd3d4a" title="Delete shift">🗑️</button>' +
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
@@ -5077,53 +4899,9 @@
           paShift = null;
         }
 
-        // Simple dialog for rotation shifts: publish/draft toggle and delete.
-        function openRotationShiftDialog(s) {
-          var nm = displayName(s);
-          var st = shiftTypeById(s.shiftTypeId);
-          var isDraft = s.published === false;
-          showDialog(nm + ' \u2014 ' + fmtLong(s.date),
-            '<p style="color:var(--dim);font-size:13px">This shift comes from a rotation' + (st ? ' (' + esc(st.name) + ')' : '') + '. You can publish/draft it or remove this occurrence.</p>',
-            [
-              { label: 'Cancel' },
-              {
-                label: isDraft ? 'Publish' : 'Move to draft',
-                onClick: function () {
-                  api('/api/schedule/rotation-shifts/publish-state', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      rotationId: s.rotationId,
-                      userId: s.userId,
-                      date: s.date,
-                      shiftTypeId: s.shiftTypeId,
-                      published: isDraft
-                    })
-                  }).then(function (r) {
-                    if (r.ok) { pageSuccess(isDraft ? 'Published.' : 'Moved to draft.'); loadShifts(); }
-                    else pageError('Could not update.');
-                  });
-                }
-              },
-              {
-                label: 'Delete', danger: true,
-                onClick: function () {
-                  if (!confirm('Remove this rotation shift on ' + fmtLong(s.date) + '?')) return;
-                  api('/api/schedule/rotation-shifts/delete', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      rotationId: s.rotationId,
-                      userId: s.userId,
-                      date: s.date,
-                      shiftTypeId: s.shiftTypeId
-                    })
-                  }).then(function (r) {
-                    if (r.ok) { pageSuccess('Shift removed.'); loadShifts(); }
-                    else pageError('Could not delete.');
-                  });
-                }
-              }
-            ]);
-        }
+        // openRotationShiftDialog (a rotation-shift dialog whose main
+        // action was the per-shift publish toggle) was removed with
+        // that feature (Deepika, 2026-11-10); it had no callers left.
         var popupShift = null;
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
@@ -5153,14 +4931,10 @@
             // Comment
             var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
             html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
-            // Publish/draft item — occurrences included (Deepika,
-            // 2026-11-09, later same day: per-shift publish kept).
-            // An occurrence is draft-at-baseline: a drawn occurrence
-            // has no stored row (a stored row suppresses it), so its
-            // item always offers Publish — and the server now
-            // materializes just that one shift for real.
-            var isDraft = isOccShift(s) || s.published === false;
-            html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+            // No publish/draft item here any more (removed 2026-11-10,
+            // Deepika's one-button consolidation): publishing is done
+            // only from Bulk Actions. The menu keeps Highlight,
+            // comment, Replace person, Make calendar event, Delete.
             // Replace person — the handler opens the same all-members
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
@@ -5297,26 +5071,6 @@
             if (act === 'comment') {
               closeShiftPopup();
               openEmployeeCommentModal(s.userId, s.date);
-            } else if (act === 'toggle-publish') {
-              closeShiftPopup();
-              var isRot = s.id && s.id.indexOf('rot-') === 0;
-              // Occurrences are draft-at-baseline (a stored row
-              // would suppress the drawing), so their toggle always
-              // publishes — the server materializes that one shift
-              // (per-shift publish, kept and made real — Deepika,
-              // 2026-11-09). Same rule as qsToggleShiftPublish.
-              var toPublished = isRot ? true : !(s.published !== false);
-              var ep, body;
-              if (isRot) {
-                ep = '/api/schedule/rotation-shifts/publish-state';
-                body = { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, published: toPublished };
-              } else {
-                ep = '/api/schedule/shifts/' + s.id + '/publish-state';
-                body = { published: toPublished };
-              }
-              api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-                if (r.ok) { s.published = toPublished; renderView(); }
-              });
             } else if (act === 'replace') {
               // Same dialog as the old box 🔄: every team member with
               // Off/Working badges (qsReplaceShift handles rotation
@@ -15951,6 +15705,18 @@ window.qsNpOfferSend = function (btn) {
             <option value="">All shift types</option>
           </select>
         </div>
+        <div id="bulk-pub-opts" style="display:none;flex:1 1 100%;gap:1rem;flex-wrap:wrap;align-items:flex-start">
+          <div class="bulk-fld">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Department</label>
+            <select id="bulk-pub-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+              <option value="">All departments I can access</option>
+            </select>
+          </div>
+          <div class="bulk-fld" style="flex:1 1 280px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift types to publish</label>
+            <div id="bulk-pub-types" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:110px;overflow-y:auto;min-width:220px"></div>
+          </div>
+        </div>
         <div class="bulk-fld bulk-date-fld">
           <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
           <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
@@ -15984,6 +15750,11 @@ window.qsNpOfferSend = function (btn) {
           <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
         </div>
         <div id="bulk-result" class="alert hidden" role="status"></div>
+        <div id="bulk-pub-preview"></div>
+        <div style="margin-top:10px">
+          <button type="button" id="bulk-pub-confirm" class="btn hidden">Publish</button>
+        </div>
+        <div id="bulk-pub-history"></div>
       </div>
       <script>
       (function () {
@@ -15993,6 +15764,7 @@ window.qsNpOfferSend = function (btn) {
         }
         var bulkAllMembers = [];
         var bulkJobRoles = [];
+        var bulkAllShiftTypes = [];
         function loadMembers() {
           api('/api/users').then(function (r) {
             if (!r.ok) return;
@@ -16083,6 +15855,8 @@ window.qsNpOfferSend = function (btn) {
         function loadBulkShiftTypes() {
           api('/api/schedule/shift-types').then(function (r) {
             if (!r.ok) return;
+            bulkAllShiftTypes = r.data.shiftTypes || [];
+            renderBulkPubTypes();
             var sel = $('bulk-shifttype');
             var fsel = $('bulk-shifttype-filter');
             // Department scope: bulk writes apply to the active department only.
@@ -16103,12 +15877,167 @@ window.qsNpOfferSend = function (btn) {
         function updateBulkSlotVisibility() {
           var a = $('bulk-action').value;
           var isSlotAction = (a === 'open-slots' || a === 'close-shifts');
+          var isPublish = a === 'publish';
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
           if (mw) mw.style.display = isSlotAction ? 'none' : '';
           var fw = $('bulk-shifttype-filter-wrap');
-          if (fw) fw.style.display = isSlotAction ? 'none' : '';
+          if (fw) fw.style.display = (isSlotAction || isPublish) ? 'none' : '';
+          var po = $('bulk-pub-opts');
+          if (po) po.style.display = isPublish ? 'flex' : 'none';
+          var run = $('bulk-run');
+          if (run) run.textContent = isPublish ? 'Preview publish' : 'Run';
+          if (!isPublish) resetBulkPublishPreview();
+        }
+
+        // ---- Publish (unified door, Deepika 2026-11-10) ----
+        // "Publish shifts" here is THE publish: it runs the Step-2
+        // engine (preview → confirm → batch) scoped by this panel's
+        // dates, ticked members (none = everyone), department and
+        // multi-selected shift types. The server enforces the
+        // department permissions; the preview the manager confirms
+        // is exactly what gets committed.
+        var bulkPubPlan = null;
+        function bulkPubFmtDay(dateStr) {
+          if (!dateStr) return '';
+          return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+        function bulkPubDeptId() { var s = $('bulk-pub-dept'); return s ? s.value : ''; }
+        function bulkPubTypeIds() {
+          var ids = [];
+          document.querySelectorAll('.bulk-pub-type-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          return ids;
+        }
+        function renderBulkPubTypes() {
+          var box = $('bulk-pub-types');
+          if (!box) return;
+          var deptId = bulkPubDeptId();
+          var types = bulkAllShiftTypes.filter(function (st) {
+            if (!st.isActive) return false;
+            if (deptId) {
+              var ids = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+              if (ids.indexOf(deptId) === -1) return false;
+            }
+            return true;
+          });
+          box.innerHTML = types.length ? types.map(function (st) {
+            return '<label style="display:block;font-size:0.88rem;padding:2px 4px;cursor:pointer;color:#222"><input type="checkbox" class="bulk-pub-type-cb" value="' + st.id + '" checked style="margin-right:6px;padding:0;border:none">' + esc(st.name) + '</label>';
+          }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shift types for this department.</p>';
+        }
+        function loadBulkPubDepts() {
+          var sel = $('bulk-pub-dept');
+          if (!sel) return;
+          function fill(allDepts) {
+            var cur = sel.value;
+            var depts = (allDepts || []).filter(function (d) {
+              return !window.qsCanViewDept || window.qsCanViewDept(d.id);
+            });
+            sel.innerHTML = '<option value="">All departments I can access</option>' + depts.map(function (d) {
+              return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
+            }).join('');
+            if (cur && depts.some(function (d) { return String(d.id) === String(cur); })) sel.value = cur;
+            renderBulkPubTypes();
+          }
+          var known = window.qsDepartments || [];
+          if (known.length) { fill(known); return; }
+          api('/api/departments').then(function (r) {
+            fill(r.ok && r.data.departments ? r.data.departments : []);
+          }).catch(function () { fill([]); });
+        }
+        function resetBulkPublishPreview() {
+          bulkPubPlan = null;
+          var pv = $('bulk-pub-preview'); if (pv) pv.innerHTML = '';
+          var cf = $('bulk-pub-confirm'); if (cf) cf.classList.add('hidden');
+        }
+        function bulkPubPreview() {
+          var from = $('bulk-from').value, to = $('bulk-to').value;
+          if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
+          var typeIds = bulkPubTypeIds();
+          if (!typeIds.length) { showResult('Tick at least one shift type to publish.', true); return; }
+          var deptId = bulkPubDeptId();
+          var body = {
+            from: from, to: to,
+            departmentIds: deptId ? [deptId] : [],
+            shiftTypeIds: typeIds,
+            userIds: selectedMemberIds(),
+          };
+          showResult('Checking…', false);
+          resetBulkPublishPreview();
+          api('/api/schedule/publish/preview', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not check that range.', true); return; }
+            var d = r.data;
+            bulkPubPlan = { from: d.from, to: d.to, departmentIds: body.departmentIds, shiftTypeIds: body.shiftTypeIds, userIds: body.userIds, plan: d.plan };
+            var nothing = !d.totalAdds && !d.totalFlips && !d.changes.length && !d.opensTotal && !d.closesTotal;
+            var h = '';
+            if (nothing) {
+              h = '<p style="font-size:0.92rem;margin:6px 0">Everything in this scope is already published — nothing new to publish.</p>';
+            } else {
+              if (d.freshAdds) {
+                h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + d.freshAdds + ' new shift' + (d.freshAdds === 1 ? '' : 's') + ' to stamp from patterns</b>';
+                d.departments.forEach(function (dp) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(dp.name) + ': ' + dp.count + '</div>'; });
+                h += '</div>';
+              }
+              if (d.totalFlips) {
+                h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + d.totalFlips + ' existing draft shift' + (d.totalFlips === 1 ? '' : 's') + ' to publish</b>';
+                (d.flipPeople || []).forEach(function (p) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(p.name) + ': ' + p.count + '</div>'; });
+                h += '</div>';
+              }
+              if (d.changes.length) {
+                h += '<div style="font-size:0.92rem;margin:8px 0"><b>Pattern changes</b> — these people\'s patterns changed since their shifts were published:</div>';
+                d.changes.forEach(function (c) {
+                  var bits = [];
+                  if (c.removes) bits.push('Removes ' + c.removes);
+                  if (c.adds) bits.push('Adds ' + c.adds);
+                  h += '<div style="font-size:0.9rem">' + esc(c.name) + ' — ' + bits.join(' · ') + '</div>';
+                });
+              }
+              (d.openForCover || []).forEach(function (p) {
+                h += '<div style="font-size:0.9rem;margin:4px 0">🩹 <b>' + p.newCount + ' shift' + (p.newCount === 1 ? '' : 's') + ' open for cover</b> after ' + esc(p.name) + '\'s last day (' + bulkPubFmtDay(p.endDate) + ')' + (p.count > p.newCount ? ' <span style="color:var(--dim)">(' + (p.count - p.newCount) + ' already open)</span>' : '') + '</div>';
+              });
+              if (d.closesTotal) h += '<div style="font-size:0.9rem;margin:4px 0">' + d.closesTotal + ' previously opened cover slot' + (d.closesTotal === 1 ? '' : 's') + ' close (pattern changed).</div>';
+              h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">Past shifts are never changed. People get a notification when their shifts publish or are removed.</p>';
+            }
+            $('bulk-pub-preview').innerHTML = h;
+            var res = $('bulk-result'); if (res) res.classList.add('hidden');
+            if (!nothing) $('bulk-pub-confirm').classList.remove('hidden');
+          }).catch(function () { showResult('Network error.', true); });
+        }
+        function bulkPubConfirm() {
+          if (!bulkPubPlan) return;
+          var btn = $('bulk-pub-confirm');
+          btn.disabled = true;
+          showResult('Publishing…', false);
+          api('/api/schedule/publish', { method: 'POST', body: JSON.stringify({ from: bulkPubPlan.from, to: bulkPubPlan.to, departmentIds: bulkPubPlan.departmentIds, shiftTypeIds: bulkPubPlan.shiftTypeIds, userIds: bulkPubPlan.userIds, plan: bulkPubPlan.plan }) }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not publish.', true); return; }
+            var bits = [];
+            if (r.data.added) bits.push(r.data.added + ' shift(s) stamped');
+            if (r.data.flipped) bits.push(r.data.flipped + ' draft(s) published');
+            if (r.data.removed) bits.push(r.data.removed + ' replaced away');
+            if (r.data.opened) bits.push(r.data.opened + ' opened for cover');
+            showResult('✓ Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + '.', false);
+            resetBulkPublishPreview();
+            bulkPubLoadHistory();
+            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
+          }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+        }
+        function bulkPubLoadHistory() {
+          var el = $('bulk-pub-history');
+          if (!el) return;
+          api('/api/schedule/publish/batches').then(function (r) {
+            if (!r.ok || !r.data || !r.data.batches || !r.data.batches.length) { el.innerHTML = ''; return; }
+            var h = '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px"><div style="font-weight:700;font-size:0.9rem;margin-bottom:6px">Recent publishes</div>';
+            r.data.batches.slice(0, 8).forEach(function (b) {
+              var when = new Date(b.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+              var counts = b.shiftCount + ' shift' + (b.shiftCount === 1 ? '' : 's');
+              if (b.flipCount) counts += ' · ' + b.flipCount + ' draft' + (b.flipCount === 1 ? '' : 's') + ' published';
+              if (b.openCount) counts += ' · ' + b.openCount + ' open';
+              h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.87rem;padding:3px 0;flex-wrap:wrap"><span>' + bulkPubFmtDay(b.rangeStart) + ' – ' + bulkPubFmtDay(b.rangeEnd) + '</span><span style="color:var(--dim)">by ' + esc(b.createdByName || 'Manager') + ' · ' + when + ' · ' + counts + '</span>' +
+                (b.undoneAt ? '<span style="color:var(--dim)">(undone)</span>' : '<button type="button" class="btn-secondary bulk-pub-undo" data-batch="' + b.id + '" style="padding:2px 10px;font-size:0.82rem">Undo</button>') + '</div>';
+            });
+            el.innerHTML = h + '</div>';
+          }).catch(function () { /* history is decoration */ });
         }
         function datesInRange(from, to) {
           var out = [];
@@ -16136,6 +16065,10 @@ window.qsNpOfferSend = function (btn) {
             return;
           }
           var dates = datesInRange(from, to);
+          // Publish (unified door, 2026-11-10): preview through the
+          // Step-2 engine first; the manager confirms the exact plan
+          // before anything is written.
+          if (action === 'publish') { bulkPubPreview(); return; }
           // Slot actions (open extra slots / close shifts) work on shift types, not members.
           if (action === 'open-slots' || action === 'close-shifts') {
             var stId = $('bulk-shifttype').value;
@@ -16205,8 +16138,8 @@ window.qsNpOfferSend = function (btn) {
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-select-all').addEventListener('change', function () {
           var on = this.checked;
@@ -16215,9 +16148,26 @@ window.qsNpOfferSend = function (btn) {
         $('bulk-members').addEventListener('change', syncBulkSelectAll);
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        $('bulk-pub-confirm').addEventListener('click', bulkPubConfirm);
+        $('bulk-pub-dept').addEventListener('change', function () { renderBulkPubTypes(); resetBulkPublishPreview(); });
+        $('bulk-pub-types').addEventListener('change', resetBulkPublishPreview);
+        $('bulk-from').addEventListener('change', resetBulkPublishPreview);
+        $('bulk-to').addEventListener('change', resetBulkPublishPreview);
+        $('bulk-members').addEventListener('change', resetBulkPublishPreview);
+        $('bulk-pub-history').addEventListener('click', function (ev) {
+          var b = ev.target && ev.target.closest ? ev.target.closest('.bulk-pub-undo') : null;
+          if (!b) return;
+          if (!confirm('Undo this publish? Its future shifts will be removed and its published drafts returned to draft (past shifts stay).')) return;
+          api('/api/schedule/publish/batches/' + b.getAttribute('data-batch') + '/undo', { method: 'POST', body: '{}' }).then(function (r) {
+            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not undo that publish.', true); return; }
+            showResult('✓ Publish undone — ' + r.data.removedShifts + ' future shift(s) removed' + (r.data.unflipped ? ', ' + r.data.unflipped + ' draft(s) back to draft' : '') + '.', false);
+            bulkPubLoadHistory();
+            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
+          }).catch(function () { showResult('Network error.', true); });
+        });
         // Expose refresh for department filter changes.
         window.qsRefreshBulkMembers = function () {
-          if (isActive()) { renderBulkMembers($('bulk-member-search').value); loadBulkShiftTypes(); loadJobRoles(); }
+          if (isActive()) { renderBulkMembers($('bulk-member-search').value); loadBulkShiftTypes(); loadJobRoles(); loadBulkPubDepts(); }
         };
         updateBulkSlotVisibility();
       })();
