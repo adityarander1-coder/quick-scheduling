@@ -9169,12 +9169,13 @@ window.qsNpOfferSend = function (btn) {
             <div id="rottab-rot-list">
             <div id="rot-group-section"></div>
             <p class="set-desc">Each team member's repeating schedule. Build a pattern once — it stays attached to that person.</p>
-            <div style="margin-bottom:0.8rem">
+            <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem">
               <button type="button" class="btn" id="rot-copy-open">⇄ Copy a rotation to people</button>
+              <button type="button" class="btn" id="rcopy-inverse-open">⇄ Copy the inverse of a rotation</button>
               <button type="button" class="btn" id="rswap-open">⇄ Swap rotations from a date</button>
               <button type="button" class="btn" id="rpair-open">👥 Pair people on a pattern</button>
-              <span style="color:var(--dim);font-size:0.85rem;margin-left:0.5rem">Set a pattern up once on one person, then copy it to everyone who works the same pattern.</span>
             </div>
+            <p style="color:var(--dim);font-size:0.85rem;margin:0 0 0.8rem">Set a pattern up once on one person, then copy it to everyone who works the same pattern.</p>
             <input type="text" id="rot-emp-search" placeholder="Search team members…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:0.8rem" autocomplete="off">
             <div id="rot-emp-list"></div>
             </div>
@@ -10012,6 +10013,7 @@ window.qsNpOfferSend = function (btn) {
               // pattern are skipped and NAMED — the confirm box below
               // previews that split and the server decides it for real.
               var rcopyPicked = {}; // userId -> true; never lost while searching/pasting
+              var rcopyWantInvert = false; // true when the dialog was opened from the "Copy the inverse of a rotation" header button — the gate then keeps the inverse toggle ticked for each invertible source picked in this session
 
               function rcopySources() {
                 var out = [];
@@ -10073,7 +10075,7 @@ window.qsNpOfferSend = function (btn) {
                 var src = rcopySourceRot();
                 if (!src) { cb.checked = false; cb.disabled = true; hide(note); return; }
                 var problem = rcopyInvertProblem(src);
-                if (!problem) { cb.disabled = false; hide(note); return; }
+                if (!problem) { cb.disabled = false; if (rcopyWantInvert) cb.checked = true; hide(note); return; }
                 cb.checked = false; cb.disabled = true;
                 note.textContent = problem === 'mixed'
                   ? 'The inverse isn\'t available for this pattern — it needs a pattern with a single shift type.'
@@ -10130,7 +10132,8 @@ window.qsNpOfferSend = function (btn) {
                 box.innerHTML = h;
                 $('rcopy-do').disabled = !will.length;
               }
-              function openRcopy() {
+              function openRcopy(invert) {
+                rcopyWantInvert = !!invert;
                 rcopyPicked = {};
                 $('rcopy-paste').value = '';
                 $('rcopy-match-report').innerHTML = '';
@@ -10154,7 +10157,8 @@ window.qsNpOfferSend = function (btn) {
                 updateRcopyConfirm();
                 show($('rcopy-modal'));
               }
-              $('rot-copy-open').addEventListener('click', openRcopy);
+              $('rot-copy-open').addEventListener('click', function () { openRcopy(false); });
+              $('rcopy-inverse-open').addEventListener('click', function () { openRcopy(true); });
               $('rcopy-cancel').addEventListener('click', function () { hide($('rcopy-modal')); });
               $('rcopy-modal').addEventListener('click', function (e) { if (e.target === $('rcopy-modal')) hide($('rcopy-modal')); });
               $('rcopy-source').addEventListener('change', function () {
