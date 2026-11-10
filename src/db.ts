@@ -31,7 +31,7 @@ async function open(): Promise<DbClient> {
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
-      max: 5,
+      max: 10, // raised 5 -> 10 (perf, 2026-11-10): screens fan out 4+ requests at once
     });
     // Verify connectivity now so boot fails fast on a bad URL.
     await pool.query('SELECT 1');

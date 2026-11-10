@@ -10,7 +10,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import compression from 'compression';
 import session from 'express-session';
 import { ensureReady } from './db';
-import { PGliteSessionStore } from './sessionStore';
+import { PGliteSessionStore, startSessionPruneTimer } from './sessionStore';
 import authRouter from './routes/auth';
 import usersRouter from './routes/users';
 import departmentsRouter from './routes/departments';
@@ -190,6 +190,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 async function main(): Promise<void> {
   await ensureReady(); // auto-runs pending migrations at boot
+  startSessionPruneTimer(); // expired sessions pruned every 15 min, off the request path
   const { startPayrollScheduler } = await import('./util/payrollScheduler.js');
   startPayrollScheduler();
   const { startEmailPollScheduler } = await import('./util/emailPollScheduler.js');

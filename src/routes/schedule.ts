@@ -490,10 +490,18 @@ async function drawRotationOccurrences(
     [`${p.rotationId}|${p.userId}|${p.date}|${p.shiftTypeId}`, p.published]
   ));
 
-  const rotationShifts: any[] = [];
-  for (const rot of rotations) {
-    const { rows: assignments } = await q(
-      `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
+  // Batched member loads (perf, 2026-11-10): ONE query for every
+  // rotation's assignments and ONE for every group's members,
+  // grouped in memory below — the per-rotation loop used to run one
+  // query per rotation plus one per group, so a grid load cost
+  // ~11 fixed queries + 1 per rotation + 1 per group. The grouped
+  // rows keep the exact shapes the per-rotation queries produced
+  // (same columns, same filters; per-group rows keep position order).
+  const rotationIds = rotations.map((r: any) => r.id);
+  const assignmentsByRotation = new Map<string, any[]>();
+  if (rotationIds.length) {
+    const { rows: allAssignments } = await q(
+      `SELECT ra.rotation_id AS "rotationId", ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
               ra.shift_type_id AS "shiftTypeId",
               u.first_name AS "firstName", u.last_name AS "lastName", u.nickname,
               u.is_active AS "userActive", u.end_date::text AS "userEndDate",
@@ -503,9 +511,61 @@ async function drawRotationOccurrences(
        FROM rotation_assignments ra
        JOIN users u ON u.id = ra.user_id
        JOIN shift_types st ON st.id = ra.shift_type_id
-       WHERE ra.rotation_id = $1 ${opts && opts.includeInactiveAssignees ? '' : 'AND u.is_active = true'}`,
-      [rot.id]
+       WHERE ra.rotation_id = ANY($1) ${opts && opts.includeInactiveAssignees ? '' : 'AND u.is_active = true'}`,
+      [rotationIds]
     );
+    for (const a of allAssignments) {
+      if (!assignmentsByRotation.has(a.rotationId)) assignmentsByRotation.set(a.rotationId, []);
+      assignmentsByRotation.get(a.rotationId)!.push(a);
+    }
+  }
+  // Group members carry their ROTATION's group shift type's display
+  // fields (the old per-group query joined shift_types on that one
+  // type), so members and types are loaded separately here and
+  // merged per rotation in the loop.
+  const allGroupIds: string[] = [];
+  const groupTypeIds = new Set<string>();
+  for (const rot of rotations) {
+    if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      groupTypeIds.add((rot as any).groupShiftTypeId);
+      for (const gid of String((rot as any).groupIds || (rot as any).groupId)
+        .split(',').map((x: string) => x.trim()).filter(Boolean)) {
+        if (!allGroupIds.includes(gid)) allGroupIds.push(gid);
+      }
+    }
+  }
+  const membersByGroup = new Map<string, any[]>();
+  if (allGroupIds.length) {
+    const { rows: allMembers } = await q(
+      `SELECT gm.group_id AS "groupId", gm.user_id AS "userId",
+              u.first_name AS "firstName", u.last_name AS "lastName",
+              u.nickname, u.end_date::text AS "userEndDate"
+       FROM rotation_group_members gm
+       JOIN users u ON u.id = gm.user_id
+       WHERE gm.group_id = ANY($1) AND u.is_active = true
+       ORDER BY gm.group_id, gm.position`,
+      [allGroupIds]
+    );
+    for (const m of allMembers) {
+      if (!membersByGroup.has(m.groupId)) membersByGroup.set(m.groupId, []);
+      membersByGroup.get(m.groupId)!.push(m);
+    }
+  }
+  const groupTypes = new Map<string, any>();
+  if (groupTypeIds.size) {
+    const { rows: typeRows } = await q(
+      `SELECT id, name AS "shiftTypeName", short_name AS "shiftTypeShort",
+              color AS "shiftTypeColor", text_color AS "shiftTypeTextColor",
+              sort_order AS "sortOrder"
+       FROM shift_types WHERE id = ANY($1)`,
+      [[...groupTypeIds]]
+    );
+    for (const t of typeRows) groupTypes.set(t.id, t);
+  }
+
+  const rotationShifts: any[] = [];
+  for (const rot of rotations) {
+    const assignments = assignmentsByRotation.get(rot.id) || [];
     (rot as any).assignments = assignments;
 
     // Group rotation ("special shift", Deepika 2026-11-04): the
@@ -522,23 +582,26 @@ async function drawRotationOccurrences(
       // the weeks actually worked.
       const groupIds = String((rot as any).groupIds || (rot as any).groupId)
         .split(',').map((x: string) => x.trim()).filter(Boolean);
-      const groupsMembers: any[][] = [];
-      for (const gid of groupIds) {
-        const { rows: members } = await q(
-          `SELECT gm.user_id AS "userId", u.first_name AS "firstName", u.last_name AS "lastName",
-                  u.nickname, u.end_date::text AS "userEndDate",
-                  st.name AS "shiftTypeName", st.short_name AS "shiftTypeShort",
-                  st.color AS "shiftTypeColor", st.text_color AS "shiftTypeTextColor",
-                  st.sort_order AS "sortOrder"
-           FROM rotation_group_members gm
-           JOIN users u ON u.id = gm.user_id
-           JOIN shift_types st ON st.id = $2
-           WHERE gm.group_id = $1 AND u.is_active = true
-           ORDER BY gm.position`,
-          [gid, (rot as any).groupShiftTypeId]
-        );
-        groupsMembers.push(members);
-      }
+      // From the batched load above: this rotation's group shift
+      // type supplies every member row's display fields, exactly as
+      // the old per-group JOIN did — including that join's effect
+      // when the type row is missing (the group yields no members).
+      const gType = groupTypes.get((rot as any).groupShiftTypeId);
+      const groupsMembers: any[][] = groupIds.map((gid) => {
+        if (!gType) return [];
+        return (membersByGroup.get(gid) || []).map((m) => ({
+          userId: m.userId,
+          firstName: m.firstName,
+          lastName: m.lastName,
+          nickname: m.nickname,
+          userEndDate: m.userEndDate,
+          shiftTypeName: gType.shiftTypeName,
+          shiftTypeShort: gType.shiftTypeShort,
+          shiftTypeColor: gType.shiftTypeColor,
+          shiftTypeTextColor: gType.shiftTypeTextColor,
+          sortOrder: gType.sortOrder,
+        }));
+      });
       const daySet = new Set(
         String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
       );
@@ -12378,16 +12441,27 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        WHERE company_id = $1 AND is_active = true`, [companyId]);
     const userPaused = new Set<string>();
     const target = new Date(date + 'T00:00:00');
-    for (const rot of rotations) {
-      const { rows: assigns } = await query(
-        `SELECT ra.user_id, ra.cycle_day, ra.shift_type_id, u.first_name, u.last_name, u.name,
+    // Batched (perf, 2026-11-10): one query for every rotation's
+    // assignments instead of one per rotation; grouped in memory
+    // with the same row shape the per-rotation query produced.
+    const assignsByRotation = new Map<string, any[]>();
+    if (rotations.length) {
+      const { rows: allAssigns } = await query(
+        `SELECT ra.rotation_id, ra.user_id, ra.cycle_day, ra.shift_type_id, u.first_name, u.last_name, u.name,
                 u.end_date::text AS end_date, jr.name AS job_role, st.name AS shift_name, st.department_id, d.name AS department_name
          FROM rotation_assignments ra
          JOIN users u ON u.id = ra.user_id AND u.is_active = true
          JOIN shift_types st ON st.id = ra.shift_type_id
          LEFT JOIN departments d ON d.id = st.department_id
          LEFT JOIN job_roles jr ON jr.id = u.job_role_id
-         WHERE ra.rotation_id = $1`, [rot.id]);
+         WHERE ra.rotation_id = ANY($1)`, [rotations.map((r: any) => r.id)]);
+      for (const a of allAssigns) {
+        if (!assignsByRotation.has(a.rotation_id)) assignsByRotation.set(a.rotation_id, []);
+        assignsByRotation.get(a.rotation_id)!.push(a);
+      }
+    }
+    for (const rot of rotations) {
+      const assigns = assignsByRotation.get(rot.id) || [];
       if (!assigns.length) continue;
       const paused = pausedRotIds.has(rot.id);
       if (paused) { for (const a of assigns) userPaused.add(a.user_id); continue; }

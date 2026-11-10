@@ -128,12 +128,16 @@ export async function getShiftsForRange(
     [`${p.rotationId}|${p.userId}|${p.date}|${p.shiftTypeId}`, p.published]
   ));
 
-  const rotationShifts: ShiftEntry[] = [];
-  const userPauseMap = new Map<string, Array<{ start: string; end: string }>>();
-
-  for (const rot of rotations) {
-    const { rows: assignments } = await query(
-      `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
+  // Batched member loads (perf, 2026-11-10; mirrors
+  // drawRotationOccurrences in schedule.ts): ONE query for every
+  // rotation's assignments and ONE for every group's members,
+  // grouped in memory — the loop below used to query per rotation
+  // and per group. Rows keep the exact shapes produced before.
+  const rotationIds = rotations.map((r: any) => r.id);
+  const assignmentsByRotation = new Map<string, any[]>();
+  if (rotationIds.length) {
+    const { rows: allAssignments } = await query(
+      `SELECT ra.rotation_id AS "rotationId", ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
               ra.shift_type_id AS "shiftTypeId",
               COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
               u.is_active AS "userActive", u.end_date::text AS "userEndDate",
@@ -141,9 +145,57 @@ export async function getShiftsForRange(
        FROM rotation_assignments ra
        JOIN users u ON u.id = ra.user_id
        JOIN shift_types st ON st.id = ra.shift_type_id
-       WHERE ra.rotation_id = $1 AND u.is_active = true`,
-      [rot.id]
+       WHERE ra.rotation_id = ANY($1) AND u.is_active = true`,
+      [rotationIds]
     );
+    for (const a of allAssignments) {
+      if (!assignmentsByRotation.has(a.rotationId)) assignmentsByRotation.set(a.rotationId, []);
+      assignmentsByRotation.get(a.rotationId)!.push(a);
+    }
+  }
+  const allGroupIds: string[] = [];
+  const groupTypeIds = new Set<string>();
+  for (const rot of rotations) {
+    if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      groupTypeIds.add((rot as any).groupShiftTypeId);
+      for (const gid of String((rot as any).groupIds || (rot as any).groupId)
+        .split(',').map((x: string) => x.trim()).filter(Boolean)) {
+        if (!allGroupIds.includes(gid)) allGroupIds.push(gid);
+      }
+    }
+  }
+  const membersByGroup = new Map<string, any[]>();
+  if (allGroupIds.length) {
+    const { rows: allMembers } = await query(
+      `SELECT gm.group_id AS "groupId", gm.user_id AS "userId",
+              COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
+              u.end_date::text AS "userEndDate"
+       FROM rotation_group_members gm
+       JOIN users u ON u.id = gm.user_id
+       WHERE gm.group_id = ANY($1) AND u.is_active = true
+       ORDER BY gm.group_id, gm.position`,
+      [allGroupIds]
+    );
+    for (const m of allMembers) {
+      if (!membersByGroup.has(m.groupId)) membersByGroup.set(m.groupId, []);
+      membersByGroup.get(m.groupId)!.push(m);
+    }
+  }
+  const groupTypes = new Map<string, any>();
+  if (groupTypeIds.size) {
+    const { rows: typeRows } = await query(
+      `SELECT id, name AS "shiftTypeName"
+       FROM shift_types WHERE id = ANY($1)`,
+      [[...groupTypeIds]]
+    );
+    for (const t of typeRows) groupTypes.set(t.id, t);
+  }
+
+  const rotationShifts: ShiftEntry[] = [];
+  const userPauseMap = new Map<string, Array<{ start: string; end: string }>>();
+
+  for (const rot of rotations) {
+    const assignments = assignmentsByRotation.get(rot.id) || [];
 
     // Group rotation ("special shift", Deepika 2026-11-04): members
     // take turns in fixed order; turns are a pure function of the
@@ -151,21 +203,20 @@ export async function getShiftsForRange(
     if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
       const groupIds = String((rot as any).groupIds || (rot as any).groupId)
         .split(',').map((x: string) => x.trim()).filter(Boolean);
-      const groupsMembers: any[][] = [];
-      for (const gid of groupIds) {
-        const { rows: members } = await query(
-          `SELECT gm.user_id AS "userId",
-                  COALESCE(u.nickname, u.first_name || ' ' || u.last_name) AS "personName",
-                  u.end_date::text AS "userEndDate", st.name AS "shiftTypeName"
-           FROM rotation_group_members gm
-           JOIN users u ON u.id = gm.user_id
-           JOIN shift_types st ON st.id = $2
-           WHERE gm.group_id = $1 AND u.is_active = true
-           ORDER BY gm.position`,
-          [gid, (rot as any).groupShiftTypeId]
-        );
-        groupsMembers.push(members);
-      }
+      // From the batched load above: the rotation's group shift
+      // type supplies each member row's shiftTypeName, exactly as
+      // the old per-group JOIN did — including that join's effect
+      // when the type row is missing (the group yields no members).
+      const gType = groupTypes.get((rot as any).groupShiftTypeId);
+      const groupsMembers: any[][] = groupIds.map((gid) => {
+        if (!gType) return [];
+        return (membersByGroup.get(gid) || []).map((m) => ({
+          userId: m.userId,
+          personName: m.personName,
+          userEndDate: m.userEndDate,
+          shiftTypeName: gType.shiftTypeName,
+        }));
+      });
       const daySet = new Set(
         String((rot as any).groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
       );

@@ -13,25 +13,37 @@ function expiryFor(session: SessionData): Date {
   return new Date(Date.now() + maxAge);
 }
 
+/** Drop expired sessions so the table doesn't grow unboundedly.
+ * Best-effort: a failed prune must never break session reads/writes. */
+async function pruneExpiredSessions(): Promise<void> {
+  try {
+    await query('DELETE FROM sessions WHERE expire < now()');
+  } catch {
+    // ignore
+  }
+}
+
+let pruneTimer: NodeJS.Timeout | null = null;
+
+/** Prune expired sessions on a 15-minute timer instead of on the
+ * request path (perf, 2026-11-10): get() used to run the prune
+ * DELETE before every session read — a write query riding on every
+ * request in the app. Reads never depended on it: get() already
+ * filters `expire > now()`. Started once from the server entry;
+ * unref'd so the timer never holds the process open on its own. */
+export function startSessionPruneTimer(): void {
+  if (pruneTimer) return;
+  pruneTimer = setInterval(() => { void pruneExpiredSessions(); }, 15 * 60 * 1000);
+  pruneTimer.unref();
+}
+
 export class PGliteSessionStore extends Store {
   constructor() {
     super();
   }
 
-  /** Lazily drop expired sessions each read so the table doesn't grow unboundedly. */
-  private async prune(): Promise<void> {
-    try {
-      await query('DELETE FROM sessions WHERE expire < now()');
-    } catch {
-      // Best-effort; a failed prune must not break session reads/writes.
-    }
-  }
-
   get(sid: string, cb: (err: any, session?: SessionData | null) => void): void {
-    this.prune()
-      .then(() =>
-        query<{ sess: any }>('SELECT sess FROM sessions WHERE sid = $1 AND expire > now()', [sid])
-      )
+    query<{ sess: any }>('SELECT sess FROM sessions WHERE sid = $1 AND expire > now()', [sid])
       .then(({ rows }) => cb(null, rows.length ? rows[0].sess : null))
       .catch((err) => cb(err));
   }
