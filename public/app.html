@@ -4157,10 +4157,20 @@
             var mds = fmtDate(md);
             if (mi >= 35 && md.getMonth() !== first.getMonth()) break;
             var mcls = 'mini-day' + (md.getMonth() !== first.getMonth() ? ' other' : '') + (mds === todayStr ? ' today' : '');
-            // Color by publish state: green = published, gray = has schedule but draft, plain = no schedule.
+            // Color by publish state: teal = the day has at least one
+            // stored published shift, gray = has schedule but nothing
+            // published yet, plain = no schedule. Publish state lives
+            // on the SHIFT, never the date (Deepika, 2026-11-10): a
+            // stored row with published !== false counts; a rotation
+            // occurrence is pattern, never published. This used to read
+            // the legacy schedule_days day flag via isPublished(),
+            // whose writers were removed with the date pill — the flag
+            // no longer says anything about real published shifts, so
+            // the mini grid now reads the shifts themselves.
             if (md.getMonth() === first.getMonth()) {
-              if (isPublished(mds)) mcls += ' pub';
-              else if (shiftsFor(mds).length) mcls += ' draft';
+              var mdShifts = shiftsFor(mds);
+              if (mdShifts.some(function (s) { return !isOccShift(s) && s.published !== false; })) mcls += ' pub';
+              else if (mdShifts.length) mcls += ' draft';
             }
             html += '<div class="' + mcls + '" data-date="' + mds + '">' + md.getDate() + '</div>';
           }
