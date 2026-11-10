@@ -22157,11 +22157,11 @@ window.qsNpOfferSend = function (btn) {
         card.style.maxWidth = '560px';
         var chosen = suState.fileName
           ? '<div style="font-weight:700">' + esc(suState.fileName) + '</div><div style="font-size:0.82rem;color:var(--muted)">Click or drop another file to change it</div>'
-          : '<div style="font-size:1.6rem">📄</div><div style="font-weight:700;margin-top:0.2rem">Drop your filled-in sheet here</div><div style="font-size:0.82rem;color:var(--muted)">.csv or .xlsx — up to 500 events</div>';
+          : '<div style="font-size:1.6rem">📄</div><div style="font-weight:700;margin-top:0.2rem">Drop your filled-in sheet here</div><div style="font-size:0.82rem;color:var(--muted)">.csv, .xlsx or .pdf — up to 500 events</div>';
         card.innerHTML =
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
             '<div><div style="font-size:1.25rem;font-weight:800">⬆ Upload a schedule</div>' +
-            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">Add many events at once from a spreadsheet. They land on this calendar' + (suState.dashName ? ' — <b>' + esc(suState.dashName) + '</b>' : '') + '.</div></div>' +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">Add many events at once from a spreadsheet — or a PDF schedule, which is read into the same check-it-first preview. They land on this calendar' + (suState.dashName ? ' — <b>' + esc(suState.dashName) + '</b>' : '') + '.</div></div>' +
             '<button type="button" id="su-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
           '</div>' +
           '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:1rem">' +
@@ -22172,7 +22172,7 @@ window.qsNpOfferSend = function (btn) {
           '<div id="su-drop" style="border:1.5px dashed var(--border);border-radius:12px;padding:1.1rem 1rem;margin-top:0.9rem;text-align:center;cursor:pointer">' +
             '<div style="font-weight:700;margin-bottom:0.5rem;text-align:left">2 · Add your file</div>' + chosen +
             '<div style="margin-top:0.7rem"><span class="btn" style="border-radius:9px;padding:0.45rem 0.9rem;display:inline-block">Choose file</span></div>' +
-            '<input type="file" id="su-file" accept=".csv,.xlsx" style="display:none">' +
+            '<input type="file" id="su-file" accept=".csv,.xlsx,.pdf" style="display:none">' +
           '</div>' +
           '<div id="su-status" style="min-height:1.2rem;font-size:0.88rem;margin-top:0.6rem;color:#b91c1c">' + esc(statusMsg || '') + '</div>' +
           '<div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:0.4rem">' +
@@ -22204,8 +22204,8 @@ window.qsNpOfferSend = function (btn) {
       }
       function suReadFile(file) {
         var st = document.getElementById('su-status');
-        if (!/\.(csv|xlsx)$/i.test(file.name)) { if (st) st.textContent = 'Please choose a .csv or .xlsx file.'; return; }
-        if (file.size > 8 * 1024 * 1024) { if (st) st.textContent = 'That file is over 8 MB — please upload a smaller sheet.'; return; }
+        if (!/\.(csv|xlsx|pdf)$/i.test(file.name)) { if (st) st.textContent = 'Please choose a .csv, .xlsx or .pdf file.'; return; }
+        if (file.size > 8 * 1024 * 1024) { if (st) st.textContent = 'That file is over 8 MB — please upload a smaller file.'; return; }
         var rd = new FileReader();
         rd.onload = function () {
           var res = String(rd.result || '');
@@ -22220,7 +22220,7 @@ window.qsNpOfferSend = function (btn) {
         if (!suState || !suState.b64) return;
         var st = document.getElementById('su-status');
         var next = document.getElementById('su-next');
-        if (next) { next.disabled = true; next.textContent = 'Checking…'; }
+        if (next) { next.disabled = true; next.textContent = /\.pdf$/i.test(suState.fileName || '') ? 'Reading the PDF…' : 'Checking…'; }
         if (st) st.textContent = '';
         api('/api/schedule/session-import/preview', {
           method: 'POST',

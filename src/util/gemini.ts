@@ -946,3 +946,104 @@ Rules:
   if (!jsonMatch) throw new Error('The AI did not return readable credential details.');
   return normalizeCredentialRead(JSON.parse(jsonMatch[0]), input.members);
 }
+
+export interface SessionPdfEvent {
+  date: string; start: string; end: string; title: string; kind: string;
+  speaker: string; attendees: string; room: string; meeting: string; notes: string;
+}
+
+/**
+ * Read a schedule PDF (the Calendars "⬆ Upload schedule" door,
+ * Deepika 2026-11-10) and extract every event as a raw row in the
+ * upload template's columns. The PDF's layout is arbitrary — list
+ * tables, people × date grids, multi-page sheets with repeated
+ * headers — so the AI reads it like a person would and normalizes.
+ * It transcribes ONLY what the document states: a field the document
+ * doesn't show comes back blank, never invented. The rows feed the
+ * SAME preview pipeline as a spreadsheet upload (exact-name matching,
+ * per-row questions, nothing created until the admin confirms), so a
+ * shaky read surfaces as questions in the preview — never as a wrong
+ * event. Mirrors parseCredentialDocument's call pattern (model
+ * discovery, 503 backoff, usage logging, outage hooks).
+ */
+export async function parseSessionSchedulePdf(input: {
+  pdfBase64: string;
+  filename: string;
+  today: string;
+  kindLabels: string[];
+  members: string[];
+}): Promise<SessionPdfEvent[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('AI is not configured (GEMINI_API_KEY missing).');
+  const prompt = `You read a schedule document (a PDF) and extract every calendar event it lists. Today is ${input.today}. File: ${input.filename}
+
+Return ONLY a JSON object: {"events": [{"date": "YYYY-MM-DD", "start": "...", "end": "...", "title": "...", "kind": "...", "speaker": "...", "attendees": "...", "room": "...", "meeting": "...", "notes": "..."}]}
+
+The columns are: date, start, end, title (the event's name), kind (session type), speaker, attendees, room, meeting (a meeting link/URL), notes.
+
+Rules:
+- Extract what the document STATES, exactly as printed — never invent a time, room, session type, or person the document does not show. When the document doesn't show a field for an event, return "" for that field.
+- Layouts vary. In a list/table, each row is an event. In a grid (people down one side, dates across the top, session names in the cells), each filled cell is one event: its date is the column's date, its speaker is the person whose row it is (when the grid is organized by person), and its title is the session named in the cell. If a heading or note states one time range for a whole grid or day, apply it to those events.
+- Headers that repeat on every page are not events. Skip page numbers, totals, legends, and footers.
+- Dates: return YYYY-MM-DD. Use the year the document prints; if it prints only a month and day, use the year that makes the date closest to today.
+- Times: transcribe as printed (e.g. "9:00 AM" or "09:00"). If the document prints a range like "9–10a", split it into start "9:00 AM" and end "10:00 AM".
+- Kind: prefer one of this calendar's session types when the document's wording matches one: ${input.kindLabels.join(', ') || '(none)'}. Otherwise transcribe the document's own wording.
+- Speaker and attendee names: transcribe exactly as printed. This team's members are: ${input.members.join(', ') || '(none)'} — when a printed name clearly refers to one of them, use that member's exact spelling.
+- Attendees: join multiple names/departments with "; " in one string.
+- If the document contains no calendar events at all, return {"events": []}.`;
+  const parts: any[] = [
+    { text: prompt },
+    { inlineData: { mimeType: 'application/pdf', data: input.pdfBase64 } },
+  ];
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise(r => setTimeout(r, attempt * 8000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
+  }
+  const data: any = await res.json();
+  logGeminiUsage(model, data);
+  geminiCallSucceeded();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('The AI did not return readable events.');
+  const parsed = JSON.parse(jsonMatch[0]) as { events?: any[] };
+  const str = (v: any, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const out: SessionPdfEvent[] = [];
+  for (const e of Array.isArray(parsed.events) ? parsed.events : []) {
+    out.push({
+      date: str(e?.date, 40),
+      start: str(e?.start, 40),
+      end: str(e?.end, 40),
+      title: str(e?.title, 300),
+      kind: str(e?.kind, 120),
+      speaker: str(e?.speaker, 300),
+      attendees: str(e?.attendees, 1000),
+      room: str(e?.room, 300),
+      meeting: str(e?.meeting, 1000),
+      notes: str(e?.notes, 2000),
+    });
+  }
+  return out;
+}

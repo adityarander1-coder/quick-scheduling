@@ -19,7 +19,7 @@ import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, todayStr } from '../util/audit.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
-import { parseScheduleDocument, isGeminiConfigured } from '../util/gemini';
+import { parseScheduleDocument, parseSessionSchedulePdf, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { companyTodayStr } from '../util/notifyJobs.js';
 import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict } from '../util/shiftConflicts.js';
@@ -14433,7 +14433,11 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
 // Bulk calendar-event upload — "⬆ Upload schedule" (Deepika,
 // 2026-11-07). Download the sheet format, upload a filled .csv /
 // .xlsx, check the preview (NOTHING is saved), answer what's
-// missing, then import. Creations go through createSessionFromBody —
+// missing, then import. A PDF schedule (Deepika, 2026-11-10) enters
+// through the same door: AI reads any layout into the template's
+// columns and the rows join this exact preview pipeline — no
+// third-party converter, nothing saved until the admin confirms.
+// Creations go through createSessionFromBody —
 // the exact path the Add event form uses — so the organizing-
 // department rule, speaker mirror, attendee snapshot, one-time guest
 // email and Calendar-report audit entry all match a hand-added
@@ -14443,6 +14447,27 @@ router.post('/academic-sessions', requireRole('owner', 'scheduler', 'employee'),
 const SESSION_IMPORT_MAX_ROWS = 500;
 const SESSION_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
 const SESSION_IMPORT_HEADERS = ['Date', 'Start', 'End', 'Event name', 'Session type', 'Speaker', 'Attendees', 'Room', 'Meeting link', 'Notes'];
+// PDF uploads (Deepika, 2026-11-10): the same door also takes a PDF
+// schedule, read by AI into the same preview grid. Page cap keeps a
+// book-length scan from becoming one giant AI read; the 500-row cap
+// below still bounds how many events one upload can stage.
+const SESSION_IMPORT_MAX_PDF_PAGES = 25;
+const SESSION_IMPORT_PDF_REFUSAL = "We couldn't read that PDF reliably — nothing was imported. Try the spreadsheet template instead.";
+
+// Best-effort PDF page count from the raw bytes (no PDF library is
+// bundled): the page tree's /Count is the largest count in the file;
+// failing that, count the /Type /Page markers. 0 = couldn't tell
+// (compressed object streams) — the caller lets the read proceed and
+// the row cap still bounds the outcome.
+function sessImpPdfPages(buf: Buffer): number {
+  const raw = buf.toString('latin1');
+  let best = 0;
+  if (/\/Type\s*\/Pages\b/.test(raw)) {
+    for (const m of raw.matchAll(/\/Count\s+(\d+)/g)) best = Math.max(best, parseInt(m[1], 10));
+  }
+  if (best > 0) return best;
+  return (raw.match(/\/Type\s*\/Page(?![s\w])/g) || []).length;
+}
 
 // GET /api/schedule/session-import/template — the blank sheet: the
 // exact column headers plus two example rows and nothing else.
@@ -14653,9 +14678,54 @@ router.post('/session-import/preview', requireRole('owner', 'scheduler'), async 
     const buf = Buffer.from(dataBase64, 'base64');
     if (!buf.length) { res.status(400).json({ error: 'That file is empty.' }); return; }
     if (buf.length > SESSION_IMPORT_MAX_BYTES) { res.status(413).json({ error: 'That file is over 8 MB — please upload a smaller sheet.' }); return; }
-    const parsed = sessImpGrid(filename, buf);
-    if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
-    const grid = parsed.grid;
+    // A PDF goes through the AI read first (its rows become a grid in
+    // the template's columns); every step after this — header mapping,
+    // per-row questions, exact-name matching — is the shared pipeline.
+    let grid: any[][];
+    let pdfRefs: Awaited<ReturnType<typeof sessImpRefs>> | null = null;
+    const isPdf = filename.toLowerCase().endsWith('.pdf') || buf.subarray(0, 4).toString('latin1') === '%PDF';
+    if (isPdf) {
+      if (buf.subarray(0, 4).toString('latin1') !== '%PDF') {
+        res.status(400).json({ error: "That file doesn't look like a readable PDF — nothing was imported. Try the spreadsheet template instead." });
+        return;
+      }
+      const pages = sessImpPdfPages(buf);
+      if (pages > SESSION_IMPORT_MAX_PDF_PAGES) {
+        res.status(400).json({ error: `That PDF has ${pages} pages — the limit is ${SESSION_IMPORT_MAX_PDF_PAGES} pages per upload. Please split it into smaller files.` });
+        return;
+      }
+      pdfRefs = await sessImpRefs(gate.companyId, dashboardId);
+      let events: Awaited<ReturnType<typeof parseSessionSchedulePdf>>;
+      try {
+        events = await parseSessionSchedulePdf({
+          pdfBase64: buf.toString('base64'),
+          filename,
+          today: todayStr(),
+          kindLabels: pdfRefs.kinds.map((k) => k.label),
+          members: pdfRefs.members.map((m) => m.name),
+        });
+      } catch (err) {
+        console.error('[schedule] session import PDF read failed:', err);
+        res.status(400).json({ error: SESSION_IMPORT_PDF_REFUSAL });
+        return;
+      }
+      if (!events.length) {
+        res.status(400).json({ error: "We couldn't find any events in that PDF — nothing was imported. Try the spreadsheet template instead." });
+        return;
+      }
+      if (events.length > SESSION_IMPORT_MAX_ROWS) {
+        res.status(400).json({ error: `That PDF has ${events.length} events — the limit is ${SESSION_IMPORT_MAX_ROWS} per upload. Please split it into smaller files.` });
+        return;
+      }
+      grid = [
+        SESSION_IMPORT_HEADERS,
+        ...events.map((e) => [e.date, e.start, e.end, e.title, e.kind, e.speaker, e.attendees, e.room, e.meeting, e.notes]),
+      ];
+    } else {
+      const parsed = sessImpGrid(filename, buf);
+      if ('error' in parsed) { res.status(400).json({ error: parsed.error }); return; }
+      grid = parsed.grid;
+    }
     // Find the header row within the first 5 rows.
     let headerIdx = -1;
     let colMap: Partial<Record<SessImpCol, number>> = {};
@@ -14677,7 +14747,7 @@ router.post('/session-import/preview', requireRole('owner', 'scheduler'), async 
       res.status(400).json({ error: `That sheet has ${dataRows.length} events — the limit is ${SESSION_IMPORT_MAX_ROWS} per upload. Please split it into smaller sheets.` });
       return;
     }
-    const refs = await sessImpRefs(gate.companyId, dashboardId);
+    const refs = pdfRefs ?? (await sessImpRefs(gate.companyId, dashboardId));
     const deptByName = new Map<string, { id: string; name: string }>();
     for (const d of refs.departments) {
       const key = d.name.toLowerCase();
