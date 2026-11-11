@@ -530,6 +530,12 @@ export async function processScheduleEmail(
       examples: examples.length ? examples : undefined,
     });
 
+    // Parse summary for EVERY email (Deepika, 2026-11-10): the
+    // clarification-ordering bug hid behind a parse that was computed
+    // and then discarded without a trace. This line makes any future
+    // silent case diagnosable from the logs alone.
+    console.log(`[email-poll] Message ${sourceId}: parse — emailType=${plan.emailType} changes=${Array.isArray(plan.changes) ? plan.changes.length : 0} confidence=${plan.confidence} needsClarification=${!!plan.needsClarification}`);
+
     // Mixed mail (batch 2, 2026-10-30): handling keys on the parse
     // OUTPUT, not the single emailType — one email can carry a schedule
     // question AND change requests, and both halves get handled: the
@@ -601,12 +607,13 @@ export async function processScheduleEmail(
       }
     }
 
-    // Skip if there is nothing actionable to plan (not a
-    // change/bulk/settings request, or no changes in it).
-    if (!hasChanges) {
-      if (opts?.markRead) await opts.markRead();
-      return { kind: 'skipped' };
-    }
+    // Ordering (Deepika, 2026-11-10 — the clarification-ordering
+    // bug): there is deliberately NO !hasChanges early return here.
+    // A parse can carry zero actionable changes AND a clarification
+    // the sender is owed (needsClarification set, low confidence, or
+    // incomplete fields) — the needsInfo evaluation below must see it
+    // first, or the question is computed and silently discarded. The
+    // 'skipped' return now sits below that block.
 
     // Gate: every change must be complete. If the AI left required fields
     // blank (or flagged low confidence / needs clarification), ask the sender
@@ -625,14 +632,20 @@ export async function processScheduleEmail(
     // in finalizeTaskPlan; the form path never needs it — its names
     // come from picked IDs.)
     let gateQuestion: string | null = null;
-    try {
-      const { gatePlanChanges } = await import('./planGate.js');
-      const gate = await gatePlanChanges(query, companyId, plan.changes);
-      if (!gate.ok) gateQuestion = gate.question;
-    } catch (gateErr: any) {
-      // Fail closed: an unverifiable plan must not become approvable.
-      console.log(`[email-poll] Message ${sourceId}: plan gate failed to run: ${gateErr.message}`);
-      gateQuestion = 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?';
+    // The gate verifies plans; when there are no actionable changes
+    // no plan can be created, so there is nothing to gate — the
+    // clarification below is then driven by the parse's own
+    // needsClarification / confidence / incomplete fields.
+    if (hasChanges) {
+      try {
+        const { gatePlanChanges } = await import('./planGate.js');
+        const gate = await gatePlanChanges(query, companyId, plan.changes);
+        if (!gate.ok) gateQuestion = gate.question;
+      } catch (gateErr: any) {
+        // Fail closed: an unverifiable plan must not become approvable.
+        console.log(`[email-poll] Message ${sourceId}: plan gate failed to run: ${gateErr.message}`);
+        gateQuestion = 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?';
+      }
     }
     const needsInfo = incomplete.length > 0 || plan.needsClarification || plan.confidence === 'low' || !!gateQuestion;
     if (needsInfo) {
@@ -692,6 +705,17 @@ export async function processScheduleEmail(
       }
       if (opts?.markRead) await opts.markRead();
       return { kind: 'clarification_sent', answeredQuestion };
+    }
+
+    // Skip if there is nothing actionable to plan AND nothing to
+    // ask about (not a change/bulk/settings request, or no changes
+    // in it, and no clarification owed). The skip is LOGGED with the
+    // parse summary — an unlogged skip is what let the Nov 10
+    // clarification-ordering bug pass unnoticed.
+    if (!hasChanges) {
+      console.log(`[email-poll] Skipped ${sourceId}: emailType=${plan.emailType} changes=${changes.length} confidence=${plan.confidence} needsClarification=${!!plan.needsClarification} — ${plan.summary || ''}`);
+      if (opts?.markRead) await opts.markRead();
+      return { kind: 'skipped' };
     }
 
     // The requester confirmation carries the standing "New request"
