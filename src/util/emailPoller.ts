@@ -610,6 +610,42 @@ export type ScheduleEmailOutcome =
   | { kind: 'skipped' }
   | { kind: 'sender_not_staff' }
   | { kind: 'clarification_sent'; answeredQuestion?: boolean };
+/**
+ * Reply-To for a clarification email: the address this company's
+ * scheduling mail is READ at, so the "reply in your own words" option
+ * actually delivers the reply into an ingest path where it can be
+ * matched to the pending clarification. Without it the mail goes out
+ * From the Resend sender and a reply lands at a dead address
+ * (Deepika's catch, 2026-11-10).
+ *  - Webhook path: the request arrived on a department inbound
+ *    address and replies go out From that same address (fromAddr) —
+ *    the bare address inside it is the Reply-To.
+ *  - Gmail path: the company's own connected inbox (company_inboxes,
+ *    the row the scheduler polls), else the legacy shared GMAIL_USER
+ *    inbox the poller falls back to.
+ * Null when no read address is known — the mail then goes out with
+ * no Reply-To, exactly as before.
+ */
+async function clarificationReplyTo(
+  query: QueryFn, companyId: string, fromAddr: string | null
+): Promise<string | null> {
+  if (fromAddr) {
+    const m = String(fromAddr).match(/<([^>]+)>/);
+    const addr = (m ? m[1] : String(fromAddr)).trim().toLowerCase();
+    return addr.includes('@') ? addr : null;
+  }
+  try {
+    const { rows } = await query(
+      'SELECT gmail_user FROM company_inboxes WHERE company_id = $1 AND is_active = true LIMIT 1',
+      [companyId]
+    );
+    const user = String(rows[0]?.gmail_user || '').trim().toLowerCase();
+    if (user.includes('@')) return user;
+  } catch { /* inbox table unavailable — legacy fallback below */ }
+  const legacy = (process.env.GMAIL_USER || '').trim().toLowerCase();
+  return legacy.includes('@') ? legacy : null;
+}
+
 export async function processScheduleEmail(
   query: QueryFn,
   companyId: string,
@@ -889,10 +925,17 @@ export async function processScheduleEmail(
       } catch (linkErr: any) {
         console.log(`[email-poll] Clarification form link failed: ${linkErr.message}`);
       }
+      // Reply-To: the address this company's scheduling mail is read
+      // at, so option 2 ("just reply to this email") delivers the
+      // reply into the polled inbox / inbound route instead of the
+      // dead Resend sender address.
+      let clarReplyTo: string | null = null;
+      try { clarReplyTo = await clarificationReplyTo(query, companyId, fromAddr); } catch { /* no Reply-To */ }
       try {
         const { sendMail } = await import('./mailer.js');
         await sendMail({
           ...(fromAddr ? { from: fromAddr } : {}),
+          ...(clarReplyTo ? { replyTo: clarReplyTo } : {}),
           to: sender.address,
           subject: `Re: ${email.subject}`,
           text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nTwo ways to finish this:\n\n1) Recommended — use the short form (it takes under a minute, and it is read exactly):${clarFormUrl ? `\n${clarFormUrl}` : ' open the ✉️ Email Q-Scheduler form in the app.'}\n\n2) Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.\n\n— Quick Scheduling`,

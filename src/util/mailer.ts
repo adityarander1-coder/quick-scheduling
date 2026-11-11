@@ -24,6 +24,10 @@ export interface MailOptions {
   /** Override the From header (e.g. a department's inbound address, so a
    * company's mail thread lives on one address both ways). Defaults to mailFrom(). */
   from?: string;
+  /** Reply-To address (bare email). Set only where a reply is a real,
+   * supported path (clarification emails); mail that must not be
+   * replied to leaves it unset. Passed to Resend as reply_to. */
+  replyTo?: string;
   to: string;
   cc?: string[];
   subject: string;
@@ -49,6 +53,7 @@ export async function sendMail(opts: MailOptions): Promise<void> {
     const fs = await import('node:fs');
     fs.appendFileSync(process.env.DEV_MAIL_OUTBOX, JSON.stringify({
       at: new Date().toISOString(), from: opts.from || mailFrom(), to: opts.to,
+      reply_to: opts.replyTo ?? null,
       cc: opts.cc || [], subject: opts.subject, text: opts.text, html: opts.html,
     }) + '\n');
     return;
@@ -64,6 +69,7 @@ export async function sendMail(opts: MailOptions): Promise<void> {
     body: JSON.stringify({
       from: opts.from || mailFrom(),
       to: [opts.to],
+      ...(opts.replyTo ? { reply_to: opts.replyTo } : {}),
       ...(opts.cc && opts.cc.length ? { cc: opts.cc } : {}),
       subject: opts.subject,
       text: opts.text,
