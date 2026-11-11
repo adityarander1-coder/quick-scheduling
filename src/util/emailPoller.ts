@@ -258,12 +258,96 @@ export async function buildSessionContext(
   return out;
 }
 
+const REQUEST_MONTHS: Record<string, number> = {
+  jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3,
+  may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+const REQUEST_WEEKDAYS: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+};
+
+/**
+ * Deterministic (no-AI) extraction of the dates a schedule request
+ * is about, resolved against `today` (YYYY-MM-DD). Recognises ISO
+ * dates, US numeric dates (12/2, 12/02/2026), month-name dates
+ * ("dec 2", "December 2nd", "2 Dec"), today/tomorrow, "in N
+ * days/weeks", and weekday names (bare/"this" = the coming one,
+ * "next" = the following week's — the ±14-day slice around the
+ * extracted dates makes the exact weekday convention forgiving).
+ * A yearless month/day resolves to its coming occurrence: this
+ * year, unless that date is more than 14 days in the past, in
+ * which case next year's. Returns sorted unique YYYY-MM-DD dates;
+ * an empty array means "no date could be extracted with
+ * confidence" and callers fall back to the near window.
+ */
+export function extractRequestDates(text: string, today: string): string[] {
+  const found = new Set<string>();
+  const t = ` ${String(text || '').toLowerCase()} `;
+  const base = new Date(today + 'T00:00:00Z');
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const mk = (y: number, mo: number, da: number): Date | null => {
+    if (mo < 0 || mo > 11 || da < 1 || da > 31) return null;
+    const d = new Date(Date.UTC(y, mo, da));
+    return d.getUTCFullYear() === y && d.getUTCMonth() === mo && d.getUTCDate() === da ? d : null;
+  };
+  const yearless = (mo: number, da: number) => {
+    let d = mk(base.getUTCFullYear(), mo, da);
+    if (!d) return;
+    if ((base.getTime() - d.getTime()) / 86400000 > 14) {
+      d = mk(base.getUTCFullYear() + 1, mo, da);
+      if (!d) return;
+    }
+    found.add(iso(d));
+  };
+  for (const m of t.matchAll(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g)) {
+    const d = mk(+m[1], +m[2] - 1, +m[3]);
+    if (d) found.add(iso(d));
+  }
+  for (const m of t.matchAll(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/g)) {
+    if (m[3]) {
+      const y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+      const d = mk(y, +m[1] - 1, +m[2]);
+      if (d) found.add(iso(d));
+    } else yearless(+m[1] - 1, +m[2]);
+  }
+  const MON = Object.keys(REQUEST_MONTHS).join('|');
+  for (const m of t.matchAll(new RegExp(`\\b(${MON})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s*,?\\s*(20\\d{2}))?\\b`, 'g'))) {
+    if (m[3]) {
+      const d = mk(+m[3], REQUEST_MONTHS[m[1]], +m[2]);
+      if (d) found.add(iso(d));
+    } else yearless(REQUEST_MONTHS[m[1]], +m[2]);
+  }
+  for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MON})\\b`, 'g'))) {
+    yearless(REQUEST_MONTHS[m[2]], +m[1]);
+  }
+  if (/\btoday\b/.test(t)) found.add(today);
+  if (/\btomorrow\b/.test(t)) {
+    const d = new Date(base); d.setUTCDate(d.getUTCDate() + 1); found.add(iso(d));
+  }
+  for (const m of t.matchAll(/\bin\s+(\d{1,3})\s+(day|week)s?\b/g)) {
+    const n = +m[1] * (m[2] === 'week' ? 7 : 1);
+    if (n > 0 && n <= 366) {
+      const d = new Date(base); d.setUTCDate(d.getUTCDate() + n); found.add(iso(d));
+    }
+  }
+  const WD = Object.keys(REQUEST_WEEKDAYS).join('|');
+  for (const m of t.matchAll(new RegExp(`\\b(next|this)?\\s*(${WD})\\b`, 'g'))) {
+    let delta = (REQUEST_WEEKDAYS[m[2]] - base.getUTCDay() + 7) % 7;
+    if (m[1] === 'next') delta += 7;
+    const d = new Date(base); d.setUTCDate(d.getUTCDate() + delta); found.add(iso(d));
+  }
+  return [...found].sort();
+}
+
 /**
  * Schedule context for the planner (Deepika, 2026-11-10): who actually
- * holds each shift over the coming weeks — stored shifts AND
- * pattern-drawn occurrences, read through getShiftsForRange, the same
- * source the grid uses — plus a per-person pivot so the planner can
- * see who is working vs off around any day it touches.
+ * holds each shift around the dates a request is about — stored
+ * shifts AND pattern-drawn occurrences, read through
+ * getShiftsForRange, the same source the grid uses — plus a
+ * per-person pivot so the planner can see who is working vs off
+ * around any day it touches.
  *
  * Why: per Deepika's Nov 8 decision the planner receives the company's
  * roster AND schedule inside each request (and forgets it after); the
@@ -271,15 +355,37 @@ export async function buildSessionContext(
  * blind — the Nov 10 incident, where it invented a "move" from a man
  * who was not on that day's schedule at all.
  *
- * Bounds (chosen to keep the prompt sane for a hospital roster): the
- * day-by-day view covers [today-1, today+60]; the per-person pivot
- * covers the next 21 days in detail. Both are character-capped; when a
- * cap bites, the lines say the list was cut. Best-effort: any failure
- * returns empty lines and planning continues (the deterministic gate
- * in planGate.ts still verifies every plan against the live data).
+ * Bounds (Deepika, 2026-11-10 evening): the data layer may reach any
+ * date within 8 months of today ("lets give access to 8 months of
+ * schedule"), but 8 months is the REACH, not the payload — "it
+ * should only read the part for those dates requested … to save
+ * cost." Dates are extracted from the request text deterministically
+ * (extractRequestDates, no AI); when dates are found, the day-by-day
+ * view is a slice [earliest − 14 days, latest + 14 days] at full
+ * detail, plus a small always-present anchor [today−1, today+21]
+ * (which also feeds the pivot whole), clamped to the 8-month reach.
+ * When NO date can be extracted, it falls back to the pre-8-month
+ * behaviour — the near window [today−1, today+60] — so no request
+ * ever sees less than it did before. If a block spans more than 62
+ * days (a request naming far-apart dates), its tail renders compact
+ * — same facts (date, per-type holders, full names) with short type
+ * codes spelled out in one legend line and no open-slot markers.
+ * A coverage line ALWAYS heads the section ("Schedule shown: …")
+ * naming the ranges actually rendered; if the character budget
+ * still cuts a block short, the cut marker is guaranteed to print
+ * (its space is reserved up front) and the coverage line names the
+ * last date actually shown, so a date the planner cannot see is
+ * never silently indistinguishable from an empty one — the planner
+ * prompt scopes its "not listed = nobody scheduled" rule to the
+ * shown ranges. The deterministic gate in planGate.ts always
+ * verifies against the FULL record regardless of the slice, so a
+ * narrow slice can cause a question, never a wrong applied change.
+ * The per-person pivot covers the next 21 days in detail.
+ * Best-effort: any failure returns empty lines and planning
+ * continues.
  */
 export async function buildScheduleContext(
-  query: QueryFn, companyId: string, today: string
+  query: QueryFn, companyId: string, today: string, requestText?: string
 ): Promise<{ scheduleLines: string[] }> {
   const out = { scheduleLines: [] as string[] };
   try {
@@ -290,7 +396,35 @@ export async function buildScheduleContext(
       return d.toISOString().slice(0, 10);
     };
     const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const entries = await getShiftsForRange(query, companyId, shiftDay(today, -1), shiftDay(today, 60));
+    const reachDate = new Date(today + 'T00:00:00Z');
+    reachDate.setUTCMonth(reachDate.getUTCMonth() + 8);
+    const REACH_TO = reachDate.toISOString().slice(0, 10);
+    const REACH_FROM = shiftDay(today, -31);
+
+    // Blocks of dates to render: [start, end] pairs, sorted, merged.
+    const requested = requestText ? extractRequestDates(requestText, today) : [];
+    let blocks: Array<[string, string]>;
+    if (requested.length) {
+      const sliceFrom = shiftDay(requested[0], -14) < REACH_FROM ? REACH_FROM : shiftDay(requested[0], -14);
+      const sliceTo = shiftDay(requested[requested.length - 1], 14) > REACH_TO ? REACH_TO : shiftDay(requested[requested.length - 1], 14);
+      const raw: Array<[string, string]> = [[shiftDay(today, -1), shiftDay(today, 21)]];
+      if (sliceFrom <= sliceTo) raw.push([sliceFrom, sliceTo]);
+      raw.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      blocks = [];
+      for (const b of raw) {
+        const last = blocks[blocks.length - 1];
+        if (last && b[0] <= shiftDay(last[1], 1)) {
+          if (b[1] > last[1]) last[1] = b[1];
+        } else blocks.push([b[0], b[1]]);
+      }
+    } else {
+      blocks = [[shiftDay(today, -1), shiftDay(today, 60)]];
+    }
+
+    let entries: Awaited<ReturnType<typeof getShiftsForRange>> = [];
+    for (const [bs, be] of blocks) {
+      entries = entries.concat(await getShiftsForRange(query, companyId, bs, be));
+    }
 
     // Staffing targets → open slots: a type staffed below its target
     // on a date has that many open slots that day.
@@ -313,8 +447,38 @@ export async function buildScheduleContext(
       if (!byType.has(e.shiftTypeId!)) byType.set(e.shiftTypeId!, { name: e.shiftTypeName, people: [] });
       byType.get(e.shiftTypeId!)!.people.push(e.personName);
     }
-    const dayLines: string[] = [];
-    for (const date of [...byDate.keys()].sort()) {
+    // Render each block: its first 62 days at full detail (the
+    // pre-8-month format, OPEN markers included); any tail beyond
+    // that renders compact — same facts (date, per-type holders,
+    // full names) with short type codes and no open-slot markers.
+    const blockFullTo = blocks.map(([bs]) => shiftDay(bs, 61));
+    const compactNames = new Set<string>();
+    for (const [date, byType] of byDate) {
+      const bi = blocks.findIndex(([bs, be], i) => date >= bs && date <= be && date > blockFullTo[i]);
+      if (bi >= 0) for (const t of byType.values()) compactNames.add(t.name);
+    }
+    // Short type codes: the initials of each compact-rendered type
+    // name, made unique with a numeric suffix on collision. One
+    // legend line (placed before the first compact line) spells
+    // them out, so the codes stay unambiguous to the planner.
+    const codeByName = new Map<string, string>();
+    {
+      const used = new Map<string, string>();
+      for (const name of [...compactNames].sort()) {
+        const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+        let base = words.map((w) => w[0]).join('').toUpperCase();
+        if (!base) base = name.slice(0, 2).toUpperCase();
+        let code = base; let n = 2;
+        while (used.has(code) && used.get(code) !== name) code = base + (n++);
+        used.set(code, name);
+        codeByName.set(name, code);
+      }
+    }
+    const legendLine = codeByName.size
+      ? `Type codes: ${[...codeByName.entries()].map(([name, code]) => `${code} = ${name}`).join('; ')}`
+      : '';
+
+    const fullLine = (date: string): string => {
       const byType = byDate.get(date)!;
       const parts: string[] = [];
       for (const [typeId, t] of byType) {
@@ -330,8 +494,23 @@ export async function buildScheduleContext(
         }
       }
       const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
-      dayLines.push(`${date} (${dow}): ${parts.join('; ')}`);
-    }
+      return `${date} (${dow}): ${parts.join('; ')}`;
+    };
+    const compactLine = (date: string): string => {
+      const byType = byDate.get(date)!;
+      const parts: string[] = [];
+      for (const t of byType.values()) {
+        parts.push(`${codeByName.get(t.name)}: ${t.people.join(', ')}`);
+      }
+      return `${date}: ${parts.join('; ')}`;
+    };
+    const sortedDates = [...byDate.keys()].sort();
+    const blockItems: Array<Array<{ date: string; line: string; compact: boolean }>> =
+      blocks.map(([bs, be], i) => sortedDates
+        .filter((date) => date >= bs && date <= be)
+        .map((date) => date > blockFullTo[i]
+          ? { date, line: compactLine(date), compact: true }
+          : { date, line: fullLine(date), compact: false }));
 
     // (b) Per-person pivot, next 21 days: the planner sees each
     // person's actual working pattern around "now", so "Bon is off
@@ -350,18 +529,52 @@ export async function buildScheduleContext(
       personLines.push(`${name} works: ${shown.join('; ')}${items.length > shown.length ? `; …and ${items.length - shown.length} more` : ''}`);
     }
 
+    // The budget is a backstop (slices keep typical contexts near
+    // today's size); its space for the coverage line is reserved up
+    // front so the honesty lines always print.
+    const BUDGET = 64000;
+    const COVERAGE_RESERVE = 192; // the coverage line always fits
     const lines: string[] = [];
     let chars = 0;
     const push = (line: string) => {
-      if (chars + line.length > 16000) return false;
+      if (chars + line.length > BUDGET - COVERAGE_RESERVE) return false;
       lines.push(line); chars += line.length + 1; return true;
     };
-    for (const l of dayLines) if (!push(l)) { push('…(schedule list cut for length)'); break; }
+    const shown: Array<{ from: string; to: string }> = [];
+    let cut = false;
+    let legendShown = false;
+    let stop = false;
+    for (let b = 0; b < blocks.length && !stop; b++) {
+      const [bs, be] = blocks[b];
+      const items = blockItems[b];
+      if (!items.length) {
+        // An empty block was still shown — "nobody scheduled
+        // anywhere in it" is information the coverage line carries.
+        shown.push({ from: bs, to: be });
+        continue;
+      }
+      let blockShownTo: string | null = null;
+      for (const it of items) {
+        if (it.compact && !legendShown) {
+          if (!push(legendLine)) { cut = true; stop = true; break; }
+          legendShown = true;
+        }
+        if (!push(it.line)) { cut = true; stop = true; break; }
+        blockShownTo = it.date;
+      }
+      if (blockShownTo) shown.push({ from: bs, to: blockShownTo });
+      else if (cut && !shown.length) shown.push({ from: bs, to: bs });
+    }
+    if (cut) push('…(schedule list cut for length)');
     if (personLines.length) {
       if (push('Per person, next 21 days:')) {
         for (const l of personLines) if (!push(l)) { push('…(per-person list cut for length)'); break; }
       }
     }
+    // Coverage line: the ranges ACTUALLY rendered. A block cut
+    // short names its last rendered date — never its promised end.
+    const ranges = shown.length ? shown : blocks.map(([a, b]) => ({ from: a, to: b }));
+    lines.unshift(`Schedule shown: ${ranges.map((r) => `${r.from} through ${r.to}`).join('; and ')}.`);
     out.scheduleLines = lines;
   } catch { /* context is best-effort; the gate still verifies */ }
   return out;
@@ -512,7 +725,7 @@ export async function processScheduleEmail(
     // past unclear wording that was later resolved, so the same
     // wording is understood the first time.
     const sessionCtx = await buildSessionContext(query, companyId, today);
-    const scheduleCtx = await buildScheduleContext(query, companyId, today);
+    const scheduleCtx = await buildScheduleContext(query, companyId, today, `${email.subject}\n${effectiveBody}`);
     const { getShiftTypeRules } = await import('./planExecutor.js');
     const { getRelevantExamples } = await import('./emailLearning.js');
     const examples = await getRelevantExamples(query, companyId, `${email.subject}\n${effectiveBody}`);

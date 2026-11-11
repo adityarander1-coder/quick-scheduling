@@ -8177,7 +8177,8 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   const today = new Date().toISOString().slice(0, 10);
   const { buildSessionContext, buildScheduleContext } = await import('../util/emailPoller.js');
   const sessionCtx = await buildSessionContext(query, companyId, today);
-  const scheduleCtx = await buildScheduleContext(query, companyId, today);
+  const scheduleCtx = await buildScheduleContext(query, companyId, today,
+    [task, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
   const { getShiftTypeRules } = await import('../util/planExecutor.js');
   const ctx: any = {
     shiftTypes: stRows.map((r: any) => r.name),

@@ -250,7 +250,7 @@ Available shift types: ${context.shiftTypes.join(', ') || '(none listed)'}
 Job-role rules for shift types (only assign someone to a shift type when their job role is listed here; types not listed are open to everyone): ${(context.shiftTypeRules || []).join(' | ') || '(none — everyone may take every shift type)'}
 Team members (copy person names EXACTLY as written here — these are the only people who exist):
 ${(context.memberDetails && context.memberDetails.length ? context.memberDetails : context.members).join('\n') || '(none listed)'}
-Schedule — who actually holds each shift (AUTHORITATIVE: stored shifts and rotation-pattern shifts combined; if a shift type is not listed for a date, nobody is scheduled for it that day):
+Schedule — who actually holds each shift (AUTHORITATIVE: stored shifts and rotation-pattern shifts combined; within the shown range stated on the first Schedule line, if a shift type is not listed for a date, nobody is scheduled for it that day; for a date beyond the shown range you cannot see that date — say so in needsClarification instead of treating it as empty):
 ${(context.schedule || []).join('\n') || '(no schedule data)'}
 Dashboards (calendars): ${(context.dashboards || []).join(', ') || '(none)'}
 Session types by dashboard: ${(context.sessionKinds || []).join(' | ') || '(none)'}
