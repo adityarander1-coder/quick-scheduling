@@ -190,6 +190,8 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 async function main(): Promise<void> {
   await ensureReady(); // auto-runs pending migrations at boot
+  const { runLearningCleanupOnce } = await import('./util/learningCleanup.js');
+  await runLearningCleanupOnce(); // one-time: delete the poisoned 2026-11-10 learning example(s); no-op after first run
   startSessionPruneTimer(); // expired sessions pruned every 15 min, off the request path
   const { startPayrollScheduler } = await import('./util/payrollScheduler.js');
   startPayrollScheduler();
