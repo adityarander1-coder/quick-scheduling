@@ -39,7 +39,23 @@ import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
-export type GateResult = { ok: true } | { ok: false; question: string };
+/** One structured name-ambiguity item (Deepika, 2026-11-10 —
+ * clickable clarification options): the fragment exactly as written,
+ * the plan field it came from, and the roster candidates it could
+ * mean. The email path stores these with the pending clarification
+ * so the question can be answered by tapping a name. Candidates
+ * ALWAYS come from this module's roster resolution — never from
+ * parsing names out of prose. */
+export interface NameAmbiguityItem {
+  fragment: string;
+  field: string;
+  label: string;
+  candidates: { id: string; name: string }[];
+}
+
+export type GateResult =
+  | { ok: true }
+  | { ok: false; question: string; items?: NameAmbiguityItem[] };
 
 interface RosterUser {
   id: string;
@@ -54,8 +70,30 @@ const norm = (s: string) => (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
 
 type Resolution =
   | { kind: 'user'; user: RosterUser }
-  | { kind: 'ambiguous'; candidates: string[] }
+  | { kind: 'ambiguous'; candidates: RosterUser[] }
   | { kind: 'none'; suggestions: string[] };
+
+/** The company's active roster in gate order (shared by the gate
+ * itself and the clarification-item derivation below). */
+export async function loadGateRoster(query: QueryFn, companyId: string): Promise<RosterUser[]> {
+  const { rows: urows } = await query(
+    `SELECT id, first_name, last_name, nickname FROM users
+     WHERE company_id = $1 AND is_active = true
+     ORDER BY lower(first_name), lower(last_name)`,
+    [companyId]
+  );
+  return urows.map((u: any) => {
+    const fullName = `${u.first_name || ''} ${u.last_name || ''}`.trim().replace(/\s+/g, ' ');
+    return {
+      id: u.id,
+      firstName: u.first_name || '',
+      lastName: u.last_name || '',
+      nickname: u.nickname || null,
+      fullName,
+      display: u.nickname || fullName,
+    };
+  });
+}
 
 /** Resolve one typed name against the roster, Deepika's exact rule. */
 function resolvePerson(input: string, roster: RosterUser[]): Resolution {
@@ -65,11 +103,11 @@ function resolvePerson(input: string, roster: RosterUser[]): Resolution {
   //    genuinely ambiguous — report, never pick the first row.
   const fullHits = roster.filter((u) => norm(u.fullName) === q);
   if (fullHits.length === 1) return { kind: 'user', user: fullHits[0] };
-  if (fullHits.length > 1) return { kind: 'ambiguous', candidates: fullHits.map((u) => u.fullName) };
+  if (fullHits.length > 1) return { kind: 'ambiguous', candidates: fullHits };
   // 2. Exact nickname (the name the person is known by), when unique.
   const nickHits = roster.filter((u) => u.nickname && norm(u.nickname) === q);
   if (nickHits.length === 1) return { kind: 'user', user: nickHits[0] };
-  if (nickHits.length > 1) return { kind: 'ambiguous', candidates: nickHits.map((u) => u.fullName) };
+  if (nickHits.length > 1) return { kind: 'ambiguous', candidates: nickHits };
   // 3. matchName semantics over full names — with ONE tightening.
   //    matchName (the Ask path) resolves a UNIQUE bare last name as
   //    exact; the plan gate does not. Deepika's rule for plans is
@@ -83,25 +121,78 @@ function resolvePerson(input: string, roster: RosterUser[]): Resolution {
   const m = matchName(input, roster.map((u) => u.fullName));
   if (m.status === 'exact') {
     const hits = roster.filter((u) => u.fullName === m.name);
-    if (hits.length !== 1) return { kind: 'ambiguous', candidates: hits.map((u) => u.fullName) };
+    if (hits.length !== 1) return { kind: 'ambiguous', candidates: hits };
     const u = hits[0];
     if (!q.includes(' ') && norm(u.firstName) !== q && norm(u.lastName) === q) {
       const cands = roster
-        .filter((x) => norm(x.lastName) === q || norm(x.fullName).includes(q))
-        .map((x) => x.fullName);
-      return { kind: 'ambiguous', candidates: [...new Set(cands)] };
+        .filter((x) => norm(x.lastName) === q || norm(x.fullName).includes(q));
+      return { kind: 'ambiguous', candidates: [...new Map(cands.map((x) => [x.id, x])).values()] };
     }
     return { kind: 'user', user: u };
   }
-  if (m.status === 'suggestions') return { kind: 'ambiguous', candidates: m.names };
+  if (m.status === 'suggestions') {
+    const byName = new Map(roster.map((u) => [u.fullName, u]));
+    const cands = m.names.map((n) => byName.get(n)).filter((u): u is RosterUser => !!u);
+    return { kind: 'ambiguous', candidates: cands.length ? cands : [] };
+  }
   return { kind: 'none', suggestions: [] };
 }
 
 function nameQuestion(fieldLabel: string, input: string, res: Resolution): string {
   if (res.kind === 'ambiguous') {
-    return `Who do you mean by "${input}" (${fieldLabel})? It could be ${res.candidates.join(' or ')} — please use the full name.`;
+    return `Who do you mean by "${input}" (${fieldLabel})? It could be ${res.candidates.map((u) => u.fullName).join(' or ')} — please use the full name.`;
   }
   return `I don't see a team member named "${input}" (${fieldLabel}). Please check the name and use their full name as it appears on the team list.`;
+}
+
+/** Quoted fragments in a question text ('You wrote 'dah' and "Kum"')
+ * — the spans a question itself flags as the unclear words. */
+export function extractQuotedFragments(text: string): string[] {
+  const out: string[] = [];
+  const re = /["“”]([^"“”]{1,50})["“”]|'([^']{1,50})'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(text || '')))) {
+    const f = (m[1] ?? m[2] ?? '').trim();
+    if (f) out.push(f);
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * Structured items for a PLANNER-composed clarification question
+ * (Deepika, 2026-11-10): the planner writes prose only, so the
+ * candidate sets are reconstructed deterministically — take the
+ * fragments the question itself quotes and resolve each against the
+ * roster with the gate's exact rule. A fragment becomes an item
+ * ONLY when that resolution is genuinely ambiguous (≥1 candidate);
+ * exact and unknown fragments are skipped, so an open-ended
+ * question yields no items and behaves exactly as before.
+ */
+export async function deriveNameAmbiguityItems(
+  query: QueryFn, companyId: string, questionText: string
+): Promise<NameAmbiguityItem[]> {
+  const fragments = extractQuotedFragments(questionText);
+  if (!fragments.length) return [];
+  const roster = await loadGateRoster(query, companyId);
+  const items: NameAmbiguityItem[] = [];
+  const seen = new Set<string>();
+  for (const fragment of fragments) {
+    if (items.length >= 4) break;
+    // Plausible name fragments only: letters, up to 3 words.
+    if (!/^[\p{L}][\p{L}\s.'-]*$/u.test(fragment) || fragment.split(/\s+/).length > 3) continue;
+    const key = norm(fragment);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const res = resolvePerson(fragment, roster);
+    if (res.kind !== 'ambiguous' || !res.candidates.length) continue;
+    items.push({
+      fragment,
+      field: 'person',
+      label: 'the person',
+      candidates: res.candidates.map((u) => ({ id: u.id, name: u.fullName })),
+    });
+  }
+  return items;
 }
 
 const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> = [
@@ -127,23 +218,7 @@ export async function gatePlanChanges(
   const list = Array.isArray(changes) ? changes : [];
   if (!list.length) return { ok: true };
 
-  const { rows: urows } = await query(
-    `SELECT id, first_name, last_name, nickname FROM users
-     WHERE company_id = $1 AND is_active = true
-     ORDER BY lower(first_name), lower(last_name)`,
-    [companyId]
-  );
-  const roster: RosterUser[] = urows.map((u: any) => {
-    const fullName = `${u.first_name || ''} ${u.last_name || ''}`.trim().replace(/\s+/g, ' ');
-    return {
-      id: u.id,
-      firstName: u.first_name || '',
-      lastName: u.last_name || '',
-      nickname: u.nickname || null,
-      fullName,
-      display: u.nickname || fullName,
-    };
-  });
+  const roster = await loadGateRoster(query, companyId);
   // ---- 1. exact names -------------------------------------------------
   const resolved = new Map<any, Map<string, RosterUser>>();
   for (const c of list) {
@@ -155,7 +230,17 @@ export async function gatePlanChanges(
       if (raw === undefined || raw === null || String(raw).trim() === '') continue;
       const res = resolvePerson(String(raw), roster);
       if (res.kind !== 'user') {
-        return { ok: false, question: nameQuestion(label, String(raw), res) };
+        // A genuine ambiguity also emits the structured item, so
+        // the clarification can be answered by tapping a name.
+        const items = res.kind === 'ambiguous' && res.candidates.length
+          ? [{
+              fragment: String(raw),
+              field,
+              label,
+              candidates: res.candidates.map((u) => ({ id: u.id, name: u.fullName })),
+            }]
+          : undefined;
+        return { ok: false, question: nameQuestion(label, String(raw), res), items };
       }
       per.set(field, res.user);
       c[field] = res.user.fullName; // canonical — downstream lookups stay exact

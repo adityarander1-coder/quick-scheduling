@@ -24711,6 +24711,10 @@ window.qsNpOfferSend = function (btn) {
     } else if (link === 'schedule') {
       if (window.qsSetAppView) window.qsSetAppView('admin');
       window.location.hash = 'schedule';
+    } else if (link.charAt(0) === '/') {
+      // Absolute-path links (clarification answer page, cross-branch
+      // page) navigate the whole browser there.
+      window.location.href = link;
     }
   }
 

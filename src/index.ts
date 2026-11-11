@@ -21,6 +21,7 @@ import invitesRouter from './routes/invites';
 import institutionsRouter from './routes/institutions';
 import scheduleRouter from './routes/schedule';
 import requestFormRouter from './routes/requestForm';
+import clarifyRouter from './routes/clarify';
 import notificationsRouter from './routes/notifications';
 import pushRouter from './routes/push';
 import credentialsRouter from './routes/credentials';
@@ -97,6 +98,7 @@ app.use('/api/institutions', institutionsRouter);
 // The request-form routes mount BEFORE the schedule router: their
 // paths (/request-form..., /request-form-link) must not be swallowed
 // by any schedule route pattern.
+app.use('/api/schedule', clarifyRouter);
 app.use('/api/schedule', requestFormRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/notifications', notificationsRouter);

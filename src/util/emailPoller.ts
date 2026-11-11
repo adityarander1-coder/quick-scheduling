@@ -881,6 +881,7 @@ export async function processScheduleEmail(
     // in finalizeTaskPlan; the form path never needs it — its names
     // come from picked IDs.)
     let gateQuestion: string | null = null;
+    let gateItems: any[] | null = null;
     // The gate verifies plans; when there are no actionable changes
     // no plan can be created, so there is nothing to gate — the
     // clarification below is then driven by the parse's own
@@ -889,7 +890,7 @@ export async function processScheduleEmail(
       try {
         const { gatePlanChanges } = await import('./planGate.js');
         const gate = await gatePlanChanges(query, companyId, plan.changes);
-        if (!gate.ok) gateQuestion = gate.question;
+        if (!gate.ok) { gateQuestion = gate.question; gateItems = gate.items || null; }
       } catch (gateErr: any) {
         // Fail closed: an unverifiable plan must not become approvable.
         console.log(`[email-poll] Message ${sourceId}: plan gate failed to run: ${gateErr.message}`);
@@ -912,9 +913,11 @@ export async function processScheduleEmail(
       // recommended one — it opens already knowing who they are and
       // submits straight into a plan; a plain-words reply also works.
       let clarFormUrl: string | null = null;
+      let senderUserId: string | null = null;
       try {
         const { findUserByAnyEmail, createClarificationFormLink, formLinkUrl } = await import('./formLinks.js');
         const senderUser = await findUserByAnyEmail(query, companyId, sender.address);
+        senderUserId = senderUser ? senderUser.id : null;
         const link = await createClarificationFormLink(query, companyId, senderUser ? senderUser.id : null, sender.address, {
           originalSubject: pendingOriginal ? pendingOriginal.subject : email.subject,
           originalBody: pendingOriginal ? pendingOriginal.body : email.body,
@@ -924,6 +927,32 @@ export async function processScheduleEmail(
         clarFormUrl = formLinkUrl(link.token);
       } catch (linkErr: any) {
         console.log(`[email-poll] Clarification form link failed: ${linkErr.message}`);
+      }
+      // Clickable options (Deepika, 2026-11-10): when this question
+      // is a name ambiguity, the candidate set becomes tappable —
+      // gate items when the gate composed the question, otherwise
+      // derived deterministically from the planner's quoted
+      // fragments. No items → the email below stays byte-identical
+      // to the prose-only one and no token is stored.
+      let clickItems: any[] | null = null;
+      let clickToken: string | null = null;
+      let optionsBlock: { text: string; html: string } | null = null;
+      try {
+        const { deriveNameAmbiguityItems } = await import('./planGate.js');
+        const items = gateItems && gateItems.length
+          ? gateItems
+          : (detail === plan.needsClarification
+              ? await deriveNameAmbiguityItems(query, companyId, detail)
+              : []);
+        if (items.length) {
+          const { buildOptionsEmailBlock } = await import('./clarifyOptions.js');
+          clickItems = items;
+          clickToken = crypto.randomBytes(24).toString('base64url');
+          optionsBlock = buildOptionsEmailBlock(items, clickToken, clarFormUrl);
+        }
+      } catch (optErr: any) {
+        console.log(`[email-poll] Clarification options failed: ${optErr.message}`);
+        clickItems = null; clickToken = null; optionsBlock = null;
       }
       // Reply-To: the address this company's scheduling mail is read
       // at, so option 2 ("just reply to this email") delivers the
@@ -938,8 +967,8 @@ export async function processScheduleEmail(
           ...(clarReplyTo ? { replyTo: clarReplyTo } : {}),
           to: sender.address,
           subject: `Re: ${email.subject}`,
-          text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}\n\nTwo ways to finish this:\n\n1) Recommended — use the short form (it takes under a minute, and it is read exactly):${clarFormUrl ? `\n${clarFormUrl}` : ' open the ✉️ Email Q-Scheduler form in the app.'}\n\n2) Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p><p>Two ways to finish this:</p><p><strong>1) Recommended</strong> — use the short form (under a minute, and it is read exactly):</p>${clarFormUrl ? `<p><a href="${clarFormUrl}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Finish it with the form</a></p>` : '<p>Open the ✉️ Email Q-Scheduler form in the app.</p>'}<p><strong>2)</strong> Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
+          text: `Hi,\n\nI wanted to apply your schedule change but I'm missing something: ${detail}${optionsBlock ? `\n\n${optionsBlock.text}\n` : ''}\n\nTwo ways to finish this:\n\n1) Recommended — use the short form (it takes under a minute, and it is read exactly):${clarFormUrl ? `\n${clarFormUrl}` : ' open the ✉️ Email Q-Scheduler form in the app.'}\n\n2) Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>I wanted to apply your schedule change but I'm missing something: <strong>${detail}</strong></p>${optionsBlock ? optionsBlock.html : ''}<p>Two ways to finish this:</p><p><strong>1) Recommended</strong> — use the short form (under a minute, and it is read exactly):</p>${clarFormUrl ? `<p><a href="${clarFormUrl}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Finish it with the form</a></p>` : '<p>Open the ✉️ Email Q-Scheduler form in the app.</p>'}<p><strong>2)</strong> Or just reply to this email in your own words with the missing detail, and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
           headers: { 'Message-ID': clarMessageId },
         });
         console.log(`[email-poll] Clarification requested from ${sender.address}: ${detail}`);
@@ -954,10 +983,28 @@ export async function processScheduleEmail(
           query, companyId, sender.address,
           pendingOriginal ? pendingOriginal.subject : email.subject,
           pendingOriginal ? pendingOriginal.body : email.body,
-          detail, clarMessageId
+          detail, clarMessageId,
+          clickItems && clickToken ? { options: { items: clickItems }, answerToken: clickToken } : undefined
         );
       } catch (saveErr: any) {
         console.log(`[email-poll] Saving pending clarification failed: ${saveErr.message}`);
+      }
+      // In-app surface for the same question (Deepika, 2026-11-10):
+      // the requester's bell entry opens the answer page when
+      // logged in. (No options → nothing new in-app, as today.)
+      if (clickItems && clickToken && senderUserId) {
+        try {
+          await notify({
+            companyId,
+            userIds: [senderUserId],
+            category: 'schedule',
+            type: 'email_clarification',
+            title: 'Quick question about your schedule request',
+            body: detail,
+            link: `/api/schedule/clarify/${clickToken}`,
+            bundleKey: `email_clarification:${companyId}:${sender.address}`,
+          });
+        } catch { /* best-effort */ }
       }
       if (opts?.markRead) await opts.markRead();
       return { kind: 'clarification_sent', answeredQuestion };
