@@ -204,3 +204,51 @@ export async function restoreClarification(
      JSON.stringify(row.answers || {}), row.answer_token, row.created_at]
   );
 }
+
+// ---------------------------------------------------------------------------
+// Processed-message idempotency (Deepika, 2026-11-11 — the one-email
+// fix): EVERY message the poller finishes processing is recorded
+// here — plan_created, clarification_sent, and skipped alike —
+// keyed by (company_id, source_email_id). pollInbox skips recorded
+// ids, so a second tick, a manual re-poll, or a failed markRead
+// can never re-process a message and send a second clarification
+// email. A clarification REPLY is a different message id and is
+// recorded in its own right, so the reply path keeps working.
+// (Migration 104 — processed_schedule_emails.)
+// ---------------------------------------------------------------------------
+
+/** Record that a message was processed. A failed record must not
+ * fail the processing itself — worst case a duplicate poll is
+ * possible, not a lost plan. */
+export async function recordProcessedMessage(
+  query: QueryFn, companyId: string, sourceEmailId: string, outcome: string
+): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO processed_schedule_emails (company_id, source_email_id, outcome)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (company_id, source_email_id) DO NOTHING`,
+      [companyId, sourceEmailId, outcome]
+    );
+  } catch (e: any) {
+    console.error('[processed] could not record', sourceEmailId, e?.message);
+  }
+}
+
+/** True when this message was already processed. */
+export async function hasProcessedMessage(
+  query: QueryFn, companyId: string, sourceEmailId: string
+): Promise<boolean> {
+  try {
+    const { rows } = await query(
+      `SELECT 1 FROM processed_schedule_emails WHERE company_id = $1 AND source_email_id = $2 LIMIT 1`,
+      [companyId, sourceEmailId]
+    );
+    return rows.length > 0;
+  } catch (e: any) {
+    // If the table is missing (pre-migration deploy), never block
+    // processing — the older plan-row + Seen-flag checks still run.
+    if (e?.code === '42P01') return false;
+    throw e;
+  }
+}

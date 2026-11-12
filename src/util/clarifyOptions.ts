@@ -1,60 +1,112 @@
 // util/clarifyOptions.ts — clickable clarification options
-// (Deepika, 2026-11-10): when a clarification question is a name
-// ambiguity, the candidate set the question already names becomes
-// tappable — one button per candidate, the click IS the name — in
-// the email (one-tap token links, the Approve/Reject pattern) and
-// on the answer page the links land on (real POST buttons, the
-// requests/act pattern). The mandatory escape line rides with every
-// options block: when none of the options are right, the sender
-// replies in their own words or finishes with the form, exactly as
-// before this feature existed.
+// (Deepika, 2026-11-10; one-email fix 2026-11-11): when a
+// clarification question names its unknowns, every one of them
+// becomes tappable — one button per candidate, the click IS the
+// answer — in the email (one-tap token links, the Approve/Reject
+// pattern) and on the answer page the links land on (real POST
+// buttons, the requests/act pattern). Name rows show FULL names
+// only, never the fragment; a single candidate is a single
+// full-name button, same code as the multi-candidate rows — there
+// is deliberately no Yes/No shape anywhere. Shift rows offer the
+// candidate shifts (holder + type) the same way. The mandatory
+// escape line rides with every options block: when none of the
+// options are right, the sender replies in their own words or
+// finishes with the form, exactly as before this feature existed.
 
 import { escHtml } from './mailer.js';
-import type { NameAmbiguityItem } from './planGate.js';
+import type { NameAmbiguityItem, ShiftChoiceItem, ShiftChoiceOption, ClarificationItem } from './planGate.js';
 
 export const NONE_OF_THESE_TEXT =
-  'None of these right? Just reply to this email in your own words with the correct name — or finish it with the form.';
+  'None of these right? Open the link and pick the person from the list.';
 
 export function clarifyUrl(token: string): string {
   const base = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
   return `${base}/api/schedule/clarify/${token}`;
 }
 
-export function clarifyPickUrl(token: string, itemIndex: number, userId: string): string {
-  return `${clarifyUrl(token)}?item=${itemIndex}&pick=${encodeURIComponent(userId)}`;
+export function clarifyPickUrl(token: string, itemIndex: number, pick: string): string {
+  return `${clarifyUrl(token)}?item=${itemIndex}&pick=${encodeURIComponent(pick)}`;
 }
 
-/** The question line for one item: multi-candidate asks who the
- * fragment means; a single candidate renders Deepika's Yes/No
- * shape ("dah" = Bon Dah?). */
-export function itemQuestion(item: NameAmbiguityItem): string {
-  if (item.candidates.length === 1) {
-    return `"${item.fragment}" = ${item.candidates[0].name}?`;
+/** Namespaced pick value for a shift option, so it can never
+ * collide with a user id in the stored answers map. */
+export function shiftOptionKey(o: ShiftChoiceOption): string {
+  return `shift:${o.holderId}:${o.shiftTypeId}:${o.date}`;
+}
+
+export function findShiftOption(item: ShiftChoiceItem, pick: string): ShiftChoiceOption | null {
+  return (item.options || []).find((o) => shiftOptionKey(o) === pick) || null;
+}
+
+/** The button label for a shift option: holder + type, full names. */
+export function shiftOptionLabel(o: ShiftChoiceOption): string {
+  return `${o.holderName} — ${o.shiftTypeName}`;
+}
+
+/** The question line for one item: a name row asks who the
+ * fragment means; a shift row asks which shift is being given up. */
+export function itemQuestion(item: ClarificationItem): string {
+  if ((item as ShiftChoiceItem).kind === 'shift') return (item as ShiftChoiceItem).label;
+  const nameItem = item as NameAmbiguityItem;
+  return `Who did you mean by "${nameItem.fragment}"?`;
+}
+
+/**
+ * The single email's question text, authored FROM the merged items
+ * (Deepika, 2026-11-11 — one-email fix): the planner/gate free
+ * text is dropped, so two sources can never contradict each other
+ * in one mail. Candidate order follows the original question's
+ * wording when it already lists them, else roster order — so a
+ * question that already read well keeps reading the same way.
+ */
+export function buildDetailFromItems(items: ClarificationItem[], originalDetail: string): string {
+  const lower = String(originalDetail || '').toLowerCase();
+  const parts: string[] = [];
+  for (const item of items) {
+    if ((item as ShiftChoiceItem).kind === 'shift') {
+      const shift = item as ShiftChoiceItem;
+      parts.push(`Which shift is being given up on ${shift.date} — ${shift.options.map((o) => `${o.holderName}'s ${o.shiftTypeName}`).join(' or ')}?`);
+    } else {
+      const nameItem = item as NameAmbiguityItem;
+      const names = [...nameItem.candidates];
+      names.sort((a, b) => {
+        const ia = lower.indexOf(a.name.toLowerCase());
+        const ib = lower.indexOf(b.name.toLowerCase());
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
+      parts.push(`You wrote "${nameItem.fragment}" — did you mean ${names.map((c) => c.name).join(' or ')}?`);
+    }
   }
-  return `Who did you mean by "${item.fragment}"?`;
+  return parts.join(' ');
 }
 
 /** The options block spliced into the clarification email, under
- * the question: one row per ambiguous item, then the escape line. */
+ * the question: one row per item (names and shifts alike), then
+ * the escape line. */
 export function buildOptionsEmailBlock(
-  items: NameAmbiguityItem[], token: string, formUrl: string | null
+  items: ClarificationItem[], token: string, formUrl: string | null
 ): { text: string; html: string } {
   const textRows: string[] = [];
   const htmlRows: string[] = [];
   items.forEach((item, i) => {
     textRows.push(itemQuestion(item));
     htmlRows.push(`<p style="margin:14px 0 6px"><strong>${escHtml(itemQuestion(item))}</strong></p>`);
-    if (item.candidates.length === 1) {
-      const c = item.candidates[0];
-      textRows.push(`- Yes: ${clarifyPickUrl(token, i, c.id)}`);
-      textRows.push(`- No: ${clarifyUrl(token)}`);
-      htmlRows.push(
-        `<p style="margin:4px 0">` +
-        `<a href="${clarifyPickUrl(token, i, c.id)}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;margin-right:8px;">Yes</a>` +
-        `<a href="${clarifyUrl(token)}" style="background:#fff;color:#0e7c86;padding:9px 19px;text-decoration:none;border-radius:5px;display:inline-block;border:1px solid #0e7c86;">No</a></p>`
-      );
+    if ((item as ShiftChoiceItem).kind === 'shift') {
+      const shift = item as ShiftChoiceItem;
+      for (const o of shift.options) {
+        const key = shiftOptionKey(o);
+        const label = shiftOptionLabel(o);
+        textRows.push(`- ${label}: ${clarifyPickUrl(token, i, key)}`);
+        htmlRows.push(
+          `<p style="margin:4px 0"><a href="${clarifyPickUrl(token, i, key)}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;">${escHtml(label)}</a></p>`
+        );
+      }
     } else {
-      for (const c of item.candidates) {
+      const nameItem = item as NameAmbiguityItem;
+      for (const c of nameItem.candidates) {
         textRows.push(`- ${c.name}: ${clarifyPickUrl(token, i, c.id)}`);
         htmlRows.push(
           `<p style="margin:4px 0"><a href="${clarifyPickUrl(token, i, c.id)}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;">${escHtml(c.name)}</a></p>`
@@ -65,10 +117,10 @@ export function buildOptionsEmailBlock(
   });
   const text =
     `Quickest — tap your answer:\n\n${textRows.join('\n')}` +
-    `${NONE_OF_THESE_TEXT}${formUrl ? `\n${formUrl}` : ''}`;
+    `${NONE_OF_THESE_TEXT}\n${clarifyUrl(token)}${formUrl ? `\nOr finish it with the form: ${formUrl}` : ''}`;
   const html =
     `<p><strong>Quickest — tap your answer:</strong></p>${htmlRows.join('')}` +
-    `<p style="color:#5b6b76;font-size:13px">${escHtml(NONE_OF_THESE_TEXT)}${formUrl ? ` <a href="${formUrl}">Open the form</a>` : ''}</p>`;
+    `<p style="color:#5b6b76;font-size:13px">${escHtml(NONE_OF_THESE_TEXT)} <a href="${clarifyUrl(token)}">Open the answer page</a>${formUrl ? ` — or <a href="${formUrl}">finish it with the form</a>` : ''}</p>`;
   return { text, html };
 }
 
@@ -86,14 +138,14 @@ const BTN_GHOST = 'background:#fff;color:#0e7c86;padding:9px 19px;border:1px sol
 
 /**
  * The answer page: every row of the pending clarification with real
- * POST buttons. Answered rows show their pick; the escape block
- * (mandatory text + a "None of these" button into the prefilled
- * form) closes the page.
+ * POST buttons. Answered rows show their pick; below the rows sits
+ * the searchable roster dropdown ("None of these are right?") and
+ * the "None of these" button into the prefilled form.
  */
 export function answerPageHtml(args: {
   token: string;
   missing: string;
-  items: NameAmbiguityItem[];
+  items: ClarificationItem[];
   answers: Record<string, string>;
   formUrl: string | null;
   notice?: string | null;
@@ -103,30 +155,32 @@ export function answerPageHtml(args: {
   const rows: string[] = [];
   items.forEach((item, i) => {
     const picked = answers[String(i)];
-    const pickedName = picked ? (item.candidates.find((c) => c.id === picked)?.name || null) : null;
+    // A recorded pick renders as the answered line: a name, or a
+    // "holder — type" label for a shift pick.
+    let pickedLabel: string | null = null;
+    if (picked) {
+      if ((item as ShiftChoiceItem).kind === 'shift') {
+        const o = findShiftOption(item as ShiftChoiceItem, picked);
+        pickedLabel = o ? shiftOptionLabel(o) : null;
+      } else {
+        pickedLabel = (item as NameAmbiguityItem).candidates.find((c) => c.id === picked)?.name || null;
+      }
+    }
     rows.push(`<p style="margin:16px 0 6px"><strong>${escHtml(itemQuestion(item))}</strong></p>`);
-    if (pickedName) {
-      rows.push(`<p style="margin:4px 0;color:#166534">✓ ${escHtml(pickedName)}</p>`);
+    if (pickedLabel) {
+      rows.push(`<p style="margin:4px 0;color:#166534">✓ ${escHtml(pickedLabel)}</p>`);
       return;
     }
-    if (item.candidates.length === 1) {
-      const c = item.candidates[0];
+    const buttons: Array<{ pick: string; label: string }> =
+      (item as ShiftChoiceItem).kind === 'shift'
+        ? (item as ShiftChoiceItem).options.map((o) => ({ pick: shiftOptionKey(o), label: shiftOptionLabel(o) }))
+        : (item as NameAmbiguityItem).candidates.map((c) => ({ pick: c.id, label: c.name }));
+    for (const b of buttons) {
       rows.push(
         `<form method="post" action="${action}" style="display:inline-block;margin:4px 8px 4px 0">` +
-        `<input type="hidden" name="item" value="${i}"><input type="hidden" name="pick" value="${escHtml(c.id)}">` +
-        `<button type="submit" style="${BTN}">Yes</button></form>` +
-        `<form method="post" action="${action}" style="display:inline-block;margin:4px 0">` +
-        `<input type="hidden" name="item" value="${i}"><input type="hidden" name="pick" value="no">` +
-        `<button type="submit" style="${BTN_GHOST}">No</button></form>`
+        `<input type="hidden" name="item" value="${i}"><input type="hidden" name="pick" value="${escHtml(b.pick)}">` +
+        `<button type="submit" style="${BTN}">${escHtml(b.label)}</button></form>`
       );
-    } else {
-      for (const c of item.candidates) {
-        rows.push(
-          `<form method="post" action="${action}" style="display:inline-block;margin:4px 8px 4px 0">` +
-          `<input type="hidden" name="item" value="${i}"><input type="hidden" name="pick" value="${escHtml(c.id)}">` +
-          `<button type="submit" style="${BTN}">${escHtml(c.name)}</button></form>`
-        );
-      }
     }
   });
   const inner =
@@ -135,7 +189,23 @@ export function answerPageHtml(args: {
     (notice ? `<p style="background:#fdf6e3;border:1px solid #ead9a0;border-radius:8px;padding:10px 12px;line-height:1.5">${escHtml(notice)}</p>` : '') +
     rows.join('') +
     `<hr style="border:none;border-top:1px solid #e5ebee;margin:20px 0">` +
-    `<p style="color:#5b6b76;font-size:13px;line-height:1.5">${escHtml(NONE_OF_THESE_TEXT)}</p>` +
+    // Searchable roster dropdown (Deepika, 2026-11-11 — supersedes
+    // the free-text box the same evening): when none of the buttons
+    // is the answer, type a few letters, pick the person from the
+    // team list, then press Send. Matches come from the roster
+    // behind the token-scoped search — the whole roster is never
+    // embedded in the page. Send stays disabled until a name is
+    // picked; a name that isn't on the roster can't be entered.
+    `<p style="margin:0 0 6px"><strong>None of these are right?</strong></p>` +
+    `<p style="margin:4px 0;color:#5b6b76;font-size:14px;line-height:1.5">Pick the person from the team list — type a few letters, choose a name, then press Send.</p>` +
+    `<form method="post" action="${action}" style="margin:10px 0;position:relative">` +
+    `<input type="text" id="qs-name-search" autocomplete="off" maxlength="100" placeholder="Type a name…" style="padding:10px 12px;border:1px solid #cbd5e1;border-radius:5px;font-size:15px;width:min(320px,65%);"> ` +
+    `<input type="hidden" id="qs-picked-id" name="pickedUserId" value="">` +
+    `<button type="submit" id="qs-name-send" disabled style="${BTN}opacity:.55;">Send</button>` +
+    `<div id="qs-name-results" style="display:none;position:absolute;left:0;top:100%;width:min(320px,65%);background:#fff;border:1px solid #cbd5e1;border-radius:5px;box-shadow:0 4px 14px rgba(20,50,60,.12);z-index:5;max-height:220px;overflow:auto"></div>` +
+    `<p id="qs-name-none" style="display:none;margin:8px 0 0;color:#5b6b76;font-size:13px">No one by that name on the team</p>` +
+    `</form>` +
+    `<script>(function(){var input=document.getElementById('qs-name-search');var hidden=document.getElementById('qs-picked-id');var send=document.getElementById('qs-name-send');var list=document.getElementById('qs-name-results');var none=document.getElementById('qs-name-none');var timer=null;function clearPick(){hidden.value='';send.disabled=true;send.style.opacity='.55';}function hide(){list.innerHTML='';list.style.display='none';none.style.display='none';}input.addEventListener('input',function(){clearPick();var q=input.value.trim();if(timer)clearTimeout(timer);if(q.length<2){hide();return;}timer=setTimeout(function(){fetch(${JSON.stringify(action + '/search')}+'?q='+encodeURIComponent(q)).then(function(r){return r.json();}).then(function(d){var rows=(d&&d.results)||[];list.innerHTML='';if(!rows.length){list.style.display='none';none.style.display='block';return;}none.style.display='none';rows.forEach(function(person){var b=document.createElement('button');b.type='button';b.textContent=person.name;b.style.cssText='display:block;width:100%;text-align:left;padding:10px 12px;background:#fff;border:none;border-bottom:1px solid #e5ebee;cursor:pointer;font-size:15px;';b.addEventListener('click',function(){input.value=person.name;hidden.value=person.id;send.disabled=false;send.style.opacity='1';hide();});list.appendChild(b);});list.style.display='block';}).catch(function(){hide();});},200);});})();</script>` +
     (formUrl
       ? `<p><a href="${formUrl}" style="${BTN_GHOST}">None of these — finish it with the form</a></p>`
       : `<p style="color:#5b6b76;font-size:13px">Or open the ✉️ Email Q-Scheduler form inside the app.</p>`);

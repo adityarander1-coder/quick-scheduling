@@ -47,15 +47,41 @@ type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
  * ALWAYS come from this module's roster resolution — never from
  * parsing names out of prose. */
 export interface NameAmbiguityItem {
+  kind: 'name';
   fragment: string;
   field: string;
   label: string;
   candidates: { id: string; name: string }[];
 }
 
+/** One structured shift-choice item (Deepika, 2026-11-11 — the
+ * one-email fix): when the question is WHICH shift is being given
+ * up, the candidate shifts are tappable too — each option is a
+ * (holder, shift type, date) tuple taken from the real schedule,
+ * never from parsing the question's prose. */
+export interface ShiftChoiceOption {
+  holderId: string;
+  holderName: string;
+  shiftTypeId: string;
+  shiftTypeName: string;
+  date: string;
+}
+
+export interface ShiftChoiceItem {
+  kind: 'shift';
+  label: string;
+  date: string;
+  options: ShiftChoiceOption[];
+}
+
+/** Any row of a clarification's options block. Legacy stored rows
+ * (migration 103) carry no `kind` on name items — readers treat a
+ * missing kind as 'name'. */
+export type ClarificationItem = NameAmbiguityItem | ShiftChoiceItem;
+
 export type GateResult =
   | { ok: true }
-  | { ok: false; question: string; items?: NameAmbiguityItem[] };
+  | { ok: false; question: string; items?: ClarificationItem[]; holderMismatch?: boolean; blockedBy?: 'conflict' };
 
 interface RosterUser {
   id: string;
@@ -160,37 +186,222 @@ export function extractQuotedFragments(text: string): string[] {
 
 /**
  * Structured items for a PLANNER-composed clarification question
- * (Deepika, 2026-11-10): the planner writes prose only, so the
- * candidate sets are reconstructed deterministically — take the
- * fragments the question itself quotes and resolve each against the
- * roster with the gate's exact rule. A fragment becomes an item
- * ONLY when that resolution is genuinely ambiguous (≥1 candidate);
- * exact and unknown fragments are skipped, so an open-ended
- * question yields no items and behaves exactly as before.
+ * (Deepika, 2026-11-10; one-email fix 2026-11-11): the planner
+ * writes prose only, so the candidate sets are reconstructed
+ * deterministically — take the fragments the question itself quotes
+ * and resolve each against the roster with the gate's exact rule.
+ * A fragment becomes an item when it resolves to at least one
+ * candidate AND it was not already written as that person's full
+ * name — a quoted full name is settled, a fragment or first name
+ * gets a tappable row (one candidate → one full-name button, never
+ * Yes/No). Returns the items plus the plausible fragments that
+ * resolved to NOBODY — those mean the question cannot be fully
+ * buttonized and the caller must fall back to prose.
  */
 export async function deriveNameAmbiguityItems(
   query: QueryFn, companyId: string, questionText: string
-): Promise<NameAmbiguityItem[]> {
+): Promise<{ items: NameAmbiguityItem[]; unresolved: string[] }> {
   const fragments = extractQuotedFragments(questionText);
-  if (!fragments.length) return [];
+  const { items, unresolved } = await resolveNameValues(query, companyId, fragments);
+  return { items: items.slice(0, 4), unresolved };
+}
+
+/**
+ * Resolve arbitrary written name values against the roster and
+ * build name items for them — shared by the quoted-fragment
+ * derivation above and by the planner's change-field values (the
+ * raw person words, before the gate canonicalizes them). A value
+ * written exactly as a roster full name is settled and gets no
+ * row; anything else that resolves to at least one candidate gets
+ * one. Values resolving to nobody, and non-name-looking values,
+ * are skipped (and, for quoted fragments, reported unresolved by
+ * the caller above).
+ */
+export async function resolveNameValues(
+  query: QueryFn, companyId: string, values: string[]
+): Promise<{ items: NameAmbiguityItem[]; unresolved: string[] }> {
   const roster = await loadGateRoster(query, companyId);
   const items: NameAmbiguityItem[] = [];
+  const unresolved: string[] = [];
   const seen = new Set<string>();
-  for (const fragment of fragments) {
-    if (items.length >= 4) break;
+  for (const raw of values) {
+    const fragment = String(raw || '').trim();
+    if (!fragment) continue;
     // Plausible name fragments only: letters, up to 3 words.
     if (!/^[\p{L}][\p{L}\s.'-]*$/u.test(fragment) || fragment.split(/\s+/).length > 3) continue;
     const key = norm(fragment);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const res = resolvePerson(fragment, roster);
-    if (res.kind !== 'ambiguous' || !res.candidates.length) continue;
+    if (res.kind === 'none') { unresolved.push(fragment); continue; }
+    const cands = res.kind === 'user' ? [res.user] : res.candidates;
+    if (!cands.length) { unresolved.push(fragment); continue; }
+    // Written exactly as the (only) candidate's full name: settled.
+    if (res.kind === 'user' && norm(fragment) === norm(res.user.fullName)) continue;
     items.push({
+      kind: 'name',
       fragment,
       field: 'person',
       label: 'the person',
-      candidates: res.candidates.map((u) => ({ id: u.id, name: u.fullName })),
+      candidates: cands.map((u) => ({ id: u.id, name: u.fullName })),
     });
+  }
+  return { items, unresolved };
+}
+
+/**
+ * Name items from the sender's OWN words (Deepika, 2026-11-11 —
+ * the one-email fix): the planner canonicalizes names before the
+ * gate ever sees them ('muh' becomes its guess 'Muh Ras'), so the
+ * planner's outputs alone cannot recover which written words were
+ * ambiguous. Scan the original request text for name-like words
+ * and resolve each with the gate's exact rule. A word is skipped
+ * when it is part of an exact full-name mention ('Bon' inside
+ * 'Bon Dah' is settled), a month/weekday, a shift-type word, or
+ * an ordinary word that resolves to nobody. One word → one item
+ * when it resolves to ≥1 candidate (1 → a single full-name
+ * button, never Yes/No). Items read in first-appearance order.
+ */
+const REQUEST_STOPWORDS = new Set([
+  // Months + weekdays (also names of people in some rosters — the
+  // request's dates, never its people).
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'mon', 'tue', 'tues', 'wed', 'thu', 'thur', 'fri', 'sat', 'sun',
+  // Ordinary request words.
+  'could', 'you', 'please', 'assign', 'assigned', 'move', 'moving', 'swap', 'swapping', 'cover', 'covering',
+  'take', 'taking', 'takes', 'took', 'from', 'to', 'the', 'on', 'for', 'of', 'in', 'at', 'by', 'with',
+  'he', 'she', 'his', 'her', 'hers', 'him', 'they', 'them', 'their', 'it', 'its', 'is', 'are', 'was', 'were',
+  'be', 'been', 'me', 'my', 'i', 'a', 'an', 'and', 'or', 'but', 'if', 'then', 'than', 'so', 'do', 'does', 'did',
+  'am', 'as', 'have', 'has', 'had', 'we', 'us', 'our', 'your', 'all', 'any', 'some', 'one', 'two',
+  'need', 'needs', 'want', 'wants', 'work', 'working', 'off', 'sick', 'leave', 'vacation', 'holiday',
+  'next', 'last', 'this', 'that', 'there', 'here', 'who', 'what', 'when', 'where', 'which', 'not', 'no', 'yes',
+  'also', 'just', 'only', 'originally', 'okay', 'ok', 'hey', 'hi', 'hello', 'thanks', 'thank', 'someone', 'anyone',
+  'today', 'tomorrow', 'sometime', 'sometimes', 'shifts', 'shift', 'schedule', 'scheduled', 'date', 'dates',
+  'change', 'changes', 'give', 'given', 'giving', 'up', 'out', 'per', 'every', 'each', 'first', 'second',
+]);
+
+export async function deriveNameItemsFromRequest(
+  query: QueryFn, companyId: string, text: string
+): Promise<NameAmbiguityItem[]> {
+  const roster = await loadGateRoster(query, companyId);
+  const lower = String(text || '').toLowerCase();
+  // Words settled by an exact full-name mention in the text.
+  const settled = new Set<string>();
+  for (const u of roster) {
+    const name = u.fullName.toLowerCase();
+    if (!name) continue;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    if (new RegExp(`(^|[^\\p{L}])${esc}([^\\p{L}]|$)`, 'u').test(lower)) {
+      for (const w of name.split(/\s+/)) settled.add(w);
+    }
+  }
+  // Shift-type words are never names ('Day' in 'Day Hospitalist').
+  const stop = new Set(REQUEST_STOPWORDS);
+  try {
+    const { rows } = await query(
+      'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
+    for (const r of rows) for (const w of String(r.name || '').toLowerCase().split(/[^a-z]+/)) if (w) stop.add(w);
+  } catch { /* shift types unreadable — the static list still applies */ }
+  const items: NameAmbiguityItem[] = [];
+  const seen = new Set<string>();
+  const tokens = String(text || '').match(/[\p{L}]+(?:['’][\p{L}]+)*/gu) || [];
+  for (const rawTok of tokens) {
+    const tok = rawTok.replace(/['’]s$/i, '').trim();
+    if (!tok || tok.length < 2) continue;
+    const key = tok.toLowerCase();
+    if (seen.has(key) || settled.has(key) || stop.has(key)) continue;
+    seen.add(key);
+    const res = resolvePerson(tok, roster);
+    if (res.kind === 'none') continue;
+    const cands = res.kind === 'user' ? [res.user] : res.candidates;
+    if (!cands.length) continue;
+    if (res.kind === 'user' && norm(tok) === norm(res.user.fullName)) continue;
+    items.push({
+      kind: 'name',
+      fragment: tok,
+      field: 'person',
+      label: 'the person',
+      candidates: cands.map((u) => ({ id: u.id, name: u.fullName })),
+    });
+    if (items.length >= 4) break;
+  }
+  return items;
+}
+
+/**
+ * Structured shift-choice items for a planner-composed question
+ * (Deepika, 2026-11-11 — the one-email fix): the options are
+ * recomputed DETERMINISTICALLY from schedule data — never parsed
+ * out of the question's prose. For each requested date: the holders
+ * of each requested shift type that day, plus the shifts the
+ * question's named people hold that day (any type). An item is
+ * returned only when a date offers a real choice (≥2 options).
+ * Shift-type names are taken from the change fields AND from the
+ * request text itself (a planner-composed holder question may
+ * carry no changes at all).
+ */
+export async function deriveShiftChoiceItems(
+  query: QueryFn, companyId: string,
+  opts: { dates: string[]; shiftTypeNames: string[]; fragments: string[]; text?: string }
+): Promise<ShiftChoiceItem[]> {
+  const dates = [...new Set((opts.dates || []).filter(Boolean))].sort();
+  if (!dates.length) return [];
+  const roster = await loadGateRoster(query, companyId);
+  const { rows: strows } = await query(
+    'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+    [companyId]
+  );
+  const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+  const types = new Map<string, { id: string; name: string }>();
+  const addType = (n: string) => {
+    const t = typeByName.get(norm(n));
+    if (t) types.set(t.id, t);
+  };
+  for (const n of opts.shiftTypeNames || []) addType(n);
+  const lowerText = String(opts.text || '').toLowerCase();
+  if (lowerText) for (const r of strows) {
+    if (lowerText.includes(String(r.name || '').toLowerCase())) addType(String(r.name));
+  }
+  if (!types.size) return [];
+  const shiftDay = (ds: string, n: number) => {
+    const d = new Date(ds + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const entries = await getShiftsForRange(query, companyId, shiftDay(dates[0], -2), shiftDay(dates[dates.length - 1], 2));
+  const items: ShiftChoiceItem[] = [];
+  for (const date of dates) {
+    const seen = new Set<string>();
+    const options: ShiftChoiceOption[] = [];
+    const push = (e: any) => {
+      if (!e.userId || !e.shiftTypeId) return;
+      const k = `${e.userId}|${e.shiftTypeId}|${date}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      const u = roster.find((r) => r.id === e.userId);
+      options.push({
+        holderId: e.userId,
+        holderName: u ? u.fullName : (e.personName || ''),
+        shiftTypeId: e.shiftTypeId,
+        shiftTypeName: e.shiftTypeName,
+        date,
+      });
+    };
+    // Holders of each requested type that day…
+    for (const e of entries) if (e.date === date && types.has(e.shiftTypeId!)) push(e);
+    // …plus the shifts the question's named people hold that day.
+    for (const f of opts.fragments || []) {
+      const res = resolvePerson(f, roster);
+      const cands = res.kind === 'user' ? [res.user] : res.kind === 'ambiguous' ? res.candidates : [];
+      for (const c of cands) {
+        for (const e of entries) if (e.date === date && e.userId === c.id) push(e);
+      }
+    }
+    if (options.length >= 2) {
+      items.push({ kind: 'shift', label: `Which shift is being given up on ${date}?`, date, options: options.slice(0, 4) });
+    }
   }
   return items;
 }
@@ -234,6 +445,7 @@ export async function gatePlanChanges(
         // the clarification can be answered by tapping a name.
         const items = res.kind === 'ambiguous' && res.candidates.length
           ? [{
+              kind: 'name' as const,
               fragment: String(raw),
               field,
               label,
@@ -277,6 +489,45 @@ export async function gatePlanChanges(
   const holdersOf = (date: string, typeId: string): string[] =>
     [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
 
+  // Shift-choice options for a holder mismatch (Deepika, 2026-11-11
+  // — the one-email fix): the holders of the requested type that
+  // day, plus the shifts the from-person actually holds that day.
+  // The options are schedule facts the gate already computed, so
+  // the question can be answered by tapping a shift instead of
+  // only in prose. A real choice needs ≥2 options.
+  const toShiftOption = (e: any): ShiftChoiceOption | null => {
+    if (!e.userId || !e.shiftTypeId || !e.date) return null;
+    const u = roster.find((r) => r.id === e.userId);
+    return {
+      holderId: e.userId,
+      holderName: u ? u.fullName : (e.personName || ''),
+      shiftTypeId: e.shiftTypeId,
+      shiftTypeName: e.shiftTypeName,
+      date: e.date,
+    };
+  };
+  const shiftOptionsFor = (date: string, typeId: string | null, fromUserId: string): ShiftChoiceOption[] => {
+    const seen = new Set<string>();
+    const opts: ShiftChoiceOption[] = [];
+    const push = (e: any) => {
+      const o = toShiftOption(e);
+      if (!o) return;
+      const k = `${o.holderId}|${o.shiftTypeId}|${o.date}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      opts.push(o);
+    };
+    for (const e of entries) if (e.date === date && typeId && e.shiftTypeId === typeId) push(e);
+    for (const e of entries) if (e.date === date && e.userId === fromUserId && e.shiftTypeId !== typeId) push(e);
+    return opts.slice(0, 4);
+  };
+  const shiftItemFor = (date: string, typeId: string | null, fromUserId: string): ShiftChoiceItem[] => {
+    const opts = shiftOptionsFor(date, typeId, fromUserId);
+    return opts.length >= 2
+      ? [{ kind: 'shift', label: `Which shift is being given up on ${date}?`, date, options: opts }]
+      : [];
+  };
+
   for (const c of dated) {
     const per = resolved.get(c)!;
     if (c.action === 'assign' || c.action === 'assign_recurring') {
@@ -290,7 +541,7 @@ export async function gatePlanChanges(
         personName: person.display,
         proposed: { date, shiftTypeId: type.id, shiftTypeName: type.name },
       });
-      if (reason) return { ok: false, question: reason };
+      if (reason) return { ok: false, question: reason, blockedBy: 'conflict' };
     } else if (c.action === 'move') {
       const fromUser = per.get('fromPerson');
       const toUser = per.get('toPerson');
@@ -305,16 +556,20 @@ export async function gatePlanChanges(
             return {
               ok: false,
               question: `${fromUser.fullName} has no ${type.name} on ${date} — ${holders.join(' and ')} ${holders.length === 1 ? 'does' : 'do'}. Should I move ${holders[0]}'s ${type.name} on ${date} to ${toUser.fullName} instead?`,
+              items: shiftItemFor(date, type.id, fromUser.id),
+              holderMismatch: true,
             };
           }
           return {
             ok: false,
             question: `Nobody is scheduled for ${type.name} on ${date}, so there is no shift to move. Should I assign ${toUser.fullName} to ${type.name} on ${date} instead?`,
+            holderMismatch: true,
           };
         }
         return {
           ok: false,
           question: `${fromUser.fullName} isn't working on ${date}, so there is no shift to move. Who holds the shift you mean?`,
+          holderMismatch: true,
         };
       }
       const held = mine[0];
@@ -325,7 +580,7 @@ export async function gatePlanChanges(
         proposed: { date, shiftTypeId: held.shiftTypeId!, shiftTypeName: held.shiftTypeName },
         exclude: [],
       });
-      if (reason) return { ok: false, question: reason };
+      if (reason) return { ok: false, question: reason, blockedBy: 'conflict' };
     } else if (c.action === 'swap') {
       const fromUser = per.get('fromPerson');
       const toUser = per.get('toPerson');
@@ -341,16 +596,20 @@ export async function gatePlanChanges(
             return {
               ok: false,
               question: `${fromUser.fullName} has no ${type.name} on ${fromDate} — ${holders.join(' and ')} ${holders.length === 1 ? 'does' : 'do'}. A swap needs ${fromUser.fullName} to be working that shift.`,
+              items: shiftItemFor(fromDate, type.id, fromUser.id),
+              holderMismatch: true,
             };
           }
           return {
             ok: false,
             question: `Nobody is scheduled for ${type.name} on ${fromDate}, so there is nothing to swap. Did you mean a different date?`,
+            holderMismatch: true,
           };
         }
         return {
           ok: false,
           question: `${fromUser.fullName} isn't working on ${fromDate}, so there is no shift to swap. Who holds the shift you mean?`,
+          holderMismatch: true,
         };
       }
       const fromTuple = { date: fromDate, shiftTypeId: fromHeld[0].shiftTypeId!, shiftTypeName: fromHeld[0].shiftTypeName };
@@ -372,7 +631,7 @@ export async function gatePlanChanges(
           receives: [{ date: toTuple ? fromDate : toDate, shiftTypeId: fromTuple.shiftTypeId, shiftTypeName: fromTuple.shiftTypeName }],
         },
       ]);
-      if (reason) return { ok: false, question: reason };
+      if (reason) return { ok: false, question: reason, blockedBy: 'conflict' };
     }
   }
   return { ok: true };

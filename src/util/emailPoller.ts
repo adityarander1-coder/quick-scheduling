@@ -26,6 +26,8 @@ import {
   savePendingClarification,
   clearPendingClarification,
   matchPendingClarification,
+  recordProcessedMessage,
+  hasProcessedMessage,
 } from './pendingClarifications.js';
 import crypto from 'crypto';
 
@@ -681,6 +683,7 @@ export async function processScheduleEmail(
     // reply, no AI call.
     if (!(await senderAllowed(query, companyId, sender.address))) {
       console.log(`[email-poll] Message ${sourceId}: sender "${email.from}" is not an active staff address for this company — ignored.`);
+      await recordProcessedMessage(query, companyId, sourceId, 'sender_not_staff');
       if (opts?.markRead) await opts.markRead();
       return { kind: 'sender_not_staff' };
     }
@@ -882,6 +885,8 @@ export async function processScheduleEmail(
     // come from picked IDs.)
     let gateQuestion: string | null = null;
     let gateItems: any[] | null = null;
+    let gateHolderMismatch = false;
+    let gateBlockedByConflict = false;
     // The gate verifies plans; when there are no actionable changes
     // no plan can be created, so there is nothing to gate — the
     // clarification below is then driven by the parse's own
@@ -890,7 +895,12 @@ export async function processScheduleEmail(
       try {
         const { gatePlanChanges } = await import('./planGate.js');
         const gate = await gatePlanChanges(query, companyId, plan.changes);
-        if (!gate.ok) { gateQuestion = gate.question; gateItems = gate.items || null; }
+        if (!gate.ok) {
+          gateQuestion = gate.question;
+          gateItems = gate.items || null;
+          gateHolderMismatch = !!gate.holderMismatch;
+          gateBlockedByConflict = gate.blockedBy === 'conflict';
+        }
       } catch (gateErr: any) {
         // Fail closed: an unverifiable plan must not become approvable.
         console.log(`[email-poll] Message ${sourceId}: plan gate failed to run: ${gateErr.message}`);
@@ -899,11 +909,101 @@ export async function processScheduleEmail(
     }
     const needsInfo = incomplete.length > 0 || plan.needsClarification || plan.confidence === 'low' || !!gateQuestion;
     if (needsInfo) {
-      const detail = gateQuestion
+      let detail = gateQuestion
         ? gateQuestion
         : incomplete.length
         ? incomplete.map((x: any) => `Change ${x.i + 1} (${plan.changes[x.i].action || 'unknown'}): ${x.problems.join(', ')}`).join('; ')
         : (plan.needsClarification || 'I could not understand the requested change well enough to build it.');
+      const originalDetail = detail;
+      // ONE aggregation point (Deepika, 2026-11-11 — the one-email
+      // fix): every question source merges into a single detail +
+      // a single items list before the one email is built — the
+      // gate's items, the planner question's quoted fragments, the
+      // planner's change-field values, and the sender's own words
+      // (the planner canonicalizes names before the gate sees them,
+      // so 'muh' can only be recovered from the original request).
+      // The merge must be COMPLETE — every undecidable element
+      // gets a row — or the question stays prose-only: a
+      // confident-looking button set that cannot resolve the
+      // request is worse than no buttons. Incomplete fields and
+      // conflict blocks have no button kind, so they stay prose.
+      let clickItems: any[] | null = null;
+      try {
+        const { deriveNameAmbiguityItems, deriveShiftChoiceItems, resolveNameValues, deriveNameItemsFromRequest } = await import('./planGate.js');
+        const { buildDetailFromItems } = await import('./clarifyOptions.js');
+        const requestText = `${pendingOriginal ? pendingOriginal.subject : email.subject}\n${pendingOriginal ? pendingOriginal.body : email.body}`;
+        const gateShiftItems: any[] = (gateItems || []).filter((it: any) => it.kind === 'shift');
+        const gateNameItems: any[] = (gateItems || []).filter((it: any) => it.kind !== 'shift');
+        const seenFrag = new Set<string>();
+        const nameItems: any[] = [];
+        const pushName = (it: any) => {
+          const k = String(it.fragment || '').toLowerCase();
+          if (!k || seenFrag.has(k)) return;
+          seenFrag.add(k);
+          nameItems.push(it);
+        };
+        for (const it of gateNameItems) pushName(it);
+        const derived = await deriveNameAmbiguityItems(query, companyId, detail);
+        for (const it of derived.items) pushName(it);
+        const changeValues: string[] = [];
+        for (const ch of (plan.changes || [])) {
+          for (const f of ['person', 'fromPerson', 'toPerson']) if ((ch as any)[f]) changeValues.push(String((ch as any)[f]));
+        }
+        if (changeValues.length) {
+          const fromChanges = await resolveNameValues(query, companyId, changeValues);
+          for (const it of fromChanges.items) pushName(it);
+        }
+        for (const it of await deriveNameItemsFromRequest(query, companyId, requestText)) pushName(it);
+        // Name rows read in the sender's own word order.
+        const lowerReq = requestText.toLowerCase();
+        nameItems.sort((a, b) => {
+          const ia = lowerReq.indexOf(String(a.fragment || '').toLowerCase());
+          const ib = lowerReq.indexOf(String(b.fragment || '').toLowerCase());
+          if (ia === -1 && ib === -1) return 0;
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        });
+        // Shift choice for a planner-composed holder question:
+        // recomputed deterministically from the schedule, never
+        // parsed from the prose. The gate's own shift item already
+        // covers the gate-driven case.
+        let shiftItems = gateShiftItems;
+        if (!shiftItems.length && nameItems.length) {
+          const dates = extractRequestDates(requestText, today);
+          const typeNames = [...new Set((plan.changes || []).map((c: any) => c.shiftType).filter(Boolean))];
+          shiftItems = await deriveShiftChoiceItems(query, companyId, {
+            dates, shiftTypeNames: typeNames,
+            fragments: nameItems.map((it) => it.fragment), text: requestText,
+          });
+        }
+        // Order (Deepika's confirmed order for the live case):
+        // taker, shift, giver — the shift row sits after the first
+        // name row.
+        const merged: any[] = [...nameItems];
+        for (const s of shiftItems) merged.splice(merged.length ? 1 : 0, 0, s);
+        const complete = merged.length > 0
+          && !derived.unresolved.length
+          && !gateBlockedByConflict
+          && !incomplete.length;
+        if (complete) {
+          const sentences = buildDetailFromItems(merged, detail);
+          if (gateHolderMismatch && gateQuestion) {
+            // The holder fact is what-is-known context the rows
+            // don't state; the gate's proposal sentence is dropped
+            // (the shift row is the decision now).
+            const first = String(gateQuestion).match(/^.*?[.!?](\s|$)/);
+            detail = `${first ? first[0].trim() : gateQuestion} ${sentences}`;
+          } else {
+            detail = sentences;
+          }
+          clickItems = merged;
+        }
+      } catch (mergeErr: any) {
+        console.log(`[email-poll] Clarification merge failed: ${mergeErr.message}`);
+        detail = originalDetail;
+        clickItems = null;
+      }
       // The clarification email carries a generated Message-ID so the
       // sender's reply can be threaded back (match rule (a)); the
       // sender+subject fallback covers clients that drop the header.
@@ -928,31 +1028,22 @@ export async function processScheduleEmail(
       } catch (linkErr: any) {
         console.log(`[email-poll] Clarification form link failed: ${linkErr.message}`);
       }
-      // Clickable options (Deepika, 2026-11-10): when this question
-      // is a name ambiguity, the candidate set becomes tappable —
-      // gate items when the gate composed the question, otherwise
-      // derived deterministically from the planner's quoted
-      // fragments. No items → the email below stays byte-identical
-      // to the prose-only one and no token is stored.
-      let clickItems: any[] | null = null;
+      // Clickable options (Deepika, 2026-11-10; one-email fix
+      // 2026-11-11): the items were merged above into ONE list for
+      // this one email — no items → the email below stays
+      // byte-identical to the prose-only one and no token is stored.
       let clickToken: string | null = null;
       let optionsBlock: { text: string; html: string } | null = null;
-      try {
-        const { deriveNameAmbiguityItems } = await import('./planGate.js');
-        const items = gateItems && gateItems.length
-          ? gateItems
-          : (detail === plan.needsClarification
-              ? await deriveNameAmbiguityItems(query, companyId, detail)
-              : []);
-        if (items.length) {
+      if (clickItems && clickItems.length) {
+        try {
           const { buildOptionsEmailBlock } = await import('./clarifyOptions.js');
-          clickItems = items;
           clickToken = crypto.randomBytes(24).toString('base64url');
-          optionsBlock = buildOptionsEmailBlock(items, clickToken, clarFormUrl);
+          optionsBlock = buildOptionsEmailBlock(clickItems, clickToken, clarFormUrl);
+        } catch (optErr: any) {
+          console.log(`[email-poll] Clarification options failed: ${optErr.message}`);
+          detail = originalDetail;
+          clickItems = null; clickToken = null; optionsBlock = null;
         }
-      } catch (optErr: any) {
-        console.log(`[email-poll] Clarification options failed: ${optErr.message}`);
-        clickItems = null; clickToken = null; optionsBlock = null;
       }
       // Reply-To: the address this company's scheduling mail is read
       // at, so option 2 ("just reply to this email") delivers the
@@ -972,6 +1063,11 @@ export async function processScheduleEmail(
           headers: { 'Message-ID': clarMessageId },
         });
         console.log(`[email-poll] Clarification requested from ${sender.address}: ${detail}`);
+        // Idempotency (Deepika, 2026-11-11): a clarification writes
+        // no plan row, so the plan-row check in pollInbox cannot see
+        // it — record the send here, at the point of effect, so a
+        // second tick or a failed markRead can never send it twice.
+        await recordProcessedMessage(query, companyId, sourceId, 'clarification_sent');
       } catch (mailErr: any) {
         console.log(`[email-poll] Clarification email failed: ${mailErr.message}`);
       }
@@ -1017,6 +1113,7 @@ export async function processScheduleEmail(
     // clarification-ordering bug pass unnoticed.
     if (!hasChanges) {
       console.log(`[email-poll] Skipped ${sourceId}: emailType=${plan.emailType} changes=${changes.length} confidence=${plan.confidence} needsClarification=${!!plan.needsClarification} — ${plan.summary || ''}`);
+      await recordProcessedMessage(query, companyId, sourceId, 'skipped');
       if (opts?.markRead) await opts.markRead();
       return { kind: 'skipped' };
     }
@@ -1041,6 +1138,10 @@ export async function processScheduleEmail(
       requesterFooter: reqFooter || undefined,
     });
     void planId;
+    // Idempotency (Deepika, 2026-11-11): the plan row itself is
+    // pollInbox's dedupe key, but the processed record closes the
+    // same hole for every outcome uniformly.
+    await recordProcessedMessage(query, companyId, sourceId, 'plan_created');
     // Learning (Deepika 2026-11-01): this email resolved a pending
     // clarification into a real plan — save the pair (their original
     // unclear words -> the clean request) in the company's example
@@ -1789,6 +1890,19 @@ async function notePollFailure(
  * Poll the Gmail inbox for new schedule change emails.
  * Creates pending plans for Deepika to approve. Never modifies the schedule directly.
  */
+/**
+ * In-flight polls, one flag per company (Deepika, 2026-11-11 —
+ * the one-email fix): runPoll ticks every 5 minutes and the
+ * manual /poll-inbox route shares this same entry point, so two
+ * polls for one inbox can overlap. A second poll for a company
+ * already being polled reports "already running" instead of
+ * re-reading the same unread messages. The processed-message
+ * record below is the primary dedupe; this guard is the second
+ * layer. Cleared in a finally — a crashed poll never wedges the
+ * inbox.
+ */
+const pollInFlight = new Set<string>();
+
 export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapCreds, deps: PollImapDeps = realImapDeps): Promise<{
   checked: number;
   newPlans: number;
@@ -1796,6 +1910,29 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
   errors: string[];
 }> {
   const result = { checked: 0, newPlans: 0, questionsAnswered: 0, errors: [] as string[] };
+  if (pollInFlight.has(companyId)) {
+    result.errors.push('A poll for this inbox is already running — try again in a moment.');
+    return result;
+  }
+  pollInFlight.add(companyId);
+  try {
+  return await pollInboxInner(query, companyId, creds, deps, result);
+  } finally {
+    pollInFlight.delete(companyId);
+  }
+}
+
+async function pollInboxInner(query: QueryFn, companyId: string, creds: ImapCreds | undefined, deps: PollImapDeps, result: {
+  checked: number;
+  newPlans: number;
+  questionsAnswered: number;
+  errors: string[];
+}): Promise<{
+  checked: number;
+  newPlans: number;
+  questionsAnswered: number;
+  errors: string[];
+}> {
 
   // Check if Gmail IMAP is configured (per-company creds, or the legacy env inbox)
   if (!creds && (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD)) {
@@ -1824,6 +1961,15 @@ export async function pollInbox(query: QueryFn, companyId: string, creds?: ImapC
     for (const uid of uids) {
       const uidStr = String(uid);
       if (seenIds.has(uidStr)) continue;
+
+      // Idempotency (Deepika, 2026-11-11 — the one-email fix): a
+      // clarification_sent or skipped outcome writes no plan row,
+      // so the plan-row check above cannot see it — a second tick
+      // or a manual re-poll would re-process the message and send
+      // a second email. The processed record closes that hole. A
+      // clarification REPLY is a different message id and is
+      // unaffected.
+      if (await hasProcessedMessage(query, companyId, uidStr)) continue;
 
       // Retry cap: a parked message is NEVER processed again, even if
       // it shows up unread once more (the park-time mark-read failed,
