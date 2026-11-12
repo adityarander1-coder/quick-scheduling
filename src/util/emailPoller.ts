@@ -628,24 +628,59 @@ export type ScheduleEmailOutcome =
  * Null when no read address is known — the mail then goes out with
  * no Reply-To, exactly as before.
  */
+/** Bare email address out of a value that may carry a display
+ * name ("Quick Scheduling <a@b.c>" -> "a@b.c"), or null when the
+ * value is not a usable address. Every Reply-To source goes
+ * through this so a stored display-name form can never reach
+ * Resend as a malformed header. */
+function bareAddress(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const m = String(value).match(/<([^>]+)>/);
+  const addr = (m ? m[1] : String(value)).trim().toLowerCase();
+  if (!addr || /\s/.test(addr) || (addr.match(/@/g) || []).length !== 1) return null;
+  const [local, domain] = addr.split('@');
+  return local && domain && domain.includes('.') ? addr : null;
+}
+
 async function clarificationReplyTo(
   query: QueryFn, companyId: string, fromAddr: string | null
 ): Promise<string | null> {
+  // Webhook path: the request arrived on a department inbound
+  // address and replies go out From that same address (fromAddr) —
+  // the bare address inside it is the Reply-To. A malformed
+  // value must NOT short-circuit the company lookup below (the
+  // old code returned null here, skipping every fallback) — fall
+  // through instead.
   if (fromAddr) {
-    const m = String(fromAddr).match(/<([^>]+)>/);
-    const addr = (m ? m[1] : String(fromAddr)).trim().toLowerCase();
-    return addr.includes('@') ? addr : null;
+    const addr = bareAddress(fromAddr);
+    if (addr) return addr;
+    console.log(`[email-poll] clarificationReplyTo: fromAddr ${JSON.stringify(fromAddr)} has no usable address — falling through to the company inbox.`);
   }
-  try {
-    const { rows } = await query(
-      'SELECT gmail_user FROM company_inboxes WHERE company_id = $1 AND is_active = true LIMIT 1',
-      [companyId]
-    );
-    const user = String(rows[0]?.gmail_user || '').trim().toLowerCase();
-    if (user.includes('@')) return user;
-  } catch { /* inbox table unavailable — legacy fallback below */ }
-  const legacy = (process.env.GMAIL_USER || '').trim().toLowerCase();
-  return legacy.includes('@') ? legacy : null;
+  // The company's own connected inbox (company_inboxes, the row
+  // the scheduler polls). One retry: a transient pool/connection
+  // blip at send time must not silently drop Reply-To (production,
+  // 2026-11-11: the click-triggered re-clarification went out with
+  // no Reply-To and the sender's reply landed nowhere — the
+  // lookup failure was swallowed without a trace, and the code
+  // read afterwards found "no defect" because the happy path is
+  // identical on every trigger). A lookup that succeeds but finds
+  // no usable address is NOT retried — it falls to the legacy env.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const { rows } = await query(
+        'SELECT gmail_user FROM company_inboxes WHERE company_id = $1 AND is_active = true ORDER BY updated_at DESC LIMIT 1',
+        [companyId]
+      );
+      const user = bareAddress(rows[0]?.gmail_user);
+      if (user) return user;
+      break;
+    } catch (e: any) {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 250));
+      else console.log(`[email-poll] clarificationReplyTo: company inbox lookup failed for ${companyId} (after retry): ${e?.message || e}`);
+    }
+  }
+  const legacy = bareAddress(process.env.GMAIL_USER);
+  return legacy;
 }
 
 export async function processScheduleEmail(
@@ -1051,6 +1086,11 @@ export async function processScheduleEmail(
       // dead Resend sender address.
       let clarReplyTo: string | null = null;
       try { clarReplyTo = await clarificationReplyTo(query, companyId, fromAddr); } catch { /* no Reply-To */ }
+      // Never silent (Deepika, 2026-11-11): a clarification
+      // without Reply-To sends the sender's reply to the dead
+      // Resend address, so a missing value is logged with the
+      // company and recipient instead of disappearing.
+      if (!clarReplyTo) console.log(`[email-poll] Clarification to ${sender.address} (company ${companyId}) has NO Reply-To — a reply will go to the dead sender address.`);
       try {
         const { sendMail } = await import('./mailer.js');
         await sendMail({
