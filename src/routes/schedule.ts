@@ -8251,6 +8251,45 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
       problems.push({ text: 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?', options: [] });
     }
   }
+  // Dates-are-the-problem (Deepika, 2026-11-11 — the same message
+  // the email path gives): the planner declined to emit a change,
+  // but the task names specific people. If one of them holds
+  // nothing of the requested type on a requested date, say so in
+  // the gate's own words instead of the generic "could not
+  // understand" line. Same derivation as the email merge — dates
+  // from the task text, single-candidate name items from the task
+  // text (deriveNameItemsFromRequest reads first-appearance
+  // order, as the email merge does), types from the plan (empty
+  // here) plus the text scan inside deriveHolderMismatch.
+  // Move/swap only, and only when the holder is checkable — both
+  // enforced inside deriveHolderMismatch. Anything else falls
+  // through to the current behavior untouched.
+  if (!plan.changes?.length) {
+    try {
+      const { deriveHolderMismatch, deriveNameItemsFromRequest } = await import('../util/planGate.js');
+      const { extractRequestDates } = await import('../util/emailPoller.js');
+      const today = new Date().toISOString().split('T')[0];
+      const taskItems = await deriveNameItemsFromRequest(query, companyId, task);
+      const mismatch = await deriveHolderMismatch(query, companyId, {
+        dates: extractRequestDates(task, today),
+        shiftTypeNames: [...new Set<string>((plan.changes || []).map((c: any) => String(c.shiftType || '')).filter(Boolean))],
+        people: taskItems.filter((it: any) => (it.candidates || []).length === 1).map((it: any) => it.candidates[0]),
+        text: task,
+      });
+      if (mismatch) {
+        const holders: string[] = [];
+        for (const it of (mismatch.items || [])) {
+          for (const o of (it.options || [])) {
+            const n = String((o as any).holderName || '');
+            if (n && !holders.includes(n)) holders.push(n);
+          }
+        }
+        problems.unshift({ text: mismatch.question, options: holders });
+      }
+    } catch (mmErr: any) {
+      console.error('[schedule] task holder-mismatch check failed:', mmErr?.message);
+    }
+  }
   if (!plan.changes?.length || problems.length) {
     if (!problems.length) {
       return { type: 'clarification' as const, question: 'I could not understand the task well enough to build a plan.', options: [] };
