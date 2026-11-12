@@ -8182,6 +8182,14 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   const scheduleCtx = await buildScheduleContext(query, companyId, today,
     [task, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
   const { getShiftTypeRules } = await import('../util/planExecutor.js');
+  // The company's learned examples ride along, exactly as on the
+  // email path (Deepika, 2026-11-11 — same brain): past unclear
+  // wording that was later resolved, so the same wording is
+  // understood the first time. Read side only — Task never saves
+  // learning examples; the writers stay email-only.
+  const { getRelevantExamples } = await import('../util/emailLearning.js');
+  const examples = await getRelevantExamples(query, companyId,
+    [task, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
   const ctx: any = {
     shiftTypes: stRows.map((r: any) => r.name),
     shiftTypeRules: await getShiftTypeRules(companyId),
@@ -8199,6 +8207,7 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
     today,
     history,
     ...sessionCtx,
+    examples: examples.length ? examples : undefined,
   };
   let plan: any;
   try {
