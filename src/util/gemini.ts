@@ -369,13 +369,15 @@ Rules:
 
   const model = await discoverModel(apiKey);
 
-  // Attached PDFs ride along as document parts; a request built from a
-  // whole schedule file can produce many changes, so give it more room.
+  // Output cap is 8000 for every plan call (MAX_TOKENS incident,
+  // 2026-11-12: a 2000 cap cut a 2-move swap off mid-JSON at 65-69
+  // output tokens — gemini-pro-latest spends most of its output
+  // budget thinking through the large prompt before writing, so a
+  // complete answer needs the headroom even with no attachments).
   const parts: any[] = [{ text: prompt }];
   for (const pdf of context.pdfAttachments || []) {
     parts.push({ inlineData: { mimeType: 'application/pdf', data: pdf.base64 } });
   }
-  const hasAttachments = !!context.attachmentText || (context.pdfAttachments || []).length > 0;
 
   // Retry on 503 (overloaded) with backoff, up to 3 attempts
   let res: Response | null = null;
@@ -388,7 +390,7 @@ Rules:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: hasAttachments ? 8000 : 2000, responseMimeType: 'application/json' },
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000, responseMimeType: 'application/json' },
         }),
       }
     );
