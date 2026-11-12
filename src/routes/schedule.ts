@@ -28,6 +28,7 @@ import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '..
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
+import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
   cleanBeneficiaries, saveBeneficiaries, loadBeneficiaries, loadInvitedUserIds,
@@ -8217,7 +8218,7 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
 // gathered first: one problem keeps today's targeted question + tappable
 // options, several become ONE question listing everything needed, so the
 // user answers once instead of one question per detail.
-async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[]) {
+async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[], senderEmail?: string | null) {
   const { collectNameProblems, decideClarification } = await import('../util/askRouting.js');
   const nameProblems = collectNameProblems(plan, memberNames, shiftNames);
   const { changeProblems } = await import('../util/emailPoller.js');
@@ -8241,56 +8242,71 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   // shift (stored or pattern-drawn), and nobody may be given a shift
   // that overlaps or breaks the 8-hour rest rule. A failure becomes
   // the clarification, naming the actual holder or the conflict.
+  let gateItems: any[] | null = null;
+  let gateQuestion: string | null = null;
+  let gateHolderMismatch = false;
+  let gateBlockedByConflict = false;
   if (plan.changes?.length && !problems.length) {
     try {
       const { gatePlanChanges } = await import('../util/planGate.js');
       const gate = await gatePlanChanges(query, companyId, plan.changes);
-      if (!gate.ok) problems.push({ text: gate.question, options: [] });
+      if (!gate.ok) {
+        gateQuestion = gate.question;
+        gateItems = gate.items || null;
+        gateHolderMismatch = !!gate.holderMismatch;
+        gateBlockedByConflict = gate.blockedBy === 'conflict';
+        problems.push({ text: gate.question, options: [] });
+      }
     } catch (gateErr: any) {
       console.error('[schedule] plan gate failed to run:', gateErr?.message);
       problems.push({ text: 'I could not check that change against the schedule — could you confirm the full names of the people involved and the date?', options: [] });
     }
   }
-  // Dates-are-the-problem (Deepika, 2026-11-11 — the same message
-  // the email path gives): the planner declined to emit a change,
-  // but the task names specific people. If one of them holds
-  // nothing of the requested type on a requested date, say so in
-  // the gate's own words instead of the generic "could not
-  // understand" line. Same derivation as the email merge — dates
-  // from the task text, single-candidate name items from the task
-  // text (deriveNameItemsFromRequest reads first-appearance
-  // order, as the email merge does), types from the plan (empty
-  // here) plus the text scan inside deriveHolderMismatch.
-  // Move/swap only, and only when the holder is checkable — both
-  // enforced inside deriveHolderMismatch. Anything else falls
-  // through to the current behavior untouched.
-  if (!plan.changes?.length) {
+  // One shared brain (Deepika, 2026-11-11 — "the brain should be
+  // the same"): when a clarification is owed, the question + its
+  // click rows come from the SAME merge the email path runs
+  // (util/clarificationMerge) — the gate's items, the planner
+  // question's quoted fragments, the change-field values, and the
+  // task's own words. The Task-only holder-mismatch derivation
+  // that lived here (c6a7b72) is gone: the merge does that check
+  // itself, from the same name items, in both doors. When the
+  // merge is complete the rows are saved on the SAME pending row
+  // the email door uses (same table, same token auth, same
+  // accumulate-until-all-answered rule) and returned with the
+  // question, so the chat renders buttons instead of prose.
+  // Anything the merge cannot buttonize falls through to the
+  // prose behavior below, byte-identical to before.
+  if (!plan.changes?.length || problems.length) {
+    const today = new Date().toISOString().split('T')[0];
+    const seedDetail = problems.length
+      ? decideClarification(problems).question
+      : (plan.needsClarification || 'I could not understand the task well enough to build a plan.');
     try {
-      const { deriveHolderMismatch, deriveNameItemsFromRequest } = await import('../util/planGate.js');
-      const { extractRequestDates } = await import('../util/emailPoller.js');
-      const today = new Date().toISOString().split('T')[0];
-      const taskItems = await deriveNameItemsFromRequest(query, companyId, task);
-      const mismatch = await deriveHolderMismatch(query, companyId, {
-        dates: extractRequestDates(task, today),
-        shiftTypeNames: [...new Set<string>((plan.changes || []).map((c: any) => String(c.shiftType || '')).filter(Boolean))],
-        people: taskItems.filter((it: any) => (it.candidates || []).length === 1).map((it: any) => it.candidates[0]),
-        text: task,
+      const { mergeClarificationItems } = await import('../util/clarificationMerge.js');
+      const merged = await mergeClarificationItems(query, companyId, {
+        detail: seedDetail,
+        plan,
+        requestText: task,
+        gateItems: gateItems || undefined,
+        gateQuestion,
+        gateHolderMismatch,
+        gateBlockedByConflict,
+        incompleteCount: incomplete.length,
+        today,
       });
-      if (mismatch) {
-        const holders: string[] = [];
-        for (const it of (mismatch.items || [])) {
-          for (const o of (it.options || [])) {
-            const n = String((o as any).holderName || '');
-            if (n && !holders.includes(n)) holders.push(n);
-          }
-        }
-        problems.unshift({ text: mismatch.question, options: holders });
+      if (merged.items?.length && senderEmail) {
+        const token = crypto.randomBytes(24).toString('base64url');
+        const { savePendingClarification } = await import('../util/pendingClarifications.js');
+        await savePendingClarification(
+          query, companyId, senderEmail, 'In-app agent task', task,
+          merged.detail, null,
+          { options: { items: merged.items }, answerToken: token }
+        );
+        return { type: 'clarification' as const, question: merged.detail, options: [] as string[], items: merged.items, token };
       }
     } catch (mmErr: any) {
-      console.error('[schedule] task holder-mismatch check failed:', mmErr?.message);
+      console.error('[schedule] task clarification merge failed:', mmErr?.message);
     }
-  }
-  if (!plan.changes?.length || problems.length) {
     if (!problems.length) {
       return { type: 'clarification' as const, question: 'I could not understand the task well enough to build a plan.', options: [] };
     }
@@ -8363,6 +8379,16 @@ async function buildAskContext(req: Request) {
   };
 }
 
+// The signed-in user's email — the sender key for an in-app Task
+// clarification's pending row (same (company, sender) keying the
+// email door uses, so one open question per person per door).
+async function sessionUserEmail(req: Request): Promise<string | null> {
+  try {
+    const { rows } = await query('SELECT email FROM users WHERE id = $1', [req.session.userId!]);
+    return rows[0]?.email || null;
+  } catch { return null; }
+}
+
 router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -8378,15 +8404,186 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
       res.json({ ok: false, error: classifyPlanError(planErr?.message || '') });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames);
+    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames, await sessionUserEmail(req));
     if (fin.type === 'clarification') {
-      res.json({ ok: false, needsClarification: fin.question, clarificationOptions: fin.options, originalTask: task });
+      res.json({ ok: false, needsClarification: fin.question, clarificationOptions: fin.options, clarificationItems: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: task });
       return;
     }
     res.json({ ok: true, planId: fin.planId, summary: fin.summary, changes: fin.changes });
   } catch (err) {
     console.error('[schedule] agent-plan failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// In-app Task clarification picks (Deepika, 2026-11-11 — "the brain
+// should be the same"): the chat's click rows post here. The pending
+// row, the accumulate-until-all-answered rule, the single-winner
+// claim, and the pick-resolution lines are the SAME code the email
+// answer page runs (pendingClarifications + clarifyOptions) — only
+// the replan engine differs (the Task planner, runTaskPlan, instead
+// of the email engine) and the answer comes back as JSON for the
+// chat instead of an HTML confirmation page. Learning is NOT saved
+// on this door: the learning writers belong to the email engine
+// and are untouched by this change.
+// ---------------------------------------------------------------------------
+
+type TaskPickResult =
+  | { ok: true; allAnswered: false; answers: Record<string, string> }
+  | { ok: true; allAnswered: true; kind: 'plan'; planId: string; summary: string; changes: any[] }
+  | { ok: true; allAnswered: true; kind: 'clarification'; question: string; options: string[]; items?: any[] | null; token?: string | null; originalTask: string }
+  | { ok: false; error: string };
+
+/**
+ * The shared completion tail: claim the clarification (the DELETE
+ * is the single-winner claim — a prose reply, a form submission,
+ * or this completion racing it loses), run the Task replan with the
+ * stitched request, and return the plan — or the fresh
+ * clarification, with its new rows + token — for the chat. A
+ * failed run puts the question back so a retry still works.
+ */
+async function finishTaskCompletion(
+  row: PendingClarification, answers: Record<string, string>,
+  stitched: string
+): Promise<TaskPickResult> {
+  const { claimClarification, restoreClarification } = await import('../util/pendingClarifications.js');
+  const claimed = await claimClarification(query, row.id);
+  if (!claimed) return { ok: false, error: 'This question was already answered.' };
+  try {
+    const { plan, memberNames, shiftNames } = await runTaskPlan(row.company_id, stitched, []);
+    const fin = await finalizeTaskPlan(row.company_id, plan, stitched, memberNames, shiftNames, row.sender_address);
+    if (fin.type === 'plan') {
+      return { ok: true, allAnswered: true, kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes };
+    }
+    return {
+      ok: true, allAnswered: true, kind: 'clarification',
+      question: fin.question, options: (fin as any).options || [],
+      items: (fin as any).items || null, token: (fin as any).token || null,
+      originalTask: stitched,
+    };
+  } catch (e: any) {
+    console.error('[schedule] task pick completion failed:', e?.message);
+    try { await restoreClarification(query, { ...claimed, answers }); } catch { /* best-effort */ }
+    return { ok: false, error: 'Your answers could not be applied just now. Please try tapping again in a moment.' };
+  }
+}
+
+/** All rows answered → run the Task replan with the picks appended
+ * as exact resolutions, exactly as the email door's
+ * completeFromPicks does. */
+async function completeTaskFromPicks(row: PendingClarification, answers: Record<string, string>): Promise<TaskPickResult> {
+  const { resolutionLine } = await import('../util/clarifyOptions.js');
+  const items: any[] = row.options?.items || [];
+  const lines = items.map((item, i) => resolutionLine(item, answers[String(i)]) || '');
+  const stitched =
+    `${row.original_body}\n\n--- Sender's reply to the clarification question ---\n${lines.join('\n')}`;
+  return finishTaskCompletion(row, answers, stitched);
+}
+
+/**
+ * The roster-dropdown door, mirroring the email answer page's
+ * handleNamePick: the picked name answers the rows it addresses
+ * (a name row it is a candidate of, or whose fragment is a short
+ * form of the picked person; a shift row when the picked person
+ * is the holder of exactly one of its options), overriding a
+ * tapped row it contradicts; tapped rows it does not address keep
+ * their picks. The pick addressed no row: it still rides as one
+ * line for the planner. The pick is a roster id resolved
+ * server-side — no free-text name can be submitted through this
+ * door.
+ */
+async function handleTaskNamePick(row: PendingClarification, pickedRaw: unknown): Promise<TaskPickResult> {
+  const { resolutionLine, pickMatchesFragment } = await import('../util/clarifyOptions.js');
+  const pickedUserId = String(pickedRaw || '').trim();
+  const items: any[] = row.options?.items || [];
+  const answers: Record<string, string> = { ...(row.answers || {}) };
+  if (!pickedUserId) return { ok: false, error: 'Pick a name from the list.' };
+  const { rows: urows } = await query(
+    `SELECT id, first_name, last_name,
+            TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+     FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [pickedUserId, row.company_id]
+  );
+  const picked = urows[0];
+  if (!picked) return { ok: false, error: 'That person is not on the team — pick a name from the list.' };
+  const pickedName: string = picked.name;
+  const pickedUser = { id: picked.id, firstName: picked.first_name || '', lastName: picked.last_name || '', fullName: pickedName };
+  const lines: string[] = [];
+  let addressedAny = false;
+  items.forEach((item, i) => {
+    const tap = answers[String(i)];
+    if (item.kind === 'shift') {
+      const mine = (item.options || []).filter((o: any) => o.holderId === pickedUserId);
+      if (mine.length === 1) {
+        addressedAny = true;
+        const o = mine[0];
+        lines.push(`${o.shiftTypeName} on ${o.date} is ${o.holderName}'s shift.`);
+      } else if (tap) {
+        const line = resolutionLine(item, tap);
+        if (line) lines.push(line);
+      }
+      return;
+    }
+    const addressed = (item.candidates || []).some((c: any) => c.id === pickedUserId) ||
+      pickMatchesFragment(item.fragment, pickedUser);
+    if (addressed) {
+      addressedAny = true;
+      lines.push(`"${item.fragment}" means ${pickedName}.`);
+    } else if (tap) {
+      const line = resolutionLine(item, tap);
+      if (line) lines.push(line);
+    }
+  });
+  if (!addressedAny) lines.push(`The correct person is ${pickedName}.`);
+  const stitched =
+    `${row.original_body}\n\n--- Sender's reply to the clarification question ---\n${lines.join('\n')}`;
+  return finishTaskCompletion(row, answers, stitched);
+}
+
+// POST /api/schedule/clarify-task/:token — record one tap (or one
+// roster-dropdown pick) on an in-app Task clarification. A tap on
+// a row that is not the last one only accumulates: the plan
+// rebuilds when every row is answered, never before. An invalid
+// pick changes nothing and returns the current answers.
+router.post('/clarify-task/:token', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const token = String(req.params.token || '').trim();
+    const { loadClarificationByToken, recordClarificationAnswers, clarificationExpired } = await import('../util/pendingClarifications.js');
+    const row = await loadClarificationByToken(query, token);
+    if (!row || clarificationExpired(row) || !row.options?.items?.length || row.company_id !== companyId) {
+      res.status(404).json({ ok: false, error: 'This question is no longer open.' });
+      return;
+    }
+    const items: any[] = row.options.items;
+    const pickedUserId = String((req.body || {}).pickedUserId || '').trim();
+    if (pickedUserId) {
+      res.json(await handleTaskNamePick(row, pickedUserId));
+      return;
+    }
+    const { pickName } = await import('../util/clarifyOptions.js');
+    const idx = Number((req.body || {}).item);
+    const pick = String((req.body || {}).pick || '');
+    const item = Number.isInteger(idx) && idx >= 0 && idx < items.length ? items[idx] : null;
+    if (!item || !pickName(item, pick)) {
+      res.json({ ok: true, allAnswered: false, answers: row.answers || {} });
+      return;
+    }
+    // Idempotent per item: an already-recorded pick stands (a
+    // double-tap can't silently change an answer).
+    const answers: Record<string, string> = { ...(row.answers || {}) };
+    if (!answers[String(idx)]) answers[String(idx)] = pick;
+    const allAnswered = items.every((_, i) => !!answers[String(i)]);
+    if (!allAnswered) {
+      await recordClarificationAnswers(query, row.id, answers);
+      res.json({ ok: true, allAnswered: false, answers });
+      return;
+    }
+    res.json(await completeTaskFromPicks(row, answers));
+  } catch (err: any) {
+    console.error('[schedule] task pick failed:', err?.message);
+    res.status(500).json({ ok: false, error: 'Something went wrong. Please try again.' });
   }
 });
 
@@ -8451,9 +8648,9 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
         res.json({ kind: 'answer', answer: TASK_MODE_SIGNPOST });
         return;
       }
-      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames);
+      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req));
       if (fin.type === 'clarification') {
-        res.json({ kind: 'clarification', question: fin.question, options: fin.options, originalTask: message });
+        res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
         return;
       }
       res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });
@@ -8497,9 +8694,9 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
       res.json({ kind: 'answer', answer: fallbackAnswer || (plan as any).summary || 'I could not answer that question.' });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames);
+    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req));
     if (fin.type === 'clarification') {
-      res.json({ kind: 'clarification', question: fin.question, options: fin.options, originalTask: message });
+      res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
       return;
     }
     res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });

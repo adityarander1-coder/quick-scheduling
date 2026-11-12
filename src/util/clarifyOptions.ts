@@ -43,6 +43,60 @@ export function shiftOptionLabel(o: ShiftChoiceOption): string {
   return `${o.holderName} — ${o.shiftTypeName}`;
 }
 
+/** The recorded pick's display label: a name for a name row, the
+ * "holder — type" label for a shift row (namespaced pick values
+ * can never collide with user ids). Null when the pick does not
+ * belong to this item — an invalid pick never resolves a row. */
+export function pickName(item: any, pick: string): string | null {
+  if (!pick) return null;
+  if (item.kind === 'shift') {
+    const o = findShiftOption(item, pick);
+    return o ? shiftOptionLabel(o) : null;
+  }
+  const c = (item.candidates || []).find((x: any) => x.id === pick);
+  return c ? c.name : null;
+}
+
+/** The resolution line a pick appends to the original request for
+ * the replan: a name row states what the fragment means; a shift
+ * row states whose shift is being given up, so the planner builds
+ * the move from the right holder. */
+export function resolutionLine(item: any, pick: string): string | null {
+  if (item.kind === 'shift') {
+    const o = findShiftOption(item, pick);
+    return o ? `${o.shiftTypeName} on ${o.date} is ${o.holderName}'s shift.` : null;
+  }
+  const name = pickName(item, pick);
+  return name ? `"${item.fragment}" means ${name}.` : null;
+}
+
+/** One row's summary line for the confirmation page, shared by
+ * the tap and dropdown completions. */
+export function pickSummaryLine(item: any, pick: string): string {
+  if (item.kind === 'shift') {
+    const o = findShiftOption(item, pick);
+    return o ? `${o.shiftTypeName} on ${o.date} is ${o.holderName}'s shift` : '';
+  }
+  const name = pickName(item, pick);
+  return name ? `"${item.fragment}" means ${name}` : '';
+}
+
+/** True when a row's fragment is a short form of the picked
+ * person (first name, last name, or a prefix of either) — the
+ * fragment was written about this person even though they were
+ * not among the row's listed candidates. */
+export function pickMatchesFragment(
+  fragment: string, picked: { firstName: string; lastName: string; fullName: string }
+): boolean {
+  const f = String(fragment || '').trim().toLowerCase();
+  if (!f || f.length < 2) return false;
+  const first = String(picked.firstName || '').toLowerCase();
+  const last = String(picked.lastName || '').toLowerCase();
+  if (f === first || f === last) return true;
+  if ((first && first.startsWith(f)) || (last && last.startsWith(f))) return true;
+  return String(picked.fullName || '').toLowerCase().split(/\s+/).includes(f);
+}
+
 /** The question line for one item: a name row asks who the
  * fragment means; a shift row asks which shift is being given up. */
 export function itemQuestion(item: ClarificationItem): string {

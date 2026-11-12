@@ -29,6 +29,7 @@ import {
   recordProcessedMessage,
   hasProcessedMessage,
 } from './pendingClarifications.js';
+import { mergeClarificationItems } from './clarificationMerge.js';
 import crypto from 'crypto';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -951,119 +952,23 @@ export async function processScheduleEmail(
         : (plan.needsClarification || 'I could not understand the requested change well enough to build it.');
       const originalDetail = detail;
       // ONE aggregation point (Deepika, 2026-11-11 — the one-email
-      // fix): every question source merges into a single detail +
-      // a single items list before the one email is built — the
-      // gate's items, the planner question's quoted fragments, the
-      // planner's change-field values, and the sender's own words
-      // (the planner canonicalizes names before the gate sees them,
-      // so 'muh' can only be recovered from the original request).
-      // The merge must be COMPLETE — every undecidable element
-      // gets a row — or the question stays prose-only: a
-      // confident-looking button set that cannot resolve the
-      // request is worse than no buttons. Incomplete fields and
-      // conflict blocks have no button kind, so they stay prose.
-      let clickItems: any[] | null = null;
-      try {
-        const { deriveNameAmbiguityItems, deriveShiftChoiceItems, deriveHolderMismatch, resolveNameValues, deriveNameItemsFromRequest } = await import('./planGate.js');
-        const { buildDetailFromItems } = await import('./clarifyOptions.js');
-        const requestText = `${pendingOriginal ? pendingOriginal.subject : email.subject}\n${pendingOriginal ? pendingOriginal.body : email.body}`;
-        const gateShiftItems: any[] = (gateItems || []).filter((it: any) => it.kind === 'shift');
-        const gateNameItems: any[] = (gateItems || []).filter((it: any) => it.kind !== 'shift');
-        const seenFrag = new Set<string>();
-        const nameItems: any[] = [];
-        const pushName = (it: any) => {
-          const k = String(it.fragment || '').toLowerCase();
-          if (!k || seenFrag.has(k)) return;
-          seenFrag.add(k);
-          nameItems.push(it);
-        };
-        for (const it of gateNameItems) pushName(it);
-        const derived = await deriveNameAmbiguityItems(query, companyId, detail);
-        for (const it of derived.items) pushName(it);
-        const changeValues: string[] = [];
-        for (const ch of (plan.changes || [])) {
-          for (const f of ['person', 'fromPerson', 'toPerson']) if ((ch as any)[f]) changeValues.push(String((ch as any)[f]));
-        }
-        if (changeValues.length) {
-          const fromChanges = await resolveNameValues(query, companyId, changeValues);
-          for (const it of fromChanges.items) pushName(it);
-        }
-        for (const it of await deriveNameItemsFromRequest(query, companyId, requestText)) pushName(it);
-        // Name rows read in the sender's own word order.
-        const lowerReq = requestText.toLowerCase();
-        nameItems.sort((a, b) => {
-          const ia = lowerReq.indexOf(String(a.fragment || '').toLowerCase());
-          const ib = lowerReq.indexOf(String(b.fragment || '').toLowerCase());
-          if (ia === -1 && ib === -1) return 0;
-          if (ia === -1) return 1;
-          if (ib === -1) return -1;
-          return ia - ib;
-        });
-        // Shift choice for a planner-composed holder question:
-        // recomputed deterministically from the schedule, never
-        // parsed from the prose. The gate's own shift item already
-        // covers the gate-driven case.
-        let shiftItems = gateShiftItems;
-        if (!shiftItems.length && nameItems.length) {
-          const dates = extractRequestDates(requestText, today);
-          const typeNames = [...new Set((plan.changes || []).map((c: any) => c.shiftType).filter(Boolean))];
-          // Dates-are-the-problem (Deepika, 2026-11-11): the planner
-          // declined to emit a change, but the request names specific
-          // people — if one of them holds nothing of the requested
-          // type on a requested date, say so in the gate's own words
-          // instead of asking which shift is being given up from a
-          // list that excludes them. Only single-candidate name rows
-          // are checkable; anything else keeps the current behavior.
-          const mismatch = await deriveHolderMismatch(query, companyId, {
-            dates,
-            shiftTypeNames: typeNames,
-            people: nameItems.filter((it: any) => (it.candidates || []).length === 1).map((it: any) => it.candidates[0]),
-            text: requestText,
-          });
-          if (mismatch) {
-            gateQuestion = mismatch.question;
-            gateHolderMismatch = true;
-            shiftItems = mismatch.items;
-          }
-          // A mismatch with no shift options of its own (one holder
-          // that day) must not eat the shift row: the fallback below
-          // can still offer a real choice from the named people's
-          // own shifts that day. Only a mismatch WITH options
-          // replaces the all-holders list.
-          if (!shiftItems.length) {
-            shiftItems = await deriveShiftChoiceItems(query, companyId, {
-              dates, shiftTypeNames: typeNames,
-              fragments: nameItems.map((it) => it.fragment), text: requestText,
-            });
-          }
-        }
-        // Order (Deepika's confirmed order for the live case):
-        // taker, shift, giver — the shift row sits after the first
-        // name row.
-        const merged: any[] = [...nameItems];
-        for (const s of shiftItems) merged.splice(merged.length ? 1 : 0, 0, s);
-        const complete = merged.length > 0
-          && !derived.unresolved.length
-          && !gateBlockedByConflict
-          && !incomplete.length;
-        if (complete) {
-          const sentences = buildDetailFromItems(merged, detail);
-          if (gateHolderMismatch && gateQuestion) {
-            // The holder fact is what-is-known context the rows
-            // don't state; the gate's proposal sentence is dropped
-            // (the shift row is the decision now).
-            const first = String(gateQuestion).match(/^.*?[.!?](\s|$)/);
-            detail = `${first ? first[0].trim() : gateQuestion} ${sentences}`;
-          } else {
-            detail = sentences;
-          }
-          clickItems = merged;
-        }
-      } catch (mergeErr: any) {
-        console.log(`[email-poll] Clarification merge failed: ${mergeErr.message}`);
-        detail = originalDetail;
-        clickItems = null;
-      }
+      // fix; shared since 2026-11-11, "the brain should be the same"):
+      // the merge lives in util/clarificationMerge and both doors
+      // (email here, in-app Task in finalizeTaskPlan) call it, so a
+      // question or a fix lands in both at once.
+      const merged = await mergeClarificationItems(query, companyId, {
+        detail,
+        plan,
+        requestText: `${pendingOriginal ? pendingOriginal.subject : email.subject}\n${pendingOriginal ? pendingOriginal.body : email.body}`,
+        gateItems: gateItems || undefined,
+        gateQuestion,
+        gateHolderMismatch,
+        gateBlockedByConflict,
+        incompleteCount: incomplete.length,
+        today,
+      });
+      detail = merged.detail;
+      let clickItems = merged.items;
       // The clarification email carries a generated Message-ID so the
       // sender's reply can be threaded back (match rule (a)); the
       // sender+subject fallback covers clients that drop the header.

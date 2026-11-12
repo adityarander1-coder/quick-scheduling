@@ -286,7 +286,13 @@ export async function deriveNameItemsFromRequest(
   query: QueryFn, companyId: string, text: string
 ): Promise<NameAmbiguityItem[]> {
   const roster = await loadGateRoster(query, companyId);
-  const lower = String(text || '').toLowerCase();
+  // Ordinal strip (Deepika, 2026-11-11 — the "17th" → "th" phantom):
+  // a date's ordinal suffix is not a word, so it never reaches the
+  // tokenizer — "17th" reads as "17" and no "th" token can
+  // substring-match Tis Tha. Both doors (email + Task) scan through
+  // here, so one strip fixes both.
+  const scanText = String(text || '').replace(/(\d+)(?:st|nd|rd|th)\b/gi, '$1');
+  const lower = scanText.toLowerCase();
   // Words settled by an exact full-name mention in the text.
   const settled = new Set<string>();
   for (const u of roster) {
@@ -306,7 +312,7 @@ export async function deriveNameItemsFromRequest(
   } catch { /* shift types unreadable — the static list still applies */ }
   const items: NameAmbiguityItem[] = [];
   const seen = new Set<string>();
-  const tokens = String(text || '').match(/[\p{L}]+(?:['’][\p{L}]+)*/gu) || [];
+  const tokens = scanText.match(/[\p{L}]+(?:['’][\p{L}]+)*/gu) || [];
   for (const rawTok of tokens) {
     const tok = rawTok.replace(/['’]s$/i, '').trim();
     if (!tok || tok.length < 2) continue;
@@ -500,8 +506,16 @@ export async function deriveHolderMismatch(
         if (mine.length) continue;
         const holders = holdersOf(date, type.id);
         if (holders.length) {
+          // Holder-list cap (Deepika, 2026-11-11): the sentence names
+          // at most the first 4 holders — the shift-item options
+          // already cap at 4, and a 12-name sentence is noise. The
+          // full holder set still rides on the shift row.
+          const shown = holders.slice(0, 4);
+          const holderList = holders.length > 4
+            ? `${shown.join(' and ')} and ${holders.length - 4} other${holders.length - 4 === 1 ? '' : 's'}`
+            : shown.join(' and ');
           return {
-            question: `${person.name} has no ${type.name} on ${date} — ${holders.join(' and ')} ${holders.length === 1 ? 'does' : 'do'}.`,
+            question: `${person.name} has no ${type.name} on ${date} — ${holderList} ${holders.length === 1 ? 'does' : 'do'}.`,
             items: shiftItemFor(date, type.id, person.id),
           };
         }
