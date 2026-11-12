@@ -406,6 +406,115 @@ export async function deriveShiftChoiceItems(
   return items;
 }
 
+export interface HolderMismatch {
+  question: string;
+  items: ShiftChoiceItem[];
+}
+
+/**
+ * Holder-mismatch check for the no-changes path (Deepika, 2026-11-11
+ * — "if dates was the issue it would have been nice it tells us
+ * thats the problem"): the planner declined to emit a change, but
+ * the request names specific people. When a named person holds
+ * NOTHING of the requested type on a requested date, the dates are
+ * the problem — say so in the gate's own words instead of asking
+ * which shift is being given up from a list that excludes them.
+ * Returns the FIRST mismatch in request order (person order, then
+ * date order), mirroring the gate's one-problem-at-a-time rule.
+ * Only fires when the holder is genuinely checkable: the name item
+ * resolved to exactly one roster person — pass those people in.
+ * Ambiguous or unknown fragments are the caller's problem to
+ * exclude; anything else returns null and the caller keeps the
+ * current behavior. The question is one sentence — the merge keeps
+ * only the first sentence of a holder-mismatch question as context.
+ */
+export async function deriveHolderMismatch(
+  query: QueryFn, companyId: string,
+  opts: { dates: string[]; shiftTypeNames: string[]; people: { id: string; name: string }[]; text?: string }
+): Promise<HolderMismatch | null> {
+  const dates = [...new Set((opts.dates || []).filter(Boolean))].sort();
+  const people = (opts.people || []).filter((p) => p && p.id && p.name);
+  if (!dates.length || !people.length) return null;
+  // Move/swap only: the mismatch means "someone must give this shift
+  // up". For an assign the named person is the TAKER — not holding
+  // the shift yet is expected, not a problem — so a request that
+  // only assigns never fires this, however its names read.
+  const MOVE_SWAP = /\b(swap|swapping|move|moving|moves|switch|switching|exchange|exchanging|trade|trading)\b|\btake\s+over\b|\btaking\s+over\b|\btake\s+it\s+from\b|\btaking\s+it\s+from\b|\bgive\s+up\b|\bgiving\s+up\b|\bcover\s+for\b|\binstead\b/i;
+  if (!MOVE_SWAP.test(String(opts.text || ''))) return null;
+  const roster = await loadGateRoster(query, companyId);
+  const { rows: strows } = await query(
+    'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+    [companyId]
+  );
+  const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+  const types = new Map<string, { id: string; name: string }>();
+  const addType = (n: string) => {
+    const t = typeByName.get(norm(n));
+    if (t) types.set(t.id, t);
+  };
+  for (const n of opts.shiftTypeNames || []) addType(n);
+  const lowerText = String(opts.text || '').toLowerCase();
+  if (lowerText) for (const r of strows) {
+    if (lowerText.includes(String(r.name || '').toLowerCase())) addType(String(r.name));
+  }
+  if (!types.size) return null;
+  const shiftDay = (ds: string, n: number) => {
+    const d = new Date(ds + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const entries = await getShiftsForRange(query, companyId, shiftDay(dates[0], -2), shiftDay(dates[dates.length - 1], 2));
+  const holdersOf = (date: string, typeId: string): string[] =>
+    [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
+  // Shift options for the mismatch date — the gate's own shape: the
+  // holders of the requested type that day, plus the shifts the
+  // named person actually holds that day (any other type). A real
+  // choice needs ≥2 options; with fewer the question stands alone.
+  const shiftItemFor = (date: string, typeId: string, personId: string): ShiftChoiceItem[] => {
+    const seen = new Set<string>();
+    const options: ShiftChoiceOption[] = [];
+    const push = (e: any) => {
+      if (!e.userId || !e.shiftTypeId || !e.date) return;
+      const k = `${e.userId}|${e.shiftTypeId}|${e.date}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      const u = roster.find((r) => r.id === e.userId);
+      options.push({
+        holderId: e.userId,
+        holderName: u ? u.fullName : (e.personName || ''),
+        shiftTypeId: e.shiftTypeId,
+        shiftTypeName: e.shiftTypeName,
+        date: e.date,
+      });
+    };
+    for (const e of entries) if (e.date === date && e.shiftTypeId === typeId) push(e);
+    for (const e of entries) if (e.date === date && e.userId === personId && e.shiftTypeId !== typeId) push(e);
+    return options.length >= 2
+      ? [{ kind: 'shift', label: `Which shift is being given up on ${date}?`, date, options: options.slice(0, 4) }]
+      : [];
+  };
+  for (const person of people) {
+    for (const date of dates) {
+      for (const type of types.values()) {
+        const mine = entries.filter((e) => e.userId === person.id && e.date === date && e.shiftTypeId === type.id);
+        if (mine.length) continue;
+        const holders = holdersOf(date, type.id);
+        if (holders.length) {
+          return {
+            question: `${person.name} has no ${type.name} on ${date} — ${holders.join(' and ')} ${holders.length === 1 ? 'does' : 'do'}.`,
+            items: shiftItemFor(date, type.id, person.id),
+          };
+        }
+        return {
+          question: `Nobody is scheduled for ${type.name} on ${date}.`,
+          items: [],
+        };
+      }
+    }
+  }
+  return null;
+}
+
 const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> = [
   { actions: ['assign', 'assign_recurring', 'unassign', 'update_team_member'], field: 'person', label: 'the person' },
   { actions: ['move', 'swap'], field: 'fromPerson', label: 'the person to move from' },

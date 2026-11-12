@@ -964,7 +964,7 @@ export async function processScheduleEmail(
       // conflict blocks have no button kind, so they stay prose.
       let clickItems: any[] | null = null;
       try {
-        const { deriveNameAmbiguityItems, deriveShiftChoiceItems, resolveNameValues, deriveNameItemsFromRequest } = await import('./planGate.js');
+        const { deriveNameAmbiguityItems, deriveShiftChoiceItems, deriveHolderMismatch, resolveNameValues, deriveNameItemsFromRequest } = await import('./planGate.js');
         const { buildDetailFromItems } = await import('./clarifyOptions.js');
         const requestText = `${pendingOriginal ? pendingOriginal.subject : email.subject}\n${pendingOriginal ? pendingOriginal.body : email.body}`;
         const gateShiftItems: any[] = (gateItems || []).filter((it: any) => it.kind === 'shift');
@@ -1007,10 +1007,35 @@ export async function processScheduleEmail(
         if (!shiftItems.length && nameItems.length) {
           const dates = extractRequestDates(requestText, today);
           const typeNames = [...new Set((plan.changes || []).map((c: any) => c.shiftType).filter(Boolean))];
-          shiftItems = await deriveShiftChoiceItems(query, companyId, {
-            dates, shiftTypeNames: typeNames,
-            fragments: nameItems.map((it) => it.fragment), text: requestText,
+          // Dates-are-the-problem (Deepika, 2026-11-11): the planner
+          // declined to emit a change, but the request names specific
+          // people — if one of them holds nothing of the requested
+          // type on a requested date, say so in the gate's own words
+          // instead of asking which shift is being given up from a
+          // list that excludes them. Only single-candidate name rows
+          // are checkable; anything else keeps the current behavior.
+          const mismatch = await deriveHolderMismatch(query, companyId, {
+            dates,
+            shiftTypeNames: typeNames,
+            people: nameItems.filter((it: any) => (it.candidates || []).length === 1).map((it: any) => it.candidates[0]),
+            text: requestText,
           });
+          if (mismatch) {
+            gateQuestion = mismatch.question;
+            gateHolderMismatch = true;
+            shiftItems = mismatch.items;
+          }
+          // A mismatch with no shift options of its own (one holder
+          // that day) must not eat the shift row: the fallback below
+          // can still offer a real choice from the named people's
+          // own shifts that day. Only a mismatch WITH options
+          // replaces the all-holders list.
+          if (!shiftItems.length) {
+            shiftItems = await deriveShiftChoiceItems(query, companyId, {
+              dates, shiftTypeNames: typeNames,
+              fragments: nameItems.map((it) => it.fragment), text: requestText,
+            });
+          }
         }
         // Order (Deepika's confirmed order for the live case):
         // taker, shift, giver — the shift row sits after the first

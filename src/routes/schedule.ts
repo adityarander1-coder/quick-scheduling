@@ -15,6 +15,7 @@ import {
   requireActiveDepartment,
 } from '../util/departmentAccess';
 import bcrypt from 'bcryptjs';
+import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, todayStr } from '../util/audit.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
@@ -8846,7 +8847,9 @@ router.get('/email-poll-status', requireRole('owner', 'scheduler'), async (req: 
 //    sent to non-approver recipients): unchanged behavior — the
 //    clicker must be logged in with edit access to the plan's
 //    departments, and the session identity is recorded.
-router.get('/plans/approve/:token', async (req: Request, res: Response) => {
+// The POST twin below shares this function: after its inline
+// sign-in sets the session, the same execution runs here.
+async function handlePlanApprove(req: Request, res: Response) {
   try {
     // Per-approver token first: it identifies the approver by itself.
     const { rows: trows } = await query(
@@ -8882,8 +8885,12 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
       const sessionRole = (req.session as any)?.role;
       const sessionCompanyId = (req.session as any)?.companyId;
       if (!sessionUserId || sessionCompanyId !== plan.company_id) {
-        const loginUrl = `/login.html?redirect=${encodeURIComponent(req.originalUrl)}`;
-        return res.send(`<h1>Login required</h1><p>Please <a href="${loginUrl}">log in</a> to approve this plan. This ensures you have access to the affected departments.</p>`);
+        // Inline sign-in (Deepika, 2026-11-11): the shared link asks
+        // whoever clicks to sign in, and sending them to the app
+        // login for that is annoying. The approve page itself
+        // carries the ID + password box — the POST twin below
+        // verifies the credentials and runs this same approval.
+        return res.send(planLoginPageHtml(req.originalUrl, plan.plan_summary));
       }
       if (sessionRole !== 'owner') {
         const { getDepartmentAccess } = await import('../util/departmentAccess.js');
@@ -8964,6 +8971,87 @@ router.get('/plans/approve/:token', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[schedule] email approve failed:', err);
     res.status(500).send(`<h1>Error</h1><p>${escHtml(err.message)}</p>`);
+  }
+}
+
+router.get('/plans/approve/:token', handlePlanApprove);
+
+// Inline sign-in page for the plan-level (shared) approve link
+// (Deepika, 2026-11-11): a small ID + password box on the approve
+// page itself — verify the credentials and approve right here, no
+// trip to the app login. The department-access check still runs
+// after sign-in, inside handlePlanApprove.
+function planLoginPageHtml(actionUrl: string, summary: string | null, error: string | null = null): string {
+  return `<!doctype html><html><body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">` +
+    `<h1>Sign in to approve</h1>` +
+    `<p>${escHtml(summary || 'A schedule change plan is waiting for your approval.')}</p>` +
+    (error ? `<p style="color:#991b1b;background:#fee2e2;border-radius:6px;padding:10px 12px">${escHtml(error)}</p>` : '') +
+    `<form method="post" action="${escHtml(actionUrl)}">` +
+    `<p><label>Email<br><input type="email" name="email" required autocomplete="username" style="padding:8px;width:100%;max-width:320px"></label></p>` +
+    `<p><label>Password<br><input type="password" name="password" required autocomplete="current-password" style="padding:8px;width:100%;max-width:320px"></label></p>` +
+    `<p><button type="submit" style="background:#22c55e;color:white;padding:10px 20px;border:none;border-radius:5px;font-size:15px;cursor:pointer">Sign in &amp; approve</button></p>` +
+    `</form></body></html>`;
+}
+
+// POST /api/schedule/plans/approve/:token — the inline sign-in for
+// the plan-level link above. Verifies the credentials against the
+// PLAN's company (same bcrypt check as /login — a user in another
+// company cannot approve this plan), sets the session, then runs
+// the same approval the GET runs — right here, no redirect to the
+// app. Wrong credentials re-render the form with an error and
+// approve nothing. Per-approver tokens never need this: a POST
+// carrying one runs straight through, login-free, exactly as the
+// GET does. Rate-limited like /login (10/min).
+router.post('/plans/approve/:token', urlencoded({ extended: false }), loginLimiter, async (req: Request, res: Response) => {
+  try {
+    const { rows: trows } = await query(
+      `SELECT p.id, p.company_id, p.plan, p.plan_summary, p.status, p.source_from, p.source_cc, p.source_subject, p.decided_at,
+              pat.user_id AS approver_id
+       FROM plan_approver_tokens pat
+       JOIN schedule_plans p ON p.id = pat.plan_id
+       WHERE pat.approve_token = $1`,
+      [req.params.token]
+    );
+    if (trows.length) return handlePlanApprove(req, res);
+    const { rows } = await query(
+      `SELECT id, company_id, plan, plan_summary, status, source_from, source_cc, source_subject, decided_at FROM schedule_plans WHERE approve_token = $1`,
+      [req.params.token]
+    );
+    if (!rows.length) return res.status(404).send('<h1>Link expired or invalid</h1>');
+    const plan = rows[0];
+    if (plan.status !== 'pending') {
+      const when = plan.decided_at ? ` on ${new Date(plan.decided_at).toLocaleString()}` : '';
+      return res.send(`<h1>Already ${escHtml(plan.status)}</h1><p>This plan was already ${escHtml(plan.status)}${escHtml(when)}. No further action needed.</p>`);
+    }
+    const email = String((req.body as any)?.email || '').trim();
+    const password = String((req.body as any)?.password || '');
+    const bad = () => res.send(planLoginPageHtml(req.originalUrl, plan.plan_summary, 'Email or password is incorrect.'));
+    if (!email || !password) { bad(); return; }
+    const { rows: urows } = await query(
+      `SELECT id, company_id, role, is_active, password_hash FROM users WHERE company_id = $1 AND lower(email) = lower($2)`,
+      [plan.company_id, email]
+    );
+    const matches: any[] = [];
+    for (const row of urows) {
+      if (row.password_hash && (await bcrypt.compare(password, row.password_hash))) matches.push(row);
+    }
+    if (!matches.length) { bad(); return; }
+    const roleRank = (r: string) => (r === 'owner' ? 0 : r === 'scheduler' ? 1 : 2);
+    matches.sort((a, b) => {
+      const activeDiff = Number(b.is_active ?? true) - Number(a.is_active ?? true);
+      if (activeDiff) return activeDiff;
+      return roleRank(a.role) - roleRank(b.role);
+    });
+    const user = matches[0];
+    if (!user.is_active) {
+      res.send(planLoginPageHtml(req.originalUrl, plan.plan_summary, 'This account has been deactivated. Contact your administrator.'));
+      return;
+    }
+    await setSession(req, user.id, user.company_id, user.role);
+    return handlePlanApprove(req, res);
+  } catch (err: any) {
+    console.error('[schedule] email approve sign-in failed:', err);
+    res.status(500).send('<h1>Error</h1><p>Something went wrong. Please try again.</p>');
   }
 });
 
