@@ -136,7 +136,8 @@ function logGeminiUsage(model: string, data: any): void {
     const u = data?.usageMetadata || {};
     const input = typeof u.promptTokenCount === 'number' ? u.promptTokenCount : 0;
     const output = typeof u.candidatesTokenCount === 'number' ? u.candidatesTokenCount : 0;
-    console.log(`[gemini] usage model=${model} input=${input} output=${output}`);
+    const finishReason = data?.candidates?.[0]?.finishReason || '';
+    console.log(`[gemini] usage model=${model} input=${input} output=${output} finishReason=${finishReason}`);
   } catch { /* logging is best-effort */ }
 }
 
@@ -387,7 +388,7 @@ Rules:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: hasAttachments ? 8000 : 2000 },
+          generationConfig: { temperature: 0.1, maxOutputTokens: hasAttachments ? 8000 : 2000, responseMimeType: 'application/json' },
         }),
       }
     );
@@ -412,8 +413,22 @@ Rules:
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   // Extract JSON from response (may have markdown code fences).
   const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Gemini did not return valid JSON.');
-  const parsed = JSON.parse(jsonMatch[0]) as SchedulePlan;
+  if (!jsonMatch) {
+    // Log the raw reply (truncated) so a braceless answer is diagnosable
+    // from production logs instead of a black box — the Nov 11 swap email
+    // failed this way 3/3 with no record of what the model actually said.
+    console.error(`[gemini] planFromEmail raw (no JSON): ${text.slice(0, 2000)}`);
+    throw new Error('Gemini did not return valid JSON.');
+  }
+  let parsed: SchedulePlan;
+  try {
+    parsed = JSON.parse(jsonMatch[0]) as SchedulePlan;
+  } catch (err) {
+    // A matched-but-malformed object: log the raw match, then rethrow the
+    // same error so the caller sees exactly what it saw before.
+    console.error(`[gemini] planFromEmail raw (malformed JSON): ${jsonMatch[0].slice(0, 2000)}`);
+    throw err;
+  }
   // Backwards compatibility: default emailType if missing
   if (!parsed.emailType) {
     parsed.emailType = (parsed.changes && parsed.changes.length > 0) ? 'change_request' : 'other';
