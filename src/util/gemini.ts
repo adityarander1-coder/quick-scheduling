@@ -465,9 +465,17 @@ function fallbackSuggestions(action: string, task: string): string[] {
   }
   if (action === 'assign') return ['Assign another person to this shift', 'Publish this shift'];
   if (action === 'unassign') return ['Find a replacement for this shift', 'Publish the updated day'];
-  if (action.includes('publish')) return ['Check the schedule for gaps'];
+  // No suggestion after a publish: the old 'Check the schedule for gaps'
+  // entry was removed (Deepika, 2026-11-12) — tapping it only re-sent
+  // those words as a plain Task and the planner re-planned the change,
+  // because no gap-check function exists behind the button. An empty
+  // list shows 'Give me another task any time.' instead of a dead button.
+  if (action.includes('publish')) return [];
   if (action.includes('staffing')) return ['Check if any days are short-staffed'];
-  return ['Check the schedule for gaps', 'Publish the updated shifts'];
+  // 'Check the schedule for gaps' was removed here too (same reason as
+  // above): every remaining suggestion must be a task the planner can
+  // actually do — 'Publish the updated shifts' maps to bulk_publish.
+  return ['Publish the updated shifts'];
 }
 
 export async function suggestFollowUps(
@@ -500,7 +508,7 @@ Rules:
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
+            generationConfig: { temperature: 0.4, maxOutputTokens: 8000 },
           }),
         }
       );
