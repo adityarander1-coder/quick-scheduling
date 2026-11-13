@@ -17,7 +17,7 @@ import {
 import bcrypt from 'bcryptjs';
 import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
-import { auditLog, auditPlanChanges, todayStr } from '../util/audit.js';
+import { auditLog, auditPlanChanges, auditDraftIfAppeared, auditDraftsForResults, resolvePersonId, todayStr } from '../util/audit.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, isGeminiConfigured } from '../util/gemini';
@@ -28,7 +28,7 @@ import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '..
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
-import { excludeRotationInstances } from '../util/planExecutor.js';
+import { excludeRotationInstances, findRotationOccurrences } from '../util/planExecutor.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -102,6 +102,77 @@ async function shiftDisplayNames(companyId: string, userId: string, shiftTypeId:
     personName: r.nickname || `${r.first_name || ''} ${r.last_name || ''}`.trim() || null,
     shiftTypeName: r.shiftTypeName || null,
   };
+}
+
+/**
+ * Full rotation snapshot for the Change report (Deepika, 2026-11-13):
+ * settings changes must carry the detail — person(s), shift type(s),
+ * cycle, start date, times — so the report can say what the rotation
+ * actually was. Snapshotted at write time, BEFORE a delete, because
+ * the delete cascades the assignments away.
+ */
+async function rotationSnapshot(companyId: string, rotationId: string): Promise<any | null> {
+  const { rows: rrows } = await query(
+    `SELECT id, name, cycle_days AS "cycleDays", start_date::text AS "startDate",
+            start_time::text AS "startTime", end_time::text AS "endTime", is_active AS "isActive"
+     FROM rotations WHERE id = $1 AND company_id = $2`,
+    [rotationId, companyId]
+  );
+  if (!rrows.length) return null;
+  const r = rrows[0];
+  const { rows: arows } = await query(
+    `SELECT ra.user_id AS "userId", ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId",
+            COALESCE(u.nickname, NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '')) AS "personName",
+            st.name AS "shiftTypeName"
+     FROM rotation_assignments ra
+     JOIN users u ON u.id = ra.user_id
+     JOIN shift_types st ON st.id = ra.shift_type_id
+     WHERE ra.rotation_id = $1 ORDER BY ra.cycle_day, "personName"`,
+    [rotationId]
+  );
+  return {
+    rotationId: r.id, name: r.name, cycleDays: r.cycleDays, startDate: r.startDate,
+    startTime: r.startTime, endTime: r.endTime, isActive: r.isActive,
+    people: arows.map((a: any) => ({
+      userId: a.userId, name: a.personName, cycleDay: a.cycleDay,
+      shiftTypeId: a.shiftTypeId, shiftTypeName: a.shiftTypeName,
+    })),
+  };
+}
+
+/**
+ * Settings audit for a rotation change: one row per affected person
+ * (affected_user_id set), carrying the full snapshot in details. A
+ * rotation with no people writes one row with no person. `people`
+ * overrides the snapshot's own people (pairing: the group members
+ * are not assignment rows).
+ */
+async function auditRotationSettings(opts: {
+  companyId: string; action: 'created' | 'updated' | 'deleted'; rotationName: string;
+  description: string; snapshot: any; changedBy: string;
+  people?: Array<{ userId: string; name: string | null }>; extraDetails?: any;
+}): Promise<void> {
+  const people = opts.people || opts.snapshot?.people || [];
+  const details = {
+    rotationId: opts.snapshot?.rotationId, kind: 'rotation',
+    snapshot: opts.snapshot, ...(opts.extraDetails || {}),
+  };
+  if (!people.length) {
+    await auditLog({
+      companyId: opts.companyId, date: todayStr(), action: opts.action, category: 'settings',
+      source: 'manual', rotationName: opts.rotationName, changedBy: opts.changedBy,
+      description: opts.description, details,
+    });
+    return;
+  }
+  for (const p of people) {
+    await auditLog({
+      companyId: opts.companyId, date: todayStr(), action: opts.action, category: 'settings',
+      source: 'manual', rotationName: opts.rotationName, changedBy: opts.changedBy,
+      description: opts.description, details,
+      affectedUserId: p.userId, personName: p.name,
+    });
+  }
 }
 
 // Default shift types (generic, seeded per company on first use).
@@ -1057,6 +1128,7 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       companyId, date, action: 'created',
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
+      affectedUserId: userId, scheduleDate: date,
     });
     // Notify: only published shifts notify (drafts stay silent).
     if (published !== false) {
@@ -1501,8 +1573,9 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
        WHERE company_id = $1 AND date = ANY($2::date[]) AND published = true ${userFilter} ${typeFilter}`,
       params
     );
-    const { rowCount } = await query(
-      `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter} ${typeFilter}`,
+    const { rows: deletedRows, rowCount } = await query(
+      `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter} ${typeFilter}
+       RETURNING user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date`,
       params
     );
     // For rotation shifts: add skip periods covering the range for the affected users' rotations.
@@ -1570,6 +1643,54 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       } catch { /* skip duplicates */ }
     }
     res.json({ deleted: rowCount || 0, paused });
+    // Report (Deepika, 2026-11-13): bulk delete used to leave no
+    // trace at all — one row per person whose shifts were removed.
+    {
+      const perUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
+      for (const d of deletedRows || []) {
+        const t = perUser.get(d.userId) || { count: 0, firstDate: d.date, lastDate: d.date, types: new Set<string>() };
+        t.count++;
+        if (d.shiftTypeId) t.types.add(d.shiftTypeId);
+        if (d.date < t.firstDate) t.firstDate = d.date;
+        if (d.date > t.lastDate) t.lastDate = d.date;
+        perUser.set(d.userId, t);
+      }
+      const typeIds = [...new Set([...perUser.values()].flatMap((t) => [...t.types]))];
+      const typeNames = new Map<string, string>();
+      if (typeIds.length) {
+        const { rows: stRows } = await query(
+          'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+          [companyId, typeIds]
+        );
+        for (const r of stRows) typeNames.set(r.id, r.name);
+      }
+      const personNames = new Map<string, string>();
+      if (perUser.size) {
+        const { rows: urows } = await query(
+          `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+          [companyId, [...perUser.keys()]]
+        );
+        for (const u of urows) personNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+      }
+      for (const [uid, t] of perUser) {
+        const types = [...t.types].map((id) => typeNames.get(id)).filter(Boolean) as string[];
+        await auditLog({
+          companyId, date: todayStr(), action: 'deleted', category: 'schedule',
+          source: 'manual', changedBy: req.session.userId!,
+          affectedUserId: uid, personName: personNames.get(uid) || null,
+          shiftTypeName: types.join(', ') || null,
+          scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
+          description: `Deleted ${t.count} shift(s) (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
+          details: { count: t.count, from: t.firstDate, to: t.lastDate, via: 'bulk-delete' },
+        });
+      }
+    }
+    // Report: the pauses/exclusions above should cover every removed
+    // row's rotation day — if one still draws as a draft, say so.
+    // Runs after the pause pass on purpose.
+    for (const d of deletedRows || []) {
+      await auditDraftIfAppeared(companyId, d.userId, d.date, d.shiftTypeId, req.session.userId!);
+    }
     // Notify people whose published shifts were removed (grouped per person).
     if (doomed.length) {
       const perUser = new Map<string, { count: number; shiftTypeId: string; firstDate: string; lastDate: string }>();
@@ -1634,6 +1755,8 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     if (srows.length) {
       const s = srows[0];
       await excludeRotationInstances(companyId, s.userId, s.date, s.shiftTypeId);
+      // Report (Deepika, 2026-11-13): if a draft still appears, say so.
+      await auditDraftIfAppeared(companyId, s.userId, s.date, s.shiftTypeId, req.session.userId!);
     }
     res.json({ ok: true });
     if (srows.length) {
@@ -1643,6 +1766,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
         companyId, date: s.date, action: 'deleted',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
+        affectedUserId: s.userId, scheduleDate: s.date,
       });
       if (s.published) {
         notify({
@@ -1844,6 +1968,7 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
         // row existed. Exclude it or it pops back.
         if (rowCount && (userId !== orig[0].userId || shiftTypeId !== orig[0].shiftTypeId)) {
           await excludeRotationInstances(companyId, orig[0].userId, origDate, orig[0].shiftTypeId);
+          await auditDraftIfAppeared(companyId, orig[0].userId, origDate, orig[0].shiftTypeId, req.session.userId!);
         }
       } else {
         // Upsert for other dates: update if this person already has this shift type that day, else create.
@@ -1948,6 +2073,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
       const old = existRows[0];
       if (old.userId !== userId || old.date !== date || old.shiftTypeId !== shiftTypeId) {
         await excludeRotationInstances(companyId, old.userId, old.date, old.shiftTypeId);
+        await auditDraftIfAppeared(companyId, old.userId, old.date, old.shiftTypeId, req.session.userId!);
       }
     }
     res.json({ ok: true });
@@ -1958,6 +2084,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
       details: { shiftId: req.params.id },
+      affectedUserId: userId, scheduleDate: date,
     });
     // Notify about meaningful changes to published shifts.
     if (existRows.length) {
@@ -2150,7 +2277,13 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
       details: { shiftId: src.id, via: 'drag' },
+      affectedUserId: src.userId, scheduleDate: src.date,
     });
+    // Report (Deepika, 2026-11-13): the vacated slot may still draw
+    // as a draft when the exclusion above missed it.
+    if (src.kind === 'manual') {
+      auditDraftIfAppeared(companyId, src.userId, src.date, src.shiftTypeId, req.session.userId!);
+    }
     if (src.published) {
       const oldNames = await shiftDisplayNames(companyId, src.userId, src.shiftTypeId);
       notify({
@@ -2273,18 +2406,30 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       if (a.kind === 'rotation' || b.kind === 'rotation' || extraUndoOps.length) undo = { ops: [...ops, ...extraUndoOps] };
     });
     res.json(undo ? { ok: true, undo } : { ok: true });
+    // Report (Deepika, 2026-11-13): one row per person, naming the
+    // person who gave the shift up — never one merged swap line.
     auditLog({
       companyId, date: a.date, action: 'updated',
-      personName: namesB.personName, shiftTypeName: namesA.shiftTypeName,
+      personName: namesA.personName, shiftTypeName: namesA.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      details: { shiftId: a.id, via: 'drag-swap' },
+      details: { shiftId: a.id, via: 'drag-swap', swap: true, swapTo: namesB.personName },
+      affectedUserId: a.userId, scheduleDate: a.date,
+      description: namesA.personName && namesB.personName
+        ? `Moved ${namesA.personName} → ${namesB.personName} on ${a.date} (swap)` : null,
     });
     auditLog({
       companyId, date: b.date, action: 'updated',
-      personName: namesA.personName, shiftTypeName: namesB.shiftTypeName,
+      personName: namesB.personName, shiftTypeName: namesB.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      details: { shiftId: b.id, via: 'drag-swap' },
+      details: { shiftId: b.id, via: 'drag-swap', swap: true, swapTo: namesA.personName },
+      affectedUserId: b.userId, scheduleDate: b.date,
+      description: namesA.personName && namesB.personName
+        ? `Moved ${namesB.personName} → ${namesA.personName} on ${b.date} (swap)` : null,
     });
+    // Report: a vacated stored slot may still draw as a draft when
+    // the exclusion above missed it.
+    if (a.kind === 'manual') auditDraftIfAppeared(companyId, a.userId, a.date, a.shiftTypeId, req.session.userId!);
+    if (b.kind === 'manual') auditDraftIfAppeared(companyId, b.userId, b.date, b.shiftTypeId, req.session.userId!);
     const actor = req.session.userId!;
     if (b.published) {
       notify({
@@ -2331,9 +2476,18 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
       const kinds = ['deleteShiftId', 'deleteExclusion', 'updateShiftUser'].filter((k) => op && op[k]);
       if (kinds.length !== 1) { res.status(400).json({ error: 'Nothing to undo.' }); return; }
     }
+    // Report (Deepika, 2026-11-13): a row this undo deletes may have
+    // been suppressing a rotation occurrence — if it now draws as a
+    // draft, say so.
+    const undone: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
     await withTransaction(async (tx) => {
       for (const op of ops) {
         if (op.deleteShiftId) {
+          const { rows: srows } = await tx.query(
+            'SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+            [op.deleteShiftId, companyId]
+          );
+          if (srows.length) undone.push({ userId: srows[0].userId, date: srows[0].date, shiftTypeId: srows[0].shiftTypeId });
           await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [op.deleteShiftId, companyId]);
         } else if (op.deleteExclusion) {
           const e = op.deleteExclusion;
@@ -2350,6 +2504,9 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
         }
       }
     });
+    for (const u of undone) {
+      await auditDraftIfAppeared(companyId, u.userId, u.date, u.shiftTypeId, req.session.userId!);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] drag-undo failed:', err);
@@ -2391,6 +2548,7 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
         action: published !== false ? 'published' : 'unpublished',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
+        affectedUserId: s.userId, scheduleDate: s.date,
       });
       if (published !== false && !s.published) {
         notify({
@@ -2490,7 +2648,8 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
         auditLog({
           companyId, date, action: wantPublished ? 'published' : 'unpublished',
           personName: names.personName, shiftTypeName: names.shiftTypeName,
-          source: 'rotation', changedBy: me,
+          source: 'manual', changedBy: me,
+          affectedUserId: userId, scheduleDate: date,
         });
       }
       res.json({ ok: true, published: wantPublished, shiftId: row.id });
@@ -2519,7 +2678,8 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       auditLog({
         companyId, date, action: 'published',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
-        source: 'rotation', rotationName: rrows[0]?.name || null, changedBy: me,
+        source: 'manual', rotationName: rrows[0]?.name || null, changedBy: me,
+        affectedUserId: userId, scheduleDate: date,
       });
       return;
     }
@@ -2541,6 +2701,12 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
     res.json({ ok: true, published: published !== false });
     if (wasPublished !== (published !== false)) {
       const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      auditLog({
+        companyId, date, action: published !== false ? 'published' : 'unpublished',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'manual', changedBy: me,
+        affectedUserId: userId, scheduleDate: date,
+      });
       if (published !== false) {
         notify({
           companyId, userIds: [userId], category: 'schedule', type: 'shift_assigned',
@@ -2599,6 +2765,7 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'rotation', rotationName: rrows[0]?.name || null,
       changedBy: req.session.userId!,
+      affectedUserId: userId, scheduleDate: date,
     });
     // Notify the person (rotation instances are published unless an
     // override says otherwise).
@@ -2671,7 +2838,7 @@ router.post('/days/publish', requireRole('owner', 'scheduler'), async (req: Requ
          DO UPDATE SET is_published = true, published_at = now(), published_by = $3`,
         [companyId, d, req.session.userId!]
       );
-      auditLog({ companyId, date: d, action: 'published', changedBy: req.session.userId! });
+      auditLog({ companyId, date: d, action: 'published', changedBy: req.session.userId!, scheduleDate: d });
     }
     res.json({ ok: true, published: dates.length });
   } catch (err) {
@@ -2697,7 +2864,7 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
          DO UPDATE SET is_published = false, published_at = null, published_by = null`,
         [companyId, d]
       );
-      auditLog({ companyId, date: d, action: 'unpublished', changedBy: req.session.userId! });
+      auditLog({ companyId, date: d, action: 'unpublished', changedBy: req.session.userId!, scheduleDate: d });
     }
     res.json({ ok: true, unpublished: dates.length });
   } catch (err) {
@@ -2761,7 +2928,7 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
     const typeFilter = shiftTypeId ? ` AND shift_type_id = $${5}` : '';
     const typeParams = shiftTypeId ? [shiftTypeId] : [];
     const { rows: flipRows } = await query(
-      `SELECT user_id, date::text AS date FROM shifts
+      `SELECT user_id, date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts
        WHERE company_id = $1 AND date = ANY($2::date[]) AND user_id = ANY($3::uuid[]) AND published = $4${typeFilter}`,
       [companyId, dates, userIds, !published, ...typeParams]
     );
@@ -2823,16 +2990,17 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
     res.json({ ok: true, updated: (rowCount || 0) + rotCount });
     // Notify per person about the flips (manual + rotation combined).
     {
-      const perUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+      const perUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
       for (const r of flipRows) {
-        const t = perUser.get(r.user_id) || { count: 0, firstDate: r.date, lastDate: r.date };
+        const t = perUser.get(r.user_id) || { count: 0, firstDate: r.date, lastDate: r.date, types: new Set<string>() };
         t.count++;
+        if (r.shiftTypeId) t.types.add(r.shiftTypeId);
         if (r.date < t.firstDate) t.firstDate = r.date;
         if (r.date > t.lastDate) t.lastDate = r.date;
         perUser.set(r.user_id, t);
       }
       for (const [uid, n] of rotFlips) {
-        const t = perUser.get(uid) || { count: 0, firstDate: dates[0], lastDate: dates[dates.length - 1] };
+        const t = perUser.get(uid) || { count: 0, firstDate: dates[0], lastDate: dates[dates.length - 1], types: new Set<string>() };
         t.count += n;
         perUser.set(uid, t);
       }
@@ -2857,6 +3025,45 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
             bundleTitle: '{count} of your shifts were removed',
             payload: { count: t.count },
             excludeUserId: req.session.userId!,
+          });
+        }
+      }
+      // Change report (Deepika, 2026-11-13): one row per person whose
+      // publish state actually flipped. Rotation flips carry no type
+      // per user, so they fall back to the request's type filter.
+      {
+        const allTypeIds = [...new Set([...perUser.values()].flatMap((t) => [...t.types]))];
+        if (shiftTypeId) allTypeIds.push(shiftTypeId);
+        const typeNames = new Map<string, string>();
+        if (allTypeIds.length) {
+          const { rows: stRows } = await query(
+            'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+            [companyId, [...new Set(allTypeIds)]]
+          );
+          for (const r of stRows) typeNames.set(r.id, r.name);
+        }
+        const uids = [...perUser.keys()];
+        const personNames = new Map<string, string>();
+        if (uids.length) {
+          const { rows: urows } = await query(
+            `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+            [companyId, uids]
+          );
+          for (const u of urows) personNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+        }
+        for (const [uid, t] of perUser) {
+          const typeIds = t.types.size ? [...t.types] : (shiftTypeId ? [shiftTypeId] : []);
+          const types = typeIds.map((id) => typeNames.get(id)).filter(Boolean) as string[];
+          await auditLog({
+            companyId, date: todayStr(), action: published ? 'published' : 'unpublished', category: 'schedule',
+            source: 'manual', changedBy: req.session.userId!,
+            affectedUserId: uid, personName: personNames.get(uid) || null,
+            shiftTypeName: types.join(', ') || null,
+            scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
+            description: published
+              ? `Published ${t.count} shift(s) (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`
+              : `Moved ${t.count} shift(s) to draft (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
+            details: { count: t.count, from: dates[0], to: dates[dates.length - 1], shiftTypeId: shiftTypeId || null, via: 'bulk-publish-state' },
           });
         }
       }
@@ -3288,13 +3495,12 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
         return;
       }
     }
-    // Audit: rotation created.
-    await auditLog({
-      companyId, date: todayStr(), action: 'created', category: 'settings',
-      source: 'manual', rotationName: String(name).trim(),
-      changedBy: req.session.userId!,
+    // Audit: rotation created — full detail, one row per person.
+    await auditRotationSettings({
+      companyId, action: 'created', rotationName: String(name).trim(),
       description: `Created rotation "${String(name).trim()}"`,
-      details: { rotationId: id, kind: 'rotation' },
+      snapshot: await rotationSnapshot(companyId, id),
+      changedBy: req.session.userId!,
     });
     res.status(201).json({ id });
   } catch (err) {
@@ -3466,14 +3672,14 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
           [crypto.randomUUID(), id, d.userId, p.cycleDay, p.shiftTypeId]
         );
       }
-      await auditLog({
-        companyId, date: todayStr(), action: 'created', category: 'settings',
-        source: 'manual', rotationName: src.name,
-        changedBy: req.session.userId!,
+      await auditRotationSettings({
+        companyId, action: 'created', rotationName: src.name,
         description: invert
           ? `Copied rotation "${src.name}" from ${stdName} to ${d.name} — inverse (the days ${stdName} doesn't work)`
           : `Copied rotation "${src.name}" from ${stdName} to ${d.name}`,
-        details: { rotationId: id, kind: 'rotation', copiedFromRotationId: src.id, copiedFromUserId: String(standardUserId), ...(invert ? { inverse: true } : {}) },
+        snapshot: await rotationSnapshot(companyId, id),
+        changedBy: req.session.userId!,
+        extraDetails: { copiedFromRotationId: src.id, copiedFromUserId: String(standardUserId), ...(invert ? { inverse: true } : {}) },
       });
       copied.push({ userId: d.userId, name: d.name, rotationId: id });
     }
@@ -3704,14 +3910,24 @@ router.post('/rotations/pair', requireRole('owner', 'scheduler'), async (req: Re
       }
     }
 
-    await auditLog({
-      companyId, date: todayStr(), action: 'created', category: 'settings',
-      source: 'manual', rotationName: tpl.name,
-      changedBy: req.session.userId!,
+    const pairSnapshot = await rotationSnapshot(companyId, rotationId);
+    if (pairSnapshot) {
+      // Group rotations carry no assignment rows — the members ARE
+      // the people, so the snapshot names them.
+      pairSnapshot.people = members.map((m) => ({
+        userId: m.id, name: m.name, cycleDay: null,
+        shiftTypeId: groupShiftTypeId, shiftTypeName: null,
+      }));
+    }
+    await auditRotationSettings({
+      companyId, action: 'created', rotationName: tpl.name,
       description: `Paired ${members.map((m) => m.name).join(', ')} on "${tpl.name}" — they take its turns in that order` +
         (templateEnded ? `; ${stdName}'s own pattern stops the day before the pair starts` : ''),
-      details: {
-        rotationId, groupId, kind: 'rotation', paired: true,
+      snapshot: pairSnapshot,
+      changedBy: req.session.userId!,
+      people: members.map((m) => ({ userId: m.id, name: m.name })),
+      extraDetails: {
+        groupId, paired: true,
         pairedFromRotationId: tpl.id, pairedFromUserId: String(standardUserId),
         memberUserIds, templateEnded,
       },
@@ -3862,12 +4078,12 @@ router.post('/rotations/:id/change-from', requireRole('owner', 'scheduler'), asy
       await tx.query('UPDATE rotations SET end_date = $1 WHERE id = $2 AND company_id = $3', [endDate, rotId, companyId]);
       return insertPatternRotation(tx, companyId, req.session.userId!, userId, pattern, fromDate);
     });
-    await auditLog({
-      companyId, date: todayStr(), action: 'updated', category: 'settings',
-      source: 'manual', rotationName: rot.name,
-      changedBy: req.session.userId!,
+    await auditRotationSettings({
+      companyId, action: 'updated', rotationName: rot.name,
       description: `Changed ${personName}'s rotation from ${fromDate}: "${rot.name}" stops ${endDate}; "${pattern.name}" starts ${fromDate}`,
-      details: { rotationId: rotId, newRotationId, kind: 'rotation', changeFromDate: fromDate },
+      snapshot: await rotationSnapshot(companyId, newRotationId),
+      changedBy: req.session.userId!,
+      extraDetails: { rotationId: rotId, newRotationId, changeFromDate: fromDate },
     });
     res.json({ ok: true, endedRotationId: rotId, newRotationId, endDate, startDate: fromDate });
   } catch (err) {
@@ -3968,12 +4184,12 @@ router.post('/rotations/swap-from', requireRole('owner', 'scheduler'), async (re
       return out;
     });
     for (const c of changes) {
-      await auditLog({
-        companyId, date: todayStr(), action: 'updated', category: 'settings',
-        source: 'manual', rotationName: c.patternName,
-        changedBy: req.session.userId!,
+      await auditRotationSettings({
+        companyId, action: 'updated', rotationName: c.patternName,
         description: `Swapped rotations from ${fromDate}: ${c.name} now runs "${c.patternName}" (from ${c.receivedFromName}); their old rotation stops ${endDate}`,
-        details: { rotationId: c.endedRotationId, newRotationId: c.newRotationId, kind: 'rotation', swapFromDate: fromDate, receivedFromUserId: c.receivedFromUserId },
+        snapshot: await rotationSnapshot(companyId, c.newRotationId),
+        changedBy: req.session.userId!,
+        extraDetails: { rotationId: c.endedRotationId, newRotationId: c.newRotationId, swapFromDate: fromDate, receivedFromUserId: c.receivedFromUserId },
       });
     }
     res.json({ ok: true, changes });
@@ -4461,11 +4677,12 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       publishTypeInScope(typeDepts, t, scope.depts, isOwner) && (!filters.typeIds || filters.typeIds.has(t));
     const today = await companyTodayStr(companyId);
     const batchId = crypto.randomUUID();
-    const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
-    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
-    const bump = (m: Map<string, any>, uid: string, date: string) => {
-      const t = m.get(uid) || { count: 0, firstDate: date, lastDate: date };
+    const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
+    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
+    const bump = (m: Map<string, any>, uid: string, date: string, shiftTypeId?: string) => {
+      const t = m.get(uid) || { count: 0, firstDate: date, lastDate: date, types: new Set<string>() };
       t.count++;
+      if (shiftTypeId) t.types.add(shiftTypeId);
       if (date < t.firstDate) t.firstDate = date;
       if (date > t.lastDate) t.lastDate = date;
       m.set(uid, t);
@@ -4493,10 +4710,10 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
         ).map((r: any) => r.id);
         if (okIds.length) {
           const { rows: del } = await tx.query(
-            `DELETE FROM shifts WHERE id = ANY($1::uuid[]) RETURNING user_id AS "userId", date::text AS date`,
+            `DELETE FROM shifts WHERE id = ANY($1::uuid[]) RETURNING user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"`,
             [okIds]
           );
-          for (const r of del) { removed++; bump(removedByUser, r.userId, r.date); }
+          for (const r of del) { removed++; bump(removedByUser, r.userId, r.date, r.shiftTypeId); }
         }
       }
       // Adds: insert as published, provenance set; a slot a stored
@@ -4512,7 +4729,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
            RETURNING user_id AS "userId", date::text AS date`,
           [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, a.date, req.session.userId!, batchId, a.rotationId || null]
         );
-        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date); }
+        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date, a.shiftTypeId); }
       }
       // Flips: hand-made draft shifts the plan named become
       // published — re-validated like everything else (still a
@@ -4535,7 +4752,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
             [batchId, companyId, f.id]
           );
           flipped++;
-          bump(addedByUser, f.userId, f.date);
+          bump(addedByUser, f.userId, f.date, f.shiftTypeId);
         }
       }
       // Opens (rule 7): aggregate per date+type into extra_open_slots
@@ -4605,12 +4822,54 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       }
     });
 
-    await auditLog({
-      companyId, date: today, action: 'published', category: 'schedule',
-      source: 'manual', changedBy: req.session.userId!,
-      description: `Published schedule ${from} – ${to}: ${added} shift(s) stamped, ${flipped} draft(s) flipped to published, ${removed} replaced away, ${opened} opened for cover`,
-      details: { batchId, from, to, added, removed, opened, closed, flipped },
-    });
+    // Change report (Deepika, 2026-11-13): one row per person whose
+    // schedule changed — never one aggregate blob. Published rows
+    // carry the person's stamped range; removed rows carry the range
+    // that was replaced away by this republish.
+    {
+      const typeIds = [...new Set([...addedByUser.values(), ...removedByUser.values()].flatMap((t) => [...t.types]))];
+      const typeNames = new Map<string, string>();
+      if (typeIds.length) {
+        const { rows: stRows } = await query(
+          'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+          [companyId, typeIds]
+        );
+        for (const r of stRows) typeNames.set(r.id, r.name);
+      }
+      const uids = [...new Set([...addedByUser.keys(), ...removedByUser.keys()])];
+      const personNames = new Map<string, string>();
+      if (uids.length) {
+        const { rows: urows } = await query(
+          `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+          [companyId, uids]
+        );
+        for (const u of urows) personNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+      }
+      for (const [uid, t] of addedByUser) {
+        const types = [...t.types].map((id) => typeNames.get(id)).filter(Boolean) as string[];
+        await auditLog({
+          companyId, date: today, action: 'published', category: 'schedule',
+          source: 'manual', changedBy: req.session.userId!,
+          affectedUserId: uid, personName: personNames.get(uid) || null,
+          shiftTypeName: types.join(', ') || null,
+          scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
+          description: `Part of the ${from} – ${to} publish (${added} shifts stamped)`,
+          details: { batchId, count: t.count, totalAdded: added, from, to, shiftTypeIds: [...t.types] },
+        });
+      }
+      for (const [uid, t] of removedByUser) {
+        const types = [...t.types].map((id) => typeNames.get(id)).filter(Boolean) as string[];
+        await auditLog({
+          companyId, date: today, action: 'deleted', category: 'schedule',
+          source: 'manual', changedBy: req.session.userId!,
+          affectedUserId: uid, personName: personNames.get(uid) || null,
+          shiftTypeName: types.join(', ') || null,
+          scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
+          description: `Removed when the schedule was republished (${from} – ${to})`,
+          details: { batchId, count: t.count, from, to, shiftTypeIds: [...t.types] },
+        });
+      }
+    }
     res.json({ ok: true, batchId, added, removed, opened, closed, flipped });
 
     // Notify affected people (never the acting admin about their own
@@ -4713,21 +4972,25 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       if (outside) { res.status(403).json({ error: 'That publish touches departments you cannot edit.' }); return; }
     }
     const today = await companyTodayStr(companyId);
-    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string }>();
+    const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
+    const bumpUndo = (uid: string, date: string, shiftTypeId?: string) => {
+      const t = removedByUser.get(uid) || { count: 0, firstDate: date, lastDate: date, types: new Set<string>() };
+      t.count++;
+      if (shiftTypeId) t.types.add(shiftTypeId);
+      if (date < t.firstDate) t.firstDate = date;
+      if (date > t.lastDate) t.lastDate = date;
+      removedByUser.set(uid, t);
+    };
     let removedShifts = 0, closedSlots = 0, unflipped = 0;
     await withTransaction(async (tx) => {
       const { rows: del } = await tx.query(
         `DELETE FROM shifts WHERE publish_batch_id = $1 AND company_id = $2 AND date >= $3::date
-         RETURNING user_id AS "userId", date::text AS date`,
+         RETURNING user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"`,
         [batchId, companyId, today]
       );
       for (const r of del) {
         removedShifts++;
-        const t = removedByUser.get(r.userId) || { count: 0, firstDate: r.date, lastDate: r.date };
-        t.count++;
-        if (r.date < t.firstDate) t.firstDate = r.date;
-        if (r.date > t.lastDate) t.lastDate = r.date;
-        removedByUser.set(r.userId, t);
+        bumpUndo(r.userId, r.date, r.shiftTypeId);
       }
       const { rows: led } = await tx.query(
         'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM publish_batch_open_slots WHERE batch_id = $1 AND company_id = $2',
@@ -4745,26 +5008,50 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
         `UPDATE shifts s SET published = false FROM publish_batch_flips f
          WHERE f.batch_id = $1 AND s.id = f.shift_id AND s.company_id = $2
            AND s.published = true AND s.date >= $3::date
-         RETURNING s.user_id AS "userId", s.date::text AS date`,
+         RETURNING s.user_id AS "userId", s.date::text AS date, s.shift_type_id AS "shiftTypeId"`,
         [batchId, companyId, today]
       );
       for (const r of unfl) {
         unflipped++;
-        const t = removedByUser.get(r.userId) || { count: 0, firstDate: r.date, lastDate: r.date };
-        t.count++;
-        if (r.date < t.firstDate) t.firstDate = r.date;
-        if (r.date > t.lastDate) t.lastDate = r.date;
-        removedByUser.set(r.userId, t);
+        bumpUndo(r.userId, r.date, r.shiftTypeId);
       }
       await tx.query('DELETE FROM publish_batch_flips WHERE batch_id = $1', [batchId]);
       await tx.query('UPDATE publish_batches SET undone_at = now() WHERE id = $1', [batchId]);
     });
-    await auditLog({
-      companyId, date: today, action: 'deleted', category: 'schedule',
-      source: 'manual', changedBy: req.session.userId!,
-      description: `Undid a schedule publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${removedShifts} future shift(s) removed, ${unflipped} flipped draft(s) returned to draft, ${closedSlots} open slot(s) taken back; past shifts kept`,
-      details: { batchId, removedShifts, closedSlots, unflipped },
-    });
+    // Change report (Deepika, 2026-11-13): mirror the publish — one
+    // row per person, never one aggregate blob.
+    {
+      const typeIds = [...new Set([...removedByUser.values()].flatMap((t) => [...t.types]))];
+      const typeNames = new Map<string, string>();
+      if (typeIds.length) {
+        const { rows: stRows } = await query(
+          'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+          [companyId, typeIds]
+        );
+        for (const r of stRows) typeNames.set(r.id, r.name);
+      }
+      const uids = [...removedByUser.keys()];
+      const personNames = new Map<string, string>();
+      if (uids.length) {
+        const { rows: urows } = await query(
+          `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+          [companyId, uids]
+        );
+        for (const u of urows) personNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+      }
+      for (const [uid, t] of removedByUser) {
+        const types = [...t.types].map((id) => typeNames.get(id)).filter(Boolean) as string[];
+        await auditLog({
+          companyId, date: today, action: 'deleted', category: 'schedule',
+          source: 'manual', changedBy: req.session.userId!,
+          affectedUserId: uid, personName: personNames.get(uid) || null,
+          shiftTypeName: types.join(', ') || null,
+          scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
+          description: `Undid publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${t.count} shift(s) removed or returned to draft; past shifts kept`,
+          details: { batchId, count: t.count, removedShifts, closedSlots, unflipped },
+        });
+      }
+    }
     res.json({ ok: true, removedShifts, closedSlots, unflipped });
     for (const [uid, t] of removedByUser) {
       notify({
@@ -4844,6 +5131,9 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
     );
     // Department scoping: the scheduler's active department must be one of the rotation's departments.
     if (!(await requireActiveDepartment(req, res, await rotationRelevantDepartments(req.params.id)))) return;
+    // Snapshot BEFORE the delete — the delete cascades the
+    // assignments away, so the detail would be unrecoverable after.
+    const snapshot = await rotationSnapshot(companyId, req.params.id);
     const { rowCount } = await query(
       'DELETE FROM rotations WHERE id = $1 AND company_id = $2',
       [req.params.id, companyId]
@@ -4853,12 +5143,11 @@ router.delete('/rotations/:id', requireRole('owner', 'scheduler'), async (req: R
       return;
     }
     const rotName = rrows[0]?.name || 'Rotation';
-    await auditLog({
-      companyId, date: todayStr(), action: 'deleted', category: 'settings',
-      source: 'manual', rotationName: rrows[0]?.name || null,
-      changedBy: req.session.userId!,
+    await auditRotationSettings({
+      companyId, action: 'deleted', rotationName: rotName,
       description: `Deleted rotation "${rotName}"`,
-      details: { rotationId: req.params.id, kind: 'rotation' },
+      snapshot,
+      changedBy: req.session.userId!,
     });
     res.json({ ok: true });
   } catch (err) {
@@ -4889,10 +5178,11 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
     const { rows: rnRows } = await query(
       'SELECT name FROM rotations WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
     const tglName = rnRows.length ? rnRows[0].name : 'Rotation';
-    await auditLog({
-      companyId, date: todayStr(), action: 'updated', category: 'settings',
-      source: 'manual', rotationName: tglName, changedBy: req.session.userId!,
+    await auditRotationSettings({
+      companyId, action: 'updated', rotationName: tglName,
       description: `${isActive ? 'Activated' : 'Paused'} rotation "${tglName}"`,
+      snapshot: await rotationSnapshot(companyId, req.params.id),
+      changedBy: req.session.userId!,
     });
     res.json({ ok: true, rotation: rows[0] });
   } catch (err) {
@@ -7966,6 +8256,152 @@ router.delete('/payroll-schedules/:id', requireRole('owner', 'scheduler'), async
 // Calendar separation (Deepika, 2026-11-07): ?category=calendar returns
 // ONLY calendar-event entries (the Calendar report); without it, the
 // original Run report returns schedule + settings and never calendar.
+//
+// Report redesign (Deepika, 2026-11-13): ONE flat list, ordered by the
+// time the change was made (newest first) — no date grouping, no
+// category sections, no client-side merging. Names resolve LIVE from
+// the roster (a rename shows the current name); deleted people still
+// show under the recorded name. Every row carries what changed, how /
+// where it was made, who changed it, the result, and the why.
+const AUDIT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function auditDayLabel(iso: string | null): string {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return String(iso);
+  return `${AUDIT_MONTHS[m - 1]} ${d}, ${y}`;
+}
+function auditRangeLabel(start: string | null, end: string | null): string {
+  if (!start) return '—';
+  if (!end || end === start) return auditDayLabel(start);
+  const [y1, m1, d1] = String(start).split('-').map(Number);
+  const [y2, m2, d2] = String(end).split('-').map(Number);
+  if (y1 === y2 && m1 === m2) return `${AUDIT_MONTHS[m1 - 1]} ${d1} – ${d2}, ${y1}`;
+  if (y1 === y2) return `${AUDIT_MONTHS[m1 - 1]} ${d1} – ${AUDIT_MONTHS[m2 - 1]} ${d2}, ${y1}`;
+  return `${auditDayLabel(start)} – ${auditDayLabel(end)}`;
+}
+function auditHowWhere(e: any): string {
+  if (e.source === 'email') return 'Via Email Q-Scheduler';
+  if (e.source === 'agent') return 'Via Task';
+  if (e.source === 'code') return 'Code problem';
+  if (e.source === 'rotation') return 'Manually made in the schedule';
+  return e.category === 'settings' ? 'Manually made in Settings' : 'Manually made in the schedule';
+}
+function auditWhatChanged(e: any): string {
+  const d = e.details || {};
+  const type = e.shiftTypeName ? ` — ${e.shiftTypeName}` : '';
+  if (e.source === 'code') return e.description || `Draft appeared${type} left as a draft`;
+  if (e.category === 'settings') {
+    if (e.action === 'created' && e.rotationName) return `Created rotation "${e.rotationName}"`;
+    if (e.action === 'deleted' && e.rotationName) return `Deleted rotation "${e.rotationName}"`;
+    return e.description || `${e.action}: ${e.rotationName || 'Settings'}`;
+  }
+  if (e.action === 'published') return `Published${type ? ` — ${e.shiftTypeName}` : ''}`;
+  if (e.action === 'unpublished') return `Moved to draft${type ? ` — ${e.shiftTypeName}` : ''}`;
+  if (d.swap && d.swapTo) return `Moved to ${d.swapTo}${type ? ` — ${e.shiftTypeName}` : ''} (swap)`;
+  if (e.action === 'rotation_excluded') return `Removed (rotation): ${e.personName || '—'}${type}`;
+  if (e.description) return e.description;
+  const word = e.action === 'created' ? 'Assigned' : e.action === 'deleted' ? 'Removed' : 'Edited';
+  return `${word}: ${e.personName || '—'}${type}`;
+}
+function auditWhyDetails(e: any): string {
+  const d = e.details || {};
+  if (d.snapshot) {
+    const s = d.snapshot;
+    const parts: string[] = [];
+    const people = [...new Set((s.people || []).map((p: any) => p.name).filter(Boolean))];
+    if (people.length) parts.push(`Person: ${people.join(', ')}`);
+    const types = [...new Set((s.people || []).map((p: any) => p.shiftTypeName).filter(Boolean))];
+    if (types.length) parts.push(`Shift type: ${types.join(', ')}`);
+    if (s.cycleDays) parts.push(`Cycle: ${s.cycleDays} days`);
+    if (s.startDate) parts.push(`Start: ${auditDayLabel(s.startDate)}`);
+    if (s.startTime || s.endTime) parts.push(`Time: ${[s.startTime, s.endTime].filter(Boolean).join(' – ')}`);
+    const days = [...new Set((s.people || []).map((p: any) => p.cycleDay).filter((x: any) => x != null))].sort((a: any, b: any) => a - b);
+    if (days.length) parts.push(`Days: ${days.join(', ')}`);
+    if (parts.length) return (e.description ? e.description + ' ' : '') + parts.join(' · ');
+  }
+  return e.description || '';
+}
+/**
+ * Leftover-draft detection (Deepika, 2026-11-13): pre-fix removals
+ * left no record of the draft they caused, so the report derives
+ * them at read time — a removal row for a (person, date, shift type)
+ * where the rotation occurrence still draws, nothing covers it, and
+ * no stored draft row exists. Each is rendered as a synthetic row
+ * (details.derived = true) dated at the removal, so it is
+ * distinguishable from a row written when the draft appeared. Range
+ * rows (bulk delete) are skipped — their pauses cover the range.
+ */
+async function detectLeftoverDrafts(companyId: string, rows: any[]): Promise<any[]> {
+  const out: any[] = [];
+  const haveDraft = new Set<string>();
+  for (const r of rows) {
+    if (r.source === 'code' && r.details?.cause) {
+      haveDraft.add(`${r.affectedUserId || ''}|${r.scheduleDate || r.date}|${r.shiftTypeName || ''}`);
+    }
+  }
+  for (const r of rows) {
+    try {
+      if (r.category !== 'schedule' || r.source === 'code') continue;
+      if (r.action !== 'deleted' && r.action !== 'updated') continue;
+      if (!r.shiftTypeName || r.scheduleDateEnd) continue;
+      const schedDate = r.scheduleDate || r.date;
+      if (!schedDate) continue;
+      let userId = r.affectedUserId || null;
+      let personName = r.personName;
+      if (!userId && personName) {
+        const who = await resolvePersonId(companyId, personName);
+        if (who) { userId = who.id; personName = who.display; }
+      }
+      if (!userId) continue;
+      const { rows: stRows } = await query(
+        'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
+        [companyId, r.shiftTypeName]
+      );
+      if (!stRows.length) continue;
+      const shiftTypeId = stRows[0].id;
+      if (haveDraft.has(`${userId}|${schedDate}|${r.shiftTypeName}`)) continue;
+      const { rows: stored } = await query(
+        'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
+        [companyId, userId, schedDate, shiftTypeId]
+      );
+      if (stored.length) continue;
+      const occ = await findRotationOccurrences(companyId, userId, schedDate, shiftTypeId);
+      let draws = false;
+      for (const o of occ) {
+        const { rows: excl } = await query(
+          `SELECT 1 FROM rotation_shift_exclusions WHERE rotation_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
+          [o.rotationId, userId, schedDate, o.shiftTypeId]
+        );
+        if (!excl.length) { draws = true; break; }
+      }
+      if (!draws) continue;
+      out.push({
+        id: `derived-${r.id}`,
+        derived: true,
+        date: r.date,
+        scheduleDate: schedDate,
+        scheduleDateEnd: null,
+        action: 'created',
+        category: 'schedule',
+        personName,
+        affectedUserId: userId,
+        shiftTypeName: r.shiftTypeName,
+        source: 'code',
+        rotationName: null,
+        changedBy: null,
+        changedByName: '—',
+        result: 'not_successful',
+        description: `Draft appeared — ${r.shiftTypeName} left as a draft. The rotation pattern drew again because the stored shift was removed without excluding the rotation day.`,
+        details: { cause: 'rotation occurrence re-drew after stored shift removal without exclusion', derived: true, fromAuditId: r.id },
+        changedAt: r.changedAt,
+      });
+      haveDraft.add(`${userId}|${schedDate}|${r.shiftTypeName}`);
+    } catch (err) {
+      console.error('[schedule] leftover draft detection failed:', (err as any)?.message);
+    }
+  }
+  return out;
+}
 router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -7987,20 +8423,66 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
     }
     where += wantCalendar ? ` AND a.category = 'calendar'` : ` AND COALESCE(a.category, 'schedule') <> 'calendar'`;
     const { rows } = await query(
-      `SELECT a.date::text AS date, a.action, a.category, a.person_name AS "personName",
+      `SELECT a.id, a.date::text AS date, a.action, a.category, a.person_name AS "personName",
               a.shift_type_name AS "shiftTypeName", a.source,
               a.rotation_name AS "rotationName",
+              a.changed_by AS "changedById",
               a.changed_by_name AS "changedBy",
               a.details AS "details",
               a.details->>'description' AS "description",
+              a.affected_user_id AS "affectedUserId",
+              a.result AS "result",
+              a.schedule_date::text AS "scheduleDate",
+              a.schedule_date_end::text AS "scheduleDateEnd",
               a.created_at AS "changedAt"
        FROM schedule_audit_log a
        WHERE a.company_id = $1${where}
-       ORDER BY a.date, a.created_at DESC
+       ORDER BY a.created_at DESC
        LIMIT 2000`,
       params
     );
-    res.json({ entries: rows });
+    // Leftover drafts (pre-fix removals) are derived from the rows in
+    // range; the Calendar report never gets them.
+    let entries: any[] = rows;
+    if (!wantCalendar) {
+      const derived = await detectLeftoverDrafts(companyId, rows);
+      if (derived.length) {
+        entries = [...rows, ...derived].sort(
+          (x: any, y: any) => new Date(y.changedAt).getTime() - new Date(x.changedAt).getTime()
+        ).slice(0, 2000);
+      }
+    }
+    // Live names (Deepika, 2026-11-13): the report shows names as they
+    // stand on the current roster — a rename shows the current name.
+    // Looked up WITHOUT the is_active filter, so deactivated people
+    // still resolve; the stored snapshot is the fallback.
+    const ids = [...new Set(entries.flatMap((e: any) => [e.affectedUserId, e.changedById]).filter(Boolean))] as string[];
+    const liveNames = new Map<string, string>();
+    if (ids.length) {
+      const { rows: urows } = await query(
+        `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+        [companyId, ids]
+      );
+      for (const u of urows) {
+        liveNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+      }
+    }
+    const out = entries.map((e: any) => {
+      const personName = (e.affectedUserId && liveNames.get(e.affectedUserId)) || e.personName || null;
+      const changedByName = (e.changedById && liveNames.get(e.changedById)) || e.changedBy || null;
+      return {
+        ...e,
+        personName,
+        changedBy: changedByName,
+        changedByName,
+        whatChanged: auditWhatChanged({ ...e, personName }),
+        howWhere: auditHowWhere(e),
+        resultLabel: e.result === 'not_successful' ? 'Not successful' : 'Successful',
+        scheduleDateLabel: auditRangeLabel(e.scheduleDate || null, e.scheduleDateEnd || null),
+        whyDetails: auditWhyDetails({ ...e, personName }),
+      };
+    });
+    res.json({ entries: out });
   } catch (err) {
     console.error('[schedule] audit report failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -8814,6 +9296,7 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       // path so no approved change is missing from the Change report.
       try {
         await auditPlanChanges(companyId, plan, results, req.session.userId!);
+        await auditDraftsForResults(companyId, results, req.session.userId!);
       } catch (auditErr) {
         console.error('[schedule] plan audit log failed:', (auditErr as any)?.message);
       }
@@ -9220,6 +9703,7 @@ async function handlePlanApprove(req: Request, res: Response) {
     // per-approver token's user for those links, else the session user.
     try {
       await auditPlanChanges(plan.company_id, plan, results, decidedBy);
+      await auditDraftsForResults(plan.company_id, results, decidedBy);
     } catch { /* audit must never break approval */ }
     const itemHtml = results.map((r: any, i: number) => {
       const badge = r.success
@@ -10142,6 +10626,7 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: me,
       details: { via: 'open-slot-claim' },
+      affectedUserId: me, scheduleDate: date,
     });
   } catch (err) {
     console.error('[schedule] claim open slot failed:', err);
@@ -10663,6 +11148,7 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
           personName: names.personName, shiftTypeName: names.shiftTypeName,
           source: 'manual', changedBy: me,
           details: { via: 'shift-request-approved', requestId: id, requestType: r.requestType },
+          affectedUserId: me, scheduleDate: arows[0].date,
         });
       }
     } catch { /* audit must never break the response */ }
@@ -10724,7 +11210,16 @@ router.post('/shift-requests/:id/decline', requireRole('owner', 'scheduler', 'em
     }
     if (dr.length && dr[0].requestType === 'open_pickup') {
       // Release the held slot: delete the unpublished shift.
+      const { rows: held } = await query(
+        'SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+        [dr[0].shiftId, companyId]
+      );
       await query('DELETE FROM shifts WHERE id = $1 AND published = false', [dr[0].shiftId]);
+      // Report (Deepika, 2026-11-13): the held draft may have been
+      // suppressing a rotation occurrence — if it now draws, say so.
+      if (held.length) {
+        await auditDraftIfAppeared(companyId, held[0].userId, held[0].date, held[0].shiftTypeId, me);
+      }
     }
     res.json({ ok: true, status: 'declined' });
     // Notify the requester that their request was declined.
@@ -10951,7 +11446,14 @@ router.post('/requests/act/:token', urlencoded({ extended: false }), async (req:
         if (!rowCount) { decidedPage(); return; }
         if (ctx.requestType === 'open_pickup') {
           // Release the held slot (mirrors the in-app decline).
+          const { rows: held } = await query(
+            'SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts WHERE id = $1 AND company_id = $2',
+            [ctx.shiftId, companyId]
+          );
           await query('DELETE FROM shifts WHERE id = $1 AND published = false', [ctx.shiftId]);
+          if (held.length) {
+            await auditDraftIfAppeared(companyId, held[0].userId, held[0].date, held[0].shiftTypeId, me);
+          }
         }
         notifyDecided(false);
         res.send(actPage('Rejected', '<p>The request has been closed and the requester has been told.</p>'));

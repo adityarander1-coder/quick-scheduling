@@ -1081,6 +1081,17 @@
     @media (max-width: 640px) {
       #admin-dept-select { max-width: 110px; }
     }
+    /* Change report (Deepika, 2026-11-13): big table on wide screens,
+       one box per change with all fields on narrow screens. */
+    .audit-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .audit-table th, .audit-table td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .audit-table th { background: #f6f8f9; position: sticky; top: 0; }
+    .audit-cards { display: none; }
+    @media (max-width: 700px) {
+      .audit-table { display: none; }
+      .audit-cards { display: block; }
+      .audit-card { border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem; margin-bottom: 0.75rem; font-size: 0.9rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    }
     .team-row { min-height: 82px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; box-shadow: var(--shadow-soft); }
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
@@ -19970,7 +19981,7 @@ window.qsNpOfferSend = function (btn) {
 
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
-    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(600px,92vw);max-height:88vh;overflow-y:auto">
+    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(1100px,96vw);max-height:88vh;overflow-y:auto">
       <h3 style="margin-top:0">Change report</h3>
       <p style="color:#5b6b76;font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI. The date you pick is the schedule date the change is for — not the date it was made.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
@@ -19985,7 +19996,7 @@ window.qsNpOfferSend = function (btn) {
         <label>To <input type="date" id="audit-to"></label>
       </div>
       <button type="button" id="audit-run" class="btn">Run report</button>
-      <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow-y:auto"></div>
+      <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow:auto"></div>
       <div style="display:flex;justify-content:flex-end;margin-top:1rem">
         <button type="button" class="btn-secondary" id="audit-close">Close</button>
       </div>
@@ -23631,80 +23642,57 @@ window.qsNpOfferSend = function (btn) {
             box.innerHTML = '<p style="color:#5b6b76">No changes recorded for this period yet. Tracking started October 9, 2026 — earlier changes are not available.</p>';
             return;
           }
-          var actionWords = { created: 'Added', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
-          var scheduleWords = { created: 'Assigned', updated: 'Edited', deleted: 'Removed', published: 'Published', unpublished: 'Moved to draft', rotation_excluded: 'Removed (rotation)' };
+          var entries = r.data.entries || [];
+          // Flat list, newest first — exactly as the endpoint returns it.
+          // No grouping, no category sections, no merging: a swap is two
+          // rows, a publish is one row per person.
           function fmtDay(iso) {
             if (!iso) return '';
             var parts = String(iso).split('-');
             var dd = new Date(+parts[0], (+parts[1] || 1) - 1, +parts[2] || 1);
             return dd.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
           }
-          function fmtTime(ts) {
-            return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+          function fmtMade(ts) {
+            return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
           }
-          var entries = r.data.entries || [];
-          // Merge a same-second manual add + manual removal on the same shift
-          // into one swap line — on the schedule grid that is one gesture, and
-          // two separate lines read like chaos. Same person, different actors,
-          // or anything involving a rotation stays as separate lines.
-          var removedByKey = {};
-          entries.forEach(function (e) {
-            if ((e.category || 'schedule') === 'schedule' && e.action === 'deleted' && e.source !== 'rotation' && !e.description) {
-              var k = String(e.changedAt).slice(0, 19) + '|' + (e.date || '') + '|' + (e.shiftTypeName || '') + '|' + (e.changedBy || '');
-              (removedByKey[k] = removedByKey[k] || []).push(e);
-            }
-          });
-          var usedRemoved = new Set();
           var html = '';
           if (mode === 'date') {
-            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule on ' + esc(fmtDay(d)) + '.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes made on ' + esc(fmtDay(d)) + ', newest first.</p>';
           } else {
-            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes to the schedule from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + '.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes made from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + ', newest first.</p>';
           }
-          var lastDate = '';
-          var lastCat = '';
+          // Wide screens: a real table with the mock's 8 columns.
+          html += '<table class="audit-table"><thead><tr><th>Name</th><th>Schedule date</th><th>Date &amp; time made</th><th>What changed</th><th>How / where made</th><th>Changed by</th><th>Result</th><th>Why / Details</th></tr></thead><tbody>';
           entries.forEach(function (e) {
-            if (usedRemoved.has(e)) return;
-            var cat = e.category || 'schedule';
-            if (e.date !== lastDate) {
-              html += '<h4 style="margin:0.75rem 0 0.25rem">' + esc(fmtDay(e.date)) + '</h4>';
-              lastDate = e.date;
-            }
-            if (cat !== lastCat) {
-              html += '<h4 style="margin:0.75rem 0 0.25rem;color:var(--primary)">' +
-                (cat === 'settings' ? '⚙️ Settings changes' : '📅 Schedule changes') + '</h4>';
-              lastCat = cat;
-            }
-            var words = cat === 'settings' ? actionWords : scheduleWords;
-            var line = '';
-            var via = e.source === 'rotation' ? 'via rotation' + (e.rotationName ? ' "' + esc(e.rotationName) + '"' : '')
-              : e.source === 'agent' ? 'via Q-Scheduler Task'
-              : e.source === 'email' ? 'via Email Q-Scheduler'
-              : 'manual';
-            if (cat === 'schedule' && e.action === 'created' && e.source !== 'rotation' && !e.description) {
-              var k = String(e.changedAt).slice(0, 19) + '|' + (e.date || '') + '|' + (e.shiftTypeName || '') + '|' + (e.changedBy || '');
-              var queue = removedByKey[k] || [];
-              var partner = null;
-              for (var qi = 0; qi < queue.length; qi++) {
-                if (!usedRemoved.has(queue[qi]) && queue[qi].personName !== e.personName) { partner = queue[qi]; break; }
-              }
-              if (partner) {
-                usedRemoved.add(partner);
-                line = '<strong>Swapped</strong>: ' + esc(partner.personName) + ' → ' + esc(e.personName) +
-                  (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '') +
-                  ' <span style="color:#5b6b76">(manual)</span><br>' +
-                  '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
-                html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
-                return;
-              }
-            }
-            var what = e.description ? esc(e.description)
-              : (e.personName ? (esc(e.personName) + (e.shiftTypeName ? ' — ' + esc(e.shiftTypeName) + ' shift' : '')) : 'Schedule');
-            line = '<strong>' + (words[e.action] || e.action) + '</strong>: ' + what +
-              ' <span style="color:#5b6b76">(' + via + ')</span><br>' +
-              '<span style="color:#5b6b76;font-size:0.8rem">by ' + esc(e.changedBy || '—') + ' · ' + esc(fmtTime(e.changedAt)) + '</span>';
-            html += '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border);font-size:0.9rem">' + line + '</div>';
+            var bad = e.result === 'not_successful';
+            html += '<tr>' +
+              '<td>' + esc(e.personName || '—') + '</td>' +
+              '<td>' + esc(e.scheduleDateLabel || '—') + '</td>' +
+              '<td>' + esc(fmtMade(e.changedAt)) + '</td>' +
+              '<td>' + esc(e.whatChanged || '—') + '</td>' +
+              '<td>' + esc(e.howWhere || '—') + '</td>' +
+              '<td>' + esc(e.changedBy || '—') + '</td>' +
+              '<td' + (bad ? ' style="color:#b3261e;font-weight:600"' : '') + '>' + esc(e.resultLabel || 'Successful') + '</td>' +
+              '<td>' + esc(e.whyDetails || '—') + '</td>' +
+              '</tr>';
           });
+          html += '</tbody></table>';
+          // Narrow screens: one box per change with ALL fields.
+          html += '<div class="audit-cards">';
+          entries.forEach(function (e) {
+            var bad = e.result === 'not_successful';
+            html += '<div class="audit-card">' +
+              '<div><strong>Name:</strong> ' + esc(e.personName || '—') + '</div>' +
+              '<div><strong>Schedule date:</strong> ' + esc(e.scheduleDateLabel || '—') + '</div>' +
+              '<div><strong>Date &amp; time made:</strong> ' + esc(fmtMade(e.changedAt)) + '</div>' +
+              '<div><strong>What changed:</strong> ' + esc(e.whatChanged || '—') + '</div>' +
+              '<div><strong>How / where made:</strong> ' + esc(e.howWhere || '—') + '</div>' +
+              '<div><strong>Changed by:</strong> ' + esc(e.changedBy || '—') + '</div>' +
+              '<div><strong>Result:</strong> <span' + (bad ? ' style="color:#b3261e;font-weight:600"' : '') + '>' + esc(e.resultLabel || 'Successful') + '</span></div>' +
+              '<div><strong>Why / Details:</strong> ' + esc(e.whyDetails || '—') + '</div>' +
+              '</div>';
+          });
+          html += '</div>';
           box.innerHTML = html;
         }).catch(function () { pageError('Could not run report.'); });
       });

@@ -77,6 +77,9 @@ interface ExecuteResult {
   dates?: string[];
   /** Resolved display name, when the executor looked the person up. */
   personDisplay?: string;
+  /** Stored rows this change removed (user/date/type) — the Change
+   *  report checks each one for a draft the removal left behind. */
+  removedSlots?: Array<{ userId: string; date: string; shiftTypeId: string }>;
 }
 
 /**
@@ -175,35 +178,26 @@ async function findMember(companyId: string, name: string): Promise<{ id: string
 }
 
 /**
- * Exclude rotation-generated instances for a user on a date (the "give off"
- * path for rotation days, which have no shift row). Returns the number of
- * rotation instances actually excluded. queryFn defaults to the global
- * query; pass a transaction's query to run the exclusion atomically
- * inside a swap.
+ * Every rotation occurrence for a user on a date (optionally one
+ * shift type): active rotations whose assignment lands on that cycle
+ * day, with pause periods skipped. This is the "does the pattern draw
+ * here" rule, shared by excludeRotationInstances and the Change
+ * report's draft detection (audit.ts) — one source of truth, so the
+ * report can never disagree with the schedule draw.
  */
-/**
- * Exclude every rotation occurrence for a user on a date (optionally one
- * shift type): insert rotation_shift_exclusions rows for each rotation
- * whose assignment lands on that cycle day. Returns the exclusions
- * actually inserted (empty when the person holds no rotation day there),
- * so callers can offer exact undo. ON CONFLICT DO NOTHING keeps this
- * idempotent. queryFn lets callers run it inside a transaction.
- * (Deepika, 2026-11-12 — dual-source fix: a stored row suppresses the
- * occurrence in the draw, so removing the row alone lets it pop back.)
- */
-export async function excludeRotationInstances(
+export async function findRotationOccurrences(
   companyId: string,
   userId: string,
   date: string,
   shiftTypeId: string | null,
   queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
-): Promise<Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }>> {
+): Promise<Array<{ rotationId: string; shiftTypeId: string }>> {
   const { rows: rotations } = await queryFn(
     `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
     [companyId]
   );
-  let excluded: Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }> = [];
+  const found: Array<{ rotationId: string; shiftTypeId: string }> = [];
   for (const rot of rotations) {
     const { rows: assignments } = await queryFn(
       `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
@@ -230,15 +224,38 @@ export async function excludeRotationInstances(
       [rot.id, date]
     );
     if (pauses.length) continue;
-    for (const m of matches) {
-      const ins = await queryFn(
-        `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
-        [companyId, rot.id, userId, date, m.shiftTypeId]
-      );
-      if (ins.rowCount && ins.rowCount > 0) excluded.push({ rotationId: rot.id, userId, date, shiftTypeId: m.shiftTypeId });
-    }
+    for (const m of matches) found.push({ rotationId: rot.id, shiftTypeId: m.shiftTypeId });
+  }
+  return found;
+}
+
+/**
+ * Exclude every rotation occurrence for a user on a date (optionally one
+ * shift type): insert rotation_shift_exclusions rows for each rotation
+ * whose assignment lands on that cycle day. Returns the exclusions
+ * actually inserted (empty when the person holds no rotation day there),
+ * so callers can offer exact undo. ON CONFLICT DO NOTHING keeps this
+ * idempotent. queryFn lets callers run it inside a transaction.
+ * (Deepika, 2026-11-12 — dual-source fix: a stored row suppresses the
+ * occurrence in the draw, so removing the row alone lets it pop back.)
+ */
+export async function excludeRotationInstances(
+  companyId: string,
+  userId: string,
+  date: string,
+  shiftTypeId: string | null,
+  queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
+): Promise<Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }>> {
+  const occ = await findRotationOccurrences(companyId, userId, date, shiftTypeId, queryFn);
+  const excluded: Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }> = [];
+  for (const o of occ) {
+    const ins = await queryFn(
+      `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+      [companyId, o.rotationId, userId, date, o.shiftTypeId]
+    );
+    if (ins.rowCount && ins.rowCount > 0) excluded.push({ rotationId: o.rotationId, userId, date, shiftTypeId: o.shiftTypeId });
   }
   return excluded;
 }
@@ -1018,12 +1035,18 @@ export async function executePlan(
             if (ins3.rowCount === 0) throw new Error(`Could not place ${fromUser.display} on ${toTypeName} on ${toDate} — conflicting shift exists.`);
           }
         });
+        // Report (Deepika, 2026-11-13): the stored rows this swap
+        // removed — the approve path checks each vacated slot for a
+        // draft the removal left behind.
+        const removedSlots: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
+        if (fromSide.kind === 'manual') removedSlots.push({ userId: fromUser.id, date: fromDate, shiftTypeId: fromSide.row.shift_type_id });
+        if (toSide && toSide.kind === 'manual') removedSlots.push({ userId: toUser.id, date: toDate, shiftTypeId: toSide.row.shift_type_id });
         if (!toSide) {
-          results.push({ action: 'swap', success: true, message: `Moved ${fromUser.display}'s ${fromTypeName}${fromRot} on ${fromDate} to ${toUser.display} on ${toDate} (${toUser.display} had no shift to swap)` });
+          results.push({ action: 'swap', success: true, removedSlots, message: `Moved ${fromUser.display}'s ${fromTypeName}${fromRot} on ${fromDate} to ${toUser.display} on ${toDate} (${toUser.display} had no shift to swap)` });
         } else {
           const sameDay = fromDate === toDate;
           results.push({
-            action: 'swap', success: true,
+            action: 'swap', success: true, removedSlots,
             message: sameDay
               ? `Swapped ${fromUser.display} (${fromTypeName}${fromRot}) ↔ ${toUser.display} (${toTypeName}${toRot}) on ${fromDate}`
               : `Swapped ${fromUser.display}'s ${fromTypeName}${fromRot} on ${fromDate} ↔ ${toUser.display}'s ${toTypeName}${toRot} on ${toDate}`,
@@ -1039,6 +1062,7 @@ export async function executePlan(
           const st = await findShiftType(companyId, change.shiftType);
           if (st) { q += ' AND shift_type_id = $4'; params.push(st.id); shiftTypeId = st.id; }
         }
+        q += ' RETURNING shift_type_id';
         const deleted = await query(q, params);
         if (deleted.rowCount === 0) {
           // No direct shift row — the visible entry is rotation-generated, so
@@ -1061,7 +1085,8 @@ export async function executePlan(
           // person/date/type. Exclude it too, or it pops back the moment
           // the row is gone.
           await excludeRotationInstances(companyId, user.id, change.date, shiftTypeId);
-          results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
+          const removedSlots = (deleted.rows || []).map((r: any) => ({ userId: user.id, date: change.date as string, shiftTypeId: r.shift_type_id }));
+          results.push({ action: 'unassign', success: true, removedSlots, message: `Removed ${user.display} from ${change.date}` });
         }
       } else if (change.action === 'move' && change.fromPerson && change.toPerson && (change.date || change.fromDate)) {
         // Move = unassign fromPerson + assign toPerson (same shift
@@ -1109,6 +1134,8 @@ export async function executePlan(
         });
         results.push({
           action: 'move', success: true,
+          removedSlots: side.kind === 'manual'
+            ? [{ userId: fromUser.id, date, shiftTypeId: side.row.shift_type_id }] : [],
           message: `Moved ${fromUser.display} → ${toUser.display} on ${date}${side.kind === 'rotation' ? ' (rotation day)' : ''}`,
         });
       } else if (change.action === 'add_job_role' && change.jobRoleName && change.department) {
