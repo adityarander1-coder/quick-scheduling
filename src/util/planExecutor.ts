@@ -181,19 +181,29 @@ async function findMember(companyId: string, name: string): Promise<{ id: string
  * query; pass a transaction's query to run the exclusion atomically
  * inside a swap.
  */
-async function excludeRotationInstances(
+/**
+ * Exclude every rotation occurrence for a user on a date (optionally one
+ * shift type): insert rotation_shift_exclusions rows for each rotation
+ * whose assignment lands on that cycle day. Returns the exclusions
+ * actually inserted (empty when the person holds no rotation day there),
+ * so callers can offer exact undo. ON CONFLICT DO NOTHING keeps this
+ * idempotent. queryFn lets callers run it inside a transaction.
+ * (Deepika, 2026-11-12 — dual-source fix: a stored row suppresses the
+ * occurrence in the draw, so removing the row alone lets it pop back.)
+ */
+export async function excludeRotationInstances(
   companyId: string,
   userId: string,
   date: string,
   shiftTypeId: string | null,
   queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
-): Promise<number> {
+): Promise<Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }>> {
   const { rows: rotations } = await queryFn(
     `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
     [companyId]
   );
-  let excluded = 0;
+  let excluded: Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }> = [];
   for (const rot of rotations) {
     const { rows: assignments } = await queryFn(
       `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
@@ -227,7 +237,7 @@ async function excludeRotationInstances(
          ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
         [companyId, rot.id, userId, date, m.shiftTypeId]
       );
-      if (ins.rowCount && ins.rowCount > 0) excluded++;
+      if (ins.rowCount && ins.rowCount > 0) excluded.push({ rotationId: rot.id, userId, date, shiftTypeId: m.shiftTypeId });
     }
   }
   return excluded;
@@ -953,9 +963,14 @@ export async function executePlan(
         await withTransaction(async (tx) => {
           // Remove fromUser's shift: delete a manual row, or exclude a
           // rotation day (the rotation pattern itself is untouched).
+          // Dual-source (Deepika, 2026-11-12): a manual row suppresses
+          // the rotation occurrence in the draw, so a person can hold
+          // the same shift twice. Deleting the row alone lets the
+          // occurrence pop back — exclude it too.
           if (fromSide.kind === 'manual') {
             const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [fromSide.row.id, companyId]);
             if (del.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${fromDate} — it may have changed.`);
+            await excludeRotationInstances(companyId, fromUser.id, fromDate, fromSide.row.shift_type_id, tx.query);
           } else {
             const ins = await tx.query(
               `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
@@ -971,6 +986,7 @@ export async function executePlan(
             if (toSide.kind === 'manual') {
               const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [toSide.row.id, companyId]);
               if (del.rowCount === 0) throw new Error(`Could not remove ${toUser.display}'s shift on ${toDate} — it may have changed.`);
+              await excludeRotationInstances(companyId, toUser.id, toDate, toSide.row.shift_type_id, tx.query);
             } else {
               const ins = await tx.query(
                 `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
@@ -1028,7 +1044,7 @@ export async function executePlan(
           // No direct shift row — the visible entry is rotation-generated, so
           // exclude the rotation instance(s) for that date instead.
           const excluded = await excludeRotationInstances(companyId, user.id, change.date, shiftTypeId);
-          if (excluded > 0) {
+          if (excluded.length > 0) {
             results.push({
               action: 'unassign', success: true,
               message: `Removed ${user.display} from ${change.date} (rotation day)`,
@@ -1040,6 +1056,11 @@ export async function executePlan(
             });
           }
         } else {
+          // Dual-source (Deepika, 2026-11-12): the deleted row may have
+          // been suppressing a rotation occurrence for the same
+          // person/date/type. Exclude it too, or it pops back the moment
+          // the row is gone.
+          await excludeRotationInstances(companyId, user.id, change.date, shiftTypeId);
           results.push({ action: 'unassign', success: true, message: `Removed ${user.display} from ${change.date}` });
         }
       } else if (change.action === 'move' && change.fromPerson && change.toPerson && (change.date || change.fromDate)) {
@@ -1066,6 +1087,9 @@ export async function executePlan(
           if (side.kind === 'manual') {
             const del = await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [side.row.id, companyId]);
             if (del.rowCount === 0) throw new Error(`Could not remove ${fromUser.display}'s shift on ${date} — it may have changed.`);
+            // Dual-source (Deepika, 2026-11-12): see the swap above —
+            // exclude any rotation occurrence the deleted row was hiding.
+            await excludeRotationInstances(companyId, fromUser.id, date, side.row.shift_type_id, tx.query);
           } else {
             const ins = await tx.query(
               `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)

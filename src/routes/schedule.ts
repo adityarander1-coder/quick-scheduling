@@ -28,6 +28,7 @@ import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '..
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
+import { excludeRotationInstances } from '../util/planExecutor.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -1627,6 +1628,13 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       res.status(404).json({ error: 'Shift not found.' });
       return;
     }
+    // Dual-source (Deepika, 2026-11-12): the deleted row may have been
+    // suppressing a rotation occurrence for the same person/date/type.
+    // Exclude it or it pops back the moment the row is gone.
+    if (srows.length) {
+      const s = srows[0];
+      await excludeRotationInstances(companyId, s.userId, s.date, s.shiftTypeId);
+    }
     res.json({ ok: true });
     if (srows.length) {
       const s = srows[0];
@@ -1830,6 +1838,13 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
           [userId, shiftTypeId, notes || null, published, req.params.id, companyId]
         );
         updated += rowCount || 0;
+        // Dual-source (Deepika, 2026-11-12): if the original (person,
+        // type) slot was vacated, the original person may still hold
+        // that shift as a rotation occurrence, hidden while the stored
+        // row existed. Exclude it or it pops back.
+        if (rowCount && (userId !== orig[0].userId || shiftTypeId !== orig[0].shiftTypeId)) {
+          await excludeRotationInstances(companyId, orig[0].userId, origDate, orig[0].shiftTypeId);
+        }
       } else {
         // Upsert for other dates: update if this person already has this shift type that day, else create.
         const { rows: existing } = await query(
@@ -1925,6 +1940,16 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
       [userId, shiftTypeId, date, notes || null, published, req.params.id, companyId]
     );
     if (!rowCount) { res.status(404).json({ error: 'Shift not found.' }); return; }
+    // Dual-source (Deepika, 2026-11-12): if the old (person, date, type)
+    // slot was vacated, the old person may still hold that shift as a
+    // rotation occurrence, hidden while the stored row existed. Exclude
+    // it or it pops back.
+    if (existRows.length) {
+      const old = existRows[0];
+      if (old.userId !== userId || old.date !== date || old.shiftTypeId !== shiftTypeId) {
+        await excludeRotationInstances(companyId, old.userId, old.date, old.shiftTypeId);
+      }
+    }
     res.json({ ok: true });
     // Audit: shift updated.
     const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
@@ -2097,6 +2122,11 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
         `UPDATE shifts SET shift_type_id = $1, date = $2, updated_at = now() WHERE id = $3 AND company_id = $4`,
         [shiftTypeId, date, src.id, companyId]
       );
+      // Dual-source (Deepika, 2026-11-12): the row just left
+      // (src.userId, src.date, src.shiftTypeId), where the same person
+      // may also hold the shift as a rotation occurrence, hidden while
+      // the stored row existed. Exclude it or it pops back.
+      await excludeRotationInstances(companyId, src.userId, src.date, src.shiftTypeId);
     } else {
       const newId = crypto.randomUUID();
       await withTransaction(async (tx) => {
@@ -2196,11 +2226,20 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
     ]);
     if (conflict) { res.status(409).json({ error: conflict }); return; }
     let undo: any = null;
+    // deleteExclusion ops for any rotation days this swap switches off
+    // under a manual row (dual-source, Deepika 2026-11-12) — they make
+    // Ctrl+Z exact even when both sides are stored rows.
+    const extraUndoOps: any[] = [];
     await withTransaction(async (tx) => {
       const ops: any[] = [];
       if (a.kind === 'manual') {
         await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [b.userId, a.id, companyId]);
         ops.push({ updateShiftUser: { shiftId: a.id, userId: a.userId } });
+        // Dual-source (Deepika, 2026-11-12): a may also hold this shift
+        // as a rotation occurrence, hidden while the stored row existed.
+        // The row just moved to b, so exclude a's occurrence or it pops back.
+        const inserted = await excludeRotationInstances(companyId, a.userId, a.date, a.shiftTypeId, tx.query);
+        for (const e of inserted) extraUndoOps.push({ deleteExclusion: { rotationId: e.rotationId, userId: e.userId, date: e.date, shiftTypeId: e.shiftTypeId } });
       } else {
         await insertRotationExclusion(tx.query, companyId, a);
         ops.push({ deleteExclusion: { rotationId: a.rotationId, userId: a.userId, date: a.date, shiftTypeId: a.shiftTypeId } });
@@ -2215,6 +2254,11 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       if (b.kind === 'manual') {
         await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [a.userId, b.id, companyId]);
         ops.push({ updateShiftUser: { shiftId: b.id, userId: b.userId } });
+        // Dual-source (Deepika, 2026-11-12): same as side a — exclude
+        // b's rotation occurrence for this date/type, if one is hiding
+        // under the stored row.
+        const inserted = await excludeRotationInstances(companyId, b.userId, b.date, b.shiftTypeId, tx.query);
+        for (const e of inserted) extraUndoOps.push({ deleteExclusion: { rotationId: e.rotationId, userId: e.userId, date: e.date, shiftTypeId: e.shiftTypeId } });
       } else {
         await insertRotationExclusion(tx.query, companyId, b);
         ops.push({ deleteExclusion: { rotationId: b.rotationId, userId: b.userId, date: b.date, shiftTypeId: b.shiftTypeId } });
@@ -2226,7 +2270,7 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
         );
         ops.push({ deleteShiftId: newId });
       }
-      if (a.kind === 'rotation' || b.kind === 'rotation') undo = { ops };
+      if (a.kind === 'rotation' || b.kind === 'rotation' || extraUndoOps.length) undo = { ops: [...ops, ...extraUndoOps] };
     });
     res.json(undo ? { ok: true, undo } : { ok: true });
     auditLog({
