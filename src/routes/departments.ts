@@ -67,6 +67,7 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
       companyId: req.session.companyId!, date: todayStr(), action: 'created',
       category: 'settings', source: 'manual', changedBy: req.session.userId!,
       description: `Added department "${clean}"`,
+      departmentId: id,
     });
     res.status(201).json({ department: { id, name: clean } });
   } catch (err) {
@@ -108,6 +109,7 @@ router.patch('/:id', requireRole('owner', 'scheduler'), async (req: Request, res
         description: oldName && oldName !== clean
           ? `Renamed department "${oldName}" to "${clean}"`
           : `Updated department "${clean}"`,
+        departmentId: req.params.id,
       });
       res.json({ department: { id: rows[0].id, name: rows[0].name } });
     } catch (err: any) {

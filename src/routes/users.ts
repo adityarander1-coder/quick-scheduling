@@ -250,6 +250,7 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
       category: 'settings', source: 'manual', changedBy: req.session.userId!,
       personName: newName,
       description: `Added team member "${newName}"${role ? ` as ${role}` : ''}`,
+      affectedUserId: userId,
     });
     res.status(201).json({ user: publicProfile(rows[0]), inviteLink });
   } catch (err) {
@@ -668,6 +669,7 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
       await auditLog({
         companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
         changedBy: req.session.userId!, description: `Added department "${name}"`,
+        departmentId: newId,
       });
     }
     // Job-role creation mirrors POST /api/job-roles' department scoping:
@@ -803,6 +805,7 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
                     companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
                     changedBy: req.session.userId!,
                     description: `Added job role "${roleDec.name}"${deptNameForAudit ? ` to ${deptNameForAudit}` : ''}`,
+                    departmentId: deptId,
                   });
                 } catch (err: any) {
                   if (err?.code === '23505') {
@@ -880,6 +883,7 @@ router.post('/import', requireRole('owner', 'scheduler'), async (req: Request, r
         companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
         changedBy: req.session.userId!, personName: joinName(first, last),
         description: `Imported team member "${joinName(first, last)}" from a file${ended ? ' (end date already passed — account starts inactive)' : ''}`,
+        affectedUserId: userId,
       });
     }
     res.json({ created, skipped, createdDepartments, createdJobRoles, textOnlyJobRoles });
@@ -1036,6 +1040,7 @@ router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res:
             companyId, date: todayStr(), action: 'created', category: 'settings', source: 'manual',
             changedBy: req.session.userId!,
             description: `Added job role "${g.roleName}"${g.departmentName ? ` to ${g.departmentName}` : ''}`,
+            departmentId: g.departmentId,
           });
         } catch (err: any) {
           if (err?.code === '23505') {
@@ -1062,6 +1067,7 @@ router.post('/job-role-repairs', requireRole('owner'), async (req: Request, res:
           companyId, date: todayStr(), action: 'updated', category: 'settings', source: 'manual',
           changedBy: req.session.userId!,
           description: `Linked job role "${roleRow.name}" to ${linked} ${linked === 1 ? 'person' : 'people'}${g.departmentName ? ` in ${g.departmentName}` : ''} (job-role repair${singleScope ? ' — single group' : ''})`,
+          departmentId: g.departmentId,
         });
       }
     }
@@ -1327,6 +1333,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
       action: deactivated ? 'deleted' : 'updated',
       category: 'settings', source: 'manual', changedBy: callerId,
       personName: targetName,
+      affectedUserId: targetId,
       description: endDateFlip === 'deactivated'
         ? `Deactivated team member "${targetName}" (end date passed)`
         : endDateFlip === 'reactivated'

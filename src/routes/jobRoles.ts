@@ -111,6 +111,7 @@ router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Re
         companyId, date: todayStr(), action: 'created', category: 'settings',
         source: 'manual', changedBy: req.session.userId!,
         description: `Added job role "${clean}"${deptName ? ` to ${deptName}` : ''}`,
+        departmentId: deptId,
       });
       res.status(201).json({ jobRole: publicRole(rows[0]) });
     } catch (err: any) {
@@ -168,6 +169,7 @@ router.patch('/:id', requireRole('owner', 'scheduler'), async (req: Request, res
         description: oldRoleName !== clean
           ? `Renamed job role "${oldRoleName}" to "${clean}"`
           : `Updated job role "${clean}"`,
+        departmentId: existing[0].department_id,
       });
       res.json({ jobRole: publicRole(rows[0]) });
     } catch (err: any) {
@@ -219,6 +221,7 @@ router.delete('/:id', requireRole('owner', 'scheduler'), async (req: Request, re
       companyId, date: todayStr(), action: 'deleted', category: 'settings',
       source: 'manual', changedBy: req.session.userId!,
       description: `Deleted job role "${existing[0].name}"${existing[0].dept_name ? ` from ${existing[0].dept_name}` : ''}`,
+      departmentId: existing[0].department_id,
     });
     res.json({ ok: true });
   } catch (err) {

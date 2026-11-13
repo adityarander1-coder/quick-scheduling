@@ -440,6 +440,7 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
       source: 'manual', changedBy: req.session.userId!,
       shiftTypeName: String(name).trim(),
       description: `Added shift type "${String(name).trim()}"`,
+      details: { shiftTypeId: id, kind: 'shift_type' },
     });
     res.status(201).json({ id });
   } catch (err: any) {
@@ -1128,7 +1129,7 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       companyId, date, action: 'created',
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      affectedUserId: userId, scheduleDate: date,
+      affectedUserId: userId, scheduleDate: date, shiftTypeId,
     });
     // Notify: only published shifts notify (drafts stay silent).
     if (published !== false) {
@@ -1681,7 +1682,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
           shiftTypeName: types.join(', ') || null,
           scheduleDate: t.firstDate, scheduleDateEnd: t.lastDate,
           description: `Deleted ${t.count} shift(s) (${fmtDateLong(t.firstDate)} – ${fmtDateLong(t.lastDate)})`,
-          details: { count: t.count, from: t.firstDate, to: t.lastDate, via: 'bulk-delete' },
+          details: { count: t.count, from: t.firstDate, to: t.lastDate, via: 'bulk-delete', shiftTypeIds: [...t.types] },
         });
       }
     }
@@ -1766,7 +1767,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
         companyId, date: s.date, action: 'deleted',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
-        affectedUserId: s.userId, scheduleDate: s.date,
+        affectedUserId: s.userId, scheduleDate: s.date, shiftTypeId: s.shiftTypeId,
       });
       if (s.published) {
         notify({
@@ -2084,7 +2085,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
       details: { shiftId: req.params.id },
-      affectedUserId: userId, scheduleDate: date,
+      affectedUserId: userId, scheduleDate: date, shiftTypeId,
     });
     // Notify about meaningful changes to published shifts.
     if (existRows.length) {
@@ -2277,7 +2278,7 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
       details: { shiftId: src.id, via: 'drag' },
-      affectedUserId: src.userId, scheduleDate: src.date,
+      affectedUserId: src.userId, scheduleDate: src.date, shiftTypeId: src.shiftTypeId,
     });
     // Report (Deepika, 2026-11-13): the vacated slot may still draw
     // as a draft when the exclusion above missed it.
@@ -2412,8 +2413,8 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       companyId, date: a.date, action: 'updated',
       personName: namesA.personName, shiftTypeName: namesA.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      details: { shiftId: a.id, via: 'drag-swap', swap: true, swapTo: namesB.personName },
-      affectedUserId: a.userId, scheduleDate: a.date,
+      details: { shiftId: a.id, via: 'drag-swap', swap: true, swapTo: namesB.personName, swapToUserId: b.userId },
+      affectedUserId: a.userId, scheduleDate: a.date, shiftTypeId: a.shiftTypeId,
       description: namesA.personName && namesB.personName
         ? `Moved ${namesA.personName} → ${namesB.personName} on ${a.date} (swap)` : null,
     });
@@ -2421,8 +2422,8 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       companyId, date: b.date, action: 'updated',
       personName: namesB.personName, shiftTypeName: namesB.shiftTypeName,
       source: 'manual', changedBy: req.session.userId!,
-      details: { shiftId: b.id, via: 'drag-swap', swap: true, swapTo: namesA.personName },
-      affectedUserId: b.userId, scheduleDate: b.date,
+      details: { shiftId: b.id, via: 'drag-swap', swap: true, swapTo: namesA.personName, swapToUserId: a.userId },
+      affectedUserId: b.userId, scheduleDate: b.date, shiftTypeId: b.shiftTypeId,
       description: namesA.personName && namesB.personName
         ? `Moved ${namesB.personName} → ${namesA.personName} on ${b.date} (swap)` : null,
     });
@@ -2548,7 +2549,7 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
         action: published !== false ? 'published' : 'unpublished',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: req.session.userId!,
-        affectedUserId: s.userId, scheduleDate: s.date,
+        affectedUserId: s.userId, scheduleDate: s.date, shiftTypeId: s.shiftTypeId,
       });
       if (published !== false && !s.published) {
         notify({
@@ -2649,7 +2650,7 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
           companyId, date, action: wantPublished ? 'published' : 'unpublished',
           personName: names.personName, shiftTypeName: names.shiftTypeName,
           source: 'manual', changedBy: me,
-          affectedUserId: userId, scheduleDate: date,
+          affectedUserId: userId, scheduleDate: date, shiftTypeId,
         });
       }
       res.json({ ok: true, published: wantPublished, shiftId: row.id });
@@ -2679,7 +2680,8 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
         companyId, date, action: 'published',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', rotationName: rrows[0]?.name || null, changedBy: me,
-        affectedUserId: userId, scheduleDate: date,
+        affectedUserId: userId, scheduleDate: date, shiftTypeId,
+        details: { rotationId },
       });
       return;
     }
@@ -2705,7 +2707,8 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
         companyId, date, action: published !== false ? 'published' : 'unpublished',
         personName: names.personName, shiftTypeName: names.shiftTypeName,
         source: 'manual', changedBy: me,
-        affectedUserId: userId, scheduleDate: date,
+        affectedUserId: userId, scheduleDate: date, shiftTypeId,
+        details: { rotationId },
       });
       if (published !== false) {
         notify({
@@ -5926,10 +5929,10 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
   try {
     const companyId = req.session.companyId!;
     // Department scoping: the scheduler's active department must be one of the shift type's departments.
-    if (!(await requireActiveDepartment(
-      req, res,
-      await shiftTypesDepartmentIds([req.params.id], companyId)
-    ))) return;
+    // Captured up front: the audit row for a hard delete must carry the
+    // department, because the type's department links are gone after.
+    const typeDepts = await shiftTypesDepartmentIds([req.params.id], companyId);
+    if (!(await requireActiveDepartment(req, res, typeDepts))) return;
     const { rows } = await query(
       'SELECT id FROM shifts WHERE shift_type_id = $1 AND company_id = $2 LIMIT 1',
       [req.params.id, companyId]
@@ -5946,6 +5949,8 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
         companyId, date: todayStr(), action: 'deleted', category: 'settings',
         shiftTypeName: delName, source: 'manual', changedBy: req.session.userId!,
         description: `Deactivated shift type "${delName}" (in use)`,
+        details: { shiftTypeId: req.params.id, kind: 'shift_type' },
+        departmentId: typeDepts.length === 1 ? typeDepts[0] : undefined,
       });
     } else {
       const { rowCount } = await query(
@@ -5957,6 +5962,8 @@ router.delete('/shift-types/:id', requireRole('owner', 'scheduler'), async (req:
         companyId, date: todayStr(), action: 'deleted', category: 'settings',
         shiftTypeName: delName, source: 'manual', changedBy: req.session.userId!,
         description: `Deleted shift type "${delName}"`,
+        details: { shiftTypeId: req.params.id, kind: 'shift_type' },
+        departmentId: typeDepts.length === 1 ? typeDepts[0] : undefined,
       });
     }
     res.json({ ok: true });
@@ -5987,6 +5994,7 @@ router.post('/shift-types/:id/restore', requireRole('owner', 'scheduler'), async
       companyId, date: todayStr(), action: 'created', category: 'settings',
       shiftTypeName: rsName, source: 'manual', changedBy: req.session.userId!,
       description: `Restored shift type "${rsName}"`,
+      details: { shiftTypeId: req.params.id, kind: 'shift_type' },
     });
     res.json({ ok: true });
   } catch (err) {
@@ -8286,14 +8294,72 @@ function auditHowWhere(e: any): string {
   if (e.source === 'rotation') return 'Manually made in the schedule';
   return e.category === 'settings' ? 'Manually made in Settings' : 'Manually made in the schedule';
 }
-function auditWhatChanged(e: any): string {
+function auditWhatChanged(e: any, live?: { users: Map<string, string>; types: Map<string, string>; rotations: Map<string, string> }): string {
   const d = e.details || {};
   const type = e.shiftTypeName ? ` — ${e.shiftTypeName}` : '';
+  // Live lookups with stored-name fallback. `live` is built by the
+  // /audit handler from the row's stored ids; historical rows without
+  // ids keep their stored names.
+  const liveUser = (id: string | null | undefined, stored: string | null | undefined): string | null =>
+    (id && live?.users.get(id)) || stored || null;
+  const liveRotation = (id: string | null | undefined, stored: string | null | undefined): string | null =>
+    (id && live?.rotations.get(id)) || stored || null;
   if (e.source === 'code') return e.description || `Draft appeared${type} left as a draft`;
   if (e.category === 'settings') {
-    if (e.action === 'created' && e.rotationName) return `Created rotation "${e.rotationName}"`;
-    if (e.action === 'deleted' && e.rotationName) return `Deleted rotation "${e.rotationName}"`;
-    return e.description || `${e.action}: ${e.rotationName || 'Settings'}`;
+    const rotName = e.rotationName;
+    if (e.action === 'created' && rotName) {
+      // Pair: 'Paired A, B on "X" — they take its turns in that order'
+      // (+ the template-ended note). Inputs are ids in details.
+      if (d.paired) {
+        const members = (d.snapshot?.people || [])
+          .map((p: any) => liveUser(p.userId, p.name)).filter(Boolean) as string[];
+        const std = d.pairedFromUserId ? liveUser(d.pairedFromUserId, null) : null;
+        if (members.length) {
+          return `Paired ${members.join(', ')} on "${rotName}" — they take its turns in that order` +
+            (d.templateEnded && std ? `; ${std}'s own pattern stops the day before the pair starts` : '');
+        }
+      }
+      // Copy: 'Copied rotation "X" from A to B' (+ inverse note).
+      if (d.copiedFromRotationId) {
+        const src = liveRotation(d.copiedFromRotationId, null);
+        const std = d.copiedFromUserId ? liveUser(d.copiedFromUserId, null) : null;
+        const to = (d.snapshot?.people || [])[0];
+        const toName = to ? liveUser(to.userId, to.name) : null;
+        if (src && std && toName) {
+          return `Copied rotation "${src}" from ${std} to ${toName}` +
+            (d.inverse ? ` — inverse (the days ${std} doesn't work)` : '');
+        }
+      }
+      return `Created rotation "${rotName}"`;
+    }
+    if (e.action === 'deleted' && rotName) return `Deleted rotation "${rotName}"`;
+    if (e.action === 'updated' && rotName) {
+      // Change-from: 'Changed A's rotation from DATE: "X" stops END;
+      // "Y" starts DATE' — old rotation id, new rotation id, date.
+      if (d.changeFromDate && d.rotationId && d.newRotationId) {
+        const oldName = liveRotation(d.rotationId, null);
+        const newName = liveRotation(d.newRotationId, null);
+        if (oldName && newName && e.personName) {
+          return `Changed ${e.personName}'s rotation from ${d.changeFromDate}: "${oldName}" stops ${dayBefore(d.changeFromDate)}; "${newName}" starts ${d.changeFromDate}`;
+        }
+      }
+      // Swap: 'Swapped rotations from DATE: A now runs "X" (from B);
+      // their old rotation stops END'.
+      if (d.swapFromDate && d.newRotationId) {
+        const newName = liveRotation(d.newRotationId, null);
+        const from = d.receivedFromUserId ? liveUser(d.receivedFromUserId, null) : null;
+        if (newName && from && e.personName) {
+          return `Swapped rotations from ${d.swapFromDate}: ${e.personName} now runs "${newName}" (from ${from}); their old rotation stops ${dayBefore(d.swapFromDate)}`;
+        }
+      }
+      // Toggle: 'Activated/Paused rotation "X"' — the snapshot is
+      // taken after the toggle, so its isActive is the new state.
+      if (/^(Activated|Paused) rotation "/.test(e.description || '') && d.snapshot && d.snapshot.isActive !== undefined && d.snapshot.isActive !== null) {
+        return `${d.snapshot.isActive ? 'Activated' : 'Paused'} rotation "${rotName}"`;
+      }
+      return `Updated rotation "${rotName}"`;
+    }
+    return e.description || `${e.action}: ${rotName || 'Settings'}`;
   }
   if (e.action === 'published') return `Published${type ? ` — ${e.shiftTypeName}` : ''}`;
   if (e.action === 'unpublished') return `Moved to draft${type ? ` — ${e.shiftTypeName}` : ''}`;
@@ -8317,7 +8383,11 @@ function auditWhyDetails(e: any): string {
     if (s.startTime || s.endTime) parts.push(`Time: ${[s.startTime, s.endTime].filter(Boolean).join(' – ')}`);
     const days = [...new Set((s.people || []).map((p: any) => p.cycleDay).filter((x: any) => x != null))].sort((a: any, b: any) => a - b);
     if (days.length) parts.push(`Days: ${days.join(', ')}`);
-    if (parts.length) return (e.description ? e.description + ' ' : '') + parts.join(' · ');
+    // The snapshot parts ARE the detail, with names already resolved
+    // live by the handler — the stored description prefix would
+    // repeat What changed with possibly stale names, so it is left
+    // out here. The full prose stays in What changed.
+    if (parts.length) return parts.join(' · ');
   }
   return e.description || '';
 }
@@ -8353,12 +8423,17 @@ async function detectLeftoverDrafts(companyId: string, rows: any[]): Promise<any
         if (who) { userId = who.id; personName = who.display; }
       }
       if (!userId) continue;
-      const { rows: stRows } = await query(
-        'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
-        [companyId, r.shiftTypeName]
-      );
-      if (!stRows.length) continue;
-      const shiftTypeId = stRows[0].id;
+      // Prefer the stored shift type id (rename-proof); fall back to
+      // the name lookup for historical rows that carry no id.
+      let shiftTypeId: string | null = (r.details?.shiftTypeId as string) || null;
+      if (!shiftTypeId) {
+        const { rows: stRows } = await query(
+          'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
+          [companyId, r.shiftTypeName]
+        );
+        if (!stRows.length) continue;
+        shiftTypeId = stRows[0].id;
+      }
       if (haveDraft.has(`${userId}|${schedDate}|${r.shiftTypeName}`)) continue;
       const { rows: stored } = await query(
         'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
@@ -8391,8 +8466,11 @@ async function detectLeftoverDrafts(companyId: string, rows: any[]): Promise<any
         changedBy: null,
         changedByName: '—',
         result: 'not_successful',
+        // Inherits the removal row's department, so the admin for that
+        // department sees the leftover draft it caused.
+        departmentId: r.departmentId || null,
         description: `Draft appeared — ${r.shiftTypeName} left as a draft. The rotation pattern drew again because the stored shift was removed without excluding the rotation day.`,
-        details: { cause: 'rotation occurrence re-drew after stored shift removal without exclusion', derived: true, fromAuditId: r.id },
+        details: { cause: 'rotation occurrence re-drew after stored shift removal without exclusion', derived: true, fromAuditId: r.id, shiftTypeId },
         changedAt: r.changedAt,
       });
       haveDraft.add(`${userId}|${schedDate}|${r.shiftTypeName}`);
@@ -8405,6 +8483,8 @@ async function detectLeftoverDrafts(companyId: string, rows: any[]): Promise<any
 router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const role = req.session.role!;
     const date = String(req.query.date || '');
     const from = String(req.query.from || '');
     const to = String(req.query.to || '');
@@ -8434,6 +8514,7 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
               a.result AS "result",
               a.schedule_date::text AS "scheduleDate",
               a.schedule_date_end::text AS "scheduleDateEnd",
+              a.department_id AS "departmentId",
               a.created_at AS "changedAt"
        FROM schedule_audit_log a
        WHERE a.company_id = $1${where}
@@ -8452,34 +8533,192 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
         ).slice(0, 2000);
       }
     }
+    // Collect every id the rows reference, so names resolve live in a
+    // handful of batched queries instead of one per row. Historical
+    // rows without ids keep their stored names.
+    const userIds = new Set<string>();
+    const typeIds = new Set<string>();
+    const rotationIds = new Set<string>();
+    const shiftIds = new Set<string>();
+    const rotationIdForRow = (e: any): string | null => {
+      const d = e.details || {};
+      // Copy rows name the SOURCE rotation; swap rows name the NEW
+      // pattern; everything else names details.rotationId.
+      if (d.copiedFromRotationId) return d.copiedFromRotationId;
+      if (d.swapFromDate && d.newRotationId) return d.newRotationId;
+      return d.rotationId || null;
+    };
+    for (const e of entries) {
+      const d = e.details || {};
+      for (const id of [e.affectedUserId, e.changedById, d.swapToUserId, d.pairedFromUserId,
+        d.copiedFromUserId, d.receivedFromUserId]) if (id) userIds.add(id);
+      for (const p of (d.snapshot?.people || [])) {
+        if (p.userId) userIds.add(p.userId);
+        if (p.shiftTypeId) typeIds.add(p.shiftTypeId);
+      }
+      for (const id of [...((d.shiftTypeIds || []) as string[]), d.shiftTypeId]) if (id) typeIds.add(id);
+      if (d.shiftId) shiftIds.add(d.shiftId);
+      for (const id of [rotationIdForRow(e), d.rotationId, d.newRotationId, d.copiedFromRotationId,
+        d.pairedFromRotationId, d.snapshot?.rotationId]) if (id) rotationIds.add(id);
+    }
     // Live names (Deepika, 2026-11-13): the report shows names as they
     // stand on the current roster — a rename shows the current name.
-    // Looked up WITHOUT the is_active filter, so deactivated people
-    // still resolve; the stored snapshot is the fallback.
-    const ids = [...new Set(entries.flatMap((e: any) => [e.affectedUserId, e.changedById]).filter(Boolean))] as string[];
-    const liveNames = new Map<string, string>();
-    if (ids.length) {
+    // People are looked up WITHOUT the is_active filter, so
+    // deactivated people still resolve; the stored snapshot is the
+    // fallback. Shift types and rotations resolve the same way; a
+    // deleted rotation or shift type falls back to its stored name.
+    const liveUsers = new Map<string, { name: string; departmentId: string | null }>();
+    if (userIds.size) {
       const { rows: urows } = await query(
-        `SELECT id, nickname, first_name, last_name FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
-        [companyId, ids]
+        `SELECT id, nickname, first_name, last_name, department_id AS "departmentId"
+         FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+        [companyId, [...userIds]]
       );
       for (const u of urows) {
-        liveNames.set(u.id, u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '');
+        liveUsers.set(u.id, {
+          name: u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '',
+          departmentId: u.department_id || null,
+        });
       }
     }
+    const liveTypes = new Map<string, string>();
+    const liveRotations = new Map<string, string>();
+    const shiftIdToType = new Map<string, string>();
+    if (shiftIds.size) {
+      const { rows: srows } = await query(
+        'SELECT id, shift_type_id AS "shiftTypeId" FROM shifts WHERE id = ANY($1::uuid[])',
+        [[...shiftIds]]
+      );
+      for (const s of srows) {
+        if (s.shiftTypeId) { typeIds.add(s.shiftTypeId); shiftIdToType.set(s.id, s.shiftTypeId); }
+      }
+    }
+    if (typeIds.size) {
+      const { rows: trows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, [...typeIds]]
+      );
+      for (const t of trows) liveTypes.set(t.id, t.name);
+    }
+    if (rotationIds.size) {
+      const { rows: rrows } = await query(
+        'SELECT id, name FROM rotations WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, [...rotationIds]]
+      );
+      for (const r of rrows) liveRotations.set(r.id, r.name);
+    }
+    const liveUserName = (id: string | null | undefined, stored: string | null | undefined): string | null =>
+      (id && liveUsers.get(id)?.name) || stored || null;
+    const liveTypeName = (e: any): string | null => {
+      const d = e.details || {};
+      const ids: string[] = [...((d.shiftTypeIds || []) as string[]), ...(d.shiftTypeId ? [d.shiftTypeId] : [])];
+      if (!ids.length && d.shiftId && shiftIdToType.get(d.shiftId)) ids.push(shiftIdToType.get(d.shiftId)!);
+      if (!ids.length) return null;
+      const names = ids.map((id) => liveTypes.get(id));
+      if (names.some((n) => !n)) return null; // a deleted type: keep the whole stored string
+      return (names as string[]).join(', ');
+    };
+    const liveRotationName = (e: any): string | null => {
+      const id = rotationIdForRow(e);
+      return (id && liveRotations.get(id)) || e.rotationName || null;
+    };
+    // Department scoping (Deepika, 2026-11-13): an admin sees updates
+    // for the departments they have access to; an owner sees all.
+    // A row's relevant departments are its stored department, the
+    // affected person's home department, and its shift type's and
+    // rotation's departments. A row with no derivable department is
+    // owner-only. The Calendar report keeps its current behaviour
+    // (all company rows) — only the Change report is scoped.
+    if (!wantCalendar && role !== 'owner') {
+      const visible = new Set(await visibleDepartmentIds(companyId, me, role));
+      const typeDepts = new Map<string, Set<string>>();
+      if (typeIds.size) {
+        const { rows: tdRows } = await query(
+          `SELECT std.shift_type_id AS "shiftTypeId", std.department_id AS "departmentId"
+           FROM shift_type_departments std WHERE std.shift_type_id = ANY($1::uuid[])
+           UNION
+           SELECT id AS "shiftTypeId", department_id AS "departmentId" FROM shift_types
+           WHERE id = ANY($1::uuid[]) AND department_id IS NOT NULL`,
+          [[...typeIds]]
+        );
+        for (const r of tdRows) {
+          if (!typeDepts.has(r.shiftTypeId)) typeDepts.set(r.shiftTypeId, new Set());
+          typeDepts.get(r.shiftTypeId)!.add(r.departmentId);
+        }
+      }
+      const rotationDepts = new Map<string, Set<string>>();
+      if (rotationIds.size) {
+        const { rows: rdRows } = await query(
+          `SELECT DISTINCT ra.rotation_id AS "rotationId", d.department_id AS "departmentId"
+           FROM rotation_assignments ra
+           LEFT JOIN shift_type_departments std ON std.shift_type_id = ra.shift_type_id
+           LEFT JOIN shift_types st ON st.id = ra.shift_type_id
+           LEFT JOIN users u ON u.id = ra.user_id
+           CROSS JOIN LATERAL (VALUES (std.department_id), (st.department_id), (u.department_id)) AS d(department_id)
+           WHERE ra.rotation_id = ANY($1::uuid[]) AND d.department_id IS NOT NULL`,
+          [[...rotationIds]]
+        );
+        for (const r of rdRows) {
+          if (!rotationDepts.has(r.rotationId)) rotationDepts.set(r.rotationId, new Set());
+          rotationDepts.get(r.rotationId)!.add(r.departmentId);
+        }
+      }
+      const relevantDepartments = (e: any): Set<string> => {
+        const out = new Set<string>();
+        const d = e.details || {};
+        if (e.departmentId) out.add(e.departmentId);
+        if (d.departmentId) out.add(d.departmentId);
+        const home = e.affectedUserId && liveUsers.get(e.affectedUserId)?.departmentId;
+        if (home) out.add(home);
+        const tids: string[] = [...((d.shiftTypeIds || []) as string[]), ...(d.shiftTypeId ? [d.shiftTypeId] : [])];
+        for (const t of tids) for (const dep of typeDepts.get(t) || []) out.add(dep);
+        for (const rid of [d.rotationId, d.newRotationId, d.copiedFromRotationId, d.pairedFromRotationId, d.snapshot?.rotationId]) {
+          if (!rid) continue;
+          for (const dep of rotationDepts.get(rid) || []) out.add(dep);
+        }
+        return out;
+      };
+      entries = entries.filter((e: any) => {
+        for (const dep of relevantDepartments(e)) if (visible.has(dep)) return true;
+        return false;
+      });
+    }
+    const live = {
+      users: new Map([...liveUsers].map(([k, v]) => [k, v.name] as [string, string])),
+      types: liveTypes,
+      rotations: liveRotations,
+    };
     const out = entries.map((e: any) => {
-      const personName = (e.affectedUserId && liveNames.get(e.affectedUserId)) || e.personName || null;
-      const changedByName = (e.changedById && liveNames.get(e.changedById)) || e.changedBy || null;
-      return {
+      const d = e.details || {};
+      const personName = liveUserName(e.affectedUserId, e.personName);
+      const changedByName = liveUserName(e.changedById, e.changedBy);
+      const shiftTypeName = liveTypeName(e) || e.shiftTypeName || null;
+      const rotationName = liveRotationName(e);
+      const swapTo = d.swapToUserId ? liveUserName(d.swapToUserId, d.swapTo) : d.swapTo;
+      const snapshot = d.snapshot ? {
+        ...d.snapshot,
+        people: (d.snapshot.people || []).map((p: any) => ({
+          ...p,
+          name: liveUserName(p.userId, p.name),
+          shiftTypeName: (p.shiftTypeId && liveTypes.get(p.shiftTypeId)) || p.shiftTypeName,
+        })),
+      } : d.snapshot;
+      const resolved = {
         ...e,
         personName,
         changedBy: changedByName,
         changedByName,
-        whatChanged: auditWhatChanged({ ...e, personName }),
-        howWhere: auditHowWhere(e),
+        shiftTypeName,
+        rotationName,
+        details: { ...d, ...(swapTo !== undefined ? { swapTo } : {}), ...(snapshot ? { snapshot } : {}) },
+      };
+      return {
+        ...resolved,
+        whatChanged: auditWhatChanged(resolved, live),
+        howWhere: auditHowWhere(resolved),
         resultLabel: e.result === 'not_successful' ? 'Not successful' : 'Successful',
         scheduleDateLabel: auditRangeLabel(e.scheduleDate || null, e.scheduleDateEnd || null),
-        whyDetails: auditWhyDetails({ ...e, personName }),
+        whyDetails: auditWhyDetails(resolved),
       };
     });
     res.json({ entries: out });
@@ -10626,7 +10865,7 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       personName: names.personName, shiftTypeName: names.shiftTypeName,
       source: 'manual', changedBy: me,
       details: { via: 'open-slot-claim' },
-      affectedUserId: me, scheduleDate: date,
+      affectedUserId: me, scheduleDate: date, shiftTypeId,
     });
   } catch (err) {
     console.error('[schedule] claim open slot failed:', err);
@@ -11148,7 +11387,7 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
           personName: names.personName, shiftTypeName: names.shiftTypeName,
           source: 'manual', changedBy: me,
           details: { via: 'shift-request-approved', requestId: id, requestType: r.requestType },
-          affectedUserId: me, scheduleDate: arows[0].date,
+          affectedUserId: me, scheduleDate: arows[0].date, shiftTypeId: arows[0].shiftTypeId,
         });
       }
     } catch { /* audit must never break the response */ }

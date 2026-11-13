@@ -10,6 +10,7 @@
  */
 import { query } from '../db.js';
 import { findRotationOccurrences } from './planExecutor.js';
+import { shiftTypesDepartmentIds, rotationRelevantDepartments } from './departmentAccess.js';
 
 export interface AuditEntry {
   companyId: string;
@@ -34,6 +35,57 @@ export interface AuditEntry {
   scheduleDate?: string | null;
   /** End of the schedule range (bulk publishes), or null. */
   scheduleDateEnd?: string | null;
+  /** Shift type id, stored in details so the report can resolve the
+   *  type's CURRENT name at read time (a rename shows the new name). */
+  shiftTypeId?: string | null;
+  /** Explicit department for the change (department-management rows).
+   *  Otherwise auditLog derives it — see deriveDepartmentId. */
+  departmentId?: string | null;
+}
+
+/**
+ * Department attribution for one audit row (Deepika, 2026-11-13 — an
+ * admin sees updates for the departments they have access to). The
+ * PRIMARY department, stored on the row: an explicit department for
+ * department-management changes, else the affected person's home
+ * department, else the single department of the rotation / shift type
+ * involved. NULL means unattributable — visible to the owner only.
+ * A deleted department never attributes (the FK would fail), and any
+ * failure here returns NULL rather than losing the audit row.
+ */
+export async function deriveDepartmentId(
+  companyId: string,
+  e: { affectedUserId?: string | null; departmentId?: string | null },
+  details: any
+): Promise<string | null> {
+  try {
+    const explicit = e.departmentId || details?.departmentId || null;
+    if (explicit) {
+      const { rows } = await query('SELECT 1 FROM departments WHERE id = $1 AND company_id = $2', [explicit, companyId]);
+      if (rows.length) return explicit as string;
+      return null;
+    }
+    if (e.affectedUserId) {
+      const { rows } = await query('SELECT department_id FROM users WHERE id = $1', [e.affectedUserId]);
+      if (rows.length && rows[0].department_id) return rows[0].department_id as string;
+    }
+    const rotationId = details?.rotationId || null;
+    if (rotationId) {
+      const depts = await rotationRelevantDepartments(rotationId);
+      if (depts.length === 1) return depts[0];
+    }
+    const stIds = [...new Set([
+      ...(details?.shiftTypeId ? [details.shiftTypeId] : []),
+      ...((details?.shiftTypeIds || []) as string[]),
+    ])].filter(Boolean) as string[];
+    if (stIds.length) {
+      const depts = await shiftTypesDepartmentIds(stIds, companyId);
+      if (depts.length === 1) return depts[0];
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function auditLog(e: AuditEntry): Promise<void> {
@@ -52,19 +104,25 @@ export async function auditLog(e: AuditEntry): Promise<void> {
     const scheduleDate = e.scheduleDate !== undefined
       ? e.scheduleDate
       : (e.category || 'schedule') === 'schedule' ? e.date : null;
+    const details = {
+      ...(e.details || {}),
+      ...(e.shiftTypeId ? { shiftTypeId: e.shiftTypeId } : {}),
+      ...(e.description ? { description: e.description } : {}),
+    };
+    const departmentId = await deriveDepartmentId(e.companyId, e, details);
     await query(
       `INSERT INTO schedule_audit_log
          (company_id, date, action, category, person_name, shift_type_name, source,
           rotation_name, changed_by, changed_by_name, details,
-          affected_user_id, result, schedule_date, schedule_date_end)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          affected_user_id, result, schedule_date, schedule_date_end, department_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [e.companyId, e.date, e.action, e.category || 'schedule',
        e.personName || null, e.shiftTypeName || null,
        e.source || 'manual', e.rotationName || null,
        e.changedBy || null, changedByName,
-       JSON.stringify({ ...(e.details || {}), ...(e.description ? { description: e.description } : {}) }),
+       JSON.stringify(details),
        e.affectedUserId || null, e.result || 'successful',
-       scheduleDate, e.scheduleDateEnd || null]
+       scheduleDate, e.scheduleDateEnd || null, departmentId]
     );
   } catch (err) {
     // Audit logging must never break the main operation.
@@ -219,6 +277,9 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
   try {
     const planSrc = plan.source_subject === 'In-app agent task' ? 'agent' : 'email';
     const changes = (plan.plan && (plan.plan as any).changes) || [];
+    // Shift type id by (lowercased) name, cached per plan — shift type
+    // names are unique per company, so the lookup is exact.
+    const typeIdByName = new Map<string, string | null>();
     const settingsActions = new Set(['add_job_role', 'rename_job_role', 'delete_job_role',
       'add_department', 'rename_department', 'add_team_member', 'update_team_member',
       'add_shift_type', 'rename_shift_type', 'set_staffing_target']);
@@ -267,6 +328,24 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
       for (const side of sides) {
         const who = side.person ? await resolvePersonId(companyId, side.person) : null;
         const personName = who?.display || r.personDisplay || side.person || null;
+        // Keep-updated (Deepika, 2026-11-13): store the shift type id
+        // and the swap partner's id so the report can resolve their
+        // CURRENT names at read time. Shift type names are unique per
+        // company, so a name lookup is exact; ambiguous names resolve
+        // to nothing rather than a guess.
+        let shiftTypeId: string | null = null;
+        if (side.shiftType) {
+          const key = side.shiftType.toLowerCase().trim();
+          if (!typeIdByName.has(key)) {
+            const { rows: stRows } = await query(
+              'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
+              [companyId, side.shiftType]
+            );
+            typeIdByName.set(key, stRows.length ? stRows[0].id : null);
+          }
+          shiftTypeId = typeIdByName.get(key) || null;
+        }
+        const swapToWho = side.swapTo ? await resolvePersonId(companyId, side.swapTo) : null;
         const dates = c.action === 'swap' ? [side.date || todayStr()] : planChangeDates(c, r);
         const perDate = dates.length > 1;
         for (const date of dates) {
@@ -286,7 +365,8 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
               : (side.description ?? (perDate ? null : (r.message || plan.plan_summary || null))),
             details: {
               planId: plan.id, action: c.action, summary: plan.plan_summary,
-              ...(side.swapTo ? { swap: true, swapTo: side.swapTo } : {}),
+              ...(shiftTypeId ? { shiftTypeId } : {}),
+              ...(side.swapTo ? { swap: true, swapTo: side.swapTo, ...(swapToWho?.id ? { swapToUserId: swapToWho.id } : {}) } : {}),
             },
           });
         }
