@@ -175,20 +175,29 @@ export async function resolvePersonId(companyId: string, name: string): Promise<
  * NOTHING on the normal post-fix paths: the exclusion inserted by
  * the removal itself covers the day, and a stored row still covering
  * the slot suppresses the occurrence.
+ *
+ * Widened (Deepika, 2026-11-13 — delete completely / Bul's Day
+ * Hospitalist draft): the removed row may have been suppressing
+ * occurrences of OTHER types that day — a published group-origin
+ * stored row suppresses any conflicting type — so the check covers
+ * EVERY type for this user/date (null-type call), not just the
+ * removed one. Each occurrence is judged on its own: a stored row
+ * still covering that type suppresses it, an exclusion covers it.
+ * One row per removal at most.
  */
 export async function auditDraftIfAppeared(
   companyId: string, userId: string, date: string, shiftTypeId: string | null, changedBy: string | null
 ): Promise<void> {
   try {
     if (!userId || !date || !shiftTypeId) return;
-    // A stored row still covering the slot suppresses the occurrence.
-    const { rows: stored } = await query(
-      'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
-      [companyId, userId, date, shiftTypeId]
-    );
-    if (stored.length) return;
-    const occ = await findRotationOccurrences(companyId, userId, date, shiftTypeId);
+    const occ = await findRotationOccurrences(companyId, userId, date, null);
     for (const o of occ) {
+      // A stored row still covering this type suppresses the occurrence.
+      const { rows: stored } = await query(
+        'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
+        [companyId, userId, date, o.shiftTypeId]
+      );
+      if (stored.length) continue;
       const { rows: excl } = await query(
         `SELECT 1 FROM rotation_shift_exclusions
          WHERE rotation_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,

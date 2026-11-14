@@ -1766,6 +1766,14 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     if (srows.length) {
       const s = srows[0];
       await excludeRotationInstances(companyId, s.userId, s.date, s.shiftTypeId);
+      // Delete completely (Deepika, 2026-11-13 — Bul's Day
+      // Hospitalist draft): the deleted row may have been
+      // suppressing occurrences of OTHER types that day (a published
+      // group-origin row suppresses any conflicting type), so sweep
+      // every occurrence for this user/date. Day-scoped only — other
+      // days untouched, the person's rotations untouched, and stored
+      // rows of other types are NOT deleted (drawn occurrences only).
+      await excludeRotationInstances(companyId, s.userId, s.date, null);
       // Report (Deepika, 2026-11-13): if a draft still appears, say so.
       await auditDraftIfAppeared(companyId, s.userId, s.date, s.shiftTypeId, req.session.userId!);
       // Group-rotation delete (Deepika, 2026-11-13 — Bul/Swing):
@@ -2857,6 +2865,15 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
        ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
       [companyId, rotationId, userId, date, shiftTypeId || null]
     );
+    // Delete completely (Deepika, 2026-11-13 — Bul's Day
+    // Hospitalist draft): this occurrence's rotation may not be the
+    // only one drawing for this user/date — a stored group-origin
+    // row suppressed other types too. Sweep every occurrence for
+    // this user/date (day-scoped; rotations and stored rows of other
+    // types untouched).
+    await excludeRotationInstances(companyId, userId, date, null);
+    // Report (Deepika, 2026-11-13): if a draft still appears, say so.
+    await auditDraftIfAppeared(companyId, userId, date, shiftTypeId || null, req.session.userId!);
     // Group-rotation occurrence delete (Deepika, 2026-11-13 —
     // Bul/Swing): the deleted shift must open for availability.
     {
@@ -8537,57 +8554,56 @@ async function detectLeftoverDrafts(companyId: string, rows: any[]): Promise<any
         if (who) { userId = who.id; personName = who.display; }
       }
       if (!userId) continue;
-      // Prefer the stored shift type id (rename-proof); fall back to
-      // the name lookup for historical rows that carry no id.
-      let shiftTypeId: string | null = (r.details?.shiftTypeId as string) || null;
-      if (!shiftTypeId) {
-        const { rows: stRows } = await query(
-          'SELECT id FROM shift_types WHERE company_id = $1 AND lower(name) = lower($2)',
-          [companyId, r.shiftTypeName]
-        );
-        if (!stRows.length) continue;
-        shiftTypeId = stRows[0].id;
-      }
-      if (haveDraft.has(`${userId}|${schedDate}|${r.shiftTypeName}`)) continue;
-      const { rows: stored } = await query(
-        'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
-        [companyId, userId, schedDate, shiftTypeId]
-      );
-      if (stored.length) continue;
-      const occ = await findRotationOccurrences(companyId, userId, schedDate, shiftTypeId);
-      let draws = false;
+      // Delete completely (Deepika, 2026-11-13 — Bul's Day
+      // Hospitalist draft): the removed row may have been
+      // suppressing occurrences of OTHER types that day, so check
+      // every type for this user/date, not just the removed one.
+      // One derived row per uncovered type (the id carries the type
+      // so two types from one removal stay distinct).
+      const occ = await findRotationOccurrences(companyId, userId, schedDate, null);
       for (const o of occ) {
+        const { rows: stRows } = await query(
+          'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+          [o.shiftTypeId, companyId]
+        );
+        const typeName = stRows[0]?.name || null;
+        if (!typeName) continue;
+        if (haveDraft.has(`${userId}|${schedDate}|${typeName}`)) continue;
+        const { rows: stored } = await query(
+          'SELECT 1 FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1',
+          [companyId, userId, schedDate, o.shiftTypeId]
+        );
+        if (stored.length) continue;
         const { rows: excl } = await query(
           `SELECT 1 FROM rotation_shift_exclusions WHERE rotation_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4 LIMIT 1`,
           [o.rotationId, userId, schedDate, o.shiftTypeId]
         );
-        if (!excl.length) { draws = true; break; }
+        if (excl.length) continue;
+        out.push({
+          id: `derived-${r.id}-${o.shiftTypeId}`,
+          derived: true,
+          date: r.date,
+          scheduleDate: schedDate,
+          scheduleDateEnd: null,
+          action: 'created',
+          category: 'schedule',
+          personName,
+          affectedUserId: userId,
+          shiftTypeName: typeName,
+          source: 'code',
+          rotationName: null,
+          changedBy: null,
+          changedByName: '—',
+          result: 'not_successful',
+          // Inherits the removal row's department, so the admin for that
+          // department sees the leftover draft it caused.
+          departmentId: r.departmentId || null,
+          description: `Draft appeared — ${typeName} left as a draft. The rotation pattern drew again because the stored shift was removed without excluding the rotation day.`,
+          details: { cause: 'rotation occurrence re-drew after stored shift removal without exclusion', derived: true, fromAuditId: r.id, shiftTypeId: o.shiftTypeId },
+          changedAt: r.changedAt,
+        });
+        haveDraft.add(`${userId}|${schedDate}|${typeName}`);
       }
-      if (!draws) continue;
-      out.push({
-        id: `derived-${r.id}`,
-        derived: true,
-        date: r.date,
-        scheduleDate: schedDate,
-        scheduleDateEnd: null,
-        action: 'created',
-        category: 'schedule',
-        personName,
-        affectedUserId: userId,
-        shiftTypeName: r.shiftTypeName,
-        source: 'code',
-        rotationName: null,
-        changedBy: null,
-        changedByName: '—',
-        result: 'not_successful',
-        // Inherits the removal row's department, so the admin for that
-        // department sees the leftover draft it caused.
-        departmentId: r.departmentId || null,
-        description: `Draft appeared — ${r.shiftTypeName} left as a draft. The rotation pattern drew again because the stored shift was removed without excluding the rotation day.`,
-        details: { cause: 'rotation occurrence re-drew after stored shift removal without exclusion', derived: true, fromAuditId: r.id, shiftTypeId },
-        changedAt: r.changedAt,
-      });
-      haveDraft.add(`${userId}|${schedDate}|${r.shiftTypeName}`);
     } catch (err) {
       console.error('[schedule] leftover draft detection failed:', (err as any)?.message);
     }
