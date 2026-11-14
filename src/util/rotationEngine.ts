@@ -278,6 +278,14 @@ export interface ComputeOpts {
   collectDeparted?: boolean;
   /** Company-today, for the departed window (defaults to UTC today). */
   today?: string;
+  /**
+   * Partial draft: only these users' occurrences (group dealing runs
+   * unchanged — an unpicked member's turn produces no row and counts
+   * as nothing). Absent = everyone.
+   */
+  onlyUserIds?: Set<string>;
+  /** Partial draft: only these shift types' occurrences. */
+  onlyShiftTypeIds?: Set<string>;
 }
 
 /**
@@ -428,6 +436,12 @@ export function computeRotationOccurrences(
         if (rot.endDate && dateStr > rot.endDate) continue;
         const m = currentMember;
         if (!m) continue;
+        // Partial draft: an unpicked member's turn produces no row
+        // and counts as nothing (not a skip) — the dealing above
+        // already ran unchanged, so the turn is still theirs, it
+        // just isn't drafted.
+        if (opts?.onlyUserIds && !opts.onlyUserIds.has(m.userId)) continue;
+        if (opts?.onlyShiftTypeIds && !opts.onlyShiftTypeIds.has(stId)) continue;
         if (onVacation(m.userId, dateStr)) {
           skip(m.userId, personDisplay(m), dateStr, stId, m.shiftTypeName, 'vacation');
           continue;
@@ -472,6 +486,11 @@ export function computeRotationOccurrences(
     const dayAssignments = byDay.get(cycleDay);
     if (!dayAssignments) continue;
     for (const a of dayAssignments) {
+      // Partial draft: occurrences only for picked people/types — an
+      // unpicked person counts as nothing (not a skip, and a departed
+      // unpicked person opens no slot).
+      if (opts?.onlyUserIds && !opts.onlyUserIds.has(a.userId)) continue;
+      if (opts?.onlyShiftTypeIds && !opts.onlyShiftTypeIds.has(a.shiftTypeId)) continue;
       const endD = a.userEndDate ? String(a.userEndDate).slice(0, 10) : null;
       const departedDate = !!(endD && dateStr > endD);
       if (!departedDate && a.userActive === false) continue;
@@ -528,6 +547,18 @@ export interface GenerateOpts {
   allowPast?: boolean;
   /** 'draft' (default) or 'published' (migration: rows are published). */
   publishMode?: 'draft' | 'published';
+  /**
+   * Partial draft (Deepika, 2026-11-14 — pick by shift + employees):
+   * draft ONLY these team members' turns. The group dealing runs
+   * unchanged; unpicked members' turns produce no rows and count as
+   * nothing (not a skip, no open slot). Absent = everyone.
+   */
+  userIds?: string[];
+  /**
+   * Partial draft: draft ONLY these shift types. Absent = every type
+   * the rotation produces.
+   */
+  shiftTypeIds?: string[];
   createdBy: string;
 }
 
@@ -781,20 +812,32 @@ export async function generateRotations(
   ];
   const ctx = await loadGenerationContext(tx, companyId, from, to, rotationIds);
 
+  // Partial draft (Deepika, 2026-11-14 — pick by shift + employees):
+  // the compute, the fresh-mode replacement, the exclusion clearing
+  // and the dry-run counts below are all scoped to the picked
+  // people/types. Absent = the whole rotation, exactly as before.
+  const onlyUserIds = opts.userIds?.length ? new Set(opts.userIds) : undefined;
+  const onlyShiftTypeIds = opts.shiftTypeIds?.length ? new Set(opts.shiftTypeIds) : undefined;
+  const compOpts = { publishMode, collectDeparted: true, today, onlyUserIds, onlyShiftTypeIds };
+  // Fresh-mode / dry-run counts scope to the picked users when a
+  // partial draft is running (parameter $5 on the queries below).
+  const userScope = onlyUserIds ? ' AND user_id = ANY($5)' : '';
+  const userParams: any[] = onlyUserIds ? [[...onlyUserIds]] : [];
+
   // ---- Dry run: compute only (the D1 choice dialog reads this).
   if (opts.dryRun) {
     let storedRows = await loadStoredRows(tx, companyId, from, to);
     const { rows: draftRows } = await tx(
       `SELECT COUNT(*)::int AS n FROM shifts
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
-         AND published = false AND date >= $3 AND date <= $4`,
-      [companyId, rotationIds, from, to]
+         AND published = false AND date >= $3 AND date <= $4${userScope}`,
+      [companyId, rotationIds, from, to, ...userParams]
     );
     const { rows: exclRows } = await tx(
       `SELECT COUNT(*)::int AS n FROM rotation_shift_exclusions
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
-         AND date >= $3 AND date <= $4`,
-      [companyId, rotationIds, from, to]
+         AND date >= $3 AND date <= $4${userScope}`,
+      [companyId, rotationIds, from, to, ...userParams]
     );
     const skipped = emptySkipped();
     const skippedDetail: SkipDetail[] = [];
@@ -803,9 +846,7 @@ export async function generateRotations(
     let wouldCreate = 0;
     for (const id of ordered) {
       const rot = byId.get(id);
-      const comp = computeRotationOccurrences(ctx, rot, from, to, storedRows, {
-        publishMode, collectDeparted: true, today,
-      });
+      const comp = computeRotationOccurrences(ctx, rot, from, to, storedRows, compOpts);
       addSkipped(skipped, comp.skipped);
       skippedDetail.push(...comp.skippedDetail);
       wouldCreate += comp.occurrences.length;
@@ -842,9 +883,10 @@ export async function generateRotations(
     const generationId = crypto.randomUUID();
     await tx(
       `INSERT INTO rotation_generations
-         (id, company_id, rotation_id, rotation_name, range_start, range_end, mode, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [generationId, companyId, id, rot.name, from, to, mode, opts.createdBy]
+         (id, company_id, rotation_id, rotation_name, range_start, range_end, mode, created_by, user_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [generationId, companyId, id, rot.name, from, to, mode, opts.createdBy,
+       onlyUserIds ? [...onlyUserIds] : null]
     );
     summary.generationIds.push(generationId);
 
@@ -854,13 +896,15 @@ export async function generateRotations(
       // Replace every still-draft row of this rotation in the range
       // (hand-added rows have rotation_id NULL and are never touched;
       // published rows are never touched) and clear its exclusions
-      // there, so deleted people return.
+      // there, so deleted people return. A PARTIAL draft replaces
+      // only the picked members' rows — an unpicked member's drafts
+      // from an earlier full draft stay exactly as they are.
       const { rows: del } = await tx(
         `DELETE FROM shifts
          WHERE company_id = $1 AND rotation_id = $2 AND published = false
-           AND date >= $3 AND date <= $4
+           AND date >= $3 AND date <= $4${userScope}
          RETURNING user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"`,
-        [companyId, id, from, to]
+        [companyId, id, from, to, ...userParams]
       );
       replacedDrafts = del.length;
       summary.replacedDrafts += replacedDrafts;
@@ -868,13 +912,15 @@ export async function generateRotations(
       // return — and drop the same keys from the in-memory context,
       // or the compute just below would still see them and skip the
       // returning dates as 'excluded' (the context was loaded before
-      // this loop and goes stale on this delete).
+      // this loop and goes stale on this delete). Partial: only the
+      // picked members' exclusions are cleared, so an unpicked
+      // member who was deleted stays deleted.
       const { rows: clearedExcl } = await tx(
         `DELETE FROM rotation_shift_exclusions
-         WHERE company_id = $1 AND rotation_id = $2 AND date >= $3 AND date <= $4
+         WHERE company_id = $1 AND rotation_id = $2 AND date >= $3 AND date <= $4${userScope}
          RETURNING rotation_id AS "rotationId", user_id AS "userId",
                    date::text AS date, shift_type_id AS "shiftTypeId"`,
-        [companyId, id, from, to]
+        [companyId, id, from, to, ...userParams]
       );
       for (const e of clearedExcl) {
         ctx.exclSet.delete(`${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`);
@@ -905,20 +951,19 @@ export async function generateRotations(
         });
       }
     } else {
-      // Keep-changes: count the still-draft rows that stay in place.
+      // Keep-changes: count the still-draft rows that stay in place
+      // (picked members only, on a partial draft).
       const { rows: kept } = await tx(
         `SELECT COUNT(*)::int AS n FROM shifts
          WHERE company_id = $1 AND rotation_id = $2 AND published = false
-           AND date >= $3 AND date <= $4`,
-        [companyId, id, from, to]
+           AND date >= $3 AND date <= $4${userScope}`,
+        [companyId, id, from, to, ...userParams]
       );
       keptDrafts = kept[0]?.n || 0;
       summary.keptDrafts += keptDrafts;
     }
 
-    const comp = computeRotationOccurrences(ctx, rot, from, to, storedRows, {
-      publishMode, collectDeparted: true, today,
-    });
+    const comp = computeRotationOccurrences(ctx, rot, from, to, storedRows, compOpts);
     addSkipped(summary.skipped, comp.skipped);
     summary.skippedDetail.push(...comp.skippedDetail);
 

@@ -16201,12 +16201,19 @@ window.qsNpOfferSend = function (btn) {
       <!-- Draft schedule from rotation (background rotations, Deepika
            2026-11-13). Shown only when the Action is
            "Draft schedule from rotation", which itself only exists
-           while the company is in generated mode. -->
+           while the company is in generated mode. Picking (Deepika,
+           Nov 14): by SHIFT (multi-select or All) + TEAM MEMBERS
+           (multi-select or All) — NOT by rotation names; the panel
+           resolves the picks to the rotations behind them. -->
       <div id="bulk-draft-panel" class="hidden" style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:1rem">
         <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start">
           <div style="flex:1 1 260px;min-width:220px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Rotations</label>
-            <div id="bulk-draft-rots" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shifts</label>
+            <div id="bulk-draft-types" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
+          </div>
+          <div style="flex:1 1 260px;min-width:220px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members</label>
+            <div id="bulk-draft-members" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
           </div>
           <div>
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Period</label>
@@ -16325,6 +16332,10 @@ window.qsNpOfferSend = function (btn) {
             }).join('');
           $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No matches.</p>';
           syncBulkSelectAll();
+          // The draft pickers list the same members — refresh them
+          // when the member list arrives or changes (guarded: only
+          // while the draft panel is open).
+          if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
         }
         function syncBulkSelectAll() {
           var boxes = document.querySelectorAll('.bulk-member-cb');
@@ -16342,6 +16353,7 @@ window.qsNpOfferSend = function (btn) {
             if (!r.ok) return;
             bulkAllShiftTypes = r.data.shiftTypes || [];
             renderBulkPubTypes();
+            if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
             var sel = $('bulk-shifttype');
             var fsel = $('bulk-shifttype-filter');
             // Department scope: bulk writes apply to the active department only.
@@ -16382,7 +16394,7 @@ window.qsNpOfferSend = function (btn) {
           if (dp) {
             dp.classList.toggle('hidden', !isDraft);
             if (isDraft) {
-              loadDraftRotations();
+              loadDraftData();
               if (!draftPanelInit) { draftPanelInit = true; setDraftPreset('4w'); }
             }
           }
@@ -16453,62 +16465,199 @@ window.qsNpOfferSend = function (btn) {
           $('bulk-from').value = today;
           $('bulk-to').value = preset === '3m' ? draftAddMonths(today, 3) : draftAddDays(today, 27);
         }
-        function loadDraftRotations() {
-          var box = $('bulk-draft-rots');
-          // Keep the current list on screen while reloading: blanking
-          // it to "Loading…" would eat a re-draft tap made in that
-          // split second ("Tick at least one rotation" with the boxes
-          // ticked a moment before).
-          var hadList = !!(box && box.querySelector('.bulk-draft-rot-cb'));
-          if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading rotations…</p>';
-          api('/api/schedule/rotations').then(function (r) {
-            if (!r.ok || !box) {
-              if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load rotations.</p>';
-              return;
-            }
-            renderDraftRotations(r.data.rotations || []);
+        // ---- Draft schedule from rotation: pick by SHIFT + TEAM
+        // MEMBERS (Deepika, 2026-11-14), never by rotation name.
+        // The panel loads the rotations (and group memberships) only
+        // to RESOLVE the picks to rotationIds — no rotation name is
+        // ever rendered here. Defaults: All shifts + All team
+        // members (the same as the old all-rotations-ticked default).
+        var draftRotations = [];
+        var draftGroups = [];
+        var draftDataLoaded = false;
+        var draftLastPicks = null;
+        function loadDraftData() {
+          var boxT = $('bulk-draft-types');
+          var boxM = $('bulk-draft-members');
+          // Keep the current lists on screen while reloading: blanking
+          // them to "Loading…" would eat a re-draft tap made in that
+          // split second ("Nothing to draft" with the boxes ticked a
+          // moment before).
+          var hadList = !!(boxT && boxT.querySelector('.bulk-draft-type-cb'));
+          if (boxT && !hadList) boxT.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading shifts…</p>';
+          if (boxM && !hadList) boxM.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading team members…</p>';
+          Promise.all([
+            api('/api/schedule/rotations'),
+            api('/api/schedule/rotation-groups').catch(function () { return { ok: false }; })
+          ]).then(function (rs) {
+            if (rs[0] && rs[0].ok) draftRotations = rs[0].data.rotations || [];
+            if (rs[1] && rs[1].ok) draftGroups = (rs[1].data && rs[1].data.groups) || [];
+            draftDataLoaded = true;
+            renderDraftPickers();
           }).catch(function () {
-            if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load rotations.</p>';
+            if (boxT && !hadList) boxT.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load shifts.</p>';
+            if (boxM && !hadList) boxM.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load team members.</p>';
           });
         }
-        function renderDraftRotations(rots) {
-          var box = $('bulk-draft-rots');
-          if (!box) return;
-          // Per-department mode: only rotations whose shift types are
-          // all generated can be drafted — a live department's
-          // rotations never appear here (the server refuses them
-          // with 403 too; the list just doesn't offer them).
-          var active = (rots || []).filter(function (r) { return r.isActive && r.generatable !== false; });
-          if (!active.length) {
-            box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No active rotations.</p>';
-            return;
-          }
-          box.innerHTML = active.map(function (r) {
-            var note = r.changedSinceLastGeneration
-              ? '<div style="font-size:0.8rem;color:#92400e;margin:1px 0 2px 22px">Pattern changed since last generation</div>'
-              : '';
-            return '<label style="display:block;font-size:0.9rem;padding:2px 4px;cursor:pointer;color:#222">' +
-              '<input type="checkbox" class="bulk-draft-rot-cb" value="' + r.id + '" checked style="margin-right:6px">' + esc(r.name || 'Rotation') + '</label>' + note;
-          }).join('');
+        // Shift types the draft can produce: types of generatable
+        // rotations, editable in a department the global filter
+        // allows (same gate as the open-slots select).
+        function draftOfferedTypes() {
+          var byId = {};
+          (bulkAllShiftTypes || []).forEach(function (st) { byId[st.id] = st; });
+          var ids = {};
+          (draftRotations || []).forEach(function (r) {
+            if (!r.isActive || r.generatable === false) return;
+            (r.assignments || []).forEach(function (a) { if (a.shiftTypeId) ids[a.shiftTypeId] = true; });
+            if (r.groupShiftTypeId) ids[r.groupShiftTypeId] = true;
+          });
+          return Object.keys(ids).map(function (id) { return byId[id]; }).filter(function (st) {
+            if (!st || !st.isActive) return false;
+            if (!window.qsStEditable(st)) return false;
+            var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+            if (deptIds.length && !deptIds.some(window.qsDeptFilterAllows)) return false;
+            return true;
+          }).sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
         }
-        function selectedDraftRotationIds() {
+        // Team members in scope (same filter as the publish member
+        // list, minus its search / job-role filters).
+        function draftOfferedMembers() {
+          return (bulkAllMembers || []).filter(function (u) {
+            if (!window.qsMemberViewable(u)) return false;
+            if (!window.qsDeptFilterAllows(u.departmentId)) return false;
+            return true;
+          }).sort(function (a, b) {
+            var na = ((a.firstName || '') + ' ' + (a.lastName || '')).trim();
+            var nb = ((b.firstName || '') + ' ' + (b.lastName || '')).trim();
+            return na.localeCompare(nb);
+          });
+        }
+        function draftGroupMemberIds(rot) {
+          var gids = String(rot.groupIds || rot.groupId || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+          var out = [];
+          gids.forEach(function (gid) {
+            var g = (draftGroups || []).find(function (x) { return String(x.id) === gid; });
+            ((g && g.members) || []).forEach(function (m) {
+              if (out.indexOf(m.userId) === -1) out.push(m.userId);
+            });
+          });
+          return out;
+        }
+        function renderDraftPickers() {
+          var boxT = $('bulk-draft-types');
+          var boxM = $('bulk-draft-members');
+          if (!boxT || !boxM || !draftDataLoaded) return;
+          // Preserve the current picks across re-renders (data
+          // arriving late, department filter changes, post-generate
+          // refresh). A box that did not exist before defaults to the
+          // "All" state; the first render is All checked.
+          var prevT = {}, prevM = {};
+          var prevAllT = true, prevAllM = true, hadT = false, hadM = false;
+          var allTEl = document.getElementById('bulk-draft-types-all');
+          var allMEl = document.getElementById('bulk-draft-members-all');
+          if (allTEl) { prevAllT = allTEl.checked; hadT = true; }
+          if (allMEl) { prevAllM = allMEl.checked; hadM = true; }
+          document.querySelectorAll('.bulk-draft-type-cb').forEach(function (cb) { prevT[cb.value] = cb.checked; });
+          document.querySelectorAll('.bulk-draft-member-cb').forEach(function (cb) { prevM[cb.value] = cb.checked; });
+          var types = draftOfferedTypes();
+          var members = draftOfferedMembers();
+          var typeHtml = '<label style="display:block;font-size:0.9rem;font-weight:600;padding:2px 4px;cursor:pointer;color:#222">' +
+            '<input type="checkbox" id="bulk-draft-types-all" style="margin-right:6px">All shifts</label>' +
+            (types.length ? types.map(function (st) {
+              var checked = hadT ? (prevT.hasOwnProperty(st.id) ? prevT[st.id] : prevAllT) : true;
+              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
+                '<input type="checkbox" class="bulk-draft-type-cb" value="' + st.id + '"' + (checked ? ' checked' : '') + ' style="margin-right:6px">' + esc(st.name) + '</label>';
+            }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shifts to draft from.</p>');
+          var memberHtml = '<label style="display:block;font-size:0.9rem;font-weight:600;padding:2px 4px;cursor:pointer;color:#222">' +
+            '<input type="checkbox" id="bulk-draft-members-all" style="margin-right:6px">All team members</label>' +
+            (members.length ? members.map(function (u) {
+              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
+              var checked = hadM ? (prevM.hasOwnProperty(u.id) ? prevM[u.id] : prevAllM) : true;
+              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
+                '<input type="checkbox" class="bulk-draft-member-cb" value="' + u.id + '"' + (checked ? ' checked' : '') + ' style="margin-right:6px">' + esc(nm) + '</label>';
+            }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No team members in scope.</p>');
+          boxT.innerHTML = typeHtml;
+          boxM.innerHTML = memberHtml;
+          syncDraftAll('types');
+          syncDraftAll('members');
+        }
+        function syncDraftAll(which) {
+          var boxes = document.querySelectorAll(which === 'types' ? '.bulk-draft-type-cb' : '.bulk-draft-member-cb');
+          var all = document.getElementById(which === 'types' ? 'bulk-draft-types-all' : 'bulk-draft-members-all');
+          if (!all) return;
+          all.checked = boxes.length > 0 && Array.prototype.every.call(boxes, function (cb) { return cb.checked; });
+        }
+        // "All" toggles the whole list; ticking/unticking one box
+        // re-syncs "All". Delegated on the static boxes so the
+        // handlers survive re-renders.
+        (function () {
+          var boxT = document.getElementById('bulk-draft-types');
+          var boxM = document.getElementById('bulk-draft-members');
+          if (boxT) boxT.addEventListener('change', function (e) {
+            var t = e.target;
+            if (t.id === 'bulk-draft-types-all') {
+              document.querySelectorAll('.bulk-draft-type-cb').forEach(function (cb) { cb.checked = t.checked; });
+            } else if (t.classList.contains('bulk-draft-type-cb')) {
+              syncDraftAll('types');
+            }
+          });
+          if (boxM) boxM.addEventListener('change', function (e) {
+            var t = e.target;
+            if (t.id === 'bulk-draft-members-all') {
+              document.querySelectorAll('.bulk-draft-member-cb').forEach(function (cb) { cb.checked = t.checked; });
+            } else if (t.classList.contains('bulk-draft-member-cb')) {
+              syncDraftAll('members');
+            }
+          });
+        })();
+        function selectedDraftTypeIds() {
           var ids = [];
-          document.querySelectorAll('.bulk-draft-rot-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          document.querySelectorAll('.bulk-draft-type-cb:checked').forEach(function (cb) { ids.push(cb.value); });
           return ids;
         }
+        function selectedDraftMemberIds() {
+          var ids = [];
+          document.querySelectorAll('.bulk-draft-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          return ids;
+        }
+        // Resolve the picks to rotations. Per-person rotation: include
+        // it when ANY assignment matches a picked shift AND a picked
+        // person. Group rotation: include it when its shift type is
+        // picked AND ANY member is picked — the engine then drafts
+        // just the picked members' turns (dealing unchanged).
+        function resolveDraftPicks() {
+          var typeIds = selectedDraftTypeIds();
+          var userIds = selectedDraftMemberIds();
+          var rotIds = [];
+          (draftRotations || []).forEach(function (r) {
+            if (!r.isActive || r.generatable === false) return;
+            if (r.groupId && r.groupShiftTypeId) {
+              if (typeIds.indexOf(r.groupShiftTypeId) === -1) return;
+              var members = draftGroupMemberIds(r);
+              if (members.some(function (uid) { return userIds.indexOf(uid) !== -1; })) rotIds.push(r.id);
+            } else {
+              var ok = (r.assignments || []).some(function (a) {
+                return typeIds.indexOf(a.shiftTypeId) !== -1 && userIds.indexOf(a.userId) !== -1;
+              });
+              if (ok) rotIds.push(r.id);
+            }
+          });
+          return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds };
+        }
         function runDraftSchedule() {
-          var ids = selectedDraftRotationIds();
+          var picks = resolveDraftPicks();
           var from = $('bulk-from').value, to = $('bulk-to').value;
-          if (!ids.length) { showResult('Tick at least one rotation.', true); return; }
+          if (!picks.shiftTypeIds.length || !picks.userIds.length) { showResult('Pick at least one shift and one team member.', true); return; }
+          if (!picks.rotationIds.length) { showResult('Nothing to draft for these picks — no rotation covers the shifts and people you picked.', true); return; }
           if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
+          draftLastPicks = picks;
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Checking what would change…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: ids, from: from, to: to, dryRun: true }) }).then(function (r) {
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, dryRun: true }) }).then(function (r) {
             if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             var existing = (r.data && r.data.existingDrafts) || 0;
             var deleted = (r.data && r.data.deletedCount) || 0;
-            if (!existing && !deleted) { doGenerate('fresh', ids, from, to); return; }
+            if (!existing && !deleted) { doGenerate('fresh'); return; }
             // D1 (Deepika, 2026-11-13): re-drafting asks at the moment,
             // ONE prompt with two options and the plain notice for each,
             // BEFORE she taps either.
@@ -16519,21 +16668,23 @@ window.qsNpOfferSend = function (btn) {
               '<p><strong>Keep the changes I made and redraft</strong><br>Your hand fixes stay, and anyone you deleted stays deleted. Everything else refreshes from the rotation as it is now.</p>' +
               '<p><strong>Re-draft from the rotations</strong><br>Everything is replaced from the rotation as it is now. Your hand fixes go away, and anyone you deleted comes back.</p>',
               [
-                { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep', ids, from, to); } },
-                { label: 'Re-draft from the rotations', onClick: function () { doGenerate('fresh', ids, from, to); } },
+                { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep'); } },
+                { label: 'Re-draft from the rotations', onClick: function () { doGenerate('fresh'); } },
                 { label: 'Cancel' }
               ]);
           }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
         }
-        function doGenerate(mode, ids, from, to) {
+        function doGenerate(mode) {
+          var picks = draftLastPicks || resolveDraftPicks();
+          var from = $('bulk-from').value, to = $('bulk-to').value;
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Drafting…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: ids, from: from, to: to, mode: mode }) }).then(function (r) {
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode }) }).then(function (r) {
             btn.disabled = false;
             if (!r.ok) { showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             showDraftResult(r.data || {});
-            loadDraftRotations();
+            loadDraftData();
             if (window.qsReloadScheduleGrid) { try { window.qsReloadScheduleGrid(); } catch (e) {} }
           }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
         }

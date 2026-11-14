@@ -4610,7 +4610,13 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 // The Stage 4 migration tool calls generateRotations directly.
 //
 // Body: { rotationIds: string[], from, to, mode?: 'keep'|'fresh',
-//         dryRun?: boolean }.
+//         dryRun?: boolean,
+//         userIds?: string[], shiftTypeIds?: string[] }.
+//   userIds / shiftTypeIds (Deepika, 2026-11-14 — pick by shift +
+//   employees): a PARTIAL draft — only those members' turns, only
+//   those types. The group dealing runs unchanged; unpicked members'
+//   turns produce no rows. Absent = the whole rotation, as before.
+//   Both are validated against the company (unknown ids 400).
 //   dryRun: compute only, write nothing — the client calls it first;
 //     when existingDrafts > 0 or deletedCount > 0 it shows the D1
 //     choice dialog (with the clear notice) and re-calls with the
@@ -4618,6 +4624,8 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 //   mode 'keep': hand fixes + deletions stay; the rest refreshes.
 //   mode 'fresh': replace every still-draft row of the rotation in
 //     range, clear its exclusions there (deleted people return).
+//     A partial fresh re-draft replaces only the picked members'
+//     rows — an unpicked member's drafts stay exactly as they are.
 //   Both modes NEVER touch published rows, and NEVER touch hand-added
 //   rows (rotation_id NULL) — a re-draft only replaces rotation-origin
 //   rows, because there is no rotation to replace a hand-added shift
@@ -4629,6 +4637,12 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     const rotationIds = Array.isArray(req.body?.rotationIds)
       ? [...new Set(req.body.rotationIds.filter((x: any) => typeof x === 'string'))] as string[]
       : [];
+    const userIds = Array.isArray(req.body?.userIds)
+      ? [...new Set(req.body.userIds.filter((x: any) => typeof x === 'string'))] as string[]
+      : [];
+    const shiftTypeIds = Array.isArray(req.body?.shiftTypeIds)
+      ? [...new Set(req.body.shiftTypeIds.filter((x: any) => typeof x === 'string'))] as string[]
+      : [];
     const from = String(req.body?.from || '');
     const to = String(req.body?.to || '');
     const dryRun = req.body?.dryRun === true;
@@ -4636,6 +4650,26 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     if (!rotationIds.length) {
       res.status(400).json({ error: 'Pick at least one rotation.' });
       return;
+    }
+    if (userIds.length) {
+      const { rows: found } = await query(
+        'SELECT id FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, userIds]
+      );
+      if (found.length !== userIds.length) {
+        res.status(400).json({ error: 'Unknown team member in the draft.' });
+        return;
+      }
+    }
+    if (shiftTypeIds.length) {
+      const { rows: found } = await query(
+        'SELECT id FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, shiftTypeIds]
+      );
+      if (found.length !== shiftTypeIds.length) {
+        res.status(400).json({ error: 'Unknown shift type in the draft.' });
+        return;
+      }
     }
     // Per-department gate: every named rotation must produce only
     // generated-type shifts (Deepika, 2026-11-14 — each department
@@ -4663,6 +4697,8 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     if (dryRun) {
       const summary = await generateRotations(query as any, companyId, {
         rotationIds, from, to, mode: genMode, dryRun: true, createdBy: req.session.userId!,
+        userIds: userIds.length ? userIds : undefined,
+        shiftTypeIds: shiftTypeIds.length ? shiftTypeIds : undefined,
       });
       // createdRows is for the migration report (direct engine
       // caller); the HTTP client only needs the counts.
@@ -4674,6 +4710,8 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
       const q: any = (text: string, params?: any[]) => tx.query(text, params);
       return generateRotations(q, companyId, {
         rotationIds, from, to, mode: genMode, createdBy: req.session.userId!,
+        userIds: userIds.length ? userIds : undefined,
+        shiftTypeIds: shiftTypeIds.length ? shiftTypeIds : undefined,
       });
     });
     // Audit entries are written AFTER the commit (auditLog uses the

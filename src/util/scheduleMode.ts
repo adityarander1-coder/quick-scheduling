@@ -146,6 +146,46 @@ function dateOfDayNum(n: number): string {
 }
 
 /**
+ * Coverage of PARTIAL generations (user_ids set — a draft for picked
+ * members only): the (date, type) pairs the generation actually
+ * created rows for, read from the stored shifts carrying that
+ * generation_id. A partial generation's unpicked turns produce no
+ * rows, so those days read as not-drafted for the type — never an
+ * OPEN row, never a phantom shift. Returns generationId ->
+ * Set<"date|shiftTypeId">. (A side effect worth knowing: if every
+ * row a partial generation created is later deleted, its dates read
+ * as not-drafted again — which is true, nothing is drafted there
+ * any more. Full generations are unaffected: they cover by range.)
+ */
+async function getPartialCoverage(
+  q: QueryFn, companyId: string, from: string, to: string,
+  partialGenIds: string[]
+): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  if (!partialGenIds.length) return out;
+  const { rows } = await q(
+    `SELECT generation_id AS "generationId", date::text AS date,
+            shift_type_id AS "shiftTypeId"
+     FROM shifts
+     WHERE company_id = $1 AND generation_id = ANY($2::uuid[])
+       AND date >= $3 AND date <= $4`,
+    [companyId, partialGenIds, from, to]
+  );
+  for (const r of rows) {
+    if (!out.has(r.generationId)) out.set(r.generationId, new Set());
+    out.get(r.generationId)!.add(`${r.date}|${r.shiftTypeId}`);
+  }
+  return out;
+}
+
+/** A generation row is partial (drafted for picked members only) when
+ *  its user_ids is a non-empty array; NULL/empty means the whole
+ *  rotation, which covers its full range as before. */
+function isPartialGeneration(r: any): boolean {
+  return Array.isArray(r.userIds) && r.userIds.length > 0;
+}
+
+/**
  * Dates in [from, to] covered by at least one generation for this
  * company (any rotation, any type). A date is "drafted" at day level
  * when a generation covers it — the grid's "Not drafted yet" day
@@ -159,17 +199,26 @@ export async function getDraftedDates(
 ): Promise<Set<string>> {
   const covered = new Set<string>();
   const { rows } = await q(
-    `SELECT range_start::text AS "rangeStart", range_end::text AS "rangeEnd"
+    `SELECT id, range_start::text AS "rangeStart", range_end::text AS "rangeEnd",
+            user_ids AS "userIds"
      FROM rotation_generations
      WHERE company_id = $1 AND range_end >= $2 AND range_start <= $3`,
     [companyId, from, to]
   );
   const fromN = dayNum(from);
   const toN = dayNum(to);
+  const partialIds = rows.filter(isPartialGeneration).map((r: any) => r.id);
+  const partialCov = await getPartialCoverage(q, companyId, from, to, partialIds);
   for (const r of rows) {
-    const s = Math.max(fromN, dayNum(r.rangeStart));
-    const e = Math.min(toN, dayNum(r.rangeEnd));
-    for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    if (!isPartialGeneration(r)) {
+      const s = Math.max(fromN, dayNum(r.rangeStart));
+      const e = Math.min(toN, dayNum(r.rangeEnd));
+      for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    } else {
+      for (const key of partialCov.get(r.id) || []) {
+        covered.add(key.split('|')[0]);
+      }
+    }
   }
   return covered;
 }
@@ -201,7 +250,8 @@ export async function getUndraftedDatesForType(
   to: string
 ): Promise<string[]> {
   const { rows } = await q(
-    `SELECT rg.range_start::text AS "rangeStart", rg.range_end::text AS "rangeEnd"
+    `SELECT rg.id, rg.range_start::text AS "rangeStart", rg.range_end::text AS "rangeEnd",
+            rg.user_ids AS "userIds"
      FROM rotation_generations rg
      JOIN rotations r ON r.id = rg.rotation_id
      WHERE rg.company_id = $1 AND rg.range_end >= $2::date AND rg.range_start <= $3::date
@@ -215,10 +265,19 @@ export async function getUndraftedDatesForType(
   const covered = new Set<string>();
   const fromN = dayNum(from);
   const toN = dayNum(to);
+  const partialIds = rows.filter(isPartialGeneration).map((r: any) => r.id);
+  const partialCov = await getPartialCoverage(q, companyId, from, to, partialIds);
   for (const r of rows) {
-    const s = Math.max(fromN, dayNum(r.rangeStart));
-    const e = Math.min(toN, dayNum(r.rangeEnd));
-    for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    if (!isPartialGeneration(r)) {
+      const s = Math.max(fromN, dayNum(r.rangeStart));
+      const e = Math.min(toN, dayNum(r.rangeEnd));
+      for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    } else {
+      for (const key of partialCov.get(r.id) || []) {
+        const [d, t] = key.split('|');
+        if (t === shiftTypeId) covered.add(d);
+      }
+    }
   }
   const out: string[] = [];
   for (let n = fromN; n <= toN; n++) {
@@ -243,7 +302,8 @@ export async function getNotDraftedByType(
   const out: Record<string, string[]> = {};
   if (!generatedTypeIds.size) return out;
   const { rows } = await q(
-    `SELECT rg.range_start::text AS "rangeStart", rg.range_end::text AS "rangeEnd",
+    `SELECT rg.id AS "generationId", rg.range_start::text AS "rangeStart",
+            rg.range_end::text AS "rangeEnd", rg.user_ids AS "userIds",
             t.shift_type_id AS "shiftTypeId"
      FROM rotation_generations rg
      JOIN rotations r ON r.id = rg.rotation_id
@@ -258,13 +318,22 @@ export async function getNotDraftedByType(
   const coveredByType = new Map<string, Set<string>>();
   const fromN = dayNum(from);
   const toN = dayNum(to);
+  const partialIds = rows.filter(isPartialGeneration).map((r: any) => r.generationId);
+  const partialCov = await getPartialCoverage(q, companyId, from, to, [...new Set(partialIds)]);
   for (const r of rows) {
     if (!generatedTypeIds.has(r.shiftTypeId)) continue;
     if (!coveredByType.has(r.shiftTypeId)) coveredByType.set(r.shiftTypeId, new Set());
     const covered = coveredByType.get(r.shiftTypeId)!;
-    const s = Math.max(fromN, dayNum(r.rangeStart));
-    const e = Math.min(toN, dayNum(r.rangeEnd));
-    for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    if (!isPartialGeneration(r)) {
+      const s = Math.max(fromN, dayNum(r.rangeStart));
+      const e = Math.min(toN, dayNum(r.rangeEnd));
+      for (let n = s; n <= e; n++) covered.add(dateOfDayNum(n));
+    } else {
+      for (const key of partialCov.get(r.generationId) || []) {
+        const [d, t] = key.split('|');
+        if (t === r.shiftTypeId) covered.add(d);
+      }
+    }
   }
   for (const typeId of generatedTypeIds) {
     const covered = coveredByType.get(typeId) || new Set<string>();
