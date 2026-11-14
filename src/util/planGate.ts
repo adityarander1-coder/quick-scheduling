@@ -36,6 +36,7 @@
 import { matchName } from './planHelpers.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
+import { isGeneratedMode, getUndraftedDates } from './scheduleMode.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
@@ -607,6 +608,33 @@ export async function gatePlanChanges(
   const from = shiftDay(dates[0], -2);
   const to = shiftDay(dates[dates.length - 1], 2);
   const entries = await getShiftsForRange(query, companyId, from, to);
+  // N1 (background rotations, Deepika 2026-11-13): in generated mode
+  // the AI sees stored shifts only — an undrafted date has no holder
+  // to verify against, so the workability loop below would ask a
+  // misleading holder-mismatch question ("X doesn't hold that shift"
+  // when nobody has been drafted for it yet). Clarify FIRST: the
+  // date is not drafted yet, and the fix is to draft it.
+  if (await isGeneratedMode(query, companyId)) {
+    const undrafted = new Set(await getUndraftedDates(query, companyId, dates[0], dates[dates.length - 1]));
+    for (const c of dated) {
+      const touched: string[] = [];
+      for (const d of [c.date, c.fromDate, c.toDate, c.startDate]) if (d) touched.push(String(d));
+      // A range change touches every date in its span.
+      if (c.action === 'assign_recurring' && c.fromDate && c.toDate) {
+        let cur = String(c.fromDate);
+        while (cur <= String(c.toDate) && touched.length < 400) {
+          touched.push(cur);
+          const dd = new Date(cur + 'T00:00:00Z');
+          dd.setUTCDate(dd.getUTCDate() + 1);
+          cur = dd.toISOString().slice(0, 10);
+        }
+      }
+      const bad = touched.find((d) => undrafted.has(d));
+      if (bad) {
+        return { ok: false, question: `I can't plan a change for ${bad} yet — that date hasn't been drafted from the rotations. Draft the schedule for that date first (Bulk Actions → Draft schedule from rotation), then ask again.` };
+      }
+    }
+  }
   const heldBy = (userId: string, date: string, typeId?: string | null) =>
     entries.filter((e) => e.userId === userId && e.date === date && (!typeId || e.shiftTypeId === typeId));
   const holdersOf = (date: string, typeId: string): string[] =>

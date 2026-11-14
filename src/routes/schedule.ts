@@ -29,6 +29,8 @@ import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { excludeRotationInstances, findRotationOccurrences } from '../util/planExecutor.js';
+import { getScheduleMode, isGeneratedMode, setScheduleMode, getUndraftedDates, getLastGenerations } from '../util/scheduleMode.js';
+import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -479,7 +481,7 @@ interface DrawOptions {
   today?: string;
 }
 
-async function drawRotationOccurrences(
+export async function drawRotationOccurrences(
   q: any,
   companyId: string,
   from: string,
@@ -965,7 +967,23 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // Generate shifts from active rotations — the drawing lives in
     // drawRotationOccurrences (shared with Publish schedule, Step 2,
     // so a publish stamps exactly what this grid draws).
-    const { occurrences: rotationShifts } = await drawRotationOccurrences(query, companyId, from, to, rows);
+    //
+    // Background rotations (Deepika, 2026-11-13): in `generated`
+    // mode this drawing is OFF — the grid shows stored rows only
+    // (drafts grey, published solid). Dates no generation has
+    // covered come back as `notDraftedDates`, so the grid can label
+    // them "Not drafted yet" instead of looking empty (managers
+    // only — employees see their own published shifts only, and an
+    // undrafted date is simply not their concern).
+    const generatedMode = await isGeneratedMode(query, companyId);
+    const rotationShifts: any[] = [];
+    let notDraftedDates: string[] = [];
+    if (!generatedMode) {
+      const drawn = await drawRotationOccurrences(query, companyId, from, to, rows);
+      rotationShifts.push(...drawn.occurrences);
+    } else if (!employeeView) {
+      notDraftedDates = await getUndraftedDates(query, companyId, from, to);
+    }
 
     // Merge and sort.
     // Manual shifts are NEVER hidden — a vacation pause suppresses only
@@ -1041,7 +1059,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       }
     } catch { /* cover markers are decoration — never fail the schedule */ }
 
-    res.json({ shifts: all, closedShifts, extraSlots });
+    res.json({ shifts: all, closedShifts, extraSlots, scheduleMode: generatedMode ? 'generated' : 'live', notDraftedDates });
   } catch (err) {
     console.error('[schedule] list shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1085,6 +1103,21 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
     if (!eligibility.ok) {
       res.status(403).json({ error: eligibility.error });
       return;
+    }
+    // Hand-add clash warning (Deepika, Nov 14, 12:01 AM): the add
+    // never removes the person's other shifts that day. A conflict
+    // (overlap or <8h rest) comes back as 409 so the client warns
+    // at the moment of adding; she confirms with confirmConflict
+    // to add anyway, or fixes the other shift first.
+    if (req.body?.confirmConflict !== true) {
+      const clash = await checkHandAddConflict(companyId, userId, shiftTypeId, date);
+      if (clash) {
+        res.status(409).json({
+          error: clash.reason,
+          conflict: { reason: clash.reason, existing: clash.existing },
+        });
+        return;
+      }
     }
     const id = crypto.randomUUID();
     try {
@@ -1200,6 +1233,22 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
     }
     let created = 0;
     let skipped = 0;
+    // Hand-add clash warning (same rule as POST /shifts): the first
+    // conflicting date in the range comes back as 409 so the client
+    // warns once for the whole bulk add; confirmConflict adds all
+    // dates anyway, and the person's other shifts stay.
+    if (req.body?.confirmConflict !== true) {
+      for (const date of dates) {
+        const clash = await checkHandAddConflict(companyId, userId, shiftTypeId, date);
+        if (clash) {
+          res.status(409).json({
+            error: clash.reason,
+            conflict: { reason: clash.reason, existing: clash.existing },
+          });
+          return;
+        }
+      }
+    }
     for (const date of dates) {
       try {
         await query(
@@ -1617,6 +1666,14 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     } catch (err) {
       console.error('[schedule] bulk delete group exclusions failed:', err);
     }
+    // Background rotations (Deepika, 2026-11-13): in `generated`
+    // mode the pause pass is SKIPPED — a 'Bulk delete' pause would
+    // suppress FUTURE generations of those dates, and the D1
+    // deletion markers are the exclusions the widened sweep below
+    // writes (keep-changes reads them; fresh clears them). The
+    // group-exclusion pass above is a no-op here (getShiftsForRange
+    // returns stored-only, no isRotation entries) — left in place.
+    if (!(await isGeneratedMode(query, companyId))) {
     const rotParams: any[] = [companyId];
     const rotUserFilter = Array.isArray(userIds) && userIds.length
       ? `AND ra.user_id = ANY($${rotParams.length + 1}::uuid[])`
@@ -1645,6 +1702,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         paused++;
       } catch { /* skip duplicates */ }
     }
+    } // end live-mode pause pass
     // Delete completely (Deepika, 2026-11-13 — widened 2026-11-14):
     // with a type filter, the group pass and the pause pass above are
     // both type-narrowed, so a deleted person's rotation occurrences
@@ -1758,6 +1816,12 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
 router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // A malformed id is a missing shift, not a server error (the
+    // uuid comparison below throws on non-uuid text otherwise).
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) {
+      res.status(404).json({ error: 'Shift not found.' });
+      return;
+    }
     // Fetch details for audit before deleting.
     const { rows: srows } = await query(
       `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
@@ -1948,15 +2012,19 @@ async function ensureOpenSlotForGroupDelete(
     );
     const extra = extraRows[0]?.n || 0;
     // Filled, exactly as the grid counts it: stored rows + drawn
-    // occurrences for the date (GET /shifts composition).
+    // occurrences for the date (GET /shifts composition). In
+    // generated mode the grid shows stored rows only, so the count
+    // is stored rows only — no drawing.
     const { rows: stored } = await query(
       `SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"
        FROM shifts WHERE company_id = $1 AND date = $2`,
       [companyId, date]
     );
-    const { occurrences } = await drawRotationOccurrences(query, companyId, date, date, stored);
-    const filled = stored.filter((s: any) => s.shiftTypeId === shiftTypeId).length
-      + occurrences.filter((o: any) => o.shiftTypeId === shiftTypeId).length;
+    let filled = stored.filter((s: any) => s.shiftTypeId === shiftTypeId).length;
+    if (!(await isGeneratedMode(query, companyId))) {
+      const { occurrences } = await drawRotationOccurrences(query, companyId, date, date, stored);
+      filled += occurrences.filter((o: any) => o.shiftTypeId === shiftTypeId).length;
+    }
     if (target + extra - filled !== 0) return false;
     await query(
       `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
@@ -3434,6 +3502,9 @@ router.put('/rotation-groups/:id', requireRole('owner', 'scheduler'), async (req
         );
       }
     }
+    // D6 badge: membership changes what every rotation using this
+    // group generates.
+    await touchRotationsForGroup(query, req.params.id);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] update rotation group failed:', err);
@@ -3464,6 +3535,7 @@ router.get('/rotations', async (req: Request, res: Response) => {
               r.end_date::text AS "endDate",
               r.is_active AS "isActive",
               r.start_time::text AS "startTime", r.end_time::text AS "endTime", r.notes,
+              r.updated_at::text AS "updatedAt",
               r.group_id AS "groupId", r.group_ids AS "groupIds", rg.name AS "groupName",
               r.group_shift_type_id AS "groupShiftTypeId", gst.name AS "groupShiftTypeName",
               r.group_days AS "groupDays", r.turn_unit AS "turnUnit",
@@ -3474,6 +3546,18 @@ router.get('/rotations', async (req: Request, res: Response) => {
        WHERE r.company_id = $1 ORDER BY r.name`,
       [companyId]
     );
+    // D6 badge (background rotations): "pattern changed since last
+    // generation" — the rotation's updated_at is past its most recent
+    // generation's created_at. No generation yet means no badge (the
+    // pattern has never been drafted, so there is nothing to be stale
+    // against). Information only; nothing auto-regenerates.
+    const lastGen = await getLastGenerations(query, companyId, rots.map((r: any) => r.id));
+    for (const r of rots) {
+      const lg = lastGen.get(r.id);
+      r.lastGenerationAt = lg ? lg.createdAt : null;
+      r.changedSinceLastGeneration = !!lg && !!r.updatedAt &&
+        new Date(r.updatedAt).getTime() > new Date(lg.createdAt).getTime();
+    }
     for (const r of rots) {
       const { rows: asg } = await query(
         `SELECT ra.id, ra.user_id AS "userId", ra.cycle_day AS "cycleDay",
@@ -4115,6 +4199,36 @@ function dayBefore(dateStr: string): string {
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
+function dayAfter(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// Hand-add clash warning (Deepika, Nov 14, 12:01 AM): adding a shift
+// never auto-removes the person's other shifts that day — their day
+// shifts stay. When the new shift conflicts with one the person
+// already has (overlap or <8h rest, same day or an adjacent date —
+// e.g. Night 7 PM–7 AM right after Day 7 AM–7 PM), the caller gets
+// the conflict back so the client can warn at the moment of adding
+// and she decides: add anyway, or fix the other shift first. At
+// draft time the reverse is D4 (the rotation skips that date).
+// Returns { reason, existing: { date, shiftTypeName } } or null.
+async function checkHandAddConflict(
+  companyId: string, userId: string, shiftTypeId: string, date: string
+): Promise<{ reason: string; existing: { date: string; shiftTypeName: string } } | null> {
+  const types = await getShiftTypeTimes(query, companyId);
+  const proposed = makeTimedShift(types, userId, { shiftTypeId, date });
+  const existing = (await loadTimedShifts(query, companyId, dayBefore(date), dayAfter(date)))
+    .filter((t: any) => t.userId === userId);
+  for (const ex of existing) {
+    const reason = findShiftConflict('This team member', [ex], proposed);
+    if (reason) {
+      return { reason, existing: { date: ex.date, shiftTypeName: ex.shiftTypeName } };
+    }
+  }
+  return null;
+}
 async function readPersonPattern(q: any, rotation: any, userId: string): Promise<RotationPattern> {
   const { rows } = await q(
     'SELECT cycle_day AS "cycleDay", shift_type_id AS "shiftTypeId" FROM rotation_assignments WHERE rotation_id = $1 AND user_id = $2 ORDER BY cycle_day',
@@ -4234,6 +4348,8 @@ router.post('/rotations/:id/change-from', requireRole('owner', 'scheduler'), asy
       await tx.query('UPDATE rotations SET end_date = $1 WHERE id = $2 AND company_id = $3', [endDate, rotId, companyId]);
       return insertPatternRotation(tx, companyId, req.session.userId!, userId, pattern, fromDate);
     });
+    // D6 badge: ending the old rotation changes the pattern.
+    await touchRotation(query, rotId);
     await auditRotationSettings({
       companyId, action: 'updated', rotationName: rot.name,
       description: `Changed ${personName}'s rotation from ${fromDate}: "${rot.name}" stops ${endDate}; "${pattern.name}" starts ${fromDate}`,
@@ -4339,6 +4455,8 @@ router.post('/rotations/swap-from', requireRole('owner', 'scheduler'), async (re
       }
       return out;
     });
+    // D6 badge: every ended rotation changed.
+    for (const c of changes) await touchRotation(query, c.endedRotationId);
     for (const c of changes) {
       await auditRotationSettings({
         companyId, action: 'updated', rotationName: c.patternName,
@@ -4424,6 +4542,129 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
     }
   } catch (err) {
     console.error('[schedule] apply rotation failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Draft a schedule from rotations (Deepika, 2026-11-13 — background
+// rotations). The old /apply shell, rewritten: it computes occurrences
+// via the shared generator (rotationEngine) and, in ONE transaction,
+// inserts stored DRAFT rows stamped with rotation_id + generation_id.
+// No notifications at generation. Audit-logged (source 'rotation').
+// Bulk endpoint — the approved mock picks MULTIPLE rotations at once
+// (Bulk Actions), so this takes rotationIds, not one :id.
+//
+// Flag-gated (Stage 1): refuses for companies still in `live` mode —
+// production stays live until the Stage 4 flip, on her explicit go.
+// The Stage 4 migration tool calls generateRotations directly.
+//
+// Body: { rotationIds: string[], from, to, mode?: 'keep'|'fresh',
+//         dryRun?: boolean }.
+//   dryRun: compute only, write nothing — the client calls it first;
+//     when existingDrafts > 0 or deletedCount > 0 it shows the D1
+//     choice dialog (with the clear notice) and re-calls with the
+//     picked mode. A clean range generates directly (mode 'fresh').
+//   mode 'keep': hand fixes + deletions stay; the rest refreshes.
+//   mode 'fresh': replace every still-draft row of the rotation in
+//     range, clear its exclusions there (deleted people return).
+//   Both modes NEVER touch published rows, and NEVER touch hand-added
+//   rows (rotation_id NULL) — a re-draft only replaces rotation-origin
+//   rows, because there is no rotation to replace a hand-added shift
+//   from (Nov 13, 11:59 PM).
+// ---------------------------------------------------------------------------
+router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const mode = await getScheduleMode(query, companyId);
+    if (mode !== 'generated') {
+      res.status(403).json({ error: 'Rotations are still live for this company — draft schedules after the schedule is switched to generated mode.' });
+      return;
+    }
+    const rotationIds = Array.isArray(req.body?.rotationIds)
+      ? [...new Set(req.body.rotationIds.filter((x: any) => typeof x === 'string'))] as string[]
+      : [];
+    const from = String(req.body?.from || '');
+    const to = String(req.body?.to || '');
+    const dryRun = req.body?.dryRun === true;
+    const genMode = req.body?.mode === 'keep' ? 'keep' : 'fresh';
+    if (!rotationIds.length) {
+      res.status(400).json({ error: 'Pick at least one rotation.' });
+      return;
+    }
+    // Department scoping: the scheduler's active department must be
+    // one of the rotations' departments (same rule as /apply).
+    const deptUnion: string[] = [];
+    for (const rid of rotationIds) {
+      for (const d of await rotationRelevantDepartments(rid)) {
+        if (!deptUnion.includes(d)) deptUnion.push(d);
+      }
+    }
+    if (!(await requireActiveDepartment(req, res, deptUnion))) return;
+    if (dryRun) {
+      const summary = await generateRotations(query as any, companyId, {
+        rotationIds, from, to, mode: genMode, dryRun: true, createdBy: req.session.userId!,
+      });
+      // createdRows is for the migration report (direct engine
+      // caller); the HTTP client only needs the counts.
+      const { createdRows: _cr, ...rest } = summary;
+      res.json({ ok: true, dryRun: true, ...rest });
+      return;
+    }
+    const summary = await withTransaction(async (tx) => {
+      const q: any = (text: string, params?: any[]) => tx.query(text, params);
+      return generateRotations(q, companyId, {
+        rotationIds, from, to, mode: genMode, createdBy: req.session.userId!,
+      });
+    });
+    // Audit entries are written AFTER the commit (auditLog uses the
+    // global query — writing inside the transaction would leave
+    // phantom rows on a rollback).
+    for (const e of summary.auditEntries || []) await auditLog(e);
+    const { createdRows: _cr2, auditEntries: _ae, ...rest2 } = summary;
+    res.json({ ok: true, ...rest2 });
+  } catch (err: any) {
+    console.error('[schedule] generate failed:', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/schedule-mode — the company's schedule mode
+// ('live' = today's drawing; 'generated' = stored rows only).
+router.get('/schedule-mode', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    res.json({ mode: await getScheduleMode(query, companyId) });
+  } catch (err) {
+    console.error('[schedule] get schedule mode failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// PUT /api/schedule/schedule-mode — flip the flag (owner only). The
+// Stage 4 flip, on Deepika's explicit go at a quiet evening; the
+// migration tool calls this after the comparison report. Flipping
+// back to 'live' resumes drawing (generated rows stay stored and
+// take manual precedence, exactly as occurrences did).
+router.put('/schedule-mode', requireRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const mode = String(req.body?.mode || '');
+    if (mode !== 'live' && mode !== 'generated') {
+      res.status(400).json({ error: "Mode must be 'live' or 'generated'." });
+      return;
+    }
+    await setScheduleMode(query, companyId, mode);
+    res.json({ mode });
+    auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings',
+      source: 'manual', changedBy: req.session.userId!,
+      description: `Schedule mode changed to ${mode}`,
+      details: { mode },
+    });
+  } catch (err) {
+    console.error('[schedule] put schedule mode failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -4558,6 +4799,20 @@ async function computePublishPlan(
   );
   const handmade = stored.filter((s: any) => !s.publishBatchId);
   const batchShifts = stored.filter((s: any) => s.publishBatchId);
+
+  // Background rotations (Deepika, 2026-11-13): in `generated` mode
+  // there is nothing to stamp from a drawing — the drafts ARE the
+  // schedule. The plan is just the flips: every stored draft row in
+  // scope (any provenance — generation, hand-made, or an old batch
+  // row toggled back to draft) flips to published. No adds, no
+  // removes, no rule-7 opens (generation reconciles those itself,
+  // per rotation, at draft time).
+  if (await isGeneratedMode(query, companyId)) {
+    const flips = stored.filter((s: any) =>
+      s.published === false && inScope(s.shiftTypeId) &&
+      (!userIds || userIds.has(s.userId)));
+    return { adds: [], removes: [], opens: [], closes: [], flips, batchPeople: new Set<string>(), openPeople: [], typeDepts };
+  }
 
   // The drawing runs against hand-made stored shifts only: a batch
   // shift must not suppress its own occurrence (it IS that
@@ -4832,6 +5087,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     const inScope = (t: string) =>
       publishTypeInScope(typeDepts, t, scope.depts, isOwner) && (!filters.typeIds || filters.typeIds.has(t));
     const today = await companyTodayStr(companyId);
+    const generatedMode = await isGeneratedMode(query, companyId);
     const batchId = crypto.randomUUID();
     const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
     const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
@@ -4891,13 +5147,20 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // published — re-validated like everything else (still a
       // draft, still hand-made, inside the range, in scope) and
       // ledgered to this batch so Undo flips back exactly its own.
+      // In generated mode the plan names EVERY stored draft in
+      // scope (any provenance — generation, hand-made, or an old
+      // batch row toggled back to draft), so the hand-made-only
+      // re-validation is dropped there.
       if (flipsIn.length) {
         const { rows: cand } = await tx.query(
-          `SELECT id, user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts
-           WHERE id = ANY($1::uuid[]) AND company_id = $2 AND published = false AND publish_batch_id IS NULL
+          `SELECT id, user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId",
+                  generation_id AS "generationId" FROM shifts
+           WHERE id = ANY($1::uuid[]) AND company_id = $2 AND published = false
+             ${generatedMode ? '' : 'AND publish_batch_id IS NULL'}
              AND date >= $3::date AND date <= $4::date`,
           [flipsIn, companyId, from, to]
         );
+        const flippedGenIds = new Set<string>();
         for (const f of cand) {
           if (!inScope(f.shiftTypeId)) continue;
           if (filters.userIds && !filters.userIds.has(f.userId)) continue;
@@ -4908,7 +5171,18 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
             [batchId, companyId, f.id]
           );
           flipped++;
+          if (f.generationId) flippedGenIds.add(f.generationId);
           bump(addedByUser, f.userId, f.date, f.shiftTypeId);
+        }
+        // Background rotations: stamp the generations this publish
+        // touched (first publish only — published_at is when the
+        // generation's drafts first became real shifts).
+        if (flippedGenIds.size) {
+          await tx.query(
+            `UPDATE rotation_generations SET published_at = COALESCE(published_at, now())
+             WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+            [companyId, [...flippedGenIds]]
+          );
         }
       }
       // Opens (rule 7): aggregate per date+type into extra_open_slots
@@ -5331,6 +5605,8 @@ router.patch('/rotations/:id', requireRole('owner', 'scheduler'), async (req: Re
       res.status(404).json({ error: 'Rotation not found.' });
       return;
     }
+    // D6 badge: toggling a rotation changes the pattern.
+    await touchRotation(query, req.params.id);
     const { rows: rnRows } = await query(
       'SELECT name FROM rotations WHERE id = $1 AND company_id = $2', [req.params.id, companyId]);
     const tglName = rnRows.length ? rnRows[0].name : 'Rotation';
@@ -5433,6 +5709,8 @@ router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (r
        VALUES ($1, $2, $3, $4, $5) RETURNING id, start_date::text AS "startDate", end_date::text AS "endDate", reason`,
       [companyId, req.params.id, startDate, endDate, reason || null]
     );
+    // D6 badge: a pause changes what the pattern generates.
+    await touchRotation(query, req.params.id);
     res.json({ ok: true, pause: rows[0] });
   } catch (err) {
     console.error('[schedule] add pause failed:', err);
@@ -5454,6 +5732,8 @@ router.delete('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'
       res.status(404).json({ error: 'Pause not found.' });
       return;
     }
+    // D6 badge: removing a pause changes what the pattern generates.
+    await touchRotation(query, req.params.id);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] delete pause failed:', err);
@@ -5481,6 +5761,8 @@ router.put('/rotations/:id/pauses/:pauseId', requireRole('owner', 'scheduler'), 
       res.status(404).json({ error: 'Pause not found.' });
       return;
     }
+    // D6 badge: changing a pause changes what the pattern generates.
+    await touchRotation(query, req.params.id);
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] update pause failed:', err);
@@ -10978,7 +11260,7 @@ async function manualShift(companyId: string, shiftId: string): Promise<any | nu
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(shiftId)) return null;
   const { rows } = await query(
     `SELECT s.id, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId",
-            s.date::text AS date, st.name AS "shiftTypeName"
+            s.date::text AS date, st.name AS "shiftTypeName", s.published
      FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
      WHERE s.id = $1 AND s.company_id = $2`,
     [shiftId, companyId]
@@ -11004,6 +11286,12 @@ async function materializeRotationOccurrence(
   rotId: string,
   opts?: { published?: boolean; provenance?: boolean; createdBy?: string }
 ): Promise<any | null> {
+  // Background rotations (Deepika, 2026-11-13): in generated mode
+  // there are no occurrences to materialize — every shift is a
+  // stored row already, and a rot- id can only be stale. (The
+  // getShiftsForRange call below would return null anyway, since it
+  // is stored-only in generated mode; this is the explicit guard.)
+  if (await isGeneratedMode(query, companyId)) return null;
   const date = rotId.slice(-10);
   if (!isValidDate(date)) return null;
   const all = await getShiftsForRange(query, companyId, date, date);
@@ -11206,6 +11494,14 @@ router.post('/shifts/:id/request-pickup', requireRole('owner', 'scheduler', 'emp
     const isPrivileged = role === 'owner' || role === 'scheduler';
     if (shift.userId !== me && !isPrivileged) {
       res.status(403).json({ error: 'You can only request pickup for your own shifts.' });
+      return;
+    }
+    // D5 (background rotations, Deepika 2026-11-13): cover is allowed
+    // on a stored shift once it is PUBLISHED — a draft is not a real
+    // shift yet, so nobody can pick it up. Applies in both modes;
+    // live-mode rot- occurrences are still refused above (no row).
+    if (!shift.published) {
+      res.status(400).json({ error: 'That shift is still a draft — publish it first, then ask for cover.' });
       return;
     }
     if (targetUserId) {
@@ -13955,6 +14251,15 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        ORDER BY st.name, u.last_name, u.first_name`, [companyId, date]);
     const manualKeys = new Set(manualRows.map((r: any) => r.user_id + '|' + r.shift_type_id));
 
+    // Background rotations (Deepika, 2026-11-13): in `generated`
+    // mode this is a stored-only query — no cycle-math loop (there
+    // are no occurrences to draw), no stored-specials suppression
+    // pass, and no pause-hiding of stored rows (a stored shift is
+    // real; the live pause-hiding was a draw-bookkeeping quirk the
+    // grid never shared).
+    if (await isGeneratedMode(query, companyId)) {
+      for (const r of manualRows) addShift(r, r.shift_type_id, r.shift_name, r.department_id, r.department_name);
+    } else {
     // Published group-origin stored shifts suppress clashing drawn
     // per-person occurrences here too (same fix as the grid, Deepika
     // 2026-11-09): this handler never draws group occurrences, so a
@@ -14047,6 +14352,7 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
       if (userPaused.has(r.user_id)) continue;
       addShift(r, r.shift_type_id, r.shift_name, r.department_id, r.department_name);
     }
+    } // end live-mode branch
 
     // 3) Filters + department ranking.
     let candidates = Array.from(byUser.values());

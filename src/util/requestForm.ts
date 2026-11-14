@@ -771,13 +771,22 @@ export async function processFormRequest(q: QueryFn, row: any): Promise<{ status
     const shiftIds: string[] = [];
     for (const c of oc.covers) {
       const { rows: srows } = await q(
-        'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND shift_type_id = $3 AND date = $4 LIMIT 1',
+        'SELECT id, published FROM shifts WHERE company_id = $1 AND user_id = $2 AND shift_type_id = $3 AND date = $4 LIMIT 1',
         [row.company_id, user.id, c.shiftTypeId, c.date]);
       if (!srows.length) {
         await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
         return { status: 'failed', outcome: 'invalid', message: multi
           ? `Your ${c.shiftTypeName} shift on ${c.date} comes from a rotation, so it cannot be posted for cover — nothing was posted. Please ask a scheduler to arrange cover for it.`
           : 'That shift comes from a rotation, so it cannot be posted for cover — please ask a scheduler to arrange cover for it.' };
+      }
+      // D5 (background rotations, Deepika 2026-11-13): cover is
+      // allowed on a stored shift once it is PUBLISHED — a draft
+      // row cannot be posted for cover in either mode.
+      if (srows[0].published === false) {
+        await q("UPDATE form_requests SET status = 'failed', outcome = 'invalid', processed_at = now() WHERE id = $1", [row.id]);
+        return { status: 'failed', outcome: 'invalid', message: multi
+          ? `Your ${c.shiftTypeName} shift on ${c.date} is still a draft — it needs to be published before cover can be posted for it. Nothing was posted.`
+          : 'That shift is still a draft — it needs to be published before cover can be posted for it.' };
       }
       const { rows: existingReq } = await q(
         "SELECT id FROM shift_requests WHERE company_id = $1 AND shift_id = $2 AND status = 'pending' LIMIT 1",

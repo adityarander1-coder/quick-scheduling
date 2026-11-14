@@ -1,6 +1,7 @@
 // util/shiftRange.ts — shared logic to get all visible shifts (manual + rotation-generated)
 // for a date range. Used by the /shifts API endpoint and email question answering.
 import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
+import { isGeneratedMode } from './scheduleMode.js';
 
 export interface ShiftEntry {
   id: string;
@@ -54,6 +55,36 @@ export async function getShiftsForRange(
      WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3`,
     [companyId, from, to]
   );
+  // Background rotations (Deepika, 2026-11-13): in `generated` mode
+  // the schedule shows stored rows ONLY — no drawing. Every consumer
+  // of this helper flips with it: the calendar feed, Short cover,
+  // gap offers, availability gaps, day-shifts, the email question
+  // path, the conflict engine, the cross-branch on-call strip, the
+  // plan gate, and the planner context. The mode is per-company, so
+  // cross-branch reads use the OTHER company's mode, correctly.
+  // Stored rows are never hidden by pauses here (a stored shift is
+  // real; the live-draw pause-hiding was a draw-bookkeeping quirk
+  // the grid never shared).
+  if (await isGeneratedMode(query, companyId)) {
+    const visibleManual: ShiftEntry[] = manualRows
+      .filter((s: any) => !employeeView || s.published)
+      .map((s: any) => ({
+        id: `manual-${s.date}-${s.userId}`,
+        date: s.date,
+        personName: s.personName,
+        shiftTypeName: s.shiftTypeName,
+        published: s.published,
+        isRotation: false,
+        userId: s.userId,
+        shiftTypeId: s.shiftTypeId,
+      }));
+    return visibleManual.sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.personName.localeCompare(b.personName);
+    });
+  }
+
+  // Active rotations
 
   // Active rotations
   const { rows: rotations } = await query(

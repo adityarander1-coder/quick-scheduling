@@ -2618,6 +2618,8 @@
           days: {},
           comments: [],
           staffingTargets: [],
+          scheduleMode: 'live',
+          notDraftedDates: [],
           highlights: {},
           canEdit: false,
           assignDate: null,
@@ -2901,7 +2903,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.notDraftedDates = sR.data.notDraftedDates || []; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3222,9 +3224,23 @@
           });
           return n;
         }
+        // Background rotations: a date is undrafted when the company
+        // is in generated mode and no generation covers it (managers
+        // only — the server sends employees an empty list).
+        function isNotDrafted(dateStr) {
+          return sched.scheduleMode === 'generated' && (sched.notDraftedDates || []).indexOf(dateStr) !== -1;
+        }
+        function notDraftedTag(dateStr) {
+          if (!sched.canEdit || !isNotDrafted(dateStr)) return '';
+          return '<div style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-top:2px">Not drafted yet</div>';
+        }
         function openCountFor(dateStr, shiftTypeId) {
           if (isShiftClosed(dateStr, shiftTypeId)) return 0;
-          var target = targetCountFor(dateStr, shiftTypeId);
+          // Background rotations (Deepika, 2026-11-13; decision N2):
+          // on a date nothing has been drafted for yet, the staffing
+          // target contributes 0 — only manually added extra slots
+          // count toward OPEN rows. No phantom OPEN rows.
+          var target = isNotDrafted(dateStr) ? 0 : targetCountFor(dateStr, shiftTypeId);
           var extra = 0;
           (sched.extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && e.shiftTypeId === shiftTypeId) extra += (e.count || 0);
@@ -3308,7 +3324,7 @@
           var html = '<article class="day-row' + (isToday ? ' is-today' : '') + '" data-date="' + dateStr + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + dateStr + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + notDraftedTag(dateStr) + '</div>';
           html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
@@ -3997,7 +4013,7 @@
           var html = '<article class="day-row' + (ds === fmtDate(new Date()) ? ' is-today' : '') + '" data-date="' + ds + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + ds + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div></div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + notDraftedTag(ds) + '</div>';
           html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
@@ -4338,13 +4354,23 @@
                         shiftTypeId: s.shiftTypeId
                       })
                     }).then(function () {
-                      return api('/api/schedule/shifts', {
+                      var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+                      api('/api/schedule/shifts', {
                         method: 'POST',
-                        body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
+                        body: JSON.stringify(repBody)
+                      }).then(function (r) {
+                        if (r && r.ok) { pageSuccess('Shift replaced.'); refreshShifts(); return; }
+                        if (r.status === 409 && r.data && r.data.conflict) {
+                          showConflictDialog(r.data.conflict, function () {
+                            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { confirmConflict: true })) }).then(function (r2) {
+                              if (r2 && r2.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
+                              else pageError('Could not replace shift.');
+                            });
+                          });
+                          return;
+                        }
+                        pageError('Could not replace shift.');
                       });
-                    }).then(function (r) {
-                      if (r && r.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
-                      else pageError('Could not replace shift.');
                     });
                   } else {
                     replaceShift(s, newUserId);
@@ -4531,13 +4557,23 @@
               method: 'POST',
               body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
             }).then(function () {
-              return api('/api/schedule/shifts', {
+              var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+              api('/api/schedule/shifts', {
                 method: 'POST',
-                body: JSON.stringify({ date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId })
+                body: JSON.stringify(repBody)
+              }).then(function (r) {
+                if (r && r.ok) { refreshShifts(); return; }
+                if (r.status === 409 && r.data && r.data.conflict) {
+                  showConflictDialog(r.data.conflict, function () {
+                    api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { confirmConflict: true })) }).then(function (r2) {
+                      if (r2 && r2.ok) { refreshShifts(); }
+                      else { showInfo('Could not replace shift.'); }
+                    });
+                  });
+                  return;
+                }
+                showInfo('Could not replace shift.');
               });
-            }).then(function (r) {
-              if (r && r.ok) { refreshShifts(); }
-              else { showInfo('Could not replace shift.'); }
             }).catch(function() { showInfo('Could not replace shift.'); });
           } else {
             replaceShift(s, newUserId);
@@ -5098,6 +5134,25 @@
         function showInfo(msg) {
           showDialog('Notice', '<p>' + esc(msg) + '</p>', [{ label: 'OK', primary: true }]);
         }
+        // Hand-add clash warning (Deepika, Nov 14, 12:01 AM): the
+        // server answers a conflicting add with 409 + the shift it
+        // clashes with. She decides — add anyway (retry with
+        // confirmConflict) or fix the other shift first (Cancel).
+        function showConflictDialog(conflict, onAddAnyway, onCancel) {
+          var ex = (conflict && conflict.existing) || {};
+          var reason = (conflict && conflict.reason) || '';
+          // The server's reason already ends in a period; strip it so the
+          // sentence below doesn't render "..".
+          reason = reason.replace(/\.+$/, '');
+          var msg = 'This person already has ' + (ex.shiftTypeName || 'a shift') +
+            (ex.date ? ' on ' + fmtLong(ex.date) : '') +
+            (reason ? ' — ' + reason : '') +
+            '. Add anyway, or fix the other shift first.';
+          showDialog('Already scheduled', '<p>' + esc(msg) + '</p>', [
+            { label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } },
+            { label: 'Add anyway', primary: true, onClick: onAddAnyway }
+          ]);
+        }
         // Remove a single open slot — works in every view (delegated).
         document.addEventListener('click', function (e) {
           var x = e.target.closest ? e.target.closest('.open-slot-x') : null;
@@ -5389,8 +5444,17 @@
             return api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(payload) });
           }).then(function (r) {
             if (!r) return;
-            if (r.ok) refreshShifts();
-            else { paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
+            if (r.ok) { refreshShifts(); return; }
+            if (r.status === 409 && r.data && r.data.conflict) {
+              showConflictDialog(r.data.conflict, function () {
+                api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, payload, { confirmConflict: true })) }).then(function (r2) {
+                  if (r2.ok) refreshShifts();
+                  else { paMessage((r2.data && r2.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
+                });
+              });
+              return;
+            }
+            paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts();
           }).catch(function () {
             paMessage('Couldn\u2019t replace this team member. Try again.');
             refreshShifts();
@@ -6608,7 +6672,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.notDraftedDates = sR.data.notDraftedDates || []; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -6639,12 +6703,17 @@
               sched.shifts = fresh;
               sched.closedShifts = sR.data.closedShifts || [];
               sched.extraSlots = sR.data.extraSlots || [];
+              sched.scheduleMode = sR.data.scheduleMode || 'live';
+              sched.notDraftedDates = sR.data.notDraftedDates || [];
               renderView();
               pageSuccess('Schedule updated just now.');
             }
           }).catch(function () { qsSchedPollBusy = false; });
         }
         window.qsPollSchedule = qsPollSchedule;
+        // Background rotations: Bulk Actions re-drafts land here so the
+        // grid can refresh without waiting for a tab switch.
+        window.qsReloadScheduleGrid = loadAll;
         setInterval(qsPollSchedule, 30000);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) qsPollSchedule(); });
 
@@ -6748,16 +6817,23 @@
                     loadShifts();
                     return;
                   }
+                  var cBody = {
+                    userId: $('sched-assign-user').value,
+                    shiftTypeId: $('sched-assign-shifttype').value,
+                    date: convDates[idx],
+                    notes: notes,
+                    published: wantPublished,
+                  };
                   api('/api/schedule/shifts', {
                     method: 'POST',
-                    body: JSON.stringify({
-                      userId: $('sched-assign-user').value,
-                      shiftTypeId: $('sched-assign-shifttype').value,
-                      date: convDates[idx],
-                      notes: notes,
-                      published: wantPublished,
-                    })
+                    body: JSON.stringify(cBody)
                   }).then(function (r2) {
+                    if (r2.status === 409 && r2.data && r2.data.conflict) {
+                      showConflictDialog(r2.data.conflict, function () {
+                        api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, cBody, { confirmConflict: true })) }).then(function () { createNext(idx + 1); }).catch(function () { createNext(idx + 1); });
+                      }, function () { createNext(idx + 1); });
+                      return;
+                    }
                     // Continue even if one fails (e.g. duplicate).
                     createNext(idx + 1);
                   }).catch(function () { createNext(idx + 1); });
@@ -6808,7 +6884,13 @@
               notes: notes,
               published: wantPublished,
             };
-            api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            var handleBulk = function (r) {
+              if (r.status === 409 && r.data && r.data.conflict) {
+                showConflictDialog(r.data.conflict, function () {
+                  api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(Object.assign({}, body, { confirmConflict: true })) }).then(handleBulk);
+                }, function () { onDone(); });
+                return;
+              }
               if (r.ok) {
                 hide($('sched-assign-modal'));
                 pageSuccess('Assigned ' + (r.data.created || 0) + ' shifts.' + (r.data.skipped ? ' (' + r.data.skipped + ' already existed.)' : ''));
@@ -6850,7 +6932,8 @@
                 show(el);
               }
               onDone();
-            });
+            };
+            api('/api/schedule/shifts/bulk', { method: 'POST', body: JSON.stringify(body) }).then(handleBulk);
           } else {
             var body = {
               userId: $('sched-assign-user').value,
@@ -6859,7 +6942,13 @@
               notes: notes,
               published: wantPublished,
             };
-            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            var handleSingle = function (r) {
+              if (r.status === 409 && r.data && r.data.conflict) {
+                showConflictDialog(r.data.conflict, function () {
+                  api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, body, { confirmConflict: true })) }).then(handleSingle);
+                }, function () { onDone(); });
+                return;
+              }
               if (r.ok) {
                 hide($('sched-assign-modal'));
                 // Optimistic: show the shift instantly, then sync the real ID in background.
@@ -6892,7 +6981,8 @@
                 show(el);
               }
               onDone();
-            });
+            };
+            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(handleSingle);
           }
         }
         $('sched-assign-range-toggle').addEventListener('change', function () {
@@ -9758,6 +9848,7 @@ window.qsNpOfferSend = function (btn) {
             <div id="rcopy-modal" class="modal-backdrop hidden">
               <div class="modal">
                 <h3>Copy a rotation to people</h3>
+                <p id="rcopy-generated-note" class="hint hidden" style="margin:0 0 0.8rem">The copied person gets their shifts when this pattern is next drafted (Draft schedule from rotation in Bulk Actions).</p>
                 <div id="rcopy-error" class="alert alert-error hidden"></div>
                 <div class="form-row">
                   <label>Copy from — person &amp; pattern</label>
@@ -10627,6 +10718,12 @@ window.qsNpOfferSend = function (btn) {
                 updateRcopyInvertGate();
                 renderRcopyPeople();
                 updateRcopyConfirm();
+                // Background rotations: in generated mode the copied
+                // person gets shifts only at the next draft.
+                api('/api/schedule/schedule-mode').then(function (mr) {
+                  var note = $('rcopy-generated-note');
+                  if (note) note.classList.toggle('hidden', !(mr.ok && mr.data && mr.data.mode === 'generated'));
+                }).catch(function () {});
                 show($('rcopy-modal'));
               }
               $('rot-copy-open').addEventListener('click', function () { openRcopy(false); });
@@ -15962,6 +16059,10 @@ window.qsNpOfferSend = function (btn) {
         #tab-bulk .bulk-band #bulk-slot-options label { color: #fff; }
         #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
         #tab-bulk #bulk-members > label:nth-child(even) { background: #e8edee; border-radius: 4px; }
+        /* Draft schedule from rotation: picker checkboxes must stay
+           checkbox-sized — the band's phone CSS makes band inputs
+           width:100%, which would stretch them full-width. */
+        #bulk-draft-panel input[type="checkbox"] { width: auto !important; flex: none; }
         @media (max-width: 700px) {
           #tab-bulk .bulk-band .bulk-fld { flex: 1 1 100%; }
           #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { width: 100%; }
@@ -16020,6 +16121,30 @@ window.qsNpOfferSend = function (btn) {
           </div>
         </div>
         <button type="button" id="bulk-run" class="btn">Run</button>
+      </div>
+      <!-- Draft schedule from rotation (background rotations, Deepika
+           2026-11-13). Shown only when the Action is
+           "Draft schedule from rotation", which itself only exists
+           while the company is in generated mode. -->
+      <div id="bulk-draft-panel" class="hidden" style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:1rem">
+        <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start">
+          <div style="flex:1 1 260px;min-width:220px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Rotations</label>
+            <div id="bulk-draft-rots" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
+          </div>
+          <div>
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Period</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="4w">Next 4 weeks</button>
+              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="3m">Next 3 months</button>
+              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="custom">Custom</button>
+            </div>
+            <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">Custom uses the From / To dates above.</p>
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <button type="button" id="bulk-draft-run" class="btn">Draft schedule</button>
+        </div>
       </div>
       <div class="card">
         <h2>Bulk Actions</h2>
@@ -16162,17 +16287,194 @@ window.qsNpOfferSend = function (btn) {
           var a = $('bulk-action').value;
           var isSlotAction = (a === 'open-slots' || a === 'close-shifts');
           var isPublish = a === 'publish';
+          var isDraft = a === 'draft-schedule';
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
-          if (mw) mw.style.display = isSlotAction ? 'none' : '';
+          if (mw) mw.style.display = (isSlotAction || isDraft) ? 'none' : '';
           var fw = $('bulk-shifttype-filter-wrap');
-          if (fw) fw.style.display = (isSlotAction || isPublish) ? 'none' : '';
+          if (fw) fw.style.display = (isSlotAction || isPublish || isDraft) ? 'none' : '';
           var po = $('bulk-pub-opts');
           if (po) po.style.display = isPublish ? 'flex' : 'none';
           var run = $('bulk-run');
-          if (run) run.textContent = isPublish ? 'Preview publish' : 'Run';
+          if (run) {
+            run.textContent = isPublish ? 'Preview publish' : 'Run';
+            // The draft panel has its own "Draft schedule" button.
+            run.style.display = isDraft ? 'none' : '';
+          }
+          var dp = $('bulk-draft-panel');
+          if (dp) {
+            dp.classList.toggle('hidden', !isDraft);
+            if (isDraft) {
+              loadDraftRotations();
+              if (!draftPanelInit) { draftPanelInit = true; setDraftPreset('4w'); }
+            }
+          }
           if (!isPublish) resetBulkPublishPreview();
+        }
+
+        // ---- Draft schedule from rotation (background rotations,
+        // Deepika 2026-11-13) ----
+        // The action exists ONLY while the company is in generated
+        // mode. In live mode the option is never added, so the whole
+        // flow stays hidden and inert.
+        var bulkScheduleMode = 'live';
+        var draftPanelInit = false;
+        var draftPreset = '4w';
+        function loadBulkScheduleMode() {
+          api('/api/schedule/schedule-mode').then(function (r) {
+            bulkScheduleMode = (r.ok && r.data && r.data.mode) || 'live';
+            syncBulkDraftOption();
+          }).catch(function () { bulkScheduleMode = 'live'; syncBulkDraftOption(); });
+        }
+        function syncBulkDraftOption() {
+          var sel = $('bulk-action');
+          if (!sel) return;
+          var opt = sel.querySelector('option[value="draft-schedule"]');
+          if (bulkScheduleMode === 'generated') {
+            if (!opt) {
+              opt = document.createElement('option');
+              opt.value = 'draft-schedule';
+              opt.textContent = 'Draft schedule from rotation';
+              sel.appendChild(opt);
+            }
+          } else if (opt) {
+            opt.remove();
+            if (sel.value === 'draft-schedule') sel.value = 'publish';
+            var dp = $('bulk-draft-panel');
+            if (dp) dp.classList.add('hidden');
+          }
+          updateBulkSlotVisibility();
+        }
+        function draftFmt(d) {
+          return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        }
+        function draftAddDays(dateStr, n) {
+          var d = new Date(dateStr + 'T12:00:00');
+          d.setDate(d.getDate() + n);
+          return draftFmt(d);
+        }
+        function draftAddMonths(dateStr, n) {
+          var d = new Date(dateStr + 'T12:00:00');
+          var day = d.getDate();
+          d.setDate(1);
+          d.setMonth(d.getMonth() + n);
+          var last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+          d.setDate(Math.min(day, last));
+          return draftFmt(d);
+        }
+        function setDraftPreset(preset) {
+          draftPreset = preset;
+          document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
+            var on = b.getAttribute('data-preset') === preset;
+            b.classList.toggle('btn', on);
+            b.classList.toggle('btn-secondary', !on);
+          });
+          if (preset === 'custom') return;
+          var today = draftFmt(new Date());
+          $('bulk-from').value = today;
+          $('bulk-to').value = preset === '3m' ? draftAddMonths(today, 3) : draftAddDays(today, 27);
+        }
+        function loadDraftRotations() {
+          var box = $('bulk-draft-rots');
+          // Keep the current list on screen while reloading: blanking
+          // it to "Loading…" would eat a re-draft tap made in that
+          // split second ("Tick at least one rotation" with the boxes
+          // ticked a moment before).
+          var hadList = !!(box && box.querySelector('.bulk-draft-rot-cb'));
+          if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading rotations…</p>';
+          api('/api/schedule/rotations').then(function (r) {
+            if (!r.ok || !box) {
+              if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load rotations.</p>';
+              return;
+            }
+            renderDraftRotations(r.data.rotations || []);
+          }).catch(function () {
+            if (box && !hadList) box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load rotations.</p>';
+          });
+        }
+        function renderDraftRotations(rots) {
+          var box = $('bulk-draft-rots');
+          if (!box) return;
+          var active = (rots || []).filter(function (r) { return r.isActive; });
+          if (!active.length) {
+            box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No active rotations.</p>';
+            return;
+          }
+          box.innerHTML = active.map(function (r) {
+            var note = r.changedSinceLastGeneration
+              ? '<div style="font-size:0.8rem;color:#92400e;margin:1px 0 2px 22px">Pattern changed since last generation</div>'
+              : '';
+            return '<label style="display:block;font-size:0.9rem;padding:2px 4px;cursor:pointer;color:#222">' +
+              '<input type="checkbox" class="bulk-draft-rot-cb" value="' + r.id + '" checked style="margin-right:6px">' + esc(r.name || 'Rotation') + '</label>' + note;
+          }).join('');
+        }
+        function selectedDraftRotationIds() {
+          var ids = [];
+          document.querySelectorAll('.bulk-draft-rot-cb:checked').forEach(function (cb) { ids.push(cb.value); });
+          return ids;
+        }
+        function runDraftSchedule() {
+          var ids = selectedDraftRotationIds();
+          var from = $('bulk-from').value, to = $('bulk-to').value;
+          if (!ids.length) { showResult('Tick at least one rotation.', true); return; }
+          if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
+          var btn = $('bulk-draft-run');
+          btn.disabled = true;
+          showResult('Checking what would change…', false);
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: ids, from: from, to: to, dryRun: true }) }).then(function (r) {
+            if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
+            var existing = (r.data && r.data.existingDrafts) || 0;
+            var deleted = (r.data && r.data.deletedCount) || 0;
+            if (!existing && !deleted) { doGenerate('fresh', ids, from, to); return; }
+            // D1 (Deepika, 2026-11-13): re-drafting asks at the moment,
+            // ONE prompt with two options and the plain notice for each,
+            // BEFORE she taps either.
+            btn.disabled = false;
+            if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
+            window.qsShowDialog('Draft again for these dates?',
+              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted.</p>' +
+              '<p><strong>Keep the changes I made and redraft</strong><br>Your hand fixes stay, and anyone you deleted stays deleted. Everything else refreshes from the rotation as it is now.</p>' +
+              '<p><strong>Re-draft from the rotations</strong><br>Everything is replaced from the rotation as it is now. Your hand fixes go away, and anyone you deleted comes back.</p>',
+              [
+                { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep', ids, from, to); } },
+                { label: 'Re-draft from the rotations', onClick: function () { doGenerate('fresh', ids, from, to); } },
+                { label: 'Cancel' }
+              ]);
+          }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+        }
+        function doGenerate(mode, ids, from, to) {
+          var btn = $('bulk-draft-run');
+          btn.disabled = true;
+          showResult('Drafting…', false);
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: ids, from: from, to: to, mode: mode }) }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
+            showDraftResult(r.data || {});
+            loadDraftRotations();
+            if (window.qsReloadScheduleGrid) { try { window.qsReloadScheduleGrid(); } catch (e) {} }
+          }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+        }
+        function showDraftResult(d) {
+          var sk = d.skipped || {};
+          var total = (sk.vacation || 0) + (sk.alreadyHasShift || 0) + (sk.ended || 0) + (sk.excluded || 0) + (sk.past || 0);
+          var parts = [
+            'vacation ' + (sk.vacation || 0),
+            'already has a shift ' + (sk.alreadyHasShift || 0),
+            'ended ' + (sk.ended || 0),
+            'previously deleted ' + (sk.excluded || 0)
+          ];
+          if (sk.past) parts.push('in the past ' + sk.past);
+          var html = '<strong>Draft ready — ' + (d.created || 0) + ' draft shifts created · Skipped ' + total + ' (' + parts.join(', ') + ')</strong><br>' +
+            'Review them on the Schedule tab — they\'re drafts until you publish. Nothing was sent to anyone.';
+          if (d.replacedDrafts) html += '<br>Replaced ' + d.replacedDrafts + ' draft shifts.';
+          if (d.keptDrafts) html += '<br>Kept ' + d.keptDrafts + ' of your hand-fixed drafts.';
+          if (d.openedSlots) html += '<br>Opened ' + d.openedSlots + ' slot' + (d.openedSlots === 1 ? '' : 's') + ' for cover.';
+          var el = $('bulk-result');
+          el.innerHTML = html;
+          el.classList.remove('hidden');
+          el.classList.remove('alert-error');
+          el.classList.add('alert-success');
         }
 
         // ---- Publish (unified door, Deepika 2026-11-10) ----
@@ -16344,6 +16646,7 @@ window.qsNpOfferSend = function (btn) {
           var from = $('bulk-from').value;
           var to = $('bulk-to').value;
           var action = $('bulk-action').value;
+          if (action === 'draft-schedule') return; // the draft panel has its own button.
           if (!from || !to || from > to) {
             showResult('Pick a valid date range.', true);
             return;
@@ -16422,8 +16725,8 @@ window.qsNpOfferSend = function (btn) {
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-select-all').addEventListener('change', function () {
           var on = this.checked;
@@ -16432,6 +16735,10 @@ window.qsNpOfferSend = function (btn) {
         $('bulk-members').addEventListener('change', syncBulkSelectAll);
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
+          b.addEventListener('click', function () { setDraftPreset(b.getAttribute('data-preset')); });
+        });
+        $('bulk-draft-run').addEventListener('click', runDraftSchedule);
         $('bulk-pub-confirm').addEventListener('click', bulkPubConfirm);
         $('bulk-pub-dept').addEventListener('change', function () { renderBulkPubTypes(); resetBulkPublishPreview(); });
         $('bulk-pub-types').addEventListener('change', resetBulkPublishPreview);
@@ -17288,6 +17595,8 @@ window.qsNpOfferSend = function (btn) {
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
+        var msScheduleMode = 'live'; // background rotations: 'live' | 'generated'
+        var msNotDraftedDates = []; // managers only; the server sends employees []
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
         var msView = 'month';
@@ -17559,6 +17868,8 @@ window.qsNpOfferSend = function (btn) {
               shifts = rs[3].data.shifts || [];
               extraSlots = rs[3].data.extraSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
+              msScheduleMode = rs[3].data.scheduleMode || 'live';
+              msNotDraftedDates = rs[3].data.notDraftedDates || [];
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
             if (rs[5] && rs[5].ok) dashEvents = rs[5].data.sessions || [];
@@ -17837,7 +18148,10 @@ window.qsNpOfferSend = function (btn) {
         // (mirrors the admin Schedule view: target + extra - filled).
         function openCountFor(dateStr, shiftTypeId) {
           if (isShiftClosed(dateStr, shiftTypeId)) return 0;
-          var target = targetCountFor(dateStr, shiftTypeId);
+          // Background rotations (decision N2, same rule as the admin
+          // grid): on an undrafted date the staffing target
+          // contributes 0 — only manually added extra slots count.
+          var target = (msScheduleMode === 'generated' && msNotDraftedDates.indexOf(dateStr) !== -1) ? 0 : targetCountFor(dateStr, shiftTypeId);
           var extra = 0;
           (extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) extra += (e.count || 0);
@@ -17893,10 +18207,13 @@ window.qsNpOfferSend = function (btn) {
           if (isMine(s)) {
             // Swap works for rotation shifts too (server materializes the
             // occurrence); cover stays manual-only, so its button hides on
-            // rotation shifts instead of silently doing nothing.
+            // rotation shifts instead of silently doing nothing. In
+            // generated mode every row is stored, so the button is gated
+            // on published too: draft rows get no cover button, in
+            // either mode. Live mode keeps the rot- exclusion.
             html += '<div style="display:flex;gap:0.5rem;margin:-2px 0 8px;flex-wrap:wrap">' +
               '<button type="button" class="btn-secondary" data-ms-swap="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Swap</button>' +
-              (String(s.id).indexOf('rot-') !== 0 ? '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Ask for cover</button>' : '') +
+              (s.published !== false && String(s.id).indexOf('rot-') !== 0 ? '<button type="button" class="btn-secondary" data-ms-cover="' + s.id + '" style="padding:0.35rem 0.8rem;font-size:0.85rem">Ask for cover</button>' : '') +
               '</div>';
           }
           return html;
@@ -18533,6 +18850,8 @@ window.qsNpOfferSend = function (btn) {
           return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
             if (sR.ok) {
               shifts = sR.data.shifts || [];
+              msScheduleMode = sR.data.scheduleMode || 'live';
+              msNotDraftedDates = sR.data.notDraftedDates || [];
               renderView();
               requestAnimationFrame(function () { window.scrollTo(0, y); });
             }
@@ -18562,6 +18881,8 @@ window.qsNpOfferSend = function (btn) {
             var fresh = sR.data.shifts || [];
             if (msShiftFingerprint(fresh) !== msShiftFingerprint(shifts)) {
               shifts = fresh;
+              msScheduleMode = sR.data.scheduleMode || 'live';
+              msNotDraftedDates = sR.data.notDraftedDates || [];
               renderView();
               msSuccess('Schedule updated just now.');
             }
