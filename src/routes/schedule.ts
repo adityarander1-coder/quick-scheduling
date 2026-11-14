@@ -8489,19 +8489,31 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
     const from = String(req.query.from || '');
     const to = String(req.query.to || '');
     const wantCalendar = String(req.query.category || '') === 'calendar';
-    let where = '';
-    const params: any[] = [companyId];
-    if (isValidDate(date)) {
-      params.push(date);
-      where = ` AND a.date = $${params.length}`;
-    } else if (isValidDate(from) && isValidDate(to) && from <= to) {
-      params.push(from, to);
-      where = ` AND a.date >= $${params.length - 1} AND a.date <= $${params.length}`;
-    } else {
+    // The picker selects SCHEDULE dates (Deepika, 2026-11-13): the
+    // report for a picked date shows the changes that put the people
+    // on that day's schedule. So the range filters on schedule dates,
+    // never on when the change was made. The old filter used the
+    // overloaded `date` column — the schedule date for schedule rows
+    // but the UTC made-date for settings rows — so a Nov 13–14 range
+    // returned Nov 12-made rows and a Nov 14 single date returned
+    // nothing, while Nov 14 itself was fully staffed.
+    const rangeFrom = isValidDate(date) ? date : (isValidDate(from) && isValidDate(to) && from <= to ? from : '');
+    const rangeTo = isValidDate(date) ? date : (isValidDate(from) && isValidDate(to) && from <= to ? to : '');
+    if (!rangeFrom) {
       res.status(400).json({ error: 'Provide a date or a from/to range.' });
       return;
     }
-    where += wantCalendar ? ` AND a.category = 'calendar'` : ` AND COALESCE(a.category, 'schedule') <> 'calendar'`;
+    let where = '';
+    const params: any[] = [companyId, rangeFrom, rangeTo];
+    if (wantCalendar) {
+      // Calendar rows are dated by the event date; unchanged.
+      where = ` AND a.date >= $2 AND a.date <= $3 AND a.category = 'calendar'`;
+    } else {
+      where = ` AND COALESCE(a.category, 'schedule') <> 'calendar' AND (
+        COALESCE(a.category, 'schedule') = 'settings'
+        OR (COALESCE(a.schedule_date, a.date) <= $3 AND COALESCE(a.schedule_date_end, a.schedule_date, a.date) >= $2)
+      )`;
+    }
     const { rows } = await query(
       `SELECT a.id, a.date::text AS date, a.action, a.category, a.person_name AS "personName",
               a.shift_type_name AS "shiftTypeName", a.source,
@@ -8532,6 +8544,127 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
           (x: any, y: any) => new Date(y.changedAt).getTime() - new Date(x.changedAt).getTime()
         ).slice(0, 2000);
       }
+    }
+    // Settings rows have no schedule date of their own — the picked
+    // range is schedule dates, so a settings row belongs in the
+    // report when its rotation COVERS a picked date, and a row with
+    // no person is expanded into one row per person of that rotation
+    // (Deepika, 2026-11-13: the Nov 12 pair rows showed "—" for Name
+    // while Ram Sah + Ana Sha were named only in the prose). Coverage
+    // uses the same day math as the draw code (shiftRange.ts): a date
+    // D is covered for cycle day C when (D − start) % cycleDays ==
+    // C − 1, D on/after start. Group rotations carry no assignment
+    // rows, so they use a span rule instead: the picked range
+    // overlaps [start, end]. A row whose coverage cannot be computed
+    // (no snapshot, rotation hard-deleted, no live data) is excluded;
+    // a covered row with no recoverable people stays a single "—" row.
+    if (!wantCalendar) {
+      const dayNum = (iso: string) => Math.floor(Date.parse(iso + 'T00:00:00Z') / 86400000);
+      const settingsRows = entries.filter((e: any) => (e.category || 'schedule') === 'settings');
+      const settingsRotIds = [...new Set(settingsRows
+        .map((e: any) => e.details?.rotationId || e.details?.snapshot?.rotationId)
+        .filter(Boolean))] as string[];
+      const rotMeta = new Map<string, { cycleDays: number | null; startDate: string | null; endDate: string | null; groupId: string | null }>();
+      const assignsByRot = new Map<string, Array<{ userId: string; cycleDay: number }>>();
+      const membersByGroup = new Map<string, string[]>();
+      if (settingsRotIds.length) {
+        const { rows: rrows } = await query(
+          `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate",
+                  end_date::text AS "endDate", group_id AS "groupId"
+           FROM rotations WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+          [companyId, settingsRotIds]
+        );
+        for (const r of rrows) rotMeta.set(r.id, { cycleDays: r.cycleDays, startDate: r.startDate, endDate: r.endDate, groupId: r.groupId });
+        const { rows: arows } = await query(
+          `SELECT rotation_id AS "rotationId", user_id AS "userId", cycle_day AS "cycleDay"
+           FROM rotation_assignments WHERE rotation_id = ANY($1::uuid[])`,
+          [settingsRotIds]
+        );
+        for (const a of arows) {
+          if (!assignsByRot.has(a.rotationId)) assignsByRot.set(a.rotationId, []);
+          assignsByRot.get(a.rotationId)!.push({ userId: a.userId, cycleDay: a.cycleDay });
+        }
+        const groupIds = [...new Set([...rotMeta.values()].map((r) => r.groupId).filter(Boolean))] as string[];
+        if (groupIds.length) {
+          const { rows: grows } = await query(
+            `SELECT group_id AS "groupId", user_id AS "userId" FROM rotation_group_members
+             WHERE group_id = ANY($1::uuid[]) ORDER BY group_id, position`,
+            [groupIds]
+          );
+          for (const g of grows) {
+            if (!membersByGroup.has(g.groupId)) membersByGroup.set(g.groupId, []);
+            membersByGroup.get(g.groupId)!.push(g.userId);
+          }
+        }
+      }
+      const rotIdForSettings = (e: any): string | null =>
+        e.details?.rotationId || e.details?.snapshot?.rotationId || null;
+      const isGroupRotation = (e: any, meta: any): boolean => {
+        const d = e.details || {};
+        if (d.paired || d.groupId || meta?.groupId) return true;
+        const people = d.snapshot?.people || [];
+        return people.length > 0 && people.every((p: any) => p.cycleDay == null);
+      };
+      const settingsPeople = (e: any, meta: any): Array<{ userId: string; name: string | null }> => {
+        const d = e.details || {};
+        if (e.affectedUserId) return [{ userId: e.affectedUserId, name: e.personName || null }];
+        const snapPeople = (d.snapshot?.people || [])
+          .filter((p: any) => p.userId)
+          .map((p: any) => ({ userId: p.userId as string, name: (p.name as string | null) || null }));
+        if (snapPeople.length) return snapPeople;
+        const rid = rotIdForSettings(e);
+        const assigns = (rid && assignsByRot.get(rid)) || [];
+        if (assigns.length) return assigns.map((a) => ({ userId: a.userId, name: null }));
+        if (meta?.groupId) {
+          const members = membersByGroup.get(meta.groupId) || [];
+          if (members.length) return members.map((userId) => ({ userId, name: null }));
+        }
+        return [];
+      };
+      const settingsCovers = (e: any, meta: any): boolean => {
+        const d = e.details || {};
+        const snap = d.snapshot;
+        if (isGroupRotation(e, meta)) {
+          const start = snap?.startDate || meta?.startDate;
+          if (!start) return false;
+          const end = meta?.endDate || null;
+          return start <= rangeTo && (!end || end >= rangeFrom);
+        }
+        const cycleDays = snap?.cycleDays || meta?.cycleDays;
+        const startDate = snap?.startDate || meta?.startDate;
+        if (!cycleDays || cycleDays < 1 || !startDate) return false;
+        let cycleDayValues: number[] = (snap?.people || [])
+          .map((p: any) => p.cycleDay).filter((c: any) => c != null);
+        if (!cycleDayValues.length) {
+          const rid = rotIdForSettings(e);
+          cycleDayValues = ((rid && assignsByRot.get(rid)) || []).map((a) => a.cycleDay);
+        }
+        if (!cycleDayValues.length) return false;
+        const start = dayNum(startDate);
+        const f = dayNum(rangeFrom);
+        const t = dayNum(rangeTo);
+        for (const c of cycleDayValues) {
+          let occ = start + (c - 1);
+          if (occ < f) occ = start + (c - 1) + Math.ceil((f - (start + (c - 1))) / cycleDays) * cycleDays;
+          if (occ >= Math.max(f, start) && occ <= t) return true;
+        }
+        return false;
+      };
+      const expanded: any[] = [];
+      for (const e of entries) {
+        if ((e.category || 'schedule') !== 'settings') { expanded.push(e); continue; }
+        const meta = rotMeta.get(rotIdForSettings(e) || '') || null;
+        if (!settingsCovers(e, meta)) continue;
+        if (!e.affectedUserId && !e.personName) {
+          const people = settingsPeople(e, meta);
+          if (people.length) {
+            for (const p of people) expanded.push({ ...e, affectedUserId: p.userId, personName: p.name });
+            continue;
+          }
+        }
+        expanded.push(e);
+      }
+      entries = expanded;
     }
     // Collect every id the rows reference, so names resolve live in a
     // handful of batched queries instead of one per row. Historical

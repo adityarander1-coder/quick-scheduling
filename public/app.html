@@ -23657,9 +23657,9 @@ window.qsNpOfferSend = function (btn) {
           }
           var html = '';
           if (mode === 'date') {
-            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes made on ' + esc(fmtDay(d)) + ', newest first.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes for ' + esc(fmtDay(d)) + ', newest first.</p>';
           } else {
-            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes made from ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + ', newest first.</p>';
+            html += '<p style="color:#5b6b76;font-size:0.9rem;margin:0 0 0.5rem">Changes for ' + esc(fmtDay(f)) + ' to ' + esc(fmtDay(t)) + ', newest first.</p>';
           }
           // Wide screens: a real table with the mock's 8 columns.
           html += '<table class="audit-table"><thead><tr><th>Name</th><th>Schedule date</th><th>Date &amp; time made</th><th>What changed</th><th>How / where made</th><th>Changed by</th><th>Result</th><th>Why / Details</th></tr></thead><tbody>';
