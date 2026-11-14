@@ -1589,6 +1589,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     // bulk delete must work for group rotations too). This runs
     // BEFORE the pause pass so the occurrences are generated from
     // the pre-delete state.
+    const groupOpenKeys = new Set<string>();
     try {
       const { rows: gRots } = await query(
         'SELECT id FROM rotations WHERE company_id = $1 AND group_id IS NOT NULL AND is_active = true',
@@ -1609,6 +1610,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
              ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
             [companyId, s.rotationId, s.userId, s.date, s.shiftTypeId]
           );
+          groupOpenKeys.add(`${s.date}|${s.shiftTypeId}`);
           paused++;
         }
       }
@@ -1642,6 +1644,14 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         );
         paused++;
       } catch { /* skip duplicates */ }
+    }
+    // Group-rotation deletes (Deepika, 2026-11-13 — Bul/Swing):
+    // each deleted group shift opens for availability when its
+    // date/type would otherwise show no open row. Runs after the
+    // pause pass so the filled count is the true post-delete one.
+    for (const k of groupOpenKeys) {
+      const [d, stId] = k.split('|');
+      await ensureOpenSlotForGroupDelete(companyId, d, stId, req.session.userId!);
     }
     res.json({ deleted: rowCount || 0, paused });
     // Report (Deepika, 2026-11-13): bulk delete used to leave no
@@ -1758,6 +1768,19 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       await excludeRotationInstances(companyId, s.userId, s.date, s.shiftTypeId);
       // Report (Deepika, 2026-11-13): if a draft still appears, say so.
       await auditDraftIfAppeared(companyId, s.userId, s.date, s.shiftTypeId, req.session.userId!);
+      // Group-rotation delete (Deepika, 2026-11-13 — Bul/Swing):
+      // the deleted shift must open for availability, not leave
+      // the person as a draft.
+      const occ = await findRotationOccurrences(companyId, s.userId, s.date, s.shiftTypeId);
+      if (occ.length) {
+        const { rows: gRows } = await query(
+          'SELECT 1 FROM rotations WHERE id = ANY($1) AND group_id IS NOT NULL AND group_shift_type_id IS NOT NULL LIMIT 1',
+          [occ.map((o: any) => o.rotationId)]
+        );
+        if (gRows.length) {
+          await ensureOpenSlotForGroupDelete(companyId, s.date, s.shiftTypeId, req.session.userId!);
+        }
+      }
     }
     res.json({ ok: true });
     if (srows.length) {
@@ -1843,6 +1866,84 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
+
+// Open slot after a group-rotation delete (Deepika, 2026-11-13 —
+// Bul/Swing delete bug): deleting one person from one shift must
+// OPEN the shift for availability, not leave the person as a draft.
+// The grid shows open rows as max(0, target + extra − filled) — the
+// exact formula the UI uses (public/app.html openCountFor). After
+// the delete, if that count would otherwise be exactly 0, grant ONE
+// extra open slot so the deleted shift shows as OPEN. Never when
+// the count is already ≥1 (an open row shows on its own), never
+// when the type is closed for the date (open rows are hidden by
+// design), and never when the day is still over target (s < 0 —
+// the slot would stay invisible now and linger as a phantom open
+// row later). Recomputing after the delete makes the grant
+// idempotent: a second delete on the same date/type sees s = 1 and
+// adds nothing. Returns true when a slot was granted.
+async function ensureOpenSlotForGroupDelete(
+  companyId: string, date: string, shiftTypeId: string, createdBy: string
+): Promise<boolean> {
+  try {
+    const { rows: closedRows } = await query(
+      `SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 LIMIT 1`,
+      [companyId, date, shiftTypeId]
+    );
+    if (closedRows.length) return false;
+    // Staffing target for the type — one row per type (GET
+    // /staffing-targets LEFT JOINs it); same weekday/date-range
+    // gating as the UI's targetCountFor.
+    let target = 0;
+    const { rows: tRows } = await query(
+      `SELECT target_count AS "targetCount", weekdays,
+              start_date::text AS "startDate", end_date::text AS "endDate"
+       FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+      [companyId, shiftTypeId]
+    );
+    if (tRows.length) {
+      const t = tRows[0];
+      const rawWeekdays: any = t.weekdays;
+      const weekdays: number[] = Array.isArray(rawWeekdays)
+        ? rawWeekdays.map((n: any) => Number(n))
+        : String(rawWeekdays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 0);
+      if (!weekdays.length) weekdays.push(0, 1, 2, 3, 4, 5, 6);
+      const dow = new Date(date + 'T00:00:00Z').getUTCDay();
+      if (weekdays.includes(dow)
+        && !(t.startDate && date < t.startDate)
+        && !(t.endDate && date > t.endDate)) {
+        target = Number(t.targetCount) || 0;
+      }
+    }
+    const { rows: extraRows } = await query(
+      `SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots
+       WHERE company_id = $1 AND date = $2 AND shift_type_id = $3`,
+      [companyId, date, shiftTypeId]
+    );
+    const extra = extraRows[0]?.n || 0;
+    // Filled, exactly as the grid counts it: stored rows + drawn
+    // occurrences for the date (GET /shifts composition).
+    const { rows: stored } = await query(
+      `SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM shifts WHERE company_id = $1 AND date = $2`,
+      [companyId, date]
+    );
+    const { occurrences } = await drawRotationOccurrences(query, companyId, date, date, stored);
+    const filled = stored.filter((s: any) => s.shiftTypeId === shiftTypeId).length
+      + occurrences.filter((o: any) => o.shiftTypeId === shiftTypeId).length;
+    if (target + extra - filled !== 0) return false;
+    await query(
+      `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+       VALUES ($1, $2, $3, 1, $4)
+       ON CONFLICT (company_id, date, shift_type_id)
+       DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+      [companyId, date, shiftTypeId, createdBy]
+    );
+    return true;
+  } catch (err) {
+    console.error('[schedule] open-slot grant failed:', (err as any)?.message);
+    return false;
+  }
+}
 
 // DELETE /api/schedule/extra-slots — remove extra open slots (owner/scheduler; department-scoped).
 // Body: { dates:[...], shiftTypeId } — removes entirely; or { date, shiftTypeId, count } to reduce.
@@ -2756,6 +2857,19 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
        ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
       [companyId, rotationId, userId, date, shiftTypeId || null]
     );
+    // Group-rotation occurrence delete (Deepika, 2026-11-13 —
+    // Bul/Swing): the deleted shift must open for availability.
+    {
+      const { rows: grRows } = await query(
+        `SELECT group_shift_type_id AS "groupShiftTypeId" FROM rotations
+         WHERE id = $1 AND company_id = $2 AND group_id IS NOT NULL`,
+        [rotationId, companyId]
+      );
+      if (grRows.length) {
+        const typeId = shiftTypeId || grRows[0].groupShiftTypeId;
+        if (typeId) await ensureOpenSlotForGroupDelete(companyId, date, typeId, req.session.userId!);
+      }
+    }
     res.json({ ok: true });
     // Audit: rotation shift excluded (removed).
     const { rows: rrows } = await query(

@@ -178,12 +178,132 @@ async function findMember(companyId: string, name: string): Promise<{ id: string
 }
 
 /**
+ * Group-rotation occurrence for one user on one date (Deepika,
+ * 2026-11-13 — Bul/Swing delete bug): a group rotation has no
+ * rotation_assignments rows — its members live in
+ * rotation_group_members and are dealt at draw time — so the
+ * assignment query in findRotationOccurrences can never see it.
+ * Replay the line dealing from the rotation start with the SAME
+ * math as drawRotationOccurrences (schedule.ts) and shiftRange.ts:
+ * turn blocks counted by dealing, the front member serves and goes
+ * to the back, a member on vacation at a turn's start keeps the
+ * front spot while the next member covers the whole turn. Returns
+ * the occurrence when the dealt member is this user on this date,
+ * else null. The manual-row / exclusion checks are deliberately
+ * NOT mirrored here: this answers "does the pattern deal this
+ * person here", the same contract as the per-person branch (which
+ * also ignores manual rows).
+ */
+async function findGroupRotationOccurrence(
+  companyId: string,
+  userId: string,
+  date: string,
+  shiftTypeId: string | null,
+  rot: any,
+  vacMap: Map<string, Array<{ start: string; end: string }>>,
+  queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }>
+): Promise<{ rotationId: string; shiftTypeId: string } | null> {
+  const stId = rot.groupShiftTypeId as string;
+  if (shiftTypeId && stId !== shiftTypeId) return null;
+  // The draw yields no members when the group shift type row is gone.
+  const { rows: typeRows } = await queryFn(
+    'SELECT id FROM shift_types WHERE id = $1 AND company_id = $2',
+    [stId, companyId]
+  );
+  if (!typeRows.length) return null;
+  const groupIds = String(rot.groupIds || rot.groupId || '')
+    .split(',').map((x: string) => x.trim()).filter(Boolean);
+  if (!groupIds.length) return null;
+  const daySet = new Set(
+    String(rot.groupDays || '').split(',').map((x: string) => Number(x)).filter((n: number) => n >= 1)
+  );
+  if (!daySet.size) return null;
+  const { rows: memberRows } = await queryFn(
+    `SELECT gm.group_id AS "groupId", gm.user_id AS "userId",
+            u.end_date::text AS "userEndDate"
+     FROM rotation_group_members gm
+     JOIN users u ON u.id = gm.user_id
+     WHERE gm.group_id = ANY($1) AND u.is_active = true
+     ORDER BY gm.group_id, gm.position`,
+    [groupIds]
+  );
+  const membersByGroup = new Map<string, any[]>();
+  for (const m of memberRows) {
+    if (!membersByGroup.has(m.groupId)) membersByGroup.set(m.groupId, []);
+    membersByGroup.get(m.groupId)!.push(m);
+  }
+  const groupsMembers: any[][] = groupIds.map((gid: string) => membersByGroup.get(gid) || []);
+  if (!groupsMembers.some((g) => g.length)) return null;
+  const unit = rot.turnUnit || 'shift';
+  const tDays = Math.max(1, Number(rot.turnDays) || 1);
+  const wStart = Number.isInteger(rot.weekStart) ? rot.weekStart : 1;
+  const dayMs = 86400000;
+  const startMs = Date.parse(rot.startDate + 'T00:00:00Z');
+  const targetMs = Date.parse(date + 'T00:00:00Z');
+  if (isNaN(startMs) || isNaN(targetMs) || targetMs < startMs) return null;
+  if (rot.endDate && date > String(rot.endDate).slice(0, 10)) return null;
+  const anchorMs = startMs - ((new Date(startMs).getUTCDay() - wStart + 7) % 7) * dayMs;
+  const onVacation = (uid: string, dateStr: string): boolean => {
+    const periods = vacMap.get(uid);
+    if (!periods) return false;
+    return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
+  };
+  const queues: any[][] = groupsMembers.map((g) => g.slice());
+  let occ = 0;
+  let blockIdx = -1;
+  let lastKey: string | null = null;
+  let currentMember: any = null;
+  for (let ms = startMs; ms <= targetMs; ms += dayMs) {
+    const dayIndex = Math.floor((ms - startMs) / dayMs);
+    const cycleDay = (dayIndex % rot.cycleDays) + 1;
+    if (!daySet.has(cycleDay)) continue;
+    const dateStr = new Date(ms).toISOString().slice(0, 10);
+    let key: string;
+    if (unit === 'week') key = 'w' + Math.floor((ms - anchorMs) / (7 * dayMs));
+    else if (unit === 'days') key = 'd' + Math.floor(occ / tDays);
+    else key = 's' + occ;
+    occ++;
+    if (key !== lastKey) {
+      lastKey = key;
+      blockIdx++;
+      const gIdx = blockIdx % groupsMembers.length;
+      const q = queues[gIdx];
+      currentMember = null;
+      for (let qi = 0; qi < q.length; qi++) {
+        if (!onVacation(q[qi].userId, dateStr)) {
+          currentMember = q[qi];
+          q.splice(qi, 1);
+          q.push(currentMember);
+          break;
+        }
+      }
+    }
+    if (dateStr !== date) continue;
+    // Target date: the draw's own checks, in the draw's order.
+    const { rows: pauses } = await queryFn(
+      `SELECT 1 FROM rotation_pauses
+       WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
+      [rot.id, date]
+    );
+    if (pauses.length) return null;
+    if (!currentMember) return null;
+    if (onVacation(currentMember.userId, dateStr)) return null;
+    if (currentMember.userEndDate && dateStr > String(currentMember.userEndDate).slice(0, 10)) return null;
+    if (currentMember.userId !== userId) return null;
+    return { rotationId: rot.id, shiftTypeId: stId };
+  }
+  return null;
+}
+
+/**
  * Every rotation occurrence for a user on a date (optionally one
  * shift type): active rotations whose assignment lands on that cycle
- * day, with pause periods skipped. This is the "does the pattern draw
- * here" rule, shared by excludeRotationInstances and the Change
- * report's draft detection (audit.ts) — one source of truth, so the
- * report can never disagree with the schedule draw.
+ * day, with pause periods skipped. Group rotations deal their
+ * members in turn (see findGroupRotationOccurrence) and are covered
+ * the same way. This is the "does the pattern draw here" rule,
+ * shared by excludeRotationInstances and the Change report's draft
+ * detection (audit.ts) — one source of truth, so the report can
+ * never disagree with the schedule draw.
  */
 export async function findRotationOccurrences(
   companyId: string,
@@ -193,12 +313,41 @@ export async function findRotationOccurrences(
   queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
 ): Promise<Array<{ rotationId: string; shiftTypeId: string }>> {
   const { rows: rotations } = await queryFn(
-    `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate"
+    `SELECT id, cycle_days AS "cycleDays", start_date::text AS "startDate",
+            end_date::text AS "endDate",
+            group_id AS "groupId", group_ids AS "groupIds",
+            group_shift_type_id AS "groupShiftTypeId",
+            group_days AS "groupDays", turn_unit AS "turnUnit",
+            turn_days AS "turnDays", week_start AS "weekStart"
      FROM rotations WHERE company_id = $1 AND is_active = true`,
     [companyId]
   );
+  // Vacation ranges per person — the SAME construction as the draw
+  // (drawRotationOccurrences / shiftRange): pauses attach to the
+  // rotations a person is assigned to; 'Bulk delete' pauses are NOT
+  // vacations. Group members have no assignment rows, so their
+  // vacations are invisible here exactly as they are in the draw —
+  // the replay below must agree with the draw, not improve on it.
+  const { rows: vacRows } = await queryFn(
+    `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
+     FROM rotation_pauses p
+     JOIN rotation_assignments ra ON ra.rotation_id = p.rotation_id
+     WHERE p.company_id = $1 AND (p.reason IS NULL OR p.reason <> 'Bulk delete')`,
+    [companyId]
+  );
+  const vacMap = new Map<string, Array<{ start: string; end: string }>>();
+  for (const v of vacRows) {
+    if (!vacMap.has(v.userId)) vacMap.set(v.userId, []);
+    vacMap.get(v.userId)!.push({ start: v.startDate, end: v.endDate });
+  }
   const found: Array<{ rotationId: string; shiftTypeId: string }> = [];
   for (const rot of rotations) {
+    const startDate = new Date(rot.startDate + 'T00:00:00');
+    const target = new Date(date + 'T00:00:00');
+    if (isNaN(startDate.getTime()) || isNaN(target.getTime()) || target < startDate) continue;
+    const daysSinceStart = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
+    const cycleDay = (daysSinceStart % rot.cycleDays) + 1; // 1-indexed, matches schedule.ts
+    // Per-person branch: the assignment lands on this cycle day.
     const { rows: assignments } = await queryFn(
       `SELECT ra.cycle_day AS "cycleDay", ra.shift_type_id AS "shiftTypeId"
        FROM rotation_assignments ra
@@ -207,24 +356,28 @@ export async function findRotationOccurrences(
          AND (u.end_date IS NULL OR u.end_date::text >= $3)`,
       [rot.id, userId, date]
     );
-    if (!assignments.length) continue;
-    const startDate = new Date(rot.startDate + 'T00:00:00');
-    const target = new Date(date + 'T00:00:00');
-    if (isNaN(startDate.getTime()) || isNaN(target.getTime()) || target < startDate) continue;
-    const daysSinceStart = Math.floor((target.getTime() - startDate.getTime()) / 86400000);
-    const cycleDay = (daysSinceStart % rot.cycleDays) + 1; // 1-indexed, matches schedule.ts
     const matches = assignments.filter(
       (a: any) => a.cycleDay === cycleDay && (!shiftTypeId || a.shiftTypeId === shiftTypeId)
     );
-    if (!matches.length) continue;
-    // Skip dates inside a pause period (vacation etc.).
-    const { rows: pauses } = await queryFn(
-      `SELECT 1 FROM rotation_pauses
-       WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
-      [rot.id, date]
-    );
-    if (pauses.length) continue;
-    for (const m of matches) found.push({ rotationId: rot.id, shiftTypeId: m.shiftTypeId });
+    if (matches.length) {
+      // Skip dates inside a pause period (vacation etc.).
+      const { rows: pauses } = await queryFn(
+        `SELECT 1 FROM rotation_pauses
+         WHERE rotation_id = $1 AND start_date::text <= $2 AND end_date::text >= $2 LIMIT 1`,
+        [rot.id, date]
+      );
+      if (!pauses.length) {
+        for (const m of matches) found.push({ rotationId: rot.id, shiftTypeId: m.shiftTypeId });
+      }
+    }
+    // Group branch: the rotation deals its members in turn (no
+    // assignment rows exist), so the assignment query above can
+    // never see it — replay the dealing and report the occurrence
+    // when the dealt member is this user on this date.
+    if (rot.groupId && rot.groupShiftTypeId) {
+      const g = await findGroupRotationOccurrence(companyId, userId, date, shiftTypeId, rot, vacMap, queryFn);
+      if (g) found.push(g);
+    }
   }
   return found;
 }
