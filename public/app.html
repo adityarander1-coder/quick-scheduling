@@ -1084,6 +1084,13 @@
     /* Change report (Deepika, 2026-11-13): big table on wide screens,
        one box per change with all fields on narrow screens. */
     .audit-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    /* Change report modal (Deepika, 2026-11-13): only the body scrolls —
+       the header (title + X) and the footer (Close) stay pinned, so the
+       Close button is always fully visible on tall reports. */
+    #audit-modal .audit-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    #audit-modal .audit-modal-foot { flex: 0 0 auto; display: flex; justify-content: flex-end; margin-top: 1rem; }
+    #audit-modal .audit-x { flex: 0 0 auto; border: 0; background: transparent; color: #5b6b76; font-size: 1.6rem; line-height: 1; padding: 0.1rem 0.45rem; border-radius: 8px; cursor: pointer; }
+    #audit-modal .audit-x:hover { background: #f1f5f9; color: #17242e; }
     .audit-table th, .audit-table td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     .audit-table th { background: #f6f8f9; position: sticky; top: 0; }
     .audit-cards { display: none; }
@@ -19981,8 +19988,12 @@ window.qsNpOfferSend = function (btn) {
 
   <!-- Global: Schedule change report modal (available from every tab) -->
   <div id="audit-modal" class="modal-backdrop hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100">
-    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(1100px,96vw);max-height:88vh;overflow-y:auto">
-      <h3 style="margin-top:0">Change report</h3>
+    <div class="modal" style="background:#fff;color:#17242e;border-radius:16px;padding:1.5rem;width:min(1100px,96vw);max-height:88vh;overflow:hidden;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex:0 0 auto">
+        <h3 style="margin-top:0">Change report</h3>
+        <button type="button" id="audit-close-x" class="audit-x" aria-label="Close">×</button>
+      </div>
+      <div class="audit-modal-body">
       <p style="color:#5b6b76;font-size:0.9rem">See who changed the schedule or settings, what changed, and whether it was manual, a rotation, or the AI. The date you pick is the schedule date the change is for — not the date it was made.</p>
       <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin:1rem 0;align-items:center">
         <label><input type="radio" name="audit-mode" value="date" checked> One date</label>
@@ -19996,8 +20007,9 @@ window.qsNpOfferSend = function (btn) {
         <label>To <input type="date" id="audit-to"></label>
       </div>
       <button type="button" id="audit-run" class="btn">Run report</button>
-      <div id="audit-results" style="margin-top:1rem;max-height:50vh;overflow:auto"></div>
-      <div style="display:flex;justify-content:flex-end;margin-top:1rem">
+      <div id="audit-results" style="margin-top:1rem"></div>
+      </div>
+      <div class="audit-modal-foot">
         <button type="button" class="btn-secondary" id="audit-close">Close</button>
       </div>
     </div>
@@ -23616,6 +23628,60 @@ window.qsNpOfferSend = function (btn) {
       // Expose for the day modal.
       window.openAuditReport = openAudit;
       $('audit-close').addEventListener('click', function () { hide(modal); });
+      $('audit-close-x').addEventListener('click', function () { hide(modal); });
+
+      // Global (Deepika, 2026-11-13): Escape closes the topmost open
+      // popup/modal, through that popup's own close control when it has
+      // one (so any cleanup it does still runs). With nothing open it
+      // does nothing. Capture phase, registered once here: it runs
+      // before bubble-phase handlers, so a dropdown menu open above a
+      // modal is closed first and the modal underneath is left for the
+      // next press.
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var i, el, z;
+        // Open dropdown menus close first (their own handlers also do
+        // this when focus is inside the menu; closing here keeps the
+        // order right no matter where focus is).
+        var menus = document.querySelectorAll('[id$="-menu"]');
+        for (i = 0; i < menus.length; i++) {
+          el = menus[i];
+          if (el.style.display === 'block' && el.getClientRects().length) {
+            el.style.display = 'none';
+            var trig = el.parentNode ? el.parentNode.querySelector('button[aria-expanded="true"]') : null;
+            if (trig) { trig.setAttribute('aria-expanded', 'false'); trig.focus(); }
+            e.stopPropagation();
+            return;
+          }
+        }
+        // Topmost visible layer, by z-index then document order.
+        var layers = [];
+        var cands = document.querySelectorAll('.modal-backdrop:not(.hidden), #cred-modal:not(.hidden), #shi-modal, #img-viewer:not(.hidden), #notif-panel:not([hidden]), #avatar-menu:not([hidden]), .qs-pal-pop, #tb-ask-panel:not(.hidden)');
+        for (i = 0; i < cands.length; i++) {
+          el = cands[i];
+          if (!el.getClientRects().length) continue;
+          z = parseInt(getComputedStyle(el).zIndex, 10);
+          layers.push({ el: el, z: isNaN(z) ? 0 : z });
+        }
+        if (!layers.length) return;
+        layers.sort(function (a, b) { return a.z - b.z; });
+        var top = layers[layers.length - 1].el;
+        if (top.id === 'notif-panel') {
+          var nc = $('notif-close');
+          if (nc) nc.click(); else top.hidden = true;
+        } else if (top.id === 'avatar-menu') {
+          top.hidden = true;
+        } else if (top.classList.contains('qs-pal-pop')) {
+          top.remove();
+        } else if (top.id === 'tb-ask-panel') {
+          top.classList.add('hidden');
+        } else {
+          var btn = top.querySelector('button[id$="-close"], button.close-btn, button[aria-label^="Close"], button[id$="-x"]') ||
+                    top.querySelector('button[id$="-cancel"]');
+          if (btn) btn.click(); else hide(top);
+        }
+        e.stopPropagation();
+      }, true);
       document.querySelectorAll('input[name="audit-mode"]').forEach(function (r) {
         r.addEventListener('change', function () {
           var isDate = document.querySelector('input[name="audit-mode"]:checked').value === 'date';
