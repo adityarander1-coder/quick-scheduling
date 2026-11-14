@@ -1645,6 +1645,27 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         paused++;
       } catch { /* skip duplicates */ }
     }
+    // Delete completely (Deepika, 2026-11-13 — widened 2026-11-14):
+    // with a type filter, the group pass and the pause pass above are
+    // both type-narrowed, so a deleted person's rotation occurrences
+    // of OTHER types that day are left to draw as drafts. Sweep every
+    // deleted (person, date) — all types — so the delete is complete.
+    // Runs after the group pass so groupOpenKeys is computed from the
+    // pre-sweep draw, and after the pause pass (paused occurrences
+    // are already suppressed; unpaused other-type ones are found and
+    // excluded here). Without a type filter the pause pass already
+    // covers everything, so the sweep is a harmless no-op there.
+    // Day-scoped per pair; rotations untouched; stored rows of other
+    // types are never deleted.
+    {
+      const seen = new Set<string>();
+      for (const d of deletedRows || []) {
+        const key = `${d.userId}|${d.date}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        await excludeRotationInstances(companyId, d.userId, d.date);
+      }
+    }
     // Group-rotation deletes (Deepika, 2026-11-13 — Bul/Swing):
     // each deleted group shift opens for availability when its
     // date/type would otherwise show no open row. Runs after the
@@ -1760,20 +1781,18 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       res.status(404).json({ error: 'Shift not found.' });
       return;
     }
-    // Dual-source (Deepika, 2026-11-12): the deleted row may have been
-    // suppressing a rotation occurrence for the same person/date/type.
-    // Exclude it or it pops back the moment the row is gone.
+    // Dual-source (Deepika, 2026-11-12) + delete completely (Deepika,
+    // 2026-11-13 — Bul's Day Hospitalist draft): the deleted row may
+    // have been suppressing a rotation occurrence for the same
+    // person/date/type — and, when it is a published group-origin row,
+    // occurrences of OTHER types that day too. excludeRotationInstances
+    // sweeps every occurrence for this user/date (all types), so the
+    // delete is complete and nothing pops back. Day-scoped only —
+    // other days untouched, the person's rotations untouched, and
+    // stored rows of other types are NOT deleted (drawn occurrences only).
     if (srows.length) {
       const s = srows[0];
-      await excludeRotationInstances(companyId, s.userId, s.date, s.shiftTypeId);
-      // Delete completely (Deepika, 2026-11-13 — Bul's Day
-      // Hospitalist draft): the deleted row may have been
-      // suppressing occurrences of OTHER types that day (a published
-      // group-origin row suppresses any conflicting type), so sweep
-      // every occurrence for this user/date. Day-scoped only — other
-      // days untouched, the person's rotations untouched, and stored
-      // rows of other types are NOT deleted (drawn occurrences only).
-      await excludeRotationInstances(companyId, s.userId, s.date, null);
+      await excludeRotationInstances(companyId, s.userId, s.date);
       // Report (Deepika, 2026-11-13): if a draft still appears, say so.
       await auditDraftIfAppeared(companyId, s.userId, s.date, s.shiftTypeId, req.session.userId!);
       // Group-rotation delete (Deepika, 2026-11-13 — Bul/Swing):
@@ -2077,7 +2096,7 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
         // that shift as a rotation occurrence, hidden while the stored
         // row existed. Exclude it or it pops back.
         if (rowCount && (userId !== orig[0].userId || shiftTypeId !== orig[0].shiftTypeId)) {
-          await excludeRotationInstances(companyId, orig[0].userId, origDate, orig[0].shiftTypeId);
+          await excludeRotationInstances(companyId, orig[0].userId, origDate);
           await auditDraftIfAppeared(companyId, orig[0].userId, origDate, orig[0].shiftTypeId, req.session.userId!);
         }
       } else {
@@ -2182,7 +2201,7 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
     if (existRows.length) {
       const old = existRows[0];
       if (old.userId !== userId || old.date !== date || old.shiftTypeId !== shiftTypeId) {
-        await excludeRotationInstances(companyId, old.userId, old.date, old.shiftTypeId);
+        await excludeRotationInstances(companyId, old.userId, old.date);
         await auditDraftIfAppeared(companyId, old.userId, old.date, old.shiftTypeId, req.session.userId!);
       }
     }
@@ -2363,7 +2382,7 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       // (src.userId, src.date, src.shiftTypeId), where the same person
       // may also hold the shift as a rotation occurrence, hidden while
       // the stored row existed. Exclude it or it pops back.
-      await excludeRotationInstances(companyId, src.userId, src.date, src.shiftTypeId);
+      await excludeRotationInstances(companyId, src.userId, src.date);
     } else {
       const newId = crypto.randomUUID();
       await withTransaction(async (tx) => {
@@ -2478,10 +2497,12 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       if (a.kind === 'manual') {
         await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [b.userId, a.id, companyId]);
         ops.push({ updateShiftUser: { shiftId: a.id, userId: a.userId } });
-        // Dual-source (Deepika, 2026-11-12): a may also hold this shift
-        // as a rotation occurrence, hidden while the stored row existed.
-        // The row just moved to b, so exclude a's occurrence or it pops back.
-        const inserted = await excludeRotationInstances(companyId, a.userId, a.date, a.shiftTypeId, tx.query);
+        // Dual-source (Deepika, 2026-11-12) + delete completely
+        // (Deepika, 2026-11-13): a may also hold this shift as a
+        // rotation occurrence — of this type or another — hidden while
+        // the stored row existed. The row just moved to b, so exclude
+        // every occurrence a holds that day or one pops back.
+        const inserted = await excludeRotationInstances(companyId, a.userId, a.date, tx.query);
         for (const e of inserted) extraUndoOps.push({ deleteExclusion: { rotationId: e.rotationId, userId: e.userId, date: e.date, shiftTypeId: e.shiftTypeId } });
       } else {
         await insertRotationExclusion(tx.query, companyId, a);
@@ -2497,10 +2518,11 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       if (b.kind === 'manual') {
         await tx.query('UPDATE shifts SET user_id = $1, updated_at = now() WHERE id = $2 AND company_id = $3', [a.userId, b.id, companyId]);
         ops.push({ updateShiftUser: { shiftId: b.id, userId: b.userId } });
-        // Dual-source (Deepika, 2026-11-12): same as side a — exclude
-        // b's rotation occurrence for this date/type, if one is hiding
+        // Dual-source (Deepika, 2026-11-12) + delete completely
+        // (Deepika, 2026-11-13): same as side a — exclude every
+        // rotation occurrence b holds that day, if any are hiding
         // under the stored row.
-        const inserted = await excludeRotationInstances(companyId, b.userId, b.date, b.shiftTypeId, tx.query);
+        const inserted = await excludeRotationInstances(companyId, b.userId, b.date, tx.query);
         for (const e of inserted) extraUndoOps.push({ deleteExclusion: { rotationId: e.rotationId, userId: e.userId, date: e.date, shiftTypeId: e.shiftTypeId } });
       } else {
         await insertRotationExclusion(tx.query, companyId, b);
@@ -2871,7 +2893,7 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
     // row suppressed other types too. Sweep every occurrence for
     // this user/date (day-scoped; rotations and stored rows of other
     // types untouched).
-    await excludeRotationInstances(companyId, userId, date, null);
+    await excludeRotationInstances(companyId, userId, date);
     // Report (Deepika, 2026-11-13): if a draft still appears, say so.
     await auditDraftIfAppeared(companyId, userId, date, shiftTypeId || null, req.session.userId!);
     // Group-rotation occurrence delete (Deepika, 2026-11-13 —
