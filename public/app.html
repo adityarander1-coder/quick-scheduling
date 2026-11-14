@@ -12112,6 +12112,18 @@ window.qsNpOfferSend = function (btn) {
                   </select>
                 </div>
               </div>
+              <div class="sub-card hidden" id="gs-schedule-mode-card">
+                <h3>How should your schedule fill in?</h3>
+                <p class="set-desc" style="margin-bottom:0.8rem">Applies to everyone in your company. Only the owner can change this.</p>
+                <div class="form-row">
+                  <label style="display:block;cursor:pointer"><input type="radio" name="gs-schedule-mode" value="live" style="width:auto" checked> <b>Fill it in automatically</b></label>
+                  <p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Your rotations fill the schedule in on their own, like today.</p>
+                </div>
+                <div class="form-row">
+                  <label style="display:block;cursor:pointer"><input type="radio" name="gs-schedule-mode" value="generated" style="width:auto"> <b>Draft from my rotations</b></label>
+                  <p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Nothing appears until you draft it from your rotations.</p>
+                </div>
+              </div>
               <div class="sub-card">
                 <h3>My appearance</h3>
                 <p class="set-desc" style="margin-bottom:0.8rem">Just for you — each admin picks their own.</p>
@@ -12595,6 +12607,27 @@ window.qsNpOfferSend = function (btn) {
                   window.qsPersonal = p;
                   applyPersonalTheme(p);
                 }).catch(function () {});
+                // Schedule mode (owner only). loadGeneralSettings runs
+                // at boot, before the session check sets window.isOwner,
+                // so ownership comes from /api/auth/me here — the same
+                // call the Team section's init uses. The card starts
+                // hidden and is shown only once the owner is confirmed;
+                // non-owners never see it, and the flip endpoint is
+                // owner-only too.
+                (function () {
+                  var smCard = document.getElementById('gs-schedule-mode-card');
+                  api('/api/auth/me').then(function (mr) {
+                    var isOwner = mr.ok && mr.data && mr.data.user && mr.data.user.role === 'owner';
+                    if (smCard) smCard.classList.toggle('hidden', !isOwner);
+                    if (!isOwner) return null;
+                    return api('/api/schedule/schedule-mode');
+                  }).then(function (mr) {
+                    if (!mr) return;
+                    var mode = (mr.data && mr.data.mode) || 'live';
+                    var rb = document.querySelector('input[name="gs-schedule-mode"][value="' + mode + '"]');
+                    if (rb) rb.checked = true;
+                  }).catch(function () {});
+                })();
               }
               // Light chrome: a light saved colour flips header/footer text dark.
               window.applyChromeLightClass = function (el, color) {
@@ -12657,6 +12690,34 @@ window.qsNpOfferSend = function (btn) {
               if (frReset) frReset.addEventListener('click', function () {
                 var inp = document.getElementById('gs-footer-color');
                 inp.value = '#083f4d'; inp.dataset.gsCleared = '1';
+              });
+              // Schedule mode saves the moment it is picked (owner
+              // only) — same Saved./error alerts as the rest of General.
+              document.querySelectorAll('input[name="gs-schedule-mode"]').forEach(function (rb) {
+                rb.addEventListener('change', function () {
+                  var errEl = document.getElementById('general-error');
+                  var okEl = document.getElementById('general-saved');
+                  errEl.classList.add('hidden'); okEl.classList.add('hidden');
+                  var prev = rb.value === 'generated' ? 'live' : 'generated';
+                  var revert = function () {
+                    var other = document.querySelector('input[name="gs-schedule-mode"][value="' + prev + '"]');
+                    if (other) other.checked = true;
+                  };
+                  api('/api/schedule/schedule-mode', { method: 'PUT', body: JSON.stringify({ mode: rb.value }) }).then(function (r) {
+                    if (r.ok) {
+                      okEl.classList.remove('hidden');
+                      setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
+                    } else {
+                      revert();
+                      errEl.textContent = (r.data && r.data.error) || 'Could not save.';
+                      errEl.classList.remove('hidden');
+                    }
+                  }).catch(function () {
+                    revert();
+                    errEl.textContent = 'Network error.';
+                    errEl.classList.remove('hidden');
+                  });
+                });
               });
               var gsForm = document.getElementById('general-form');
               if (gsForm) gsForm.addEventListener('submit', function (e) {
