@@ -2619,7 +2619,9 @@
           comments: [],
           staffingTargets: [],
           scheduleMode: 'live',
+          generatedTypeIds: [],
           notDraftedDates: [],
+          notDraftedByType: {},
           highlights: {},
           canEdit: false,
           assignDate: null,
@@ -2903,7 +2905,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.notDraftedDates = sR.data.notDraftedDates || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3224,14 +3226,23 @@
           });
           return n;
         }
-        // Background rotations: a date is undrafted when the company
-        // is in generated mode and no generation covers it (managers
-        // only — the server sends employees an empty list).
-        function isNotDrafted(dateStr) {
-          return sched.scheduleMode === 'generated' && (sched.notDraftedDates || []).indexOf(dateStr) !== -1;
+        // Background rotations: a date is undrafted for a shift type
+        // when that type is in a generated department and no
+        // generation covers the date for it (managers only — the
+        // server sends employees an empty map). The mode is per
+        // department, so one type can be undrafted while another
+        // draws (Deepika, 2026-11-14).
+        function isNotDrafted(dateStr, shiftTypeId) {
+          var list = (sched.notDraftedByType || {})[shiftTypeId] || [];
+          return list.indexOf(dateStr) !== -1;
         }
-        function notDraftedTag(dateStr) {
-          if (!sched.canEdit || !isNotDrafted(dateStr)) return '';
+        // With a shift type: that type is undrafted that day (drives
+        // the per-type OPEN suppression). Without one (day headers):
+        // the day-level rule — no generation covers the date at all.
+        function notDraftedTag(dateStr, shiftTypeId) {
+          if (!sched.canEdit) return '';
+          if (shiftTypeId) { if (!isNotDrafted(dateStr, shiftTypeId)) return ''; }
+          else if ((sched.notDraftedDates || []).indexOf(dateStr) === -1) return '';
           return '<div style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-top:2px">Not drafted yet</div>';
         }
         function openCountFor(dateStr, shiftTypeId) {
@@ -3240,7 +3251,7 @@
           // on a date nothing has been drafted for yet, the staffing
           // target contributes 0 — only manually added extra slots
           // count toward OPEN rows. No phantom OPEN rows.
-          var target = isNotDrafted(dateStr) ? 0 : targetCountFor(dateStr, shiftTypeId);
+          var target = isNotDrafted(dateStr, shiftTypeId) ? 0 : targetCountFor(dateStr, shiftTypeId);
           var extra = 0;
           (sched.extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && e.shiftTypeId === shiftTypeId) extra += (e.count || 0);
@@ -6672,7 +6683,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.notDraftedDates = sR.data.notDraftedDates || []; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -6704,7 +6715,9 @@
               sched.closedShifts = sR.data.closedShifts || [];
               sched.extraSlots = sR.data.extraSlots || [];
               sched.scheduleMode = sR.data.scheduleMode || 'live';
+              sched.generatedTypeIds = sR.data.generatedTypeIds || [];
               sched.notDraftedDates = sR.data.notDraftedDates || [];
+              sched.notDraftedByType = sR.data.notDraftedByType || {};
               renderView();
               pageSuccess('Schedule updated just now.');
             }
@@ -10718,12 +10731,13 @@ window.qsNpOfferSend = function (btn) {
                 updateRcopyInvertGate();
                 renderRcopyPeople();
                 updateRcopyConfirm();
-                // Background rotations: in generated mode the copied
-                // person gets shifts only at the next draft.
-                api('/api/schedule/schedule-mode').then(function (mr) {
-                  var note = $('rcopy-generated-note');
-                  if (note) note.classList.toggle('hidden', !(mr.ok && mr.data && mr.data.mode === 'generated'));
-                }).catch(function () {});
+                // Background rotations: when the source rotation's
+                // shift types are all generated, the copied person
+                // gets shifts only at the next draft (the copy's
+                // pattern has the same types). No API call — the
+                // rotation list already carries `generatable`.
+                var note = $('rcopy-generated-note');
+                if (note) note.classList.toggle('hidden', !(src && src.rot && src.rot.generatable));
                 show($('rcopy-modal'));
               }
               $('rot-copy-open').addEventListener('click', function () { openRcopy(false); });
@@ -12114,15 +12128,8 @@ window.qsNpOfferSend = function (btn) {
               </div>
               <div class="sub-card hidden" id="gs-schedule-mode-card">
                 <h3>How should your schedule fill in?</h3>
-                <p class="set-desc" style="margin-bottom:0.8rem">Applies to everyone in your company. Only the owner can change this.</p>
-                <div class="form-row">
-                  <label style="display:block;cursor:pointer"><input type="radio" name="gs-schedule-mode" value="live" style="width:auto" checked> <b>Fill it in automatically</b></label>
-                  <p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Your rotations fill the schedule in on their own, like today.</p>
-                </div>
-                <div class="form-row">
-                  <label style="display:block;cursor:pointer"><input type="radio" name="gs-schedule-mode" value="generated" style="width:auto"> <b>Draft from my rotations</b></label>
-                  <p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Nothing appears until you draft it from your rotations.</p>
-                </div>
+                <p class="set-desc" style="margin-bottom:0.8rem">Each department picks its own. The owner can change any department; a department's admin can change their own department.</p>
+                <div id="gs-schedule-mode-rows"></div>
               </div>
               <div class="sub-card">
                 <h3>My appearance</h3>
@@ -12607,25 +12614,61 @@ window.qsNpOfferSend = function (btn) {
                   window.qsPersonal = p;
                   applyPersonalTheme(p);
                 }).catch(function () {});
-                // Schedule mode (owner only). loadGeneralSettings runs
-                // at boot, before the session check sets window.isOwner,
-                // so ownership comes from /api/auth/me here — the same
-                // call the Team section's init uses. The card starts
-                // hidden and is shown only once the owner is confirmed;
-                // non-owners never see it, and the flip endpoint is
-                // owner-only too.
+                // Schedule mode (per department, Deepika 2026-11-14):
+                // one row per department the signed-in user can
+                // administer — the owner sees all, a department's
+                // admin sees only theirs, a user with no departments
+                // sees no card (the list comes back empty and the
+                // card stays hidden). The mode is the server's list,
+                // so no role check is needed here; the PUT endpoint
+                // enforces the same access server-side. Each radio
+                // saves its department the moment it is picked —
+                // same Saved./error alerts as the rest of General.
                 (function () {
                   var smCard = document.getElementById('gs-schedule-mode-card');
-                  api('/api/auth/me').then(function (mr) {
-                    var isOwner = mr.ok && mr.data && mr.data.user && mr.data.user.role === 'owner';
-                    if (smCard) smCard.classList.toggle('hidden', !isOwner);
-                    if (!isOwner) return null;
-                    return api('/api/schedule/schedule-mode');
-                  }).then(function (mr) {
-                    if (!mr) return;
-                    var mode = (mr.data && mr.data.mode) || 'live';
-                    var rb = document.querySelector('input[name="gs-schedule-mode"][value="' + mode + '"]');
-                    if (rb) rb.checked = true;
+                  var rowsEl = document.getElementById('gs-schedule-mode-rows');
+                  if (!smCard || !rowsEl) return;
+                  api('/api/schedule/schedule-modes').then(function (mr) {
+                    var modes = (mr.ok && mr.data && mr.data.modes) || [];
+                    if (!modes.length) return; // no departments to administer: card stays hidden
+                    smCard.classList.remove('hidden');
+                    rowsEl.innerHTML = modes.map(function (m) {
+                      var gid = 'gs-schedule-mode-' + m.departmentId;
+                      return '<div class="form-row" style="margin-bottom:0.6rem">' +
+                        '<div style="font-weight:600;margin-bottom:0.2rem">' + esc(m.name) + '</div>' +
+                        '<label style="display:block;cursor:pointer"><input type="radio" name="' + gid + '" value="live" style="width:auto"' + (m.mode === 'live' ? ' checked' : '') + '> <b>Fill it in automatically</b></label>' +
+                        '<p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Your rotations fill the schedule in on their own.</p>' +
+                        '<label style="display:block;cursor:pointer"><input type="radio" name="' + gid + '" value="generated" style="width:auto"' + (m.mode === 'generated' ? ' checked' : '') + '> <b>Draft from my rotations</b></label>' +
+                        '<p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Nothing appears until you draft it from your rotations.</p>' +
+                        '</div>';
+                    }).join('');
+                    rowsEl.querySelectorAll('input[type="radio"]').forEach(function (rb) {
+                      rb.addEventListener('change', function () {
+                        var deptId = rb.name.replace('gs-schedule-mode-', '');
+                        var errEl = document.getElementById('general-error');
+                        var okEl = document.getElementById('general-saved');
+                        errEl.classList.add('hidden'); okEl.classList.add('hidden');
+                        var prev = rb.value === 'generated' ? 'live' : 'generated';
+                        var revert = function () {
+                          var other = rowsEl.querySelector('input[name="gs-schedule-mode-' + deptId + '"][value="' + prev + '"]');
+                          if (other) other.checked = true;
+                        };
+                        api('/api/schedule/schedule-mode/' + deptId, { method: 'PUT', body: JSON.stringify({ mode: rb.value }) }).then(function (r) {
+                          if (r.ok) {
+                            okEl.classList.remove('hidden');
+                            setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
+                          } else {
+                            revert();
+                            errEl.textContent = (r.data && r.data.error) || 'Could not save.';
+                            errEl.classList.remove('hidden');
+                          }
+                        }).catch(function () {
+                          revert();
+                          errEl.textContent = 'Network error.';
+                          errEl.classList.remove('hidden');
+                        });
+                      });
+                    });
                   }).catch(function () {});
                 })();
               }
@@ -12690,34 +12733,6 @@ window.qsNpOfferSend = function (btn) {
               if (frReset) frReset.addEventListener('click', function () {
                 var inp = document.getElementById('gs-footer-color');
                 inp.value = '#083f4d'; inp.dataset.gsCleared = '1';
-              });
-              // Schedule mode saves the moment it is picked (owner
-              // only) — same Saved./error alerts as the rest of General.
-              document.querySelectorAll('input[name="gs-schedule-mode"]').forEach(function (rb) {
-                rb.addEventListener('change', function () {
-                  var errEl = document.getElementById('general-error');
-                  var okEl = document.getElementById('general-saved');
-                  errEl.classList.add('hidden'); okEl.classList.add('hidden');
-                  var prev = rb.value === 'generated' ? 'live' : 'generated';
-                  var revert = function () {
-                    var other = document.querySelector('input[name="gs-schedule-mode"][value="' + prev + '"]');
-                    if (other) other.checked = true;
-                  };
-                  api('/api/schedule/schedule-mode', { method: 'PUT', body: JSON.stringify({ mode: rb.value }) }).then(function (r) {
-                    if (r.ok) {
-                      okEl.classList.remove('hidden');
-                      setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
-                    } else {
-                      revert();
-                      errEl.textContent = (r.data && r.data.error) || 'Could not save.';
-                      errEl.classList.remove('hidden');
-                    }
-                  }).catch(function () {
-                    revert();
-                    errEl.textContent = 'Network error.';
-                    errEl.classList.remove('hidden');
-                  });
-                });
               });
               var gsForm = document.getElementById('general-form');
               if (gsForm) gsForm.addEventListener('submit', function (e) {
@@ -16375,16 +16390,18 @@ window.qsNpOfferSend = function (btn) {
         }
 
         // ---- Draft schedule from rotation (background rotations,
-        // Deepika 2026-11-13) ----
-        // The action exists ONLY while the company is in generated
-        // mode. In live mode the option is never added, so the whole
-        // flow stays hidden and inert.
+        // Deepika 2026-11-13 — per department, 2026-11-14) ----
+        // The action exists while ANY department the user can
+        // administer is generated. In a fully live company the
+        // option is never added, so the whole flow stays hidden
+        // and inert.
         var bulkScheduleMode = 'live';
         var draftPanelInit = false;
         var draftPreset = '4w';
         function loadBulkScheduleMode() {
-          api('/api/schedule/schedule-mode').then(function (r) {
-            bulkScheduleMode = (r.ok && r.data && r.data.mode) || 'live';
+          api('/api/schedule/schedule-modes').then(function (r) {
+            var modes = (r.ok && r.data && r.data.modes) || [];
+            bulkScheduleMode = modes.some(function (m) { return m.mode === 'generated'; }) ? 'generated' : 'live';
             syncBulkDraftOption();
           }).catch(function () { bulkScheduleMode = 'live'; syncBulkDraftOption(); });
         }
@@ -16457,7 +16474,11 @@ window.qsNpOfferSend = function (btn) {
         function renderDraftRotations(rots) {
           var box = $('bulk-draft-rots');
           if (!box) return;
-          var active = (rots || []).filter(function (r) { return r.isActive; });
+          // Per-department mode: only rotations whose shift types are
+          // all generated can be drafted — a live department's
+          // rotations never appear here (the server refuses them
+          // with 403 too; the list just doesn't offer them).
+          var active = (rots || []).filter(function (r) { return r.isActive && r.generatable !== false; });
           if (!active.length) {
             box.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No active rotations.</p>';
             return;
@@ -17656,8 +17677,8 @@ window.qsNpOfferSend = function (btn) {
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
-        var msScheduleMode = 'live'; // background rotations: 'live' | 'generated'
-        var msNotDraftedDates = []; // managers only; the server sends employees []
+        var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
+        var msNotDraftedByType = {}; // managers only; the server sends employees {}
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
         var msView = 'month';
@@ -17930,7 +17951,7 @@ window.qsNpOfferSend = function (btn) {
               extraSlots = rs[3].data.extraSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
               msScheduleMode = rs[3].data.scheduleMode || 'live';
-              msNotDraftedDates = rs[3].data.notDraftedDates || [];
+              msNotDraftedByType = rs[3].data.notDraftedByType || {};
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
             if (rs[5] && rs[5].ok) dashEvents = rs[5].data.sessions || [];
@@ -18212,7 +18233,7 @@ window.qsNpOfferSend = function (btn) {
           // Background rotations (decision N2, same rule as the admin
           // grid): on an undrafted date the staffing target
           // contributes 0 — only manually added extra slots count.
-          var target = (msScheduleMode === 'generated' && msNotDraftedDates.indexOf(dateStr) !== -1) ? 0 : targetCountFor(dateStr, shiftTypeId);
+          var target = ((msNotDraftedByType[shiftTypeId] || []).indexOf(dateStr) !== -1) ? 0 : targetCountFor(dateStr, shiftTypeId);
           var extra = 0;
           (extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) extra += (e.count || 0);
@@ -18912,7 +18933,7 @@ window.qsNpOfferSend = function (btn) {
             if (sR.ok) {
               shifts = sR.data.shifts || [];
               msScheduleMode = sR.data.scheduleMode || 'live';
-              msNotDraftedDates = sR.data.notDraftedDates || [];
+              msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();
               requestAnimationFrame(function () { window.scrollTo(0, y); });
             }
@@ -18943,7 +18964,7 @@ window.qsNpOfferSend = function (btn) {
             if (msShiftFingerprint(fresh) !== msShiftFingerprint(shifts)) {
               shifts = fresh;
               msScheduleMode = sR.data.scheduleMode || 'live';
-              msNotDraftedDates = sR.data.notDraftedDates || [];
+              msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();
               msSuccess('Schedule updated just now.');
             }

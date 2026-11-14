@@ -36,7 +36,7 @@
 import { matchName } from './planHelpers.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
-import { isGeneratedMode, getUndraftedDates } from './scheduleMode.js';
+import { getGeneratedTypeIds, getUndraftedDatesForType } from './scheduleMode.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
@@ -608,15 +608,19 @@ export async function gatePlanChanges(
   const from = shiftDay(dates[0], -2);
   const to = shiftDay(dates[dates.length - 1], 2);
   const entries = await getShiftsForRange(query, companyId, from, to);
-  // N1 (background rotations, Deepika 2026-11-13): in generated mode
-  // the AI sees stored shifts only — an undrafted date has no holder
-  // to verify against, so the workability loop below would ask a
-  // misleading holder-mismatch question ("X doesn't hold that shift"
-  // when nobody has been drafted for it yet). Clarify FIRST: the
-  // date is not drafted yet, and the fix is to draft it.
-  if (await isGeneratedMode(query, companyId)) {
-    const undrafted = new Set(await getUndraftedDates(query, companyId, dates[0], dates[dates.length - 1]));
+  // N1 (background rotations, Deepika 2026-11-13 — per department,
+  // 2026-11-14): for a generated shift type the AI sees stored
+  // shifts only — an undrafted date has no holder to verify
+  // against, so the workability loop below would ask a misleading
+  // holder-mismatch question ("X doesn't hold that shift" when
+  // nobody has been drafted for it yet). Clarify FIRST: the date is
+  // not drafted yet, and the fix is to draft it. Live types skip
+  // this — their holders draw from the rotation as always.
+  {
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     for (const c of dated) {
+      const type = resolveType(c.shiftType);
+      if (!type || !generatedTypes.has(type.id)) continue;
       const touched: string[] = [];
       for (const d of [c.date, c.fromDate, c.toDate, c.startDate]) if (d) touched.push(String(d));
       // A range change touches every date in its span.
@@ -629,6 +633,11 @@ export async function gatePlanChanges(
           cur = dd.toISOString().slice(0, 10);
         }
       }
+      if (!touched.length) continue;
+      touched.sort();
+      const undrafted = new Set(await getUndraftedDatesForType(
+        query, companyId, type.id, touched[0], touched[touched.length - 1]
+      ));
       const bad = touched.find((d) => undrafted.has(d));
       if (bad) {
         return { ok: false, question: `I can't plan a change for ${bad} yet — that date hasn't been drafted from the rotations. Draft the schedule for that date first (Bulk Actions → Draft schedule from rotation), then ask again.` };

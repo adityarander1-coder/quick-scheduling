@@ -8,7 +8,8 @@
 //   3. writes a comparison report (per person per week: drawn vs
 //      stored counts, plus every differing date) to the goal's
 //      hidden_files/,
-//   4. flips the company's schedule_mode flag — ONLY with --flip.
+//   4. flips every department's schedule mode to 'generated' —
+//      ONLY with --flip.
 //
 // Run via `npx tsx`, NOT a route. Rehearse on the fixture only.
 // NEVER run against production without Deepika's explicit go at a
@@ -36,7 +37,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { query, withTransaction } from '../src/db.js';
 import { generateRotations } from '../src/util/rotationEngine.js';
-import { getScheduleMode, setScheduleMode } from '../src/util/scheduleMode.js';
+import { getCompanyModeSummary, setDepartmentMode } from '../src/util/scheduleMode.js';
 import { companyTodayStr } from '../src/util/notifyJobs.js';
 import { drawRotationOccurrences } from '../src/routes/schedule.js';
 import { auditLog } from '../src/util/audit.js';
@@ -123,9 +124,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const companyName = coRows[0].name || companyId;
-  const modeBefore = await getScheduleMode(query, companyId);
+  const modeBefore = await getCompanyModeSummary(query, companyId);
   if (modeBefore === 'generated' && !dryRun) {
-    console.error(`Company ${companyName} is ALREADY in generated mode — nothing to migrate.`);
+    console.error(`Company ${companyName} is ALREADY in generated mode (every department) — nothing to migrate.`);
     process.exit(1);
   }
 
@@ -309,7 +310,7 @@ async function main(): Promise<void> {
   lines.push('- A negative Diff is usually a D4 skip (the person was on vacation, already had a shift that day, or was previously deleted). Check the list above.');
   lines.push('- A positive Diff is a row generation creates that the draw suppressed (e.g. the draw\'s special-precedence pass hid a per-person occurrence under a group shift; generation deals the group first and skips the clash instead — same person, same day, one row either way).');
   lines.push('- Past dates in the range are stored as published truth and never re-drawn; future dates are stored published so the schedule looks identical the day the flag flips.');
-  if (!flip && !dryRun) lines.push('- The flag was NOT flipped by this run. Review this report, then re-run with --flip to switch the company to generated mode.');
+  if (!flip && !dryRun) lines.push('- The departments were NOT flipped by this run. Review this report, then re-run with --flip to switch the company to generated mode.');
 
   const outPath = String(args.out || '') ||
     path.join(GOAL_DIR, 'hidden_files', `migration-to-generated-${companyId.slice(0, 8)}-${from}-to-${to}${dryRun ? '-dryrun' : ''}.md`);
@@ -318,12 +319,13 @@ async function main(): Promise<void> {
   console.log(`Report written: ${outPath}`);
   console.log(`Drawn ${drawn.length} · created ${created.length} · drawn-not-created ${drawnNotCreated.length} · created-not-drawn ${createdNotDrawn.length}`);
 
-  // ---- 5. Flip the flag — only with --flip, never on a dry run.
+  // ---- 5. Flip every department's mode — only with --flip, never on a dry run.
   if (flip && !dryRun) {
-    await setScheduleMode(query, companyId, 'generated');
-    console.log(`Schedule mode flipped to 'generated' for ${companyName}.`);
+    const { rows: deptRows } = await query('SELECT id FROM departments WHERE company_id = $1', [companyId]);
+    for (const d of deptRows) await setDepartmentMode(query, companyId, d.id, 'generated');
+    console.log(`Schedule mode flipped to 'generated' for every department of ${companyName}.`);
   } else if (!dryRun) {
-    console.log('Flag NOT flipped — re-run with --flip after reviewing the report.');
+    console.log('Departments NOT flipped — re-run with --flip after reviewing the report.');
   }
 }
 

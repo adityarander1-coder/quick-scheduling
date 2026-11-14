@@ -29,7 +29,7 @@ import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { excludeRotationInstances, findRotationOccurrences } from '../util/planExecutor.js';
-import { getScheduleMode, isGeneratedMode, setScheduleMode, getUndraftedDates, getLastGenerations } from '../util/scheduleMode.js';
+import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
@@ -479,6 +479,11 @@ interface DrawOptions {
   collectDeparted?: boolean;
   includeInactiveAssignees?: boolean;
   today?: string;
+  // Per-department mode (Deepika, 2026-11-14): shift types in a
+  // generated department are not drawn here at all — the caller
+  // passes the set from getGeneratedTypeIds. Empty/absent = draw
+  // everything, as before.
+  skipShiftTypeIds?: Set<string>;
 }
 
 export async function drawRotationOccurrences(
@@ -652,6 +657,9 @@ export async function drawRotationOccurrences(
     // rotation's start — so a skipped turn (vacation, manual shift)
     // never reshuffles the order.
     if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      // Per-department mode: a group rotation whose shift type is
+      // generated is not drawn — its days come from drafting only.
+      if (opts?.skipShiftTypeIds?.has((rot as any).groupShiftTypeId)) continue;
       // The rotation rotates through its groups in order; each
       // group rotates its own members. Turn BLOCKS are counted by
       // dealing (a week with no run-dates is never a block), so a
@@ -776,9 +784,14 @@ export async function drawRotationOccurrences(
 
     if (assignments.length === 0) continue;
 
-    // Build map: cycleDay -> assignments
+    // Build map: cycleDay -> assignments. Per-department mode:
+    // assignments for a generated shift type are not drawn — their
+    // days come from drafting only. (The departed collection below
+    // only sees live-type assignments, so no rule-7 slot is opened
+    // for a generated type here — generation opens those itself.)
     const byDay = new Map<number, typeof assignments>();
     for (const a of assignments) {
+      if (opts?.skipShiftTypeIds?.has(a.shiftTypeId)) continue;
       if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
       byDay.get(a.cycleDay)!.push(a);
     }
@@ -968,21 +981,29 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // drawRotationOccurrences (shared with Publish schedule, Step 2,
     // so a publish stamps exactly what this grid draws).
     //
-    // Background rotations (Deepika, 2026-11-13): in `generated`
-    // mode this drawing is OFF — the grid shows stored rows only
-    // (drafts grey, published solid). Dates no generation has
-    // covered come back as `notDraftedDates`, so the grid can label
-    // them "Not drafted yet" instead of looking empty (managers
+    // Background rotations (Deepika, 2026-11-13 — per department,
+    // 2026-11-14): a shift type is drawn only when its departments
+    // are all 'live'. Types in a generated department are NOT drawn
+    // — the grid shows their stored rows only (drafts grey, published
+    // solid). Dates no generation has covered for a generated type
+    // come back in `notDraftedByType`, so the grid can suppress that
+    // type's OPEN rows instead of looking short-staffed (managers
     // only — employees see their own published shifts only, and an
-    // undrafted date is simply not their concern).
-    const generatedMode = await isGeneratedMode(query, companyId);
+    // undrafted date is simply not their concern). `notDraftedDates`
+    // is the day-level version (any generation covering the date =
+    // drafted) for the "Not drafted yet" day header; `scheduleMode`
+    // is the company summary: 'live' | 'generated' | 'mixed'.
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     const rotationShifts: any[] = [];
     let notDraftedDates: string[] = [];
-    if (!generatedMode) {
-      const drawn = await drawRotationOccurrences(query, companyId, from, to, rows);
-      rotationShifts.push(...drawn.occurrences);
-    } else if (!employeeView) {
+    let notDraftedByType: Record<string, string[]> = {};
+    const drawn = await drawRotationOccurrences(query, companyId, from, to, rows, { skipShiftTypeIds: generatedTypes });
+    rotationShifts.push(...drawn.occurrences);
+    if (!employeeView && generatedTypes.size) {
+      // Day-level (any generation covering the date = drafted) for the
+      // "Not drafted yet" header; per-type for the OPEN suppression.
       notDraftedDates = await getUndraftedDates(query, companyId, from, to);
+      notDraftedByType = await getNotDraftedByType(query, companyId, generatedTypes, from, to);
     }
 
     // Merge and sort.
@@ -1059,7 +1080,12 @@ router.get('/shifts', async (req: Request, res: Response) => {
       }
     } catch { /* cover markers are decoration — never fail the schedule */ }
 
-    res.json({ shifts: all, closedShifts, extraSlots, scheduleMode: generatedMode ? 'generated' : 'live', notDraftedDates });
+    res.json({
+      shifts: all, closedShifts, extraSlots,
+      scheduleMode: await getCompanyModeSummary(query, companyId),
+      generatedTypeIds: [...generatedTypes],
+      notDraftedDates, notDraftedByType,
+    });
   } catch (err) {
     console.error('[schedule] list shifts failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -1666,14 +1692,17 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     } catch (err) {
       console.error('[schedule] bulk delete group exclusions failed:', err);
     }
-    // Background rotations (Deepika, 2026-11-13): in `generated`
-    // mode the pause pass is SKIPPED — a 'Bulk delete' pause would
+    // Background rotations (Deepika, 2026-11-13 — per department,
+    // 2026-11-14): the pause pass is SKIPPED for a rotation whose
+    // shift types are all generated — a 'Bulk delete' pause would
     // suppress FUTURE generations of those dates, and the D1
     // deletion markers are the exclusions the widened sweep below
-    // writes (keep-changes reads them; fresh clears them). The
-    // group-exclusion pass above is a no-op here (getShiftsForRange
-    // returns stored-only, no isRotation entries) — left in place.
-    if (!(await isGeneratedMode(query, companyId))) {
+    // writes (keep-changes reads them; fresh clears them). Rotations
+    // with any live type are paused as before. (Group rotations
+    // have no assignments, so they never appear in this query —
+    // the group-exclusion pass above covers them.)
+    {
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     const rotParams: any[] = [companyId];
     const rotUserFilter = Array.isArray(userIds) && userIds.length
       ? `AND ra.user_id = ANY($${rotParams.length + 1}::uuid[])`
@@ -1686,13 +1715,24 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       : '';
     if (rotTypeFilter) rotParams.push(shiftTypeId);
     const { rows: rots } = await query(
-      `SELECT DISTINCT r.id AS rotation_id, ra.user_id
+      `SELECT DISTINCT r.id AS rotation_id, ra.user_id, ra.shift_type_id AS "shiftTypeId"
        FROM rotations r
        JOIN rotation_assignments ra ON ra.rotation_id = r.id
        WHERE r.company_id = $1 AND r.is_active = true ${rotUserFilter} ${rotTypeFilter}`,
       rotParams
     );
+    // A rotation is skipped when EVERY type it produces is generated
+    // (a mixed rotation still pauses — its live types need it).
+    const rotTypes = new Map<string, Set<string>>();
     for (const rt of rots) {
+      if (!rotTypes.has(rt.rotation_id)) rotTypes.set(rt.rotation_id, new Set());
+      rotTypes.get(rt.rotation_id)!.add(rt.shiftTypeId);
+    }
+    const skipRot = new Set<string>([...rotTypes.entries()]
+      .filter(([, types]) => types.size && [...types].every((t) => generatedTypes.has(t)))
+      .map(([id]) => id));
+    for (const rt of rots) {
+      if (skipRot.has(rt.rotation_id)) continue;
       try {
         await query(
           `INSERT INTO rotation_pauses (id, rotation_id, company_id, start_date, end_date, reason)
@@ -1702,7 +1742,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         paused++;
       } catch { /* skip duplicates */ }
     }
-    } // end live-mode pause pass
+    } // end pause pass (generated rotations skipped)
     // Delete completely (Deepika, 2026-11-13 — widened 2026-11-14):
     // with a type filter, the group pass and the pause pass above are
     // both type-narrowed, so a deleted person's rotation occurrences
@@ -2012,17 +2052,18 @@ async function ensureOpenSlotForGroupDelete(
     );
     const extra = extraRows[0]?.n || 0;
     // Filled, exactly as the grid counts it: stored rows + drawn
-    // occurrences for the date (GET /shifts composition). In
-    // generated mode the grid shows stored rows only, so the count
-    // is stored rows only — no drawing.
+    // occurrences for the date (GET /shifts composition). Per
+    // department, a generated type counts stored rows only (the
+    // draw skips it); a live type counts stored + drawn.
     const { rows: stored } = await query(
       `SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId"
        FROM shifts WHERE company_id = $1 AND date = $2`,
       [companyId, date]
     );
     let filled = stored.filter((s: any) => s.shiftTypeId === shiftTypeId).length;
-    if (!(await isGeneratedMode(query, companyId))) {
-      const { occurrences } = await drawRotationOccurrences(query, companyId, date, date, stored);
+    {
+      const generatedTypes = await getGeneratedTypeIds(query, companyId);
+      const { occurrences } = await drawRotationOccurrences(query, companyId, date, date, stored, { skipShiftTypeIds: generatedTypes });
       filled += occurrences.filter((o: any) => o.shiftTypeId === shiftTypeId).length;
     }
     if (target + extra - filled !== 0) return false;
@@ -3552,6 +3593,11 @@ router.get('/rotations', async (req: Request, res: Response) => {
     // pattern has never been drafted, so there is nothing to be stale
     // against). Information only; nothing auto-regenerates.
     const lastGen = await getLastGenerations(query, companyId, rots.map((r: any) => r.id));
+    // Per-department mode: a rotation is draftable ('generatable')
+    // when every shift type it produces is generated. The draft
+    // panel hides the rest, and the copy-assign note reads this
+    // instead of a company-wide mode call.
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     for (const r of rots) {
       const lg = lastGen.get(r.id);
       r.lastGenerationAt = lg ? lg.createdAt : null;
@@ -3571,6 +3617,9 @@ router.get('/rotations', async (req: Request, res: Response) => {
         [r.id]
       );
       r.assignments = asg;
+      const types = [...new Set(asg.map((a: any) => a.shiftTypeId))];
+      if (r.groupShiftTypeId) types.push(r.groupShiftTypeId);
+      r.generatable = types.length > 0 && types.every((t: string) => generatedTypes.has(t));
     }
     res.json({ rotations: rots });
   } catch (err) {
@@ -4577,11 +4626,6 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const mode = await getScheduleMode(query, companyId);
-    if (mode !== 'generated') {
-      res.status(403).json({ error: 'Rotations are still live for this company — draft schedules after the schedule is switched to generated mode.' });
-      return;
-    }
     const rotationIds = Array.isArray(req.body?.rotationIds)
       ? [...new Set(req.body.rotationIds.filter((x: any) => typeof x === 'string'))] as string[]
       : [];
@@ -4591,6 +4635,20 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     const genMode = req.body?.mode === 'keep' ? 'keep' : 'fresh';
     if (!rotationIds.length) {
       res.status(400).json({ error: 'Pick at least one rotation.' });
+      return;
+    }
+    // Per-department gate: every named rotation must produce only
+    // generated-type shifts (Deepika, 2026-11-14 — each department
+    // picks its own). A rotation in a live-mode department is
+    // refused with the same 403 shape as the old company-wide one,
+    // naming the department(s) to switch in General Settings.
+    const gate = await checkRotationsGeneratable(query, companyId, rotationIds);
+    if (!gate.ok) {
+      const names = gate.liveDepartmentNames;
+      const msg = names.length
+        ? `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still set to fill in automatically — switch ${names.length === 1 ? 'it' : 'them'} to 'Draft from my rotations' in General Settings first.`
+        : `One of these rotations is in a department that still fills in automatically — switch it to 'Draft from my rotations' in General Settings first.`;
+      res.status(403).json({ error: msg });
       return;
     }
     // Department scoping: the scheduler's active department must be
@@ -4630,38 +4688,73 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
   }
 });
 
-// GET /api/schedule/schedule-mode — the company's schedule mode
-// ('live' = today's drawing; 'generated' = stored rows only).
-router.get('/schedule-mode', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// GET /api/schedule/schedule-modes — the departments the signed-in
+// user can administer, each with its current mode. Owner: all
+// departments. Scheduler: only departments they have edit access to
+// (a scheduler with no departments gets an empty list — the Settings
+// card stays hidden). The mode lives per department (Deepika,
+// 2026-11-14: "each department picks its own").
+router.get('/schedule-modes', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    res.json({ mode: await getScheduleMode(query, companyId) });
+    const { rows: depts } = await query(
+      'SELECT id, name FROM departments WHERE company_id = $1 ORDER BY name',
+      [companyId]
+    );
+    let administrable: string[];
+    if (req.session.role === 'owner') {
+      administrable = depts.map((d: any) => d.id);
+    } else {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      administrable = access.edit || [];
+    }
+    const modes = await getDepartmentModes(query, companyId);
+    res.json({
+      modes: depts
+        .filter((d: any) => administrable.includes(d.id))
+        .map((d: any) => ({ departmentId: d.id, name: d.name, mode: modes.get(d.id) || 'live' })),
+    });
   } catch (err) {
-    console.error('[schedule] get schedule mode failed:', err);
+    console.error('[schedule] get schedule modes failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
-// PUT /api/schedule/schedule-mode — flip the flag (owner only). The
-// Stage 4 flip, on Deepika's explicit go at a quiet evening; the
-// migration tool calls this after the comparison report. Flipping
-// back to 'live' resumes drawing (generated rows stay stored and
-// take manual precedence, exactly as occurrences did).
-router.put('/schedule-mode', requireRole('owner'), async (req: Request, res: Response) => {
+// PUT /api/schedule/schedule-mode/:departmentId — flip one
+// department's mode. Server-enforced: the owner can flip any
+// department; a scheduler only one they have edit access to (403
+// otherwise). 400 on anything but 'live' | 'generated'.
+router.put('/schedule-mode/:departmentId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    const departmentId = String(req.params.departmentId || '');
     const mode = String(req.body?.mode || '');
     if (mode !== 'live' && mode !== 'generated') {
       res.status(400).json({ error: "Mode must be 'live' or 'generated'." });
       return;
     }
-    await setScheduleMode(query, companyId, mode);
-    res.json({ mode });
+    const { rows: drows } = await query(
+      'SELECT id, name FROM departments WHERE id = $1 AND company_id = $2',
+      [departmentId, companyId]
+    );
+    if (!drows.length) {
+      res.status(404).json({ error: 'Department not found.' });
+      return;
+    }
+    if (req.session.role !== 'owner') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      if (!(access.edit || []).includes(departmentId)) {
+        res.status(403).json({ error: 'You can only change departments you administer.' });
+        return;
+      }
+    }
+    await setDepartmentMode(query, companyId, departmentId, mode);
+    res.json({ departmentId, mode });
     auditLog({
       companyId, date: todayStr(), action: 'updated', category: 'settings',
       source: 'manual', changedBy: req.session.userId!,
-      description: `Schedule mode changed to ${mode}`,
-      details: { mode },
+      description: `Schedule mode for ${drows[0].name} changed to ${mode}`,
+      details: { mode, departmentId, departmentName: drows[0].name },
     });
   } catch (err) {
     console.error('[schedule] put schedule mode failed:', err);
@@ -4800,26 +4893,27 @@ async function computePublishPlan(
   const handmade = stored.filter((s: any) => !s.publishBatchId);
   const batchShifts = stored.filter((s: any) => s.publishBatchId);
 
-  // Background rotations (Deepika, 2026-11-13): in `generated` mode
-  // there is nothing to stamp from a drawing — the drafts ARE the
-  // schedule. The plan is just the flips: every stored draft row in
-  // scope (any provenance — generation, hand-made, or an old batch
-  // row toggled back to draft) flips to published. No adds, no
-  // removes, no rule-7 opens (generation reconciles those itself,
+  // Background rotations (Deepika, 2026-11-13 — per department,
+  // 2026-11-14): a generated shift type has nothing to stamp from a
+  // drawing — its drafts ARE the schedule, so they just flip to
+  // published (any provenance: generation, hand-made, or an old batch
+  // row toggled back to draft). A live type keeps the stamp diff
+  // below, and its hand-made drafts flip too. No adds/removes/rule-7
+  // opens for a generated type (generation reconciles those itself,
   // per rotation, at draft time).
-  if (await isGeneratedMode(query, companyId)) {
-    const flips = stored.filter((s: any) =>
-      s.published === false && inScope(s.shiftTypeId) &&
-      (!userIds || userIds.has(s.userId)));
-    return { adds: [], removes: [], opens: [], closes: [], flips, batchPeople: new Set<string>(), openPeople: [], typeDepts };
-  }
+  const generatedTypes = await getGeneratedTypeIds(query, companyId);
+  const flips = stored.filter((s: any) =>
+    s.published === false && inScope(s.shiftTypeId) &&
+    (!userIds || userIds.has(s.userId)) &&
+    (generatedTypes.has(s.shiftTypeId) || !s.publishBatchId));
 
   // The drawing runs against hand-made stored shifts only: a batch
   // shift must not suppress its own occurrence (it IS that
   // occurrence, published), or the diff would read it as a remove.
+  // Generated types are not drawn — the draw skips them.
   const { occurrences, departed } = await drawRotationOccurrences(
     query, companyId, from, to, handmade,
-    { collectDeparted: true, includeInactiveAssignees: true, today }
+    { collectDeparted: true, includeInactiveAssignees: true, today, skipShiftTypeIds: generatedTypes }
   );
 
   const batchByKey = new Map<string, any>(batchShifts.map((s: any) => [pubKey(s.userId, s.date, s.shiftTypeId), s]));
@@ -4847,16 +4941,9 @@ async function computePublishPlan(
     if (s.date < today) continue;              // the past is truth — never removed
     if (userIds && !userIds.has(s.userId)) continue;
     if (!inScope(s.shiftTypeId)) continue;
+    if (generatedTypes.has(s.shiftTypeId)) continue; // generated types are flips-only, never removed by the draw diff
     if (!desiredByKey.has(pubKey(s.userId, s.date, s.shiftTypeId))) removes.push(s);
   }
-
-  // Stored DRAFT flips (unified publish door, Deepika 2026-11-10):
-  // hand-made draft shifts in scope publish alongside the stamps —
-  // the flip the old Bulk Actions door did, folded into the batch
-  // (migration 102's ledger) so Undo can flip back exactly its own.
-  const flips = stored.filter((s: any) =>
-    !s.publishBatchId && s.published === false && inScope(s.shiftTypeId) &&
-    (!userIds || userIds.has(s.userId)));
 
   // --- Rule 7: departed people's would-be shifts open for cover ---
   const desiredOpens = new Map<string, { rotationId: string; date: string; shiftTypeId: string; count: number; people: Map<string, { userId: string; name: string; endDate: string; count: number }> }>();
@@ -4896,6 +4983,7 @@ async function computePublishPlan(
   for (const [k, n] of existingOpens) {
     if (!desiredOpens.has(k)) {
       const [rotationId, date, shiftTypeId] = k.split('|');
+      if (generatedTypes.has(shiftTypeId)) continue; // generated types' slots are reconciled by generation, not the publish diff
       closes.push({ rotationId, date, shiftTypeId, count: n });
     }
   }
@@ -5087,7 +5175,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     const inScope = (t: string) =>
       publishTypeInScope(typeDepts, t, scope.depts, isOwner) && (!filters.typeIds || filters.typeIds.has(t));
     const today = await companyTodayStr(companyId);
-    const generatedMode = await isGeneratedMode(query, companyId);
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     const batchId = crypto.randomUUID();
     const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
     const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
@@ -5147,16 +5235,15 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // published — re-validated like everything else (still a
       // draft, still hand-made, inside the range, in scope) and
       // ledgered to this batch so Undo flips back exactly its own.
-      // In generated mode the plan names EVERY stored draft in
-      // scope (any provenance — generation, hand-made, or an old
+      // For a generated shift type the plan names EVERY stored draft
+      // in scope (any provenance — generation, hand-made, or an old
       // batch row toggled back to draft), so the hand-made-only
-      // re-validation is dropped there.
+      // re-validation is dropped for generated types.
       if (flipsIn.length) {
         const { rows: cand } = await tx.query(
           `SELECT id, user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId",
-                  generation_id AS "generationId" FROM shifts
+                  generation_id AS "generationId", publish_batch_id AS "publishBatchId" FROM shifts
            WHERE id = ANY($1::uuid[]) AND company_id = $2 AND published = false
-             ${generatedMode ? '' : 'AND publish_batch_id IS NULL'}
              AND date >= $3::date AND date <= $4::date`,
           [flipsIn, companyId, from, to]
         );
@@ -5164,6 +5251,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
         for (const f of cand) {
           if (!inScope(f.shiftTypeId)) continue;
           if (filters.userIds && !filters.userIds.has(f.userId)) continue;
+          if (!generatedTypes.has(f.shiftTypeId) && f.publishBatchId) continue;
           await tx.query('UPDATE shifts SET published = true WHERE id = $1', [f.id]);
           await tx.query(
             `INSERT INTO publish_batch_flips (batch_id, company_id, shift_id) VALUES ($1, $2, $3)
@@ -11286,12 +11374,11 @@ async function materializeRotationOccurrence(
   rotId: string,
   opts?: { published?: boolean; provenance?: boolean; createdBy?: string }
 ): Promise<any | null> {
-  // Background rotations (Deepika, 2026-11-13): in generated mode
-  // there are no occurrences to materialize — every shift is a
-  // stored row already, and a rot- id can only be stale. (The
-  // getShiftsForRange call below would return null anyway, since it
-  // is stored-only in generated mode; this is the explicit guard.)
-  if (await isGeneratedMode(query, companyId)) return null;
+  // Background rotations: a rot- id names a drawn occurrence.
+  // getShiftsForRange below draws only live types, so in a
+  // generated department the lookup finds nothing and this returns
+  // null — no company-wide guard is needed now that the mode is
+  // per department.
   const date = rotId.slice(-10);
   if (!isValidDate(date)) return null;
   const all = await getShiftsForRange(query, companyId, date, date);
@@ -14251,15 +14338,13 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
        ORDER BY st.name, u.last_name, u.first_name`, [companyId, date]);
     const manualKeys = new Set(manualRows.map((r: any) => r.user_id + '|' + r.shift_type_id));
 
-    // Background rotations (Deepika, 2026-11-13): in `generated`
-    // mode this is a stored-only query — no cycle-math loop (there
-    // are no occurrences to draw), no stored-specials suppression
-    // pass, and no pause-hiding of stored rows (a stored shift is
+    // Background rotations (Deepika, 2026-11-13 — per department,
+    // 2026-11-14): a generated shift type is never drawn here — its
+    // stored rows are the whole truth for the day (a stored shift is
     // real; the live pause-hiding was a draw-bookkeeping quirk the
-    // grid never shared).
-    if (await isGeneratedMode(query, companyId)) {
-      for (const r of manualRows) addShift(r, r.shift_type_id, r.shift_name, r.department_id, r.department_name);
-    } else {
+    // grid never shared, so a generated type's stored rows are never
+    // pause-hidden either). A live type draws exactly as before.
+    const generatedTypes = await getGeneratedTypeIds(query, companyId);
     // Published group-origin stored shifts suppress clashing drawn
     // per-person occurrences here too (same fix as the grid, Deepika
     // 2026-11-09): this handler never draws group occurrences, so a
@@ -14336,6 +14421,7 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
       const cycleDay = (daysSince % rot.cycle_days) + 1;
       for (const a of assigns) {
         if (a.cycle_day !== cycleDay) continue;
+        if (generatedTypes.has(a.shift_type_id)) continue; // generated type: stored rows only, never drawn
         if (a.end_date && date > String(a.end_date).slice(0, 10)) continue;
         if (exclSet.has(rot.id + '|' + a.user_id + '|' + a.shift_type_id)) continue;
         if (manualKeys.has(a.user_id + '|' + a.shift_type_id)) continue; // manual takes precedence
@@ -14348,11 +14434,11 @@ router.get('/working-on', requireRole('owner', 'scheduler'), async (req: Request
       }
     }
     // Manual shifts last, skipping members paused that day (mirrors main view).
+    // A generated type's stored rows are never pause-hidden (stored is real).
     for (const r of manualRows) {
-      if (userPaused.has(r.user_id)) continue;
+      if (userPaused.has(r.user_id) && !generatedTypes.has(r.shift_type_id)) continue;
       addShift(r, r.shift_type_id, r.shift_name, r.department_id, r.department_name);
     }
-    } // end live-mode branch
 
     // 3) Filters + department ranking.
     let candidates = Array.from(byUser.values());

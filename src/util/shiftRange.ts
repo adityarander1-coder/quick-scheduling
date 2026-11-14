@@ -1,7 +1,7 @@
 // util/shiftRange.ts — shared logic to get all visible shifts (manual + rotation-generated)
 // for a date range. Used by the /shifts API endpoint and email question answering.
 import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
-import { isGeneratedMode } from './scheduleMode.js';
+import { getGeneratedTypeIds } from './scheduleMode.js';
 
 export interface ShiftEntry {
   id: string;
@@ -55,36 +55,18 @@ export async function getShiftsForRange(
      WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3`,
     [companyId, from, to]
   );
-  // Background rotations (Deepika, 2026-11-13): in `generated` mode
-  // the schedule shows stored rows ONLY — no drawing. Every consumer
-  // of this helper flips with it: the calendar feed, Short cover,
-  // gap offers, availability gaps, day-shifts, the email question
-  // path, the conflict engine, the cross-branch on-call strip, the
-  // plan gate, and the planner context. The mode is per-company, so
-  // cross-branch reads use the OTHER company's mode, correctly.
-  // Stored rows are never hidden by pauses here (a stored shift is
-  // real; the live-draw pause-hiding was a draw-bookkeeping quirk
-  // the grid never shared).
-  if (await isGeneratedMode(query, companyId)) {
-    const visibleManual: ShiftEntry[] = manualRows
-      .filter((s: any) => !employeeView || s.published)
-      .map((s: any) => ({
-        id: `manual-${s.date}-${s.userId}`,
-        date: s.date,
-        personName: s.personName,
-        shiftTypeName: s.shiftTypeName,
-        published: s.published,
-        isRotation: false,
-        userId: s.userId,
-        shiftTypeId: s.shiftTypeId,
-      }));
-    return visibleManual.sort((a, b) => {
-      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-      return a.personName.localeCompare(b.personName);
-    });
-  }
-
-  // Active rotations
+  // Background rotations (Deepika, 2026-11-13 — per department,
+  // 2026-11-14): a shift type in a generated department is NOT
+  // drawn — its stored rows are the whole truth for the range. Every
+  // consumer of this helper flips per type with it: the calendar
+  // feed, Short cover, gap offers, availability gaps, day-shifts,
+  // the email question path, the conflict engine, the cross-branch
+  // on-call strip, the plan gate, and the planner context. A stored
+  // row of a generated type is never hidden by pauses here (a stored
+  // shift is real; the live-draw pause-hiding was a draw-bookkeeping
+  // quirk the grid never shared); a live type's stored rows keep
+  // the pause-hiding below.
+  const generatedTypes = await getGeneratedTypeIds(query, companyId);
 
   // Active rotations
   const { rows: rotations } = await query(
@@ -230,8 +212,10 @@ export async function getShiftsForRange(
 
     // Group rotation ("special shift", Deepika 2026-11-04): members
     // take turns in fixed order; turns are a pure function of the
-    // date, counted from the rotation's start.
+    // date, counted from the rotation's start. A generated type is
+    // not drawn — its days come from drafting only.
     if ((rot as any).groupId && (rot as any).groupShiftTypeId) {
+      if (generatedTypes.has((rot as any).groupShiftTypeId)) continue;
       const groupIds = String((rot as any).groupIds || (rot as any).groupId)
         .split(',').map((x: string) => x.trim()).filter(Boolean);
       // From the batched load above: the rotation's group shift
@@ -342,6 +326,7 @@ export async function getShiftsForRange(
 
     const byDay = new Map<number, typeof assignments>();
     for (const a of assignments) {
+      if (generatedTypes.has(a.shiftTypeId)) continue; // generated type: stored rows only, never drawn
       if (!byDay.has(a.cycleDay)) byDay.set(a.cycleDay, []);
       byDay.get(a.cycleDay)!.push(a);
     }
@@ -393,14 +378,16 @@ export async function getShiftsForRange(
     }
   }
 
-  // Hide manual shifts for users paused on that date
+  // Hide manual shifts for users paused on that date — except a
+  // generated type's stored rows, which are never hidden (stored is
+  // real; the pause-hiding was a draw-bookkeeping quirk).
   const isUserPaused = (userId: string, dateStr: string): boolean => {
     const periods = userPauseMap.get(userId);
     if (!periods) return false;
     return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
   };
   const visibleManual: ShiftEntry[] = manualRows
-    .filter((s: any) => !s.userId || !isUserPaused(s.userId, s.date))
+    .filter((s: any) => !s.userId || generatedTypes.has(s.shiftTypeId) || !isUserPaused(s.userId, s.date))
     .filter((s: any) => !employeeView || s.published)
     .map((s: any) => ({
       id: `manual-${s.date}-${s.userId}`,
