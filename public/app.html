@@ -4815,13 +4815,18 @@
           });
           $('sched-day-shifts').innerHTML = countStripHtml + html;
           // Open slots for unfilled staffing targets.
+          // Popup parity (Deepika, 2026-11-14): the popup lists opens
+          // for every type the user can VIEW, exactly as the grid does
+          // (shiftTypeVisible + openCountRole). Assigning into a type
+          // stays gated on edit access — the assign picker lists only
+          // editable types, and the assign/close/slot endpoints 403
+          // server-side — so this only changes what is shown.
           var openHtml = '';
           if (sched.canEdit) {
             sched.shiftTypes.forEach(function (st) {
-              if (!st.isActive) return;
-              if (!window.qsStEditable(st)) return; // only the active department's types are assignable
+              if (!shiftTypeVisible(st)) return;
               var closed = isShiftClosed(ds, st.id);
-              var open = openCountFor(ds, st.id);
+              var open = openCountRole(ds, st);
               if (closed) {
                 openHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">' +
                   '<span class="shift-cat" style="background:#f3f4f6;border-color:#d1d5db;color:#6b7280">' + esc(st.name) + '</span>' +
@@ -4847,8 +4852,11 @@
             $('sched-day-shifts').querySelectorAll('.open-slot').forEach(function (b) {
               b.addEventListener('click', function (e) {
                 if (e.target.closest('.open-slot-x')) return; // handled by delegated remover
-                hide($('sched-day-modal'));
-                openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
+                // openAssignModal refuses types the user cannot edit
+                // (returns false) — only hide the day popup when it
+                // actually opens, or tapping a view-only open slot
+                // would make the popup vanish with no feedback.
+                if (openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'))) hide($('sched-day-modal'));
               });
             });
             $('sched-day-shifts').querySelectorAll('[data-slot-restore]').forEach(function (b) {
