@@ -2916,9 +2916,10 @@
           var isRange = sched.view === 'range';
           if (isRange) show($('sched-range-picker'));
           else hide($('sched-range-picker'));
-          // Arrows live in the month grid (Month view) or nowhere (Range/Block views);
-          // Today stays on its own in the toolbar.
-          var hideArrows = (sched.view === 'range' || sched.view === 'month' || sched.view === 'block');
+          // Arrows live in the month grid (Month view) or nowhere (Range
+          // views); Block keeps the toolbar arrows — they step the year
+          // (Deepika, 2026-11-15: "i have arrow to go to next year").
+          var hideArrows = (sched.view === 'range' || sched.view === 'month');
           var pv = $('sched-prev'), nx = $('sched-next');
           if (pv) pv.style.display = hideArrows ? 'none' : '';
           if (nx) nx.style.display = hideArrows ? 'none' : '';
@@ -5644,6 +5645,10 @@
               rangeFrom: sched.rangeFrom,
               rangeTo: sched.rangeTo,
               rangeHorizon: sched.rangeHorizon || null,
+              // Block view Start date (Deepika, 2026-11-15): remember the
+              // picked start across reloads so the block view stops
+              // falling back to the week containing Jan 1 every time.
+              blockStart: schedBlockStart || null,
             }));
           } catch (e) { /* storage unavailable */ }
         }
@@ -5676,6 +5681,10 @@
               if (rt) rt.value = p.rangeTo;
             }
             if (p.rangeHorizon) sched.rangeHorizon = p.rangeHorizon;
+            if (p.blockStart) {
+              var bs = parseDate(p.blockStart);
+              if (bs && !isNaN(bs.getTime())) schedBlockStart = p.blockStart;
+            }
           } catch (e) { /* ignore bad stored data */ }
         }
 
@@ -5781,7 +5790,7 @@
         if (bmSel) bmSel.addEventListener('change', function () { schedBlockMode = bmSel.value; sbSel = {}; renderView(); });
         if (bmemSel) bmemSel.addEventListener('change', function () { schedBlockMember = bmemSel.value; renderView(); });
         var bsInp = $('sched-block-start');
-        if (bsInp) bsInp.addEventListener('change', function () { if (bsInp.value) { schedBlockStart = bsInp.value; loadAll(); } });
+        if (bsInp) bsInp.addEventListener('change', function () { if (bsInp.value) { schedBlockStart = bsInp.value; saveSchedView(); loadAll(); } });
         // ---- Block view "Make schedule" mode: multi-select blocks and
         // assign an employee (By shift) or a shift (By employee), or work
         // by date range. Candidates are filtered by job roles. ----
@@ -6604,7 +6613,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() - 1);
             else if (sched.view === 'week') a.setDate(a.getDate() - 7);
-            else if (sched.view === 'block') { var bp = blockFromDate(); bp.setFullYear(bp.getFullYear() - 1); schedBlockStart = fmtDate(bp); }
+            else if (sched.view === 'block') { var bp = schedBlockStart ? parseDate(schedBlockStart) : blockFromDate(); bp.setFullYear(bp.getFullYear() - 1); schedBlockStart = fmtDate(bp); }
             else a.setMonth(a.getMonth() - 1);
           }
           saveSchedView();
@@ -6629,7 +6638,7 @@
             var a = sched.anchorDate;
             if (sched.view === 'day') a.setDate(a.getDate() + 1);
             else if (sched.view === 'week') a.setDate(a.getDate() + 7);
-            else if (sched.view === 'block') { var bn = blockFromDate(); bn.setFullYear(bn.getFullYear() + 1); schedBlockStart = fmtDate(bn); }
+            else if (sched.view === 'block') { var bn = schedBlockStart ? parseDate(schedBlockStart) : blockFromDate(); bn.setFullYear(bn.getFullYear() + 1); schedBlockStart = fmtDate(bn); }
             else a.setMonth(a.getMonth() + 1);
           }
           saveSchedView();
@@ -6648,6 +6657,11 @@
             return;
           }
           sched.anchorDate = new Date();
+          // Today in Block view resets to the Jan 1 default (and clears
+          // the remembered Start date): Today means "take me to now",
+          // the same as in every other view. The picked start is
+          // remembered across reloads and view switches, just not
+          // across an explicit Today tap (Deepika, 2026-11-15).
           if (sched.view === 'block') schedBlockStart = '';
           saveSchedView();
           loadAll();
@@ -18537,6 +18551,9 @@ window.qsNpOfferSend = function (btn) {
               rangeFrom: rangeFrom,
               rangeTo: rangeTo,
               rangeHorizon: rangeHorizon || null,
+              // Block view Start date (Deepika, 2026-11-15): same
+              // remember-across-reloads rule as the admin Schedule tab.
+              blockStart: msBlockStart || null,
             }));
           } catch (e) { /* storage unavailable */ }
         }
@@ -18567,6 +18584,10 @@ window.qsNpOfferSend = function (btn) {
               if (rt) rt.value = p.rangeTo;
             }
             if (p.rangeHorizon) rangeHorizon = p.rangeHorizon;
+            if (p.blockStart) {
+              var mbs = parseDate(p.blockStart);
+              if (mbs && !isNaN(mbs.getTime())) msBlockStart = p.blockStart;
+            }
           } catch (e) { /* ignore bad stored data */ }
         }
 
@@ -19952,7 +19973,7 @@ window.qsNpOfferSend = function (btn) {
           });
         });
         $('ms-prev').addEventListener('click', function () {
-          if (msView === 'block') { var bp = msBlockFromDate(); bp.setFullYear(bp.getFullYear() - 1); msBlockStart = fmtDate(bp); loadData(); return; }
+          if (msView === 'block') { var bp = msBlockStart ? parseDate(msBlockStart) : msBlockFromDate(); bp.setFullYear(bp.getFullYear() - 1); msBlockStart = fmtDate(bp); loadData(); return; }
           if (msView === 'range' && rangeFrom) {
             // Shift the whole window back by its span (open ranges move From + horizon).
             var rf = parseDate(rangeFrom);
@@ -19979,6 +20000,8 @@ window.qsNpOfferSend = function (btn) {
             loadData();
             return;
           }
+          // Today in Block view resets to the Jan 1 default (and clears
+          // the remembered Start date) — same rule as the admin tab.
           anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData();
         });
         // Phone: Today sits next to the "My schedule" heading (same band look).
@@ -20015,7 +20038,7 @@ window.qsNpOfferSend = function (btn) {
           else if (msMql.addListener) msMql.addListener(placeMsToday);
         }
         $('ms-next').addEventListener('click', function () {
-          if (msView === 'block') { var bn = msBlockFromDate(); bn.setFullYear(bn.getFullYear() + 1); msBlockStart = fmtDate(bn); loadData(); return; }
+          if (msView === 'block') { var bn = msBlockStart ? parseDate(msBlockStart) : msBlockFromDate(); bn.setFullYear(bn.getFullYear() + 1); msBlockStart = fmtDate(bn); loadData(); return; }
           if (msView === 'range' && rangeFrom) {
             var rf = parseDate(rangeFrom);
             var rt = rangeTo ? parseDate(rangeTo) : parseDate(rangeHorizon || fmtDate(addDays(rf, 90)));
@@ -20078,7 +20101,7 @@ window.qsNpOfferSend = function (btn) {
         if (msBmSel) msBmSel.addEventListener('change', function () { msBlockMode = msBmSel.value; renderView(); });
         if (msBmemSel) msBmemSel.addEventListener('change', function () { msBlockMember = msBmemSel.value; renderView(); });
         var msBsInp = $('ms-block-start');
-        if (msBsInp) msBsInp.addEventListener('change', function () { if (msBsInp.value) { msBlockStart = msBsInp.value; loadData(); } });
+        if (msBsInp) msBsInp.addEventListener('change', function () { if (msBsInp.value) { msBlockStart = msBsInp.value; saveMsView(); loadData(); } });
         $('ms-range-apply').addEventListener('click', function () {
           var f = $('ms-range-from').value, t = $('ms-range-to').value;
           if (!f) { msError('Pick a from date.'); return; }
