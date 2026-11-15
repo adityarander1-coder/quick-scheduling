@@ -1388,6 +1388,14 @@
        day are untouched. */
     #tab-schedule .week-grid { display: grid; gap: 1px; }
     #tab-schedule .week-grid article.day-row { margin-bottom: 0; border-right: 2px solid #7a8a8e; border-bottom: 2px solid #7a8a8e; }
+  /* At schedule_size 70/80 the whole schedule is zoomed (0.7/0.8, see
+     qsApplyScheduleSize), so a 2px border paints as a single device
+     pixel and is invisible — that is why the lines did not show on
+     production (9 columns at 1919px is the 0.7-zoom signature). Under
+     the zoom the dividers are 3px, so they paint as 2 device pixels;
+     at size 100 they stay 2px. Phones never get qs-scaled. */
+  #tab-schedule #sched-view.qs-f70 .week-grid article.day-row,
+  #tab-schedule #sched-view.qs-f80 .week-grid article.day-row { border-right-width: 3px; border-bottom-width: 3px; }
     #sched-view.qs-scaled .week-grid, #ms-view.qs-scaled .week-grid { display: flex; flex-wrap: wrap; }
     #sched-view.qs-scaled .week-grid article.day-row, #ms-view.qs-scaled .week-grid article.day-row { flex: 1 1 250px; min-width: 0; }
     #sched-view.qs-f80 .shift-cat, #ms-view.qs-f80 .shift-cat { font-weight: 800; color: #0a0f1a; }
@@ -1876,8 +1884,27 @@
         #tab-myschedule .sbw-open { color: #c62828; font-weight: 800; }
         @media (min-width: 900px) {
           body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
-          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1px; align-items: start; }
+          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1px; align-items: stretch; }
+          /* stretch (not start): adjacent day boxes in a row are EQUAL IN
+             SIZE — the card's bottom border aligns across the row so the
+             dividers run straight (Deepika, 2026-11-15). The same
+             align-items also stretches the cards in the qs-scaled flex
+             layout (size 70/80). The shift rows inside keep their own
+             height; the extra space in a stretched card stays empty. */
           #tab-schedule .week-grid article.day-row { margin-bottom: 0; }
+          /* Shift rows: ONE consistent height on desktop. The type-name
+             cell is at least two lines tall, so a 1-line name
+             ("Clinic") renders the same height as a 2-line name
+             ("Day Hospitalist") and rows line up across adjacent day
+             boxes. The cell is border-box, so the floor covers the
+             two text lines (3em at 11px) PLUS the 0.36rem top+bottom
+             padding — 38.8px, the measured standard row height. The
+             name truncates with an ellipsis instead of wrapping.
+             Rows carrying a note/comment keep auto height so user
+             content is never clipped. Phones are untouched: there
+             the name cell fits on one line and rows are already uniform. */
+          #tab-schedule .shift-grid .shift-cat { min-height: calc(3em + 0.36rem); }
+          #tab-schedule .shift-grid:not(:has(.day-note, .entry-name-comment)) .shift-nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
           #tab-schedule .sched-control-box { display: flex; align-items: center; gap: 1rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0; font-size: 1.2rem; white-space: nowrap; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 0; flex: 1 1 320px; }
