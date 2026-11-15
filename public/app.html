@@ -1373,17 +1373,21 @@
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
     /* Day-box dividers (Deepika, 2026-11-14, approved phone + web mocks;
        2026-11-15: LINES ONLY — the container background is gone, the
-       divider is drawn on the day boxes themselves): a 1px #7a8a8e line
+       divider is drawn on the day boxes themselves): a 2px #7a8a8e line
        between one day's box and the next — each card's right and bottom
        edge, facing the 1px gap, on the stacked phone view and between
-       the columns on desktop alike. The container has NO background and
+       the columns on desktop alike. 2px, not 1px: a single device pixel
+       is invisible at a glance on a real monitor and is missed by any
+       boundary scan that does not land exactly on the card's last pixel
+       column (that is how the Nov 15 live look found "no lines" although
+       the 1px border was rendering). The container has NO background and
        NO border, so no dark paint shows in empty space. The day cards
        KEEP their own border (top/left), radius and shadow. This
        SUPERSEDES 118879a, which stripped the cards and joined them into
        one grid — do NOT bring that back. The shift boxes inside each
        day are untouched. */
     #tab-schedule .week-grid { display: grid; gap: 1px; }
-    #tab-schedule .week-grid article.day-row { margin-bottom: 0; border-right: 1px solid #7a8a8e; border-bottom: 1px solid #7a8a8e; }
+    #tab-schedule .week-grid article.day-row { margin-bottom: 0; border-right: 2px solid #7a8a8e; border-bottom: 2px solid #7a8a8e; }
     #sched-view.qs-scaled .week-grid, #ms-view.qs-scaled .week-grid { display: flex; flex-wrap: wrap; }
     #sched-view.qs-scaled .week-grid article.day-row, #ms-view.qs-scaled .week-grid article.day-row { flex: 1 1 250px; min-width: 0; }
     #sched-view.qs-f80 .shift-cat, #ms-view.qs-f80 .shift-cat { font-weight: 800; color: #0a0f1a; }
