@@ -6656,13 +6656,17 @@
             loadAll();
             return;
           }
+          // Today in Block view goes to the picked Start date
+          // (Deepika, 2026-11-15): a remembered Start date is kept,
+          // so the block view jumps to its week. With no remembered
+          // start, Today takes you to now and the Jan 1 default
+          // applies as before.
+          if (sched.view === 'block' && schedBlockStart) {
+            saveSchedView();
+            loadAll();
+            return;
+          }
           sched.anchorDate = new Date();
-          // Today in Block view resets to the Jan 1 default (and clears
-          // the remembered Start date): Today means "take me to now",
-          // the same as in every other view. The picked start is
-          // remembered across reloads and view switches, just not
-          // across an explicit Today tap (Deepika, 2026-11-15).
-          if (sched.view === 'block') schedBlockStart = '';
           saveSchedView();
           loadAll();
         });
@@ -20000,9 +20004,13 @@ window.qsNpOfferSend = function (btn) {
             loadData();
             return;
           }
-          // Today in Block view resets to the Jan 1 default (and clears
-          // the remembered Start date) — same rule as the admin tab.
-          anchorDate = new Date(); if (msView === 'block') msBlockStart = ''; loadData();
+          // Today in Block view goes to the picked Start date
+          // (Deepika, 2026-11-15): a remembered Start date is kept,
+          // so the block view jumps to its week; with no remembered
+          // start, Today takes you to now and the Jan 1 default
+          // applies as before — same rule as the admin tab.
+          if (msView === 'block' && msBlockStart) { loadData(); return; }
+          anchorDate = new Date(); loadData();
         });
         // Phone: Today sits next to the "My schedule" heading (same band look).
         // The node itself is moved, so its click handler moves with it.
