@@ -1369,6 +1369,12 @@
     /* Stage 2 (content): day cards + joined shift pills, mock-matched */
     #tab-schedule .day-row, #tab-myschedule .day-row { border: none; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.10); }
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
+    /* Week-grid gridlines (Deepika, 2026-11-14, approved mock): a single shared
+       1px #c9d6d8 line between every row and column, like a collapsed table —
+       the 1px gap over the line-coloured container background draws the lines,
+       so the day cards drop their own borders, radius and shadow inside it. */
+    #tab-schedule .week-grid { display: grid; gap: 1px; background: #c9d6d8; border: 1px solid #c9d6d8; }
+    #tab-schedule .week-grid article.day-row { border: none; border-radius: 0; box-shadow: none; margin-bottom: 0; }
     #sched-view.qs-scaled .week-grid, #ms-view.qs-scaled .week-grid { display: flex; flex-wrap: wrap; }
     #sched-view.qs-scaled .week-grid article.day-row, #ms-view.qs-scaled .week-grid article.day-row { flex: 1 1 250px; min-width: 0; }
     #sched-view.qs-f80 .shift-cat, #ms-view.qs-f80 .shift-cat { font-weight: 800; color: #0a0f1a; }
@@ -1857,7 +1863,7 @@
         #tab-myschedule .sbw-open { color: #c62828; font-weight: 800; }
         @media (min-width: 900px) {
           body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
-          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.4rem; align-items: start; }
+          #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1px; align-items: start; }
           #tab-schedule .week-grid article.day-row { margin-bottom: 0; }
           #tab-schedule .sched-control-box { display: flex; align-items: center; gap: 1rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
           #tab-schedule .sched-control-box .sched-h1 { margin: 0; font-size: 1.2rem; white-space: nowrap; }
