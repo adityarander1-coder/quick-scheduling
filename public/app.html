@@ -4318,7 +4318,19 @@
             html += '<div class="strip-day-head"><span class="strip-dow">' + dayNames[d.getDay()] + '</span>' +
               '<span class="strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span></div>';
             var dayShifts = shiftsFor(ds);
-            dayShifts.forEach(function (s) { html += monthChipHtml(s); });
+            // Group by shift type in Settings sort order, like the
+            // desktop month grid (monthDayInner) and the week view:
+            // the strip used to list shifts in raw shiftsFor order
+            // (stored shifts, then rotation occurrences), so one
+            // type's chips scattered among the others.
+            var stripByType = {};
+            dayShifts.forEach(function (s) { (stripByType[s.shiftTypeId] = stripByType[s.shiftTypeId] || []).push(s); });
+            var stripRendered = {};
+            sched.shiftTypes.forEach(function (st) {
+              (stripByType[st.id] || []).forEach(function (s) { html += monthChipHtml(s); stripRendered[s.id] = true; });
+            });
+            // Shifts whose type is not in the list still show, at the end.
+            dayShifts.forEach(function (s) { if (!stripRendered[s.id]) html += monthChipHtml(s); });
             var openTotal = 0;
             sched.shiftTypes.forEach(function (st) {
               if (!shiftTypeVisible(st)) return;
@@ -19482,7 +19494,13 @@ window.qsNpOfferSend = function (btn) {
               '<span class="ms-strip-day-num">' + monthNames[d.getMonth()] + ' ' + d.getDate() + '</span></div>';
             var list = shiftsFor(ds);
             if (!list.length && !msEventsFor(ds).length) html += '<div style="color:var(--dim);font-size:0.85rem">No shifts.</div>';
-            list.forEach(function (s) {
+            // Group by shift type in Settings sort order, like the
+            // manager month strip: one type's chips together, types
+            // whose list entry is missing render at the end.
+            var msByType = {};
+            list.forEach(function (s) { (msByType[s.shiftTypeId] = msByType[s.shiftTypeId] || []).push(s); });
+            var msRendered = {};
+            var msStripChip = function (s) {
               var st = stById(s.shiftTypeId);
               var color = (st && st.color) || '#637a8e';
               var shiftName = st ? st.name : 'Shift';
@@ -19490,7 +19508,11 @@ window.qsNpOfferSend = function (btn) {
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
                 '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span>' + qsCoverBadge(s) + '</span></div>';
+            };
+            shiftTypes.forEach(function (st) {
+              (msByType[st.id] || []).forEach(function (s) { msStripChip(s); msRendered[s.id] = true; });
             });
+            list.forEach(function (s) { if (!msRendered[s.id]) msStripChip(s); });
             if (showAvailable()) {
               var openParts = [];
               shiftTypes.forEach(function (st) {
