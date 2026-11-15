@@ -16994,19 +16994,14 @@ window.qsNpOfferSend = function (btn) {
             if (boxM && !hadList) boxM.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load team members.</p>';
           });
         }
-        // Shift types the draft can produce: types of generatable
-        // rotations, editable in a department the global filter
-        // allows (same gate as the open-slots select).
+        // Shift types the draft can produce: ALL shift types
+        // (Deepika, 2026-11-15 — "all shifts should show in drafts
+        // even there is no rotation"), editable in a department the
+        // global filter allows (same gate as the open-slots select).
+        // A type with no rotation drafts its open positions from the
+        // staffing target instead of from a rotation.
         function draftOfferedTypes() {
-          var byId = {};
-          (bulkAllShiftTypes || []).forEach(function (st) { byId[st.id] = st; });
-          var ids = {};
-          (draftRotations || []).forEach(function (r) {
-            if (!r.isActive || r.generatable === false) return;
-            (r.assignments || []).forEach(function (a) { if (a.shiftTypeId) ids[a.shiftTypeId] = true; });
-            if (r.groupShiftTypeId) ids[r.groupShiftTypeId] = true;
-          });
-          return Object.keys(ids).map(function (id) { return byId[id]; }).filter(function (st) {
+          return (bulkAllShiftTypes || []).filter(function (st) {
             if (!st || !st.isActive) return false;
             if (!window.qsStEditable(st)) return false;
             var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
@@ -17137,13 +17132,27 @@ window.qsNpOfferSend = function (btn) {
               if (ok) rotIds.push(r.id);
             }
           });
-          return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds };
+          var rotationlessTypeIds = rotationlessDraftTypeIds(typeIds);
+          return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds, rotationlessTypeIds: rotationlessTypeIds };
+        }
+        // Types no generatable rotation produces: they draft their
+        // open positions from the target (rotation-places-0). The
+        // server re-derives this authoritatively; this is only the
+        // panel's gate for allowing a draft with no rotation in it.
+        function rotationlessDraftTypeIds(typeIds) {
+          var produced = {};
+          (draftRotations || []).forEach(function (r) {
+            if (!r.isActive || r.generatable === false) return;
+            (r.assignments || []).forEach(function (a) { if (a.shiftTypeId) produced[a.shiftTypeId] = true; });
+            if (r.groupShiftTypeId) produced[r.groupShiftTypeId] = true;
+          });
+          return typeIds.filter(function (t) { return !produced[t]; });
         }
         function runDraftSchedule() {
           var picks = resolveDraftPicks();
           var from = $('bulk-from').value, to = $('bulk-to').value;
           if (!picks.shiftTypeIds.length || !picks.userIds.length) { showResult('Pick at least one shift and one team member.', true); return; }
-          if (!picks.rotationIds.length) { showResult('Nothing to draft for these picks — no rotation covers the shifts and people you picked.', true); return; }
+          if (!picks.rotationIds.length && !picks.rotationlessTypeIds.length) { showResult('Nothing to draft for these picks — no rotation covers the shifts and people you picked.', true); return; }
           if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
           draftLastPicks = picks;
           var btn = $('bulk-draft-run');

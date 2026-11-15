@@ -30,7 +30,7 @@ import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences } from '../util/planExecutor.js';
-import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
+import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
@@ -4729,7 +4729,7 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     const to = String(req.body?.to || '');
     const dryRun = req.body?.dryRun === true;
     const genMode = req.body?.mode === 'keep' ? 'keep' : 'fresh';
-    if (!rotationIds.length) {
+    if (!rotationIds.length && !shiftTypeIds.length) {
       res.status(400).json({ error: 'Pick at least one rotation.' });
       return;
     }
@@ -4773,6 +4773,20 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     for (const rid of rotationIds) {
       for (const d of await rotationRelevantDepartments(rid)) {
         if (!deptUnion.includes(d)) deptUnion.push(d);
+      }
+    }
+    // Rotation-less types (Deepika, 2026-11-15): a draft with no
+    // rotation still belongs to the picked types' departments — a
+    // scheduler may only draft types in their active department.
+    // (An empty union 403s in requireActiveDepartment for
+    // schedulers, so a rotation-less-only draft by a scheduler
+    // needs its types' departments here.)
+    if (shiftTypeIds.length) {
+      const typeDepts = await getTypeDepartments(query, companyId);
+      for (const tid of shiftTypeIds) {
+        for (const d of typeDepts.get(tid) || []) {
+          if (!deptUnion.includes(d)) deptUnion.push(d);
+        }
       }
     }
     if (!(await requireActiveDepartment(req, res, deptUnion))) return;

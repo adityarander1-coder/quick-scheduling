@@ -106,7 +106,31 @@ export async function getGeneratedTypeIds(
   return out;
 }
 
-/** One type's mode (true when the type is fully generated). */
+/**
+ * Shift types any ACTIVE rotation in the company produces (per-person
+ * assignments + group types). A type in this set can be drafted; a
+ * type outside it never can — no rotation will ever place its people.
+ *
+ * Requirements and rotations are independent (Deepika, 2026-11-15):
+ * a staffing requirement (target) can exist without a rotation
+ * behind it, and the app must never assume a requirement has one.
+ */
+export async function getTypesWithRotations(
+  q: QueryFn,
+  companyId: string
+): Promise<Set<string>> {
+  const { rows } = await q(
+    `SELECT ra.shift_type_id AS "shiftTypeId"
+     FROM rotation_assignments ra
+     JOIN rotations r ON r.id = ra.rotation_id
+     WHERE r.company_id = $1 AND r.is_active = true
+     UNION
+     SELECT group_shift_type_id FROM rotations
+     WHERE company_id = $1 AND is_active = true AND group_shift_type_id IS NOT NULL`,
+    [companyId]
+  );
+  return new Set(rows.map((r: any) => r.shiftTypeId));
+}
 export async function isTypeGenerated(
   q: QueryFn,
   companyId: string,
@@ -343,6 +367,18 @@ export async function getNotDraftedByType(
       if (!covered.has(d)) undrafted.push(d);
     }
     out[typeId] = undrafted;
+  }
+  // Requirements and rotations are independent (Deepika, 2026-11-15):
+  // a generated type NO rotation produces can never be drafted, so it
+  // is never "not drafted" — its staffing target always counts and
+  // its open slots show as per the set requirement. Types WITH a
+  // rotation keep the N2 rule: undrafted dates show no opens until
+  // drafted. The check is dynamic (rotations as they exist now), so
+  // creating a rotation for the type later returns it to normal
+  // generated behaviour.
+  const withRotations = await getTypesWithRotations(q, companyId);
+  for (const typeId of generatedTypeIds) {
+    if (!withRotations.has(typeId)) out[typeId] = [];
   }
   return out;
 }

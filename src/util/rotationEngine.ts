@@ -42,6 +42,7 @@
 
 import { withTransaction } from '../db.js';
 import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
+import { getGeneratedTypeIds, getTypesWithRotations } from './scheduleMode.js';
 import type { AuditEntry } from './audit.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>;
@@ -825,6 +826,31 @@ function producedTypeIds(
   return out;
 }
 
+/** Rotation-less types a draft call must open from the target
+ *  (Deepika, 2026-11-15 — "all shifts should show in drafts even
+ *  there is no rotation"): picked shift types that are generated AND
+ *  produced by no ACTIVE rotation in the company. A rotation-less
+ *  type places nobody, so the shortfall pass treats it as
+ *  rotation-places-0 — its shortfall is the full target minus stored
+ *  shifts. Only EXPLICITLY picked types count: a full draft drafts
+ *  rotations and never auto-includes types no rotation produces.
+ *  Live types are excluded: their target already counts on the grid,
+ *  so there is no draft to do for them. */
+async function getRotationlessTypeIds(
+  tx: QueryFn, companyId: string, onlyShiftTypeIds?: Set<string>
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!onlyShiftTypeIds?.size) return out;
+  const [generatedTypes, withRotations] = await Promise.all([
+    getGeneratedTypeIds(tx as any, companyId),
+    getTypesWithRotations(tx as any, companyId),
+  ]);
+  for (const t of onlyShiftTypeIds) {
+    if (generatedTypes.has(t) && !withRotations.has(t)) out.add(t);
+  }
+  return out;
+}
+
 /** Desired shortfall per date|type: target minus stored shifts. The
  *  stored set is the CURRENT state (after this call's placements) —
  *  drafts, published and hand-added rows all count as filled, so a
@@ -970,7 +996,7 @@ export async function generateRotations(
   const { rotationIds, from, to } = opts;
   const mode = opts.mode || 'fresh';
   const publishMode = opts.publishMode || 'draft';
-  if (!Array.isArray(rotationIds) || !rotationIds.length) {
+  if (!Array.isArray(rotationIds) || (!rotationIds.length && !opts.shiftTypeIds?.length)) {
     throw Object.assign(new Error('Pick at least one rotation.'), { status: 400 });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
@@ -1010,6 +1036,14 @@ export async function generateRotations(
   const onlyUserIds = opts.userIds?.length ? new Set(opts.userIds) : undefined;
   const onlyShiftTypeIds = opts.shiftTypeIds?.length ? new Set(opts.shiftTypeIds) : undefined;
   const compOpts = { publishMode, collectDeparted: true, today, onlyUserIds, onlyShiftTypeIds };
+  // Rotation-less types (Deepika, 2026-11-15): picked generated types
+  // no active rotation produces. A call with no rotations at all is
+  // only valid when it picks at least one such type — otherwise
+  // there is nothing to draft.
+  const rotationless = await getRotationlessTypeIds(tx, companyId, onlyShiftTypeIds);
+  if (!rotationIds.length && !rotationless.size) {
+    throw Object.assign(new Error('Nothing to draft for these picks — no rotation covers the shifts you picked.'), { status: 400 });
+  }
   // Fresh-mode / dry-run counts scope to the picked users when a
   // partial draft is running (parameter $5 on the queries below).
   const userScope = onlyUserIds ? ' AND user_id = ANY($5)' : '';
@@ -1058,7 +1092,7 @@ export async function generateRotations(
     // math as the real run, on the simulated stored set — no writes).
     let openedShortfall = 0;
     if (publishMode === 'draft') {
-      const typeIds = producedTypeIds(ctx, rots, onlyShiftTypeIds);
+      const typeIds = new Set([...producedTypeIds(ctx, rots, onlyShiftTypeIds), ...rotationless]);
       if (typeIds.size) {
         const inputs = await loadShortfallInputs(tx, companyId, from, to);
         const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
@@ -1243,7 +1277,7 @@ export async function generateRotations(
   // Drafts only — the Stage 4 migration (publishMode 'published')
   // stamps live-mode truth and must not open anything.
   if (publishMode === 'draft') {
-    const typeIds = producedTypeIds(ctx, rots, onlyShiftTypeIds);
+    const typeIds = new Set([...producedTypeIds(ctx, rots, onlyShiftTypeIds), ...rotationless]);
     if (typeIds.size) {
       const inputs = await loadShortfallInputs(tx, companyId, from, to);
       const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
@@ -1259,6 +1293,22 @@ export async function generateRotations(
         if (rot.groupId && rot.groupShiftTypeId) types.add(rot.groupShiftTypeId as string);
         for (const a of ctx.assignmentsByRotation.get(id) || []) types.add(a.shiftTypeId);
         for (const t of types) if (!genIdByType.has(t)) genIdByType.set(t, g.generationId);
+      }
+      // Rotation-less types have no rotation and no generation of
+      // their own: their grants belong to one dedicated generation
+      // for this call (rotation_id NULL — the schema allows it; the
+      // generation is the draft batch, not a rotation). Only created
+      // when this call actually grants something for such a type.
+      if (rotationless.size && [...desired.keys()].some((k) => rotationless.has(k.split('|')[1]))) {
+        const rlGenId = crypto.randomUUID();
+        await tx(
+          `INSERT INTO rotation_generations
+             (id, company_id, rotation_id, rotation_name, range_start, range_end, mode, created_by, user_ids)
+           VALUES ($1, $2, NULL, 'Open positions (no rotation)', $3, $4, $5, $6, NULL)`,
+          [rlGenId, companyId, from, to, mode, opts.createdBy]
+        );
+        summary.generationIds.push(rlGenId);
+        for (const t of rotationless) if (!genIdByType.has(t)) genIdByType.set(t, rlGenId);
       }
       const rec = await reconcileShortfallSlots(tx, companyId, genIdByType, from, to, desired, typeIds);
       summary.openedShortfall = rec.total;
