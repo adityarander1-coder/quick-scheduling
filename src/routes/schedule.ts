@@ -28,6 +28,7 @@ import { sendShiftRequestActionEmails, sendShiftRequestApproverEmails } from '..
 import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
+import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
@@ -348,6 +349,14 @@ router.get('/shift-types', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/schedule/shift-type-presets — the shared healthcare preset
+// catalog (Deepika, 2026-11-14). One list for every company; open to
+// anyone signed in — no role gate. The picker pulls from it once as a
+// copy through the normal shift-type create path.
+router.get('/shift-type-presets', async (_req: Request, res: Response) => {
+  res.json({ presets: HEALTHCARE_SHIFT_PRESETS });
+});
+
 // Build a payroll PDF buffer from report data.
 async function buildPayrollPdf(opts: {
   companyName: string; from: string; to: string;
@@ -395,10 +404,35 @@ async function buildPayrollPdf(opts: {
 router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { name, shortName, color, textColor, sortOrder, departmentId, departmentIds, eligibleJobRoleIds } = req.body ?? {};
+    const { name, shortName, color, textColor, sortOrder, startTime, endTime, departmentId, departmentIds, eligibleJobRoleIds } = req.body ?? {};
     if (!name || !String(name).trim()) {
       res.status(400).json({ error: 'A shift type name is required.' });
       return;
+    }
+    // Optional default times (used by the healthcare preset pull; the
+    // hand-made form does not send them and keeps the old behaviour).
+    const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    if (startTime !== undefined && (typeof startTime !== 'string' || !timeRe.test(startTime))) {
+      res.status(400).json({ error: 'Invalid start time.' });
+      return;
+    }
+    if (endTime !== undefined && (typeof endTime !== 'string' || !timeRe.test(endTime))) {
+      res.status(400).json({ error: 'Invalid end time.' });
+      return;
+    }
+    // Sort order: an explicit value is honoured; otherwise the new type
+    // goes at the end (max + 1), matching the setup/import paths.
+    // (The old `Number(sortOrder) || 0` put new types at the top.)
+    let sortOrderVal: number;
+    const providedSort = Number(sortOrder);
+    if (sortOrder !== undefined && sortOrder !== null && sortOrder !== '' && Number.isInteger(providedSort) && providedSort >= 0) {
+      sortOrderVal = providedSort;
+    } else {
+      const { rows: maxRows } = await query(
+        'SELECT COALESCE(MAX(sort_order), 0) AS m FROM shift_types WHERE company_id = $1',
+        [companyId]
+      );
+      sortOrderVal = Number(maxRows[0]?.m || 0) + 1;
     }
     // Validate departments belong to company (accept departmentIds array or legacy departmentId).
     const deptIds: string[] = Array.isArray(departmentIds) ? departmentIds : (departmentId ? [departmentId] : []);
@@ -425,10 +459,11 @@ router.post('/shift-types', requireRole('owner', 'scheduler'), async (req: Reque
     }
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, department_id, eligible_job_role_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO shift_types (id, company_id, name, short_name, color, text_color, sort_order, start_time, end_time, department_id, eligible_job_role_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [id, companyId, String(name).trim(), String(shortName || '').trim(),
-       String(color || '#7fc8bc'), String(textColor || '#ffffff'), Number(sortOrder) || 0,
+       String(color || '#7fc8bc'), String(textColor || '#ffffff'), sortOrderVal,
+       startTime || null, endTime || null,
        validDeptIds[0] || null, elig.ids]
     );
     for (const dd of validDeptIds) {
@@ -6400,7 +6435,7 @@ router.post('/inbound-addresses/ensure', requireRole('owner'), async (req: Reque
 router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const { startTime, endTime, name, color, departmentId, departmentIds, eligibleJobRoleIds } = req.body;
+    const { startTime, endTime, name, color, sortOrder, departmentId, departmentIds, eligibleJobRoleIds } = req.body;
     const timeRe = /^([01]\d|2[0-3]):([0-5]\d)$/;
     const updates: string[] = [];
     const vals: any[] = [];
@@ -6418,6 +6453,13 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
     }
     if (color !== undefined && /^#[0-9a-fA-F]{6}$/.test(color)) {
       updates.push(`color = $${i++}`); vals.push(color);
+    }
+    // Reorder (Deepika, 2026-11-14): the Shifts list up/down arrows
+    // persist sort_order; the schedule orders by it.
+    if (sortOrder !== undefined) {
+      const n = Number(sortOrder);
+      if (!Number.isInteger(n) || n < 0) { res.status(400).json({ error: 'Invalid sort order.' }); return; }
+      updates.push(`sort_order = $${i++}`); vals.push(n);
     }
     var deptIdsForJoin: string[] | null = null;
     if (departmentIds !== undefined || departmentId !== undefined) {

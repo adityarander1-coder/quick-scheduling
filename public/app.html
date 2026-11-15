@@ -1364,8 +1364,8 @@
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { border-radius: 8px; }
     .card { border-radius: 12px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
-    #tab-schedule .shift-cat, #tab-myschedule .shift-cat { border-radius: 7px; }
-    #tab-schedule .shift-nm, #tab-myschedule .shift-nm { border-radius: 7px; font-weight: 800; color: #101828; }
+    #tab-schedule .shift-cat, #tab-myschedule .shift-cat, .qs-shift-preview .shift-cat { border-radius: 7px; }
+    #tab-schedule .shift-nm, #tab-myschedule .shift-nm, .qs-shift-preview .shift-nm { border-radius: 7px; font-weight: 800; color: #101828; }
     /* Stage 2 (content): day cards + joined shift pills, mock-matched */
     #tab-schedule .day-row, #tab-myschedule .day-row { border: none; border-radius: 14px; box-shadow: 0 1px 4px rgba(16,24,40,.10); }
     #tab-schedule .week-grid, #tab-myschedule .week-grid { gap: 0.7rem; }
@@ -1383,7 +1383,7 @@
     .qs-count-circle { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #fff; color: #10222b; font-weight: 900; font-size: 10px; box-shadow: inset 0 0 0 1.5px rgba(16,34,43,.25); font-style: normal; vertical-align: middle; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
     #tab-schedule .day-row-body, #tab-myschedule .day-row-body { padding: 0.45rem 0.6rem 0.6rem; }
-    #tab-schedule .shift-grid, #tab-myschedule .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
+    #tab-schedule .shift-grid, #tab-myschedule .shift-grid, .qs-shift-preview .shift-grid { display: grid; grid-template-columns: 0.68fr 1.32fr; gap: 0; border-radius: 9px; overflow: hidden; margin-bottom: 2px; min-height: 22px; background: var(--surface-alt); }
     /* Drag-and-drop move/swap (2026-11-01) */
     #tab-schedule .qs-drag-src { opacity: .35; }
     #tab-schedule .qs-person { cursor: grab; border-radius: 4px; padding: 0 2px; }
@@ -1413,8 +1413,8 @@
     .qs-pal-sec { font-size: 0.78rem; font-weight: 700; color: var(--dim); margin: 8px 0 2px; }
     .qs-pal-row.wrap { flex-wrap: wrap; }
     .qs-pal-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
-    #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
-    #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
+    #tab-schedule .shift-grid .shift-cat, #tab-myschedule .shift-grid .shift-cat, .qs-shift-preview .shift-grid .shift-cat { border: none; border-radius: 0; padding: 0.18rem 0.45rem; font-size: 11px; display: flex; align-items: center; }
+    #tab-schedule .shift-grid .shift-nm, #tab-myschedule .shift-grid .shift-nm, .qs-shift-preview .shift-grid .shift-nm { border: none; border-radius: 0; background: transparent; padding: 0.18rem 0.45rem 0.18rem 0.3rem; font-size: 12px; flex: 1; }
     /* Open-slot label edges match the filled rows (Deepika, 2026-11-02): the type
        label is flush where it meets the name cell — curve only on the outer edge
        of the box, never a capsule curved on both ends. Colours unchanged. */
@@ -1903,8 +1903,13 @@
           #tab-schedule .sched-control-box #sched-block-make { order: 10; margin-left: auto; }
           #tab-schedule .sched-control-box #sched-range-picker, #tab-myschedule .sched-control-box #ms-range-picker { order: 20; flex: 1 1 100%; }
         }
-        #tab-schedule .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
-        #tab-schedule .shift-nm { background: #ffffff; border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
+        #tab-schedule .shift-cat, .qs-shift-preview .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
+        #tab-schedule .shift-nm, .qs-shift-preview .shift-nm { background: #ffffff; border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
+        /* Shift-box preview button in Settings → Shifts (Deepika, 2026-11-14):
+           the box itself is the colour control — a plain button reset so
+           only the box shows. */
+        button.qs-box-btn { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; text-align: left; }
+        button.qs-box-btn:disabled { cursor: default; }
         #tab-schedule .shift-nm .day-note { font-weight: 400; color: var(--dim); font-size: 11px; margin-top: 0.15rem; }
         /* Open shift slots (unfilled staffing targets) */
         #tab-schedule button.open-slot { border: 0; background: none; padding: 0; width: 100%; cursor: pointer; font: inherit; text-align: left; }
@@ -3155,6 +3160,25 @@
           return !!(s && (s.isRotation || String(s.id).indexOf('rot-') === 0));
         }
 
+        // Shared schedule shift-box preview (Deepika, 2026-11-14): the
+        // exact box the schedule grid renders, exposed on window so
+        // Settings → Shifts can preview a shift type's colour with the
+        // real box, never a lookalike. shiftBoxHtml below calls this
+        // too, so the preview and the grid cannot drift apart.
+        // opts: { label (type name), name (person name — '' in Settings,
+        // where no person applies), color, published, extra (extra
+        // name-cell html), shiftId, hlClass, hlStyle }. Drafts and
+        // occurrences are grey: colour '#9ca3af', no name-box tint —
+        // byte-identical to the grid.
+        window.qsShiftBoxPreviewHtml = function (opts) {
+          var color = opts.published ? (opts.color || '#637a8e') : '#9ca3af';
+          var nmBg = opts.published ? 'background:' + tint(color, 82) + ';' : '';
+          return '<div class="shift-grid' + (opts.hlClass || '') + '" data-shift-id="' + (opts.shiftId || '') + '"' + (opts.hlStyle || '') + '>' +
+            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(opts.label || 'Shift') + '</div></div>' +
+            '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(opts.name || '') + (opts.extra || '') + '</div>' +
+            '</div>';
+        };
+
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
           var published = s.published !== false && !isOccShift(s);
@@ -3167,8 +3191,8 @@
           // the open slot's tint (Deepika, 2026-11-09, mock approved):
           // colour in BOTH boxes for published shifts. Drafts and
           // occurrences get no name-box background — byte-identical
-          // to before, so the grey family is untouched.
-          var nmBg = published ? 'background:' + tint(color, 82) + ';' : '';
+          // to before, so the grey family is untouched. (The box
+          // itself is rendered by window.qsShiftBoxPreviewHtml above.)
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
           var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
           dc.forEach(function (c) { note += '<div class="entry-name-comment">' + BUBBLE_SVG + '<span>' + esc(c.comment) + '</span></div>'; });
@@ -3192,10 +3216,12 @@
               cBtn += '<span class="read-only-hint" title="Switch active department to edit" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:11px">🔒</span>';
             }
           }
-          return '<div class="shift-grid' + (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + '" data-shift-id="' + s.id + '"' + highlightStyleFor(s.userId) + '>' +
-            '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + '</div></div>' +
-            '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + note + qsCoverBadge(s) + cBtn + '</div>' +
-            '</div>';
+          return window.qsShiftBoxPreviewHtml({
+            label: label, name: nm, color: color, published: published,
+            extra: note + qsCoverBadge(s) + cBtn, shiftId: s.id,
+            hlClass: (sched.highlights[s.userId] != null ? ' is-highlighted' : ''),
+            hlStyle: highlightStyleFor(s.userId),
+          });
         }
 
         // Staffing target that applies to a shift type on a given date (weekdays + date range).
@@ -14591,6 +14617,7 @@ window.qsNpOfferSend = function (btn) {
             <div class="set-head-row">
               <h3 class="set-h3" style="margin:0">Shift settings</h3>
               <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                <button type="button" id="shift-presets-btn" class="btn-secondary">Add from common shifts</button>
                 <button type="button" id="shift-add-btn" class="btn-secondary">+ Add shift type</button>
                 <button type="button" id="shift-save-btn" class="btn">Save changes</button>
               </div>
@@ -14618,6 +14645,10 @@ window.qsNpOfferSend = function (btn) {
                   </div>
                 </div>
                 <div class="form-row">
+                  <label>Preview — how it looks on the schedule</label>
+                  <div id="shift-new-preview"></div>
+                </div>
+                <div class="form-row">
                   <label>Departments <span class="hint">(optional — leave empty for all departments; check multiple for cross-department shifts)</span></label>
                   <div id="shift-new-depts" style="display:flex;flex-wrap:wrap;gap:6px"></div>
                 </div>
@@ -14628,6 +14659,40 @@ window.qsNpOfferSend = function (btn) {
                 <div class="modal-actions">
                   <button type="button" id="shift-modal-cancel" class="btn-secondary">Cancel</button>
                   <button type="button" id="shift-modal-save" class="btn">Add</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Healthcare shift-type presets modal (Deepika, 2026-11-14):
+                 pull once as a copy; afterwards an ordinary shift type. -->
+            <div id="shift-preset-modal" class="modal-backdrop hidden">
+              <div class="modal" style="width:min(660px,96vw)">
+                <h3>Add common healthcare shifts</h3>
+                <p style="font-size:0.88rem;color:var(--dim);margin:0 0 0.6rem">Pick from the shared list — each one is added as an ordinary shift type you can rename or retime later.</p>
+                <div id="shift-preset-error" class="alert alert-error hidden"></div>
+                <div id="shift-preset-result" class="alert alert-success hidden"></div>
+                <div class="form-row">
+                  <label>Shift length</label>
+                  <div style="display:flex;gap:1rem">
+                    <label style="display:flex;gap:6px;align-items:center;font-size:0.92rem;white-space:nowrap"><input type="radio" name="preset-length" value="12" checked> 12-hour</label>
+                    <label style="display:flex;gap:6px;align-items:center;font-size:0.92rem;white-space:nowrap"><input type="radio" name="preset-length" value="8"> 8-hour</label>
+                  </div>
+                  <span style="font-size:0.8rem;color:var(--dim)">Some shifts keep fixed times either way (e.g. Physical Therapist 8 AM–5 PM).</span>
+                </div>
+                <div class="form-row">
+                  <label>Departments <span class="hint">(same as adding a shift type — leave empty for all departments)</span></label>
+                  <div id="shift-preset-depts" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+                </div>
+                <div class="form-row">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <label style="margin:0">Common shifts</label>
+                    <button type="button" id="shift-preset-all" class="btn-secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem">Select all</button>
+                  </div>
+                  <div id="shift-preset-list" style="max-height:46vh;overflow-y:auto;margin-top:0.5rem"></div>
+                </div>
+                <div class="modal-actions">
+                  <button type="button" id="shift-preset-cancel" class="btn-secondary">Cancel</button>
+                  <button type="button" id="shift-preset-add" class="btn">Add selected</button>
                 </div>
               </div>
             </div>
@@ -14906,10 +14971,11 @@ window.qsNpOfferSend = function (btn) {
                     // shift type is filed under the active department only, and
                     // an existing one's departments can't change until "All
                     // departments" is selected. Values render checked as-is so
-                    // saving never drops an association.
+                    // saving never drops an association. The preset picker
+                    // ('preset') files new types the same way.
                     var locked = !!window.qsActiveDeptId;
                     var on = selectedIds.indexOf(d.id) !== -1;
-                    if (locked && prefix === 'new') on = String(d.id) === String(window.qsActiveDeptId);
+                    if (locked && (prefix === 'new' || prefix === 'preset')) on = String(d.id) === String(window.qsActiveDeptId);
                     return '<label style="display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:0.9rem;border-radius:6px;cursor:pointer;white-space:nowrap">' +
                       '<input type="checkbox" data-deptchk="' + prefix + '" value="' + d.id + '"' + (on ? ' checked' : '') + (locked ? ' disabled' : '') + ' style="accent-color:#2563eb;margin:0;width:15px;height:15px">' + esc(d.name) + '</label>';
                   }).join('') +
@@ -15001,6 +15067,17 @@ window.qsNpOfferSend = function (btn) {
               function renderShifts() {
                 var html = '';
                 var anyEditable = false;
+                // Rendered order (department filter applied) — the reorder
+                // arrows move within this list; the top row has no up, the
+                // bottom row no down.
+                var visibleList = [];
+                shiftTypes.forEach(function (st, i) {
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  if (window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows)) return;
+                  visibleList.push({ st: st, i: i });
+                });
+                var visibleIdx = {};
+                visibleList.forEach(function (entry, vi) { visibleIdx[entry.st.id] = vi; });
                 shiftTypes.forEach(function (st, i) {
                   // Global department filter: show only shift types in the selected department.
                   var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
@@ -15009,10 +15086,20 @@ window.qsNpOfferSend = function (btn) {
                   var editable = window.qsStEditable(st);
                   if (editable) anyEditable = true;
                   var deleted = st.isActive === false;
+                  var vi = visibleIdx[st.id];
+                  // Colour preview (Deepika, 2026-11-14): the row shows the
+                  // actual schedule shift box with the type name in it —
+                  // not a plain colour dot. The box is also the colour
+                  // control on editable rows. Deleted rows read grey.
+                  var boxColor = rowColorEdits[st.id] || st.color;
+                  var boxHtml = window.qsShiftBoxPreviewHtml
+                    ? '<span class="qs-shift-preview" data-boxwrap="' + i + '" style="display:block;width:230px;flex:none">' + window.qsShiftBoxPreviewHtml({ label: st.name, name: '', color: boxColor, published: !deleted }) + '</span>'
+                    : '<span class="color-dot" style="background:' + esc(boxColor) + '"></span>';
+                  var colorCell = (editable && !deleted)
+                    ? '<button type="button" class="qs-box-btn" data-doti="' + i + '" title="Change colour" style="width:230px;flex:none">' + boxHtml + '</button>'
+                    : boxHtml;
                   html += '<div class="shift-row"' + (deleted ? ' style="opacity:0.6"' : '') + '>' +
-                    ((editable && !deleted)
-                      ? '<button type="button" class="color-dot qs-dot-btn" data-doti="' + i + '" title="Change colour" style="background:' + esc(rowColorEdits[st.id] || st.color) + ';cursor:pointer;padding:0"></button>'
-                      : '<span class="color-dot" style="background:' + esc(rowColorEdits[st.id] || st.color) + '"></span>') +
+                    colorCell +
                     (editable && !deleted
                       ? '<input type="text" id="shift-name-' + i + '" value="' + esc(st.name) + '" style="font-weight:700;font-size:1rem;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.6rem;min-width:140px;flex:1;font-family:inherit">'
                       : '<label>' + esc(st.name) + (deleted ? ' <span style="color:#dc2626;font-size:0.8rem;font-weight:700">(deleted)</span>' : '') +
@@ -15028,6 +15115,12 @@ window.qsNpOfferSend = function (btn) {
                       '<span>to</span>' +
                       '<input type="time" id="shift-end-' + i + '" value="' + esc(st.endTime || '20:00') + '"' + ((deleted || !editable) ? ' disabled' : '') + '>' +
                     '</div>' +
+                    (editable && !deleted
+                      ? '<span style="display:flex;flex-direction:column;gap:2px;flex:none">' +
+                        '<button type="button" class="btn-secondary shift-move-btn" data-id="' + st.id + '" data-dir="-1" title="Move up"' + (vi === 0 ? ' disabled' : '') + ' style="padding:0.05rem 0.45rem;font-size:0.85rem;line-height:1.2">↑</button>' +
+                        '<button type="button" class="btn-secondary shift-move-btn" data-id="' + st.id + '" data-dir="1" title="Move down"' + (vi === visibleList.length - 1 ? ' disabled' : '') + ' style="padding:0.05rem 0.45rem;font-size:0.85rem;line-height:1.2">↓</button>' +
+                        '</span>'
+                      : '') +
                     (editable
                       ? (deleted
                         ? '<button type="button" class="btn shift-restore-btn" data-id="' + st.id + '" data-name="' + esc(st.name) + '" style="padding:0.3rem 0.6rem;font-size:0.85rem">Restore</button>'
@@ -15036,6 +15129,7 @@ window.qsNpOfferSend = function (btn) {
                     '</div>';
                 });
                 if ($('shift-add-btn')) $('shift-add-btn').style.display = anyEditable ? '' : 'none';
+                if ($('shift-presets-btn')) $('shift-presets-btn').style.display = anyEditable ? '' : 'none';
                 if ($('shift-save-btn')) $('shift-save-btn').style.display = anyEditable ? '' : 'none';
                 $('shift-shifts-list').innerHTML = html;
                 // Load each editable row's eligible-roles dropdown (async per department).
@@ -15065,6 +15159,54 @@ window.qsNpOfferSend = function (btn) {
                       });
                   });
                 });
+                $('shift-shifts-list').querySelectorAll('.shift-move-btn').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    moveShiftType(b.getAttribute('data-id'), parseInt(b.getAttribute('data-dir'), 10));
+                  });
+                });
+              }
+
+              // Reorder (Deepika, 2026-11-14): up/down arrows persist
+              // sort_order; the schedule orders by it. Swap with the
+              // neighbour in the rendered list; when the two share a
+              // sort_order (legacy ties — new types used to be 0),
+              // renumber the rendered list first so the swap lands.
+              function visibleShiftTypes() {
+                return shiftTypes.filter(function (st) {
+                  var deptIds = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  return !(window.qsActiveDeptId && !deptIds.some(window.qsDeptFilterAllows));
+                });
+              }
+              function moveShiftType(id, dir) {
+                var visible = visibleShiftTypes();
+                var idx = -1;
+                for (var k = 0; k < visible.length; k++) {
+                  if (String(visible[k].id) === String(id)) { idx = k; break; }
+                }
+                if (idx < 0) return;
+                var other = visible[idx + dir];
+                if (!other) return;
+                var a = visible[idx];
+                var renumber = Promise.resolve();
+                if ((a.sortOrder || 0) === (other.sortOrder || 0)) {
+                  var jobs = [];
+                  visible.forEach(function (st, vi) {
+                    var want = (vi + 1) * 10;
+                    if ((st.sortOrder || 0) !== want) jobs.push(api('/api/schedule/shift-types/' + st.id, { method: 'PUT', body: JSON.stringify({ sortOrder: want }) }));
+                    st.sortOrder = want;
+                  });
+                  renumber = Promise.all(jobs);
+                }
+                renumber.then(function () {
+                  return Promise.all([
+                    api('/api/schedule/shift-types/' + a.id, { method: 'PUT', body: JSON.stringify({ sortOrder: other.sortOrder }) }),
+                    api('/api/schedule/shift-types/' + other.id, { method: 'PUT', body: JSON.stringify({ sortOrder: a.sortOrder }) }),
+                  ]);
+                }).then(function (rs) {
+                  var failed = rs.filter(function (r) { return !r.ok; });
+                  if (failed.length) pageError('Could not move the shift type. Please try again.');
+                  loadAll();
+                }).catch(function () { pageError('Network error. Could not move the shift type.'); });
               }
 
               function loadAll() {
@@ -15114,6 +15256,21 @@ window.qsNpOfferSend = function (btn) {
                 });
               });
 
+              // Live colour preview (Deepika, 2026-11-14): the actual
+              // schedule shift box, both states — published tinted with
+              // the picked colour, draft grey — updating as the name or
+              // colour changes. No surprise on the schedule.
+              function renderNewShiftPreview() {
+                var host = $('shift-new-preview');
+                if (!host || !window.qsShiftBoxPreviewHtml) return;
+                var name = ($('shift-new-name').value || '').trim() || 'Shift type';
+                var color = $('shift-new-color').value || '#7fc8bc';
+                host.innerHTML =
+                  '<div style="margin-bottom:6px"><div style="font-size:0.8rem;color:var(--dim);margin-bottom:2px">Published</div><span class="qs-shift-preview" style="display:block">' +
+                  window.qsShiftBoxPreviewHtml({ label: name, name: '', color: color, published: true }) + '</span></div>' +
+                  '<div><div style="font-size:0.8rem;color:var(--dim);margin-bottom:2px">Draft</div><span class="qs-shift-preview" style="display:block">' +
+                  window.qsShiftBoxPreviewHtml({ label: name, name: '', color: color, published: false }) + '</span></div>';
+              }
               function renderNewPalette() {
                 var host = $('shift-new-palette');
                 if (host) host.innerHTML = qsPaletteHTML($('shift-new-color').value);
@@ -15124,24 +15281,31 @@ window.qsNpOfferSend = function (btn) {
                   if (!sw) return;
                   $('shift-new-color').value = sw.getAttribute('data-hex');
                   renderNewPalette();
+                  renderNewShiftPreview();
                 });
-                $('shift-new-color').addEventListener('input', renderNewPalette);
+                $('shift-new-color').addEventListener('input', function () { renderNewPalette(); renderNewShiftPreview(); });
               }
-              // Existing-row colour dots: one delegated picker for the whole list.
+              if ($('shift-new-name')) $('shift-new-name').addEventListener('input', renderNewShiftPreview);
+              // Existing-row colour boxes: one delegated picker for the whole list.
               $('shift-shifts-list').addEventListener('click', function (e) {
-                var b = e.target.closest ? e.target.closest('.qs-dot-btn') : null;
+                var b = e.target.closest ? e.target.closest('.qs-box-btn') : null;
                 if (!b) return;
                 var st = shiftTypes[Number(b.getAttribute('data-doti'))];
                 if (!st) return;
                 qsOpenPalette(b, rowColorEdits[st.id] || st.color, function (hex) {
                   rowColorEdits[st.id] = hex;
-                  b.style.background = hex;
+                  // Live preview: re-render the row's box with the new colour.
+                  var wrap = b.querySelector('[data-boxwrap]');
+                  if (wrap && window.qsShiftBoxPreviewHtml) {
+                    wrap.innerHTML = window.qsShiftBoxPreviewHtml({ label: st.name, name: '', color: hex, published: true });
+                  }
                 });
               });
               $('shift-add-btn').addEventListener('click', function () {
                 $('shift-new-name').value = '';
                 $('shift-new-color').value = qsNextPaletteColor();
                 renderNewPalette();
+                renderNewShiftPreview();
                 hide($('shift-modal-error'));
                 renderNewModalRoles();
                 show($('shift-modal'));
@@ -15161,6 +15325,208 @@ window.qsNpOfferSend = function (btn) {
                   else { var e2 = $('shift-modal-error'); e2.textContent = (r.data && r.data.error) || 'Could not add.'; show(e2); }
                 });
               });
+
+              // Healthcare shift-type presets (Deepika, 2026-11-14):
+              // pull once as a copy through the normal create path;
+              // afterwards an ordinary shift type. No new permission
+              // gate — the existing shift-type management permissions
+              // govern, and the list itself is open to anyone.
+              var healthcarePresets = null; // from GET /shift-type-presets
+              var presetSelected = {}; // catalog index -> true
+              var presetAssignedColors = {}; // catalog index -> colour for this open
+              function presetLength() {
+                var r = document.querySelector('input[name="preset-length"]:checked');
+                return r ? r.value : '12';
+              }
+              function presetTimes(p, len) {
+                if (len === '8' && p.start8 && p.end8) return { start: p.start8, end: p.end8 };
+                return { start: p.start12, end: p.end12 };
+              }
+              function fmtPresetTime(hhmm) {
+                var h = parseInt(hhmm.slice(0, 2), 10), m = parseInt(hhmm.slice(3), 10);
+                var ap = h >= 12 ? 'PM' : 'AM';
+                var h12 = h % 12; if (h12 === 0) h12 = 12;
+                return h12 + (m ? ':' + ('0' + m).slice(-2) : '') + ' ' + ap;
+              }
+              function presetTimeLabel(p, len) {
+                var t = presetTimes(p, len);
+                if (t.start === '00:00' && t.end === '00:00') return '24 hours';
+                var fixed = len === '8' && (!p.start8 || !p.end8);
+                return fmtPresetTime(t.start) + '–' + fmtPresetTime(t.end) + (fixed ? ' (fixed)' : '');
+              }
+              // Next unused palette colour (same scan as qsNextPaletteColor,
+              // over an explicit used-set so a batch gets distinct colours).
+              function nextPresetColor(used) {
+                for (var k = 1; k <= 2; k++) {
+                  for (var f = 0; f < QS_PALETTE.length; f++) {
+                    if (!used[QS_PALETTE[f].shades[k]]) return QS_PALETTE[f].shades[k];
+                  }
+                }
+                return '#7fc8bc';
+              }
+              // Duplicate = same name (case-insensitive) already in one of
+              // the target departments — or on either side "all
+              // departments". Includes soft-deleted types: the name is
+              // still taken company-wide (unique index), restore instead.
+              function presetNameExists(name, deptIds) {
+                var lower = String(name).toLowerCase();
+                return shiftTypes.some(function (st) {
+                  if (String(st.name || '').toLowerCase() !== lower) return false;
+                  var stDepts = st.departmentIds && st.departmentIds.length ? st.departmentIds : (st.departmentId ? [st.departmentId] : []);
+                  if (!deptIds.length || !stDepts.length) return true;
+                  return stDepts.some(function (d) { return deptIds.indexOf(d) !== -1; });
+                });
+              }
+              function presetRowHtml(p, idx, len) {
+                var color = presetAssignedColors[idx] || '#7fc8bc';
+                var box = window.qsShiftBoxPreviewHtml
+                  ? '<span class="qs-shift-preview" style="display:block;width:240px;flex:none">' + window.qsShiftBoxPreviewHtml({ label: p.name, name: '', color: color, published: true }) + '</span>'
+                  : '<span class="color-dot" style="background:' + esc(color) + '"></span>';
+                return '<label style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:7px 6px;border-bottom:1px solid #f1f5f9;cursor:pointer">' +
+                  '<input type="checkbox" data-presetidx="' + idx + '"' + (presetSelected[idx] ? ' checked' : '') + ' style="accent-color:#2563eb;width:16px;height:16px;flex:none">' +
+                  box +
+                  '<span style="font-size:0.88rem;color:var(--dim);white-space:nowrap">' + esc(presetTimeLabel(p, len)) + '</span>' +
+                  '</label>';
+              }
+              function refreshPresetAllLabel() {
+                var btn = $('shift-preset-all');
+                if (!btn || !healthcarePresets) return;
+                var all = healthcarePresets.length && healthcarePresets.every(function (p, idx) { return presetSelected[idx]; });
+                btn.textContent = all ? 'Deselect all' : 'Select all';
+              }
+              function renderPresetList() {
+                var len = presetLength();
+                var groups = [];
+                healthcarePresets.forEach(function (p) { if (groups.indexOf(p.group) === -1) groups.push(p.group); });
+                var html = groups.map(function (g) {
+                  var idxs = [];
+                  healthcarePresets.forEach(function (p, idx) { if (p.group === g) idxs.push(idx); });
+                  var allOn = idxs.length && idxs.every(function (i) { return presetSelected[i]; });
+                  var h = '<div style="margin-bottom:0.7rem"><div style="display:flex;justify-content:space-between;align-items:center"><strong style="font-size:0.92rem">' + esc(g) + '</strong>' +
+                    '<button type="button" class="btn-secondary" data-preset-group="' + esc(g) + '" style="padding:0.2rem 0.55rem;font-size:0.8rem">' + (allOn ? 'Deselect all' : 'Select all') + '</button></div>';
+                  h += idxs.map(function (idx) { return presetRowHtml(healthcarePresets[idx], idx, len); }).join('');
+                  return h + '</div>';
+                }).join('');
+                $('shift-preset-list').innerHTML = html;
+                refreshPresetAllLabel();
+              }
+              function loadPresets() {
+                if (healthcarePresets) return Promise.resolve(healthcarePresets);
+                return api('/api/schedule/shift-type-presets').then(function (r) {
+                  healthcarePresets = (r.ok && r.data && r.data.presets) || [];
+                  return healthcarePresets;
+                }).catch(function () { healthcarePresets = []; return healthcarePresets; });
+              }
+              function openPresetModal() {
+                hide($('shift-preset-error'));
+                hide($('shift-preset-result'));
+                loadPresets().then(function () {
+                  if (!healthcarePresets.length) {
+                    var e = $('shift-preset-error');
+                    e.textContent = 'Could not load the preset list. Please try again.';
+                    show(e);
+                    return;
+                  }
+                  presetSelected = {};
+                  // Colours are assigned in catalog order, skipping colours
+                  // already in use, so the box preview shows what gets added.
+                  var used = {};
+                  shiftTypes.forEach(function (st) { if (st.color) used[String(st.color).toLowerCase()] = 1; });
+                  presetAssignedColors = {};
+                  healthcarePresets.forEach(function (p, idx) {
+                    var c = nextPresetColor(used);
+                    presetAssignedColors[idx] = c;
+                    used[c.toLowerCase()] = 1;
+                  });
+                  $('shift-preset-depts').innerHTML = deptDropdownHTML([], 'preset');
+                  renderPresetList();
+                  show($('shift-preset-modal'));
+                });
+              }
+              function addSelectedPresets() {
+                var btn = $('shift-preset-add');
+                btn.disabled = true;
+                hide($('shift-preset-error'));
+                hide($('shift-preset-result'));
+                var len = presetLength();
+                var deptIds = checkedDeptIds('preset');
+                var picked = [];
+                healthcarePresets.forEach(function (p, idx) { if (presetSelected[idx]) picked.push({ p: p, idx: idx }); });
+                if (!picked.length) {
+                  var e = $('shift-preset-error');
+                  e.textContent = 'Tick at least one shift.';
+                  show(e);
+                  btn.disabled = false;
+                  return;
+                }
+                var added = [], skipped = [], failed = [];
+                var usedColors = {};
+                shiftTypes.forEach(function (st) { if (st.color) usedColors[String(st.color).toLowerCase()] = 1; });
+                var chain = Promise.resolve();
+                picked.forEach(function (entry) {
+                  chain = chain.then(function () {
+                    var p = entry.p;
+                    if (presetNameExists(p.name, deptIds)) { skipped.push(p.name); return; }
+                    var color = presetAssignedColors[entry.idx] || nextPresetColor(usedColors);
+                    usedColors[String(color).toLowerCase()] = 1;
+                    var t = presetTimes(p, len);
+                    return api('/api/schedule/shift-types', {
+                      method: 'POST',
+                      body: JSON.stringify({ name: p.name, shortName: p.shortName, color: color, departmentIds: deptIds, startTime: t.start, endTime: t.end }),
+                    }).then(function (r) {
+                      if (r.ok) added.push(p.name);
+                      else if (r.status === 409 || (r.data && r.data.error && /already exists/i.test(r.data.error))) skipped.push(p.name);
+                      else failed.push(p.name);
+                    });
+                  });
+                });
+                chain.then(function () {
+                  var parts = [];
+                  if (added.length) parts.push('Added ' + added.length + ' shift type' + (added.length > 1 ? 's' : '') + ': ' + added.join(', '));
+                  if (skipped.length) parts.push(skipped.length + ' already existed and were skipped: ' + skipped.join(', '));
+                  if (failed.length) parts.push(failed.length + ' could not be added: ' + failed.join(', '));
+                  var el = $('shift-preset-result');
+                  el.textContent = (parts.join('. ') || 'Nothing added.') + '.';
+                  show(el);
+                  btn.disabled = false;
+                  loadAll();
+                }).catch(function () {
+                  var e2 = $('shift-preset-error');
+                  e2.textContent = 'Network error. Some shifts may not have been added — please check the list.';
+                  show(e2);
+                  btn.disabled = false;
+                  loadAll();
+                });
+              }
+              $('shift-presets-btn').addEventListener('click', openPresetModal);
+              $('shift-preset-cancel').addEventListener('click', function () { hide($('shift-preset-modal')); });
+              $('shift-preset-modal').addEventListener('click', function (e) { if (e.target === $('shift-preset-modal')) hide($('shift-preset-modal')); });
+              document.querySelectorAll('input[name="preset-length"]').forEach(function (r) {
+                r.addEventListener('change', renderPresetList);
+              });
+              $('shift-preset-list').addEventListener('change', function (e) {
+                var cb = e.target;
+                if (cb && cb.matches && cb.matches('input[data-presetidx]')) {
+                  presetSelected[Number(cb.getAttribute('data-presetidx'))] = cb.checked;
+                  renderPresetList();
+                }
+              });
+              $('shift-preset-list').addEventListener('click', function (e) {
+                var b = e.target.closest ? e.target.closest('[data-preset-group]') : null;
+                if (!b) return;
+                var g = b.getAttribute('data-preset-group');
+                var idxs = [];
+                healthcarePresets.forEach(function (p, idx) { if (p.group === g) idxs.push(idx); });
+                var allOn = idxs.length && idxs.every(function (i) { return presetSelected[i]; });
+                idxs.forEach(function (i) { presetSelected[i] = !allOn; });
+                renderPresetList();
+              });
+              $('shift-preset-all').addEventListener('click', function () {
+                var all = healthcarePresets.length && healthcarePresets.every(function (p, idx) { return presetSelected[idx]; });
+                healthcarePresets.forEach(function (p, idx) { presetSelected[idx] = !all; });
+                renderPresetList();
+              });
+              $('shift-preset-add').addEventListener('click', addSelectedPresets);
 
               window.addEventListener('hashchange', function () { if (isActive()) loadAll(); });
               if (isActive()) loadAll();
