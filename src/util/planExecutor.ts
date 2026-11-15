@@ -823,9 +823,11 @@ function cleanRecurE(change: PlanChange): { recurRule: string; recurInterval: nu
 /** Execute a plan's changes. Returns per-change results. */
 /**
  * Check one person against one shift type's eligible job-role list.
- * Same gate as the manual-assign / pickup paths: an empty list means
- * everyone is eligible; otherwise the member's linked job role must be
- * in the list (members with no role set fail restricted types).
+ * Same gate as the manual-assign / pickup paths: a non-empty list means
+ * the member's linked job role must be in the list. An empty list means
+ * all roles of the shift type's own departments (Deepika, 2026-11-14);
+ * a type with no departments stays open to everyone. Members with no
+ * role set fail department-scoped types.
  */
 async function checkPersonEligible(
   companyId: string,
@@ -833,23 +835,21 @@ async function checkPersonEligible(
   shiftTypeId: string
 ): Promise<{ ok: true } | { ok: false; roleName: string | null; eligibleNames: string }> {
   const { rows: trows } = await query(
-    'SELECT eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2',
+    `SELECT st.eligible_job_role_ids,
+            COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "departmentIds",
+            st.department_id AS "departmentId"
+     FROM shift_types st WHERE st.id = $1 AND st.company_id = $2`,
     [shiftTypeId, companyId]
   );
   if (!trows.length) return { ok: true };
   const list: string[] = Array.isArray(trows[0].eligible_job_role_ids) ? trows[0].eligible_job_role_ids : [];
-  if (!list.length) return { ok: true };
+  const deptIds: string[] = Array.isArray(trows[0].departmentIds) ? [...trows[0].departmentIds] : [];
+  if (trows[0].departmentId && !deptIds.includes(trows[0].departmentId)) deptIds.push(trows[0].departmentId);
   const { rows: urows } = await query(
     'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
     [userId, companyId]
   );
   const roleId: string | null = urows.length ? urows[0].job_role_id : null;
-  if (roleId && list.includes(roleId)) return { ok: true };
-  const { rows: rrows } = await query(
-    'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
-    [list, companyId]
-  );
-  const eligibleNames = rrows.map((r: any) => r.name).join(', ') || 'specific job roles';
   let roleName: string | null = null;
   if (roleId) {
     const { rows: prows } = await query(
@@ -858,7 +858,30 @@ async function checkPersonEligible(
     );
     roleName = prows.length ? prows[0].name : null;
   }
-  return { ok: false, roleName, eligibleNames };
+  if (list.length) {
+    if (roleId && list.includes(roleId)) return { ok: true };
+    const { rows: rrows } = await query(
+      'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
+      [list, companyId]
+    );
+    const eligibleNames = rrows.map((r: any) => r.name).join(', ') || 'specific job roles';
+    return { ok: false, roleName, eligibleNames };
+  }
+  // Empty list: "all roles" = all roles of the type's own departments.
+  if (!deptIds.length) return { ok: true };
+  const { rows: drows } = await query(
+    'SELECT name FROM departments WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
+    [deptIds, companyId]
+  );
+  const deptNames = drows.map((r: any) => r.name).join(', ') || 'its departments';
+  if (roleId) {
+    const { rows: rrows } = await query(
+      'SELECT department_id FROM job_roles WHERE id = $1 AND company_id = $2',
+      [roleId, companyId]
+    );
+    if (rrows.length && deptIds.includes(rrows[0].department_id)) return { ok: true };
+  }
+  return { ok: false, roleName, eligibleNames: `any job role in ${deptNames}` };
 }
 
 /**
@@ -995,24 +1018,47 @@ export async function validatePlanConflicts(companyId: string, changes: PlanChan
 
 /**
  * Human-readable job-role rules for the planner prompt, restricted types
- * only: e.g. ["Red Team: only PGY1, PGY2, PGY3"]. Empty when nothing is
- * restricted (everyone may take every shift type).
+ * only: e.g. ["Red Team: only PGY1, PGY2, PGY3"]. A type with an explicit
+ * list names its roles; a department-scoped type with an EMPTY list is
+ * also restricted (Deepika, 2026-11-14 — "all roles" means all roles of
+ * the type's own departments) and reads e.g. "Resident Day: only any
+ * job role in Residents". Empty when nothing is restricted (everyone
+ * may take every shift type). A global type with an empty list stays
+ * open to everyone and is not listed.
  */
 export async function getShiftTypeRules(companyId: string): Promise<string[]> {
   const { rows: stRows } = await query(
-    'SELECT name, eligible_job_role_ids FROM shift_types WHERE company_id = $1 AND is_active = true',
+    `SELECT st.name, st.eligible_job_role_ids,
+            COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "departmentIds",
+            st.department_id AS "departmentId"
+     FROM shift_types st WHERE st.company_id = $1 AND st.is_active = true`,
     [companyId]
   );
-  const restricted = stRows.filter((r: any) => Array.isArray(r.eligible_job_role_ids) && r.eligible_job_role_ids.length);
-  if (!restricted.length) return [];
-  const ids = [...new Set(restricted.flatMap((r: any) => r.eligible_job_role_ids))];
-  const { rows: rRows } = await query(
-    'SELECT id, name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2',
-    [ids, companyId]
-  );
+  const deptIdsOf = (r: any): string[] => {
+    const ids: string[] = Array.isArray(r.departmentIds) ? [...r.departmentIds] : [];
+    if (r.departmentId && !ids.includes(r.departmentId)) ids.push(r.departmentId);
+    return ids;
+  };
+  const hasList = (r: any) => Array.isArray(r.eligible_job_role_ids) && r.eligible_job_role_ids.length;
+  const explicit = stRows.filter(hasList);
+  const scopedEmpty = stRows.filter((r: any) => !hasList(r) && deptIdsOf(r).length > 0);
+  if (!explicit.length && !scopedEmpty.length) return [];
+  const roleIds = [...new Set(explicit.flatMap((r: any) => r.eligible_job_role_ids))];
+  const deptIds = [...new Set(scopedEmpty.flatMap((r: any) => deptIdsOf(r)))];
+  const { rows: rRows } = roleIds.length
+    ? await query('SELECT id, name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2', [roleIds, companyId])
+    : { rows: [] };
+  const { rows: dRows } = deptIds.length
+    ? await query('SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) AND company_id = $2', [deptIds, companyId])
+    : { rows: [] };
   const byId = new Map(rRows.map((r: any) => [r.id, r.name]));
-  return restricted.map((r: any) =>
-    `${r.name}: only ${r.eligible_job_role_ids.map((id: string) => byId.get(id) || 'a job role').join(', ')}`);
+  const deptById = new Map(dRows.map((r: any) => [r.id, r.name]));
+  return [
+    ...explicit.map((r: any) =>
+      `${r.name}: only ${r.eligible_job_role_ids.map((id: string) => byId.get(id) || 'a job role').join(', ')}`),
+    ...scopedEmpty.map((r: any) =>
+      `${r.name}: only any job role in ${deptIdsOf(r).map((id: string) => deptById.get(id) || 'its departments').join(', ')}`),
+  ];
 }
 
 export async function executePlan(

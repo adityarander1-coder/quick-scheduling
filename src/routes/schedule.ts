@@ -253,7 +253,8 @@ function isValidDate(s: any): boolean {
  * Validate a shift type's eligible job role ids. Each role must exist in the
  * company, and when the shift type has departments, the role's department
  * must be one of them. Returns null ids when the field was not provided
- * (leave unchanged); empty array = everyone eligible.
+ * (leave unchanged); empty array = all roles of the type's departments
+ * (stored as []; resolved against the type's departments at claim time).
  */
 async function validateEligibleRoles(
   raw: unknown,
@@ -284,32 +285,54 @@ async function validateEligibleRoles(
 /**
  * Check whether a member may claim an open slot for a shift type.
  * Symmetric/bidirectional: the shift type's eligible list is the single gate.
- * Empty/NULL list = everyone eligible; otherwise the member's linked job
- * role must be in the list. Members with no role set can only claim
- * unrestricted shifts.
+ * Non-empty list: the member's linked job role must be in the list.
+ * Empty/NULL list ("all roles"): all roles of the shift type's own
+ * departments (Deepika, 2026-11-14 — it used to mean everyone in the
+ * company, so a resident-team shift was open to non-residents). A type
+ * with no departments keeps the old meaning (everyone eligible).
+ * Members with no role set can only claim unrestricted (global) shifts.
+ * shiftDeptIds is the type's effective departments (shiftTypeDeptMap).
  */
 async function checkShiftEligibility(
   companyId: string,
   memberId: string,
-  eligibleIds: string[] | null | undefined
+  eligibleIds: string[] | null | undefined,
+  shiftDeptIds: string[]
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const list: string[] = Array.isArray(eligibleIds) ? eligibleIds : [];
-  if (!list.length) return { ok: true };
   const { rows: urows } = await query(
     'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
     [memberId, companyId]
   );
   const memberRoleId: string | null = urows.length ? urows[0].job_role_id : null;
-  if (memberRoleId && list.includes(memberRoleId)) return { ok: true };
-  const { rows: rrows } = await query(
-    'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
-    [list, companyId]
+  if (list.length) {
+    if (memberRoleId && list.includes(memberRoleId)) return { ok: true };
+    const { rows: rrows } = await query(
+      'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
+      [list, companyId]
+    );
+    const names = rrows.map((r) => r.name).join(', ') || 'specific job roles';
+    return {
+      ok: false,
+      error: `This shift can only be picked up by: ${names}.`,
+    };
+  }
+  // Empty list: "all roles" means all roles of the type's own departments.
+  if (!shiftDeptIds.length) return { ok: true };
+  const { rows: drows } = await query(
+    'SELECT name FROM departments WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
+    [shiftDeptIds, companyId]
   );
-  const names = rrows.map((r) => r.name).join(', ') || 'specific job roles';
-  return {
-    ok: false,
-    error: `This shift can only be picked up by: ${names}.`,
-  };
+  const deptNames = drows.map((r) => r.name).join(', ') || 'its departments';
+  if (!memberRoleId) {
+    return { ok: false, error: `This shift is only open to people with a job role in: ${deptNames}.` };
+  }
+  const { rows: rrows } = await query(
+    'SELECT department_id FROM job_roles WHERE id = $1 AND company_id = $2',
+    [memberRoleId, companyId]
+  );
+  if (rrows.length && shiftDeptIds.includes(rrows[0].department_id)) return { ok: true };
+  return { ok: false, error: `This shift is only open to people in: ${deptNames}.` };
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1199,9 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       return;
     }
     // Job role enforcement: member's role must be eligible for this shift type.
-    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+    // An empty eligible list means all roles of the type's own departments.
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
     if (!eligibility.ok) {
       res.status(403).json({ error: eligibility.error });
       return;
@@ -1295,7 +1320,8 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
       return;
     }
     // Job role enforcement.
-    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
     if (!eligibility.ok) {
       res.status(403).json({ error: eligibility.error });
       return;
@@ -1396,6 +1422,7 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
     let created = 0, already = 0, ineligible = 0, outOfScope = 0, invalid = 0, totalDates = 0;
     let firstRoleError: string | null = null;
     const createdByUser = new Map<string, { count: number; shiftTypeId: string; shiftTypeName: string; firstDate: string; lastDate: string }>();
+    const typeDepts = await shiftTypeDeptMap(companyId);
     for (const group of assignments) {
       const userId = group?.userId, shiftTypeId = group?.shiftTypeId;
       const rawDates: any[] = Array.isArray(group?.dates) ? group.dates : [];
@@ -1422,7 +1449,7 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
         if (!relevant.length || !relevant.includes(activeDept)) { outOfScope++; continue; }
       }
       // Job-role eligibility for this (member, shift type) pair.
-      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
       if (!eligibility.ok) {
         ineligible++;
         if (!firstRoleError) firstRoleError = eligibility.error;
@@ -2515,7 +2542,8 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
       [shiftTypeId, companyId]
     );
     if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
-    const eligibility = await checkShiftEligibility(companyId, src.userId, trows[0].eligible_job_role_ids);
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const eligibility = await checkShiftEligibility(companyId, src.userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
     if (!eligibility.ok) { res.status(403).json({ error: eligibility.error }); return; }
     const { rows: dup } = await query(
       `SELECT id FROM shifts WHERE company_id = $1 AND date = $2 AND user_id = $3 AND shift_type_id = $4 AND id <> $5 LIMIT 1`,
@@ -2628,11 +2656,12 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       [[a.shiftTypeId, b.shiftTypeId], companyId]
     );
     const eligFor = (tid: string) => (trows.find((t: any) => t.id === tid) || {}).eligible_job_role_ids;
+    const typeDepts = await shiftTypeDeptMap(companyId);
     const namesA = await shiftDisplayNames(companyId, a.userId, a.shiftTypeId);
     const namesB = await shiftDisplayNames(companyId, b.userId, b.shiftTypeId);
-    const eligA = await checkShiftEligibility(companyId, a.userId, eligFor(b.shiftTypeId));
+    const eligA = await checkShiftEligibility(companyId, a.userId, eligFor(b.shiftTypeId), typeDepts.get(b.shiftTypeId) || []);
     if (!eligA.ok) { res.status(403).json({ error: eligA.error }); return; }
-    const eligB = await checkShiftEligibility(companyId, b.userId, eligFor(a.shiftTypeId));
+    const eligB = await checkShiftEligibility(companyId, b.userId, eligFor(a.shiftTypeId), typeDepts.get(a.shiftTypeId) || []);
     if (!eligB.ok) { res.status(403).json({ error: eligB.error }); return; }
     const conflict = await checkSwapConflicts(query, companyId, [
       {
@@ -3722,6 +3751,7 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
         [gShiftTypeId, companyId]
       );
       if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
+      const typeDepts = await shiftTypeDeptMap(companyId);
       const allMembers: any[] = [];
       for (const gid of groupIds) {
         const { rows: grows } = await query(
@@ -3738,7 +3768,7 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
           return;
         }
         for (const m of members) {
-          const elig = await checkShiftEligibility(companyId, m.userId, trows[0].eligibleIds);
+          const elig = await checkShiftEligibility(companyId, m.userId, trows[0].eligibleIds, typeDepts.get(gShiftTypeId) || []);
           if (!elig.ok) {
             res.status(400).json({
               error: `${m.firstName} ${m.lastName} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
@@ -4141,8 +4171,9 @@ router.post('/rotations/pair', requireRole('owner', 'scheduler'), async (req: Re
       [groupShiftTypeId, companyId]
     );
     if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
+    const typeDepts = await shiftTypeDeptMap(companyId);
     for (const m of members) {
-      const elig = await checkShiftEligibility(companyId, m.id, trows[0].eligibleIds);
+      const elig = await checkShiftEligibility(companyId, m.id, trows[0].eligibleIds, typeDepts.get(groupShiftTypeId) || []);
       if (!elig.ok) {
         res.status(400).json({
           error: `${m.name} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
@@ -6492,7 +6523,8 @@ router.put('/shift-types/:id', requireRole('owner', 'scheduler'), async (req: Re
       updates.push(`department_id = $${i++}`); vals.push(deptIdsForJoin[0] || null);
     }
     // Eligible job roles: each must belong to the shift type's (effective)
-    // department(s); empty list = everyone eligible.
+    // department(s); empty list = all roles of the type's departments
+    // (stored as []; resolved against the type's departments at claim time).
     if (eligibleJobRoleIds !== undefined) {
       const effectiveDepts = deptIdsForJoin !== null
         ? deptIdsForJoin
@@ -7136,6 +7168,7 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
     }
     const requested: any[] = [];
     const failed: any[] = [];
+    const typeDepts = await shiftTypeDeptMap(companyId);
     for (const item of items) {
       const date = item && item.date;
       const shiftTypeId = item && item.shiftTypeId;
@@ -7148,7 +7181,7 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
         'SELECT id, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
         [shiftTypeId, companyId]);
       if (!trows.length) { failed.push({ date, shiftTypeId, error: 'Shift not found.' }); continue; }
-      const elig = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      const elig = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
       if (!elig.ok) { failed.push({ date, shiftTypeId, error: elig.error }); continue; }
       const shiftId = crypto.randomUUID();
       let held = false;
@@ -7884,6 +7917,7 @@ function gapPrevDate(date: string): string {
 // role doesn't fit. Conflicted people stay listed with the reason so
 // the scheduler sees the whole picture.
 async function gapAudiences(companyId: string, date: string, shiftTypeId: string, type: any) {
+  const typeDepts = await shiftTypeDeptMap(companyId);
   const { rows: resp } = await query(
     `SELECT r.name, r.available, r.user_id AS "userId" FROM availability_responses r
      JOIN availability_requests ar ON ar.id = r.request_id
@@ -7916,7 +7950,7 @@ async function gapAudiences(companyId: string, date: string, shiftTypeId: string
     // Account-keyed answers (login page) win over typed-name ones.
     const ans = saidById.has(u.id) ? saidById.get(u.id)
       : gapNameKeys(u).map((k) => said.get(k)).find((v) => v !== undefined);
-    const elig = await checkShiftEligibility(companyId, u.id, type.eligible_job_role_ids);
+    const elig = await checkShiftEligibility(companyId, u.id, type.eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
     if (!elig.ok) continue;
     const conflict = await checkShiftConflict(query as any, companyId, {
       userId: u.id, personName: 'You',
@@ -8135,7 +8169,8 @@ router.post('/gap-offers/act/:token', urlencoded({ extended: false }), async (re
       res.send(actPage('No longer available', '<p>This shift type is no longer active.</p>'));
       return;
     }
-    const elig = await checkShiftEligibility(ctx.companyId, ctx.userId, trows[0].eligible_job_role_ids);
+    const typeDepts = await shiftTypeDeptMap(ctx.companyId);
+    const elig = await checkShiftEligibility(ctx.companyId, ctx.userId, trows[0].eligible_job_role_ids, typeDepts.get(ctx.shiftTypeId) || []);
     if (!elig.ok) {
       res.send(actPage('Not eligible', '<p>' + escHtml(elig.error || 'Your role doesn\u2019t fit this shift.') + '</p>'));
       return;
@@ -11529,8 +11564,10 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       return;
     }
     // Job-role eligibility: symmetric gate — the member's linked job role
-    // must be in the shift type's eligible list (empty list = everyone).
-    const elig = await checkShiftEligibility(companyId, me, trows[0].eligible_job_role_ids);
+    // must be in the shift type's eligible list (empty list = all roles
+    // of the shift type's own departments).
+    const typeDepts = await shiftTypeDeptMap(companyId);
+    const elig = await checkShiftEligibility(companyId, me, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
     if (!elig.ok) {
       res.status(403).json({ error: elig.error });
       return;
@@ -15392,6 +15429,7 @@ async function sessionAudienceHas(companyId: string, gap: any, user: any, member
 // extra slots − assigned, per day and type), filtered to the shift
 // types their job role fits (owners see all).
 async function shiftGapsForUser(companyId: string, user: any, fromDate: string, toDate: string): Promise<any[]> {
+  const typeDepts = await shiftTypeDeptMap(companyId);
   const { rows: types } = await query(
     `SELECT id, name, short_name AS "shortName", color, eligible_job_role_ids AS "eligibleIds"
      FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name`,
@@ -15419,7 +15457,7 @@ async function shiftGapsForUser(companyId: string, user: any, fromDate: string, 
   const mine: any[] = [];
   for (const t of types) {
     if (user.role !== 'owner') {
-      const elig = await checkShiftEligibility(companyId, user.id, t.eligibleIds);
+      const elig = await checkShiftEligibility(companyId, user.id, t.eligibleIds, typeDepts.get(t.id) || []);
       if (!elig.ok) continue;
     }
     mine.push(t);
@@ -17500,6 +17538,7 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
     const failed: Array<{ row: number; reason: string }> = [];
     const createdByUser = new Map<string, { count: number; shiftTypeId: string; firstDate: string; lastDate: string }>();
     let imported = 0;
+    const typeDepts = await shiftTypeDeptMap(companyId);
     for (const r of rowsIn) {
       const rowNo = Number(r?.row) || 0;
       const fail = (reason: string) => { failed.push({ row: rowNo, reason }); };
@@ -17525,7 +17564,7 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
         const relevant = await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId);
         if (!relevant.length || !relevant.includes(activeDept)) { fail('This shift belongs to a different department.'); continue; }
       }
-      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids);
+      const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
       if (!eligibility.ok) { fail(eligibility.error); continue; }
       const { rows: dup } = await query(
         'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',

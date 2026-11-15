@@ -71,6 +71,31 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/job-roles/all — every role in departments the user can view
+// (owner: all; scheduler: viewable departments only). The setup wizard
+// and the schedule's role displays use this to learn which department
+// each role belongs to.
+router.get('/all', async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    let sql = `SELECT id, name, department_id, created_at FROM job_roles
+               WHERE company_id = $1 ORDER BY lower(name)`;
+    const params: any[] = [companyId];
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      if (!access.view.length) { res.json({ jobRoles: [] }); return; }
+      sql = `SELECT id, name, department_id, created_at FROM job_roles
+             WHERE company_id = $1 AND department_id = ANY($2::uuid[]) ORDER BY lower(name)`;
+      params.push(access.view);
+    }
+    const { rows } = await query(sql, params);
+    res.json({ jobRoles: rows.map(publicRole) });
+  } catch (err) {
+    console.error('[job-roles] list-all failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/job-roles — create a role in a department (owner/scheduler).
 router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
