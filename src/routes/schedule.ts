@@ -1064,6 +1064,21 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId, from, to]
     );
 
+    // Draft-open rule (Deepika, 2026-11-14): an employee's shift
+    // list excludes unpublished rows, so their grid would count a
+    // drafted-but-unpublished position as open AND as placed — the
+    // shortfall twice. These counts let the client add the reserved
+    // drafts back into `filled` (managers already see them in
+    // `shifts`, so they ignore this map).
+    const { rows: unpublishedRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*)::int AS n
+       FROM shifts WHERE company_id = $1 AND published = false AND date >= $2 AND date <= $3
+       GROUP BY date, shift_type_id`,
+      [companyId, from, to]
+    );
+    const unpublishedCounts: Record<string, number> = {};
+    for (const r of unpublishedRows) unpublishedCounts[`${r.date}|${r.shiftTypeId}`] = r.n;
+
     const all = employeeView ? [...visibleManual] : [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -1117,6 +1132,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
 
     res.json({
       shifts: all, closedShifts, extraSlots,
+      unpublishedCounts, includesDrafts: !employeeView,
       scheduleMode: await getCompanyModeSummary(query, companyId),
       generatedTypeIds: [...generatedTypes],
       notDraftedDates, notDraftedByType,

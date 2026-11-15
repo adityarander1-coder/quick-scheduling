@@ -2620,6 +2620,8 @@
           shifts: [],
           closedShifts: [],
           extraSlots: [],
+          unpublishedCounts: {},
+          includesDrafts: true,
           days: {},
           comments: [],
           staffingTargets: [],
@@ -2910,7 +2912,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3287,6 +3289,13 @@
           for (var i = 0; i < sched.shifts.length; i++) {
             if (sched.shifts[i].date === dateStr && sched.shifts[i].shiftTypeId === shiftTypeId) filled++;
           }
+          // Draft-open rule (Deepika, 2026-11-14): a drafted-but-
+          // unpublished row reserves its position. Viewers whose
+          // shift list excludes drafts (employees) add those back
+          // here, or the draft's own positions read as open too —
+          // the shortfall twice. Managers already see the drafts in
+          // sched.shifts, so they add nothing.
+          if (!sched.includesDrafts) filled += (sched.unpublishedCounts || {})[dateStr + '|' + shiftTypeId] || 0;
           return Math.max(0, target + extra - filled);
         }
 
@@ -6709,7 +6718,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -17069,6 +17078,7 @@ window.qsNpOfferSend = function (btn) {
           if (d.replacedDrafts) html += '<br>Replaced ' + d.replacedDrafts + ' draft shifts.';
           if (d.keptDrafts) html += '<br>Kept ' + d.keptDrafts + ' of your hand-fixed drafts.';
           if (d.openedSlots) html += '<br>Opened ' + d.openedSlots + ' slot' + (d.openedSlots === 1 ? '' : 's') + ' for cover.';
+          if (d.openedShortfall) html += '<br>Opened ' + d.openedShortfall + ' open position' + (d.openedShortfall === 1 ? '' : 's') + ' still needed.';
           var el = $('bulk-result');
           el.innerHTML = html;
           el.classList.remove('hidden');
@@ -18194,6 +18204,8 @@ window.qsNpOfferSend = function (btn) {
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
+        var msUnpublishedCounts = {}; // draft-open rule: reserved drafts, by date|type
+        var msIncludesDrafts = false; // employees never see drafts in `shifts`
         var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
         var msNotDraftedByType = {}; // managers only; the server sends employees {}
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
@@ -18467,6 +18479,8 @@ window.qsNpOfferSend = function (btn) {
               shifts = rs[3].data.shifts || [];
               extraSlots = rs[3].data.extraSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
+              msUnpublishedCounts = rs[3].data.unpublishedCounts || {};
+              msIncludesDrafts = rs[3].data.includesDrafts !== false;
               msScheduleMode = rs[3].data.scheduleMode || 'live';
               msNotDraftedByType = rs[3].data.notDraftedByType || {};
             }
@@ -18760,6 +18774,11 @@ window.qsNpOfferSend = function (btn) {
           for (var i = 0; i < shifts.length; i++) {
             if (shifts[i].date === dateStr && String(shifts[i].shiftTypeId) === String(shiftTypeId)) filled++;
           }
+          // Draft-open rule (Deepika, 2026-11-14): a drafted-but-
+          // unpublished row reserves its position. This list excludes
+          // drafts, so add their count back here, or the draft's own
+          // positions read as open too — the shortfall twice.
+          if (!msIncludesDrafts) filled += (msUnpublishedCounts || {})[dateStr + '|' + shiftTypeId] || 0;
           return Math.max(0, target + extra - filled);
         }
         function isWorking(dateStr) {
@@ -19449,6 +19468,8 @@ window.qsNpOfferSend = function (btn) {
           return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
             if (sR.ok) {
               shifts = sR.data.shifts || [];
+              msUnpublishedCounts = sR.data.unpublishedCounts || {};
+              msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
               msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();
@@ -19480,6 +19501,8 @@ window.qsNpOfferSend = function (btn) {
             var fresh = sR.data.shifts || [];
             if (msShiftFingerprint(fresh) !== msShiftFingerprint(shifts)) {
               shifts = fresh;
+              msUnpublishedCounts = sR.data.unpublishedCounts || {};
+              msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
               msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();

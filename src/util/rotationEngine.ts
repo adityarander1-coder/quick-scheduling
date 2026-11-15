@@ -579,6 +579,15 @@ export interface GenerateSummary {
   replacedDrafts: number;
   keptDrafts: number;
   openedSlots: number;
+  /**
+   * Draft-open rule (Deepika, 2026-11-14): the staffing-target
+   * shortfall this draft opens, summed over the range — the positions
+   * still needed after the rotation's people are placed. Owned by the
+   * generation (generation_open_slots kind='shortfall'), never added
+   * to extra_open_slots, so the grid keeps counting the shortfall
+   * exactly once through its target math.
+   */
+  openedShortfall: number;
   skipped: SkipCounts;
   skippedDetail: SkipDetail[];
   perRotation: PerRotationSummary[];
@@ -639,7 +648,10 @@ async function reconcileOpenSlots(
   tx: QueryFn, companyId: string, rotationId: string, generationId: string,
   from: string, to: string, desired: Map<string, number>
 ): Promise<number> {
-  // Existing ledger for this rotation, in range.
+  // Existing ledger for this rotation, in range — rule-7 rows only
+  // (shortfall rows live beside them under kind='shortfall' and are
+  // reconciled separately; mixing the two would net a rule-7 grant
+  // against a shortfall and silently eat one or the other).
   const { rows: genRows } = await tx(
     `SELECT id FROM rotation_generations WHERE company_id = $1 AND rotation_id = $2`,
     [companyId, rotationId]
@@ -651,7 +663,7 @@ async function reconcileOpenSlots(
     const { rows } = await tx(
       `SELECT id, date::text AS date, shift_type_id AS "shiftTypeId", count
        FROM generation_open_slots
-       WHERE generation_id = ANY($1::uuid[]) AND date >= $2 AND date <= $3
+       WHERE generation_id = ANY($1::uuid[]) AND date >= $2 AND date <= $3 AND kind = 'rule7'
        ORDER BY created_at ASC`,
       [genIds, from, to]
     );
@@ -697,9 +709,9 @@ async function reconcileOpenSlots(
     if (want > have) {
       const grant = want - have;
       await tx(
-        `INSERT INTO generation_open_slots (generation_id, company_id, date, shift_type_id, count)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (generation_id, date, shift_type_id)
+        `INSERT INTO generation_open_slots (generation_id, company_id, date, shift_type_id, count, kind)
+         VALUES ($1, $2, $3, $4, $5, 'rule7')
+         ON CONFLICT (generation_id, date, shift_type_id, kind)
          DO UPDATE SET count = generation_open_slots.count + EXCLUDED.count`,
         [generationId, companyId, date, shiftTypeId, grant]
       );
@@ -736,6 +748,185 @@ async function reconcileOpenSlots(
     }
   }
   return netOpened;
+}
+
+// ---------------------------------------------------------------------------
+// Draft-open rule (Deepika, 2026-11-14): when a shift type is drafted
+// from the rotation, the draft ALSO opens the positions still needed
+// — the staffing-target shortfall. The shortfall is per date+type
+// across the WHOLE draft call (all rotations placed first), never per
+// rotation: two rotations sharing a type must not each open the same
+// gap. It lives in generation_open_slots under kind='shortfall' and
+// is NEVER added to extra_open_slots — the grid's target math
+// (target + extra - filled) already counts the shortfall, so adding
+// it there would count it twice. Hand-added extra slots are never
+// touched; a type with no target gets no opens.
+// ---------------------------------------------------------------------------
+
+interface ShortfallTarget {
+  shiftTypeId: string;
+  targetCount: number;
+  weekdays: number[];
+  startDate: string | null;
+  endDate: string | null;
+}
+
+/** Staffing targets + closed dates for the shortfall computation —
+ *  mirrors the grid's targetCountFor (weekdays + date range). */
+async function loadShortfallInputs(
+  tx: QueryFn, companyId: string, from: string, to: string
+): Promise<{ targets: ShortfallTarget[]; closed: Set<string> }> {
+  const { rows: trows } = await tx(
+    `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
+            weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+     FROM staffing_targets WHERE company_id = $1`,
+    [companyId]
+  );
+  const targets = trows.map((t: any) => ({
+    shiftTypeId: t.shiftTypeId,
+    targetCount: Number(t.targetCount) || 0,
+    weekdays: Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6],
+    startDate: t.startDate || null,
+    endDate: t.endDate || null,
+  }));
+  const { rows: crows } = await tx(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+     FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [companyId, from, to]
+  );
+  return { targets, closed: new Set(crows.map((c: any) => `${c.date}|${c.shiftTypeId}`)) };
+}
+
+function targetForShortfall(targets: ShortfallTarget[], shiftTypeId: string, dateStr: string): number {
+  for (const t of targets) {
+    if (t.shiftTypeId !== shiftTypeId) continue;
+    const dow = new Date(dateStr + 'T00:00:00').getDay();
+    if (!t.weekdays.includes(dow)) return 0;
+    if (t.startDate && dateStr < t.startDate) return 0;
+    if (t.endDate && dateStr > t.endDate) return 0;
+    return t.targetCount;
+  }
+  return 0;
+}
+
+/** Shift types a draft call produces (per-person assignments + group
+ *  types), intersected with the picked types on a partial draft. A
+ *  type whose rotation placed nobody (vacation, pause, ended) is
+ *  still in scope — its shortfall is the full target. */
+function producedTypeIds(
+  ctx: GenerationContext, rots: any[], onlyShiftTypeIds?: Set<string>
+): Set<string> {
+  const out = new Set<string>();
+  for (const rot of rots) {
+    if (rot.groupId && rot.groupShiftTypeId) out.add(rot.groupShiftTypeId as string);
+    for (const a of ctx.assignmentsByRotation.get(rot.id) || []) out.add(a.shiftTypeId);
+  }
+  if (onlyShiftTypeIds) for (const t of [...out]) if (!onlyShiftTypeIds.has(t)) out.delete(t);
+  return out;
+}
+
+/** Desired shortfall per date|type: target minus stored shifts. The
+ *  stored set is the CURRENT state (after this call's placements) —
+ *  drafts, published and hand-added rows all count as filled, so a
+ *  partial draft reconciles against what was actually drafted, and a
+ *  hand-added person fills one of the needed positions. */
+function computeShortfallDesired(
+  inputs: { targets: ShortfallTarget[]; closed: Set<string> },
+  storedRows: Array<{ userId: string; date: string; shiftTypeId: string }>,
+  from: string, to: string, typeIds: Set<string>, today: string
+): Map<string, number> {
+  const placed = new Map<string, number>();
+  for (const s of storedRows) {
+    if (s.date < from || s.date > to) continue;
+    if (!typeIds.has(s.shiftTypeId)) continue;
+    const k = `${s.date}|${s.shiftTypeId}`;
+    placed.set(k, (placed.get(k) || 0) + 1);
+  }
+  const desired = new Map<string, number>();
+  for (let n = dayNum(from); n <= dayNum(to); n++) {
+    const date = dateOfDayNum(n);
+    if (date < today) continue; // past is truth — never open the past
+    for (const typeId of typeIds) {
+      if (inputs.closed.has(`${date}|${typeId}`)) continue;
+      const t = targetForShortfall(inputs.targets, typeId, date);
+      if (!t) continue;
+      const s = Math.max(0, t - (placed.get(`${date}|${typeId}`) || 0));
+      if (s > 0) desired.set(`${date}|${typeId}`, s);
+    }
+  }
+  return desired;
+}
+
+/**
+ * Reconcile the shortfall opens against the desired counts. The
+ * desired total is per date+type across the whole call, so existing
+ * grants are read across ALL generations in range (any rotation's):
+ * a re-draft of a subset nets the total down instead of stacking on
+ * a stale grant from a rotation that was not re-drafted. New grants
+ * are written under the first generation of this call that produces
+ * the type; removals take the oldest rows first. Types outside this
+ * call's scope are left alone — their grants belong to their own
+ * draft. Returns the net grants/removals and the total shortfall
+ * this draft now owns.
+ */
+async function reconcileShortfallSlots(
+  tx: QueryFn, companyId: string,
+  genIdByType: Map<string, string>,
+  from: string, to: string,
+  desired: Map<string, number>,
+  typeIds: Set<string>
+): Promise<{ granted: number; removed: number; total: number }> {
+  const { rows } = await tx(
+    `SELECT id, generation_id AS "generationId", date::text AS date,
+            shift_type_id AS "shiftTypeId", count
+     FROM generation_open_slots
+     WHERE company_id = $1 AND kind = 'shortfall' AND date >= $2 AND date <= $3
+     ORDER BY created_at ASC`,
+    [companyId, from, to]
+  );
+  const existing = new Map<string, number>();
+  const ledgerRows: Array<{ id: string; date: string; shiftTypeId: string; count: number }> = [];
+  for (const r of rows) {
+    const k = `${r.date}|${r.shiftTypeId}`;
+    existing.set(k, (existing.get(k) || 0) + r.count);
+    ledgerRows.push({ id: r.id, date: r.date, shiftTypeId: r.shiftTypeId, count: r.count });
+  }
+  let granted = 0, removed = 0;
+  const keys = new Set<string>([...desired.keys()]);
+  for (const k of existing.keys()) {
+    if (typeIds.has(k.split('|')[1])) keys.add(k);
+  }
+  for (const k of keys) {
+    const want = desired.get(k) || 0;
+    const have = existing.get(k) || 0;
+    const [date, shiftTypeId] = k.split('|');
+    if (want > have) {
+      const grant = want - have;
+      const genId = genIdByType.get(shiftTypeId);
+      if (!genId) continue; // no generation in this call produces the type — leave the gap to its own draft
+      await tx(
+        `INSERT INTO generation_open_slots (generation_id, company_id, date, shift_type_id, count, kind)
+         VALUES ($1, $2, $3, $4, $5, 'shortfall')
+         ON CONFLICT (generation_id, date, shift_type_id, kind)
+         DO UPDATE SET count = generation_open_slots.count + EXCLUDED.count`,
+        [genId, companyId, date, shiftTypeId, grant]
+      );
+      granted += grant;
+    } else if (want < have) {
+      let remove = have - want;
+      for (const lr of ledgerRows.filter((x) => `${x.date}|${x.shiftTypeId}` === k)) {
+        if (remove <= 0) break;
+        const take = Math.min(lr.count, remove);
+        if (take >= lr.count) await tx('DELETE FROM generation_open_slots WHERE id = $1', [lr.id]);
+        else await tx('UPDATE generation_open_slots SET count = count - $1 WHERE id = $2', [take, lr.id]);
+        remove -= take;
+      }
+      removed += (have - want - remove);
+    }
+  }
+  let total = 0;
+  for (const v of desired.values()) total += v;
+  return { granted, removed, total };
 }
 
 /**
@@ -863,8 +1054,20 @@ export async function generateRotations(
         openedSlots: comp.departed.length, skipped: comp.skipped,
       });
     }
+    // Dry run also reports the shortfall this draft would open (same
+    // math as the real run, on the simulated stored set — no writes).
+    let openedShortfall = 0;
+    if (publishMode === 'draft') {
+      const typeIds = producedTypeIds(ctx, rots, onlyShiftTypeIds);
+      if (typeIds.size) {
+        const inputs = await loadShortfallInputs(tx, companyId, from, to);
+        const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
+        for (const v of desired.values()) openedShortfall += v;
+      }
+    }
     return {
       generationIds: [], created: 0, replacedDrafts: 0, keptDrafts: 0, openedSlots: 0,
+      openedShortfall,
       skipped, skippedDetail, perRotation,
       existingDrafts: draftRows[0]?.n || 0, deletedCount: exclRows[0]?.n || 0, wouldCreate, createdRows,
     };
@@ -873,6 +1076,7 @@ export async function generateRotations(
   // ---- Real generation.
   const summary: GenerateSummary = {
     generationIds: [], created: 0, replacedDrafts: 0, keptDrafts: 0, openedSlots: 0,
+    openedShortfall: 0,
     skipped: emptySkipped(), skippedDetail: [], perRotation: [], auditEntries: [], createdRows: [],
   };
   const auditEntries: AuditEntry[] = summary.auditEntries!;
@@ -1030,6 +1234,34 @@ export async function generateRotations(
           details: { generationId, rotationId: id, count: n, from, to, mode },
         });
       }
+    }
+  }
+
+  // Draft-open rule (Deepika, 2026-11-14): after every rotation in
+  // the call has placed its people, open the positions still needed
+  // (staffing-target shortfall) for the types this draft produces.
+  // Drafts only — the Stage 4 migration (publishMode 'published')
+  // stamps live-mode truth and must not open anything.
+  if (publishMode === 'draft') {
+    const typeIds = producedTypeIds(ctx, rots, onlyShiftTypeIds);
+    if (typeIds.size) {
+      const inputs = await loadShortfallInputs(tx, companyId, from, to);
+      const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
+      // Attribute new grants to the first generation of this call
+      // that produces the type (the ledger total per date+type is
+      // what matters, not which generation holds it).
+      const genIdByType = new Map<string, string>();
+      for (const id of ordered) {
+        const rot = byId.get(id);
+        const g = summary.perRotation.find((p) => p.rotationId === id);
+        if (!g || !g.generationId) continue;
+        const types = new Set<string>();
+        if (rot.groupId && rot.groupShiftTypeId) types.add(rot.groupShiftTypeId as string);
+        for (const a of ctx.assignmentsByRotation.get(id) || []) types.add(a.shiftTypeId);
+        for (const t of types) if (!genIdByType.has(t)) genIdByType.set(t, g.generationId);
+      }
+      const rec = await reconcileShortfallSlots(tx, companyId, genIdByType, from, to, desired, typeIds);
+      summary.openedShortfall = rec.total;
     }
   }
   return summary;
