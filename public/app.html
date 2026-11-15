@@ -3307,15 +3307,10 @@
           var list = (sched.notDraftedByType || {})[shiftTypeId] || [];
           return list.indexOf(dateStr) !== -1;
         }
-        // With a shift type: that type is undrafted that day (drives
-        // the per-type OPEN suppression). Without one (day headers):
-        // the day-level rule — no generation covers the date at all.
-        function notDraftedTag(dateStr, shiftTypeId) {
-          if (!sched.canEdit) return '';
-          if (shiftTypeId) { if (!isNotDrafted(dateStr, shiftTypeId)) return ''; }
-          else if ((sched.notDraftedDates || []).indexOf(dateStr) === -1) return '';
-          return '<div style="font-size:0.72rem;font-weight:600;color:#6b7280;margin-top:2px">Not drafted yet</div>';
-        }
+        // "Not drafted yet" day-header label REMOVED (Deepika, 2026-11-14):
+        // the notice is gone, but isNotDrafted / notDraftedDates /
+        // notDraftedByType still drive the undrafted-date OPEN
+        // suppression below — behavior unchanged, label only.
         function openCountFor(dateStr, shiftTypeId) {
           if (isShiftClosed(dateStr, shiftTypeId)) return 0;
           // Background rotations (Deepika, 2026-11-13; decision N2):
@@ -3413,7 +3408,7 @@
           var html = '<article class="day-row' + (isToday ? ' is-today' : '') + '" data-date="' + dateStr + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + dateStr + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + notDraftedTag(dateStr) + '</div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (isToday ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + '</div>';
           html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + dateStr + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
@@ -4102,7 +4097,7 @@
           var html = '<article class="day-row' + (ds === fmtDate(new Date()) ? ' is-today' : '') + '" data-date="' + ds + '">';
           html += '<header class="day-row-head">' +
             '<div class="day-row-date" data-date="' + ds + '" title="View details & notes">' +
-            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + notDraftedTag(ds) + '</div>';
+            '<div class="dow">' + esc(dow) + '</div><div class="dnum">' + esc(dnum) + (ds === fmtDate(new Date()) ? ' <span class="today-tag">TODAY</span>' : '') + '</div>' + '</div>';
           html += '<div class="day-row-actions">' +
             (sched.canEdit ? '<button type="button" class="add-shift-btn" data-date="' + ds + '" title="Assign shift">+</button>' : '') +
             '</div></header>';
