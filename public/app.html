@@ -1419,6 +1419,32 @@
     #tab-schedule .day-box.qs-drop-hl, #tab-schedule .month-strip-day.qs-drop-hl { outline-offset: -3px; background: #e6f4f5; }
     #qs-place-banner { position: fixed; left: 50%; transform: translateX(-50%); bottom: 86px; z-index: 960; background: #21414c; color: #fff; border-radius: 12px; padding: 10px 14px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 22px rgba(15,40,50,.4); max-width: min(92vw, 520px); font-size: .92rem; }
     #qs-place-banner button { background: #fff; color: #21414c; border: none; border-radius: 999px; padding: 6px 12px; font-weight: 700; cursor: pointer; }
+    /* Multi-select shifts (Deepika, 2026-11-17): tap Select in the Tools
+       bar (under Highlight), then tap shifts to add them. Long-press
+       stays the move gesture — selection never takes it over. */
+    body.qs-selecting #tab-schedule .shift-grid, body.qs-selecting #tab-myschedule .shift-grid { cursor: pointer; }
+    .shift-grid.qs-selected, .open-slot.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; position: relative; }
+    .shift-grid.qs-selected::after, .open-slot.qs-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; z-index: 5; width: 22px; height: 22px; border-radius: 50%; background: #0e7c86; color: #fff; font-size: 13px; font-weight: 800; line-height: 22px; text-align: center; box-shadow: 0 2px 6px rgba(8,63,77,.4); pointer-events: none; }
+    .qs-person.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; }
+    #qs-selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 900; background: #083f4d; color: #fff; border-radius: 14px; padding: 10px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; box-shadow: 0 10px 28px rgba(8,63,77,.4); max-width: calc(100vw - 24px); }
+    #qs-selbar.hidden { display: none; }
+    #qs-selbar .qs-sel-count { font-weight: 800; font-size: 15px; margin-right: 2px; white-space: nowrap; }
+    #qs-selbar .qs-sel-result { font-size: 13px; color: #bfe3e6; white-space: nowrap; }
+    #qs-selbar button { border: none; border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; background: #fff; color: #083f4d; }
+    #qs-selbar button[data-selact="delete"] { background: #fde8ea; color: #b42318; }
+    #qs-selbar button[data-selact="done"] { background: #0e7c86; color: #fff; }
+    #qs-selbar button:disabled { opacity: .5; cursor: default; }
+    #qs-sel-move .qs-sel-move-map { font-size: 13px; color: var(--text); margin: 10px 0 4px; }
+    #qs-sel-move .qs-sel-move-map div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+    #qs-sel-move .qs-sel-move-people { max-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+    #qs-sel-move .qs-sel-move-people button { text-align: left; border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 8px 10px; font-size: 14px; cursor: pointer; font-family: inherit; }
+    #qs-sel-move .qs-sel-move-people button.sel { border-color: #0e7c86; background: #e6f4f5; font-weight: 700; }
+    #qs-sel-move label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--dim); margin-top: 10px; }
+    #qs-sel-move [data-mtab] { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 8px 14px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; color: var(--text); }
+    #qs-sel-move [data-mtab].qs-mtab-on { background: #0e7c86; border-color: #0e7c86; color: #fff; }
+    #qs-sel-move input { padding: 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 15px; font-family: inherit; }
+    #ms-select-toggle { border: 1px solid #0e7c86; background: #fff; color: #0a6270; border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    #ms-select-toggle.qs-sel-on { background: #0e7c86; color: #fff; }
     #qs-undo-btn { position: fixed; right: 16px; bottom: 86px; z-index: 950; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 10px 16px; font-weight: 700; box-shadow: 0 6px 18px rgba(15,40,50,.35); cursor: pointer; }
     .qs-ur-btn { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 999px; padding: 0.4rem 0.75rem; font-weight: 700; font-size: 0.85rem; cursor: pointer; line-height: 1; }
     .qs-ur-btn:hover { background: rgba(255,255,255,.28); }
@@ -1760,6 +1786,7 @@
   <div id="qs-tools-rail" aria-label="Tools">
     <div class="qtr-head">TOOLS</div>
     <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
+    <button type="button" class="qtr-btn" id="qtr-select" data-tool="select" onclick="window.qsSelToggle()" aria-pressed="false" title="Select shifts to act on together"><span class="qtr-ic">☑️</span><span class="qtr-tx">Select</span></button>
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
@@ -3805,6 +3832,554 @@
           }
         }
 
+        // -----------------------------------------------------------------
+        // Multi-select shifts (Deepika, 2026-11-17).
+        // Enter via the Select button in the Tools rail (under Highlight),
+        // the Select item in a shift's popup, or Ctrl/Cmd-click on a shift.
+        // Long-press STAYS the move gesture — selection never takes it over
+        // (while selection is on, drag arming is suppressed; entering
+        // selection exits place mode). Two scopes — 'schedule' (manager
+        // grid) and 'myschedule' (My Schedule mirror) — each register an
+        // adapter; the document-level gesture handler picks the scope by
+        // which tab root contains the tap. Every bar action reuses the
+        // single-shift endpoints (delete-completely sweep, publish-state,
+        // drag-move, extra-slots) — no server changes, no parallel paths.
+        // Bulk delete / publish / change-person are NOT undoable (their
+        // single-shift equivalents aren't either); bulk move-to-date IS —
+        // one undo entry per moved shift, same shape as qsExecuteDrop.
+        // -----------------------------------------------------------------
+        (function initQsSel() {
+          function fmtDayShort(ds) {
+            var p = (ds || '').split('-');
+            if (p.length !== 3) return ds;
+            var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+            var wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+            var mo = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+            return wd + ' ' + mo + ' ' + d.getDate();
+          }
+          function addDays(ds, n) {
+            var p = String(ds).split('-');
+            var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + n);
+            function z(x) { return (x < 10 ? '0' : '') + x; }
+            return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate());
+          }
+          function dayDiff(a, b) {
+            var pa = String(a).split('-'), pb = String(b).split('-');
+            var da = new Date(Number(pa[0]), Number(pa[1]) - 1, Number(pa[2]));
+            var db = new Date(Number(pb[0]), Number(pb[1]) - 1, Number(pb[2]));
+            return Math.round((db - da) / 86400000);
+          }
+          function memberName(m) {
+            if (!m) return '';
+            var n = [m.firstName, m.lastName].filter(Boolean).join(' ');
+            return n || m.nickname || m.name || m.email || '';
+          }
+          function itemKey(it) { return it.kind === 's' ? 's:' + it.id : 'o:' + it.date + '|' + it.shiftTypeId; }
+          function itemFromShift(s) {
+            if (!s || !s.id || !s.date || !s.shiftTypeId) return null;
+            return {
+              kind: 's', id: s.id, date: s.date, shiftTypeId: s.shiftTypeId, userId: s.userId || null,
+              rotationId: s.rotationId || (String(s.id).indexOf('rot-') === 0 ? s.id : null),
+              published: s.published !== false, notes: s.notes || null,
+            };
+          }
+
+          var sel = {
+            on: false, scope: null, items: {}, scopes: {}, result: '',
+            _movePerson: null, _moveTab: 'date',
+          };
+          var bar = null, barCount = null, barResult = null, moveDlg = null;
+
+          function ensureBar() {
+            if (bar) return bar;
+            var wrap = document.createElement('div');
+            wrap.innerHTML =
+              '<div id="qs-selbar" class="hidden">' +
+              '<span class="qs-sel-count"></span><span class="qs-sel-result"></span>' +
+              '<button type="button" data-selact="delete">Delete</button>' +
+              '<button type="button" data-selact="publish">Publish</button>' +
+              '<button type="button" data-selact="unpublish">Unpublish</button>' +
+              '<button type="button" data-selact="move">Move</button>' +
+              '<button type="button" data-selact="duplicate">Duplicate</button>' +
+              '<button type="button" data-selact="close">Close slot</button>' +
+              '<button type="button" data-selact="done">Done</button>' +
+              '</div>';
+            bar = wrap.firstChild;
+            bar.addEventListener('click', function (e) {
+              var b = e.target.closest ? e.target.closest('[data-selact]') : null;
+              if (!b) return;
+              e.stopPropagation();
+              selAction(b.getAttribute('data-selact'));
+            });
+            document.body.appendChild(bar);
+            barCount = bar.querySelector('.qs-sel-count');
+            barResult = bar.querySelector('.qs-sel-result');
+            return bar;
+          }
+          function ensureMoveDlg() {
+            if (moveDlg) return moveDlg;
+            var wrap = document.createElement('div');
+            wrap.innerHTML =
+              '<div id="qs-sel-move" class="modal-backdrop hidden">' +
+              '<div class="modal" style="max-width:460px">' +
+              '<h3 id="qs-sel-move-title">Move shifts</h3>' +
+              '<p id="qs-sel-move-sub" style="font-size:13px;color:var(--dim);margin:6px 0 0"></p>' +
+              '<div style="display:flex;gap:6px;margin-top:12px">' +
+              '<button type="button" data-mtab="date">Move to date</button>' +
+              '<button type="button" data-mtab="person">Change person</button>' +
+              '</div>' +
+              '<div id="qs-sel-move-date-pane">' +
+              '<label>New date for the earliest shift <input type="date" id="qs-sel-move-date"></label>' +
+              '<label>Forward by (days) <input type="number" id="qs-sel-move-forward" min="1" value="7"></label>' +
+              '<div class="qs-sel-move-map" id="qs-sel-move-map"></div>' +
+              '</div>' +
+              '<div id="qs-sel-move-person-pane" class="hidden">' +
+              '<p style="font-size:13px;color:var(--dim);margin:10px 0 0">Choose who these shifts go to:</p>' +
+              '<div class="qs-sel-move-people" id="qs-sel-move-people"></div>' +
+              '</div>' +
+              '<div class="modal-actions">' +
+              '<button type="button" id="qs-sel-move-cancel" class="btn-secondary">Cancel</button>' +
+              '<button type="button" id="qs-sel-move-confirm" class="btn">Move</button>' +
+              '</div></div></div>';
+            moveDlg = wrap.firstChild;
+            document.body.appendChild(moveDlg);
+            moveDlg.addEventListener('click', function (e) {
+              var t = e.target.closest ? e.target.closest('[data-mtab]') : null;
+              if (t) { setMoveTab(t.getAttribute('data-mtab')); return; }
+              var p = e.target.closest ? e.target.closest('[data-mperson]') : null;
+              if (p) { sel._movePerson = p.getAttribute('data-mperson'); syncMovePeople(); return; }
+              if (e.target.id === 'qs-sel-move-cancel') { hideMoveDlg(); return; }
+              if (e.target.id === 'qs-sel-move-confirm') { confirmMoveDlg(); return; }
+            });
+            var dateIn = moveDlg.querySelector('#qs-sel-move-date');
+            var fwdIn = moveDlg.querySelector('#qs-sel-move-forward');
+            dateIn.addEventListener('input', syncMoveFromDate);
+            dateIn.addEventListener('change', syncMoveFromDate);
+            fwdIn.addEventListener('input', syncMoveFromForward);
+            fwdIn.addEventListener('change', syncMoveFromForward);
+            return moveDlg;
+          }
+          function activeScopeName() {
+            var a = document.querySelector('.tab-panel.active');
+            if (!a) return null;
+            if (a.id === 'tab-myschedule' && sel.scopes.myschedule) return 'myschedule';
+            if (a.id === 'tab-schedule' && sel.scopes.schedule) return 'schedule';
+            return null;
+          }
+          function itemCount() { return Object.keys(sel.items).length; }
+          function itemsList() { return Object.keys(sel.items).map(function (k) { return sel.items[k]; }); }
+          function selectedShifts() { return itemsList().filter(function (it) { return it.kind === 's'; }); }
+          function selectedOpens() { return itemsList().filter(function (it) { return it.kind === 'o'; }); }
+          function earliestDate() {
+            var ds = itemsList().map(function (it) { return it.date; }).filter(Boolean).sort();
+            return ds.length ? ds[0] : null;
+          }
+          function refreshActiveScope() {
+            var sc = sel.scopes[sel.scope];
+            if (sc && sc.refresh) sc.refresh();
+          }
+
+          function applyUI() {
+            ensureBar();
+            document.querySelectorAll('.qs-selected').forEach(function (el) { el.classList.remove('qs-selected'); });
+            var sc = sel.scopes[sel.scope];
+            var root = sc && sc.root ? sc.root : document;
+            itemsList().forEach(function (it) {
+              if (it.kind === 's') {
+                // Mark the shift BOX only — the chevron button inside it
+                // (.shift-actions-btn) carries the same data-shift-id,
+                // and marking it too doubles the count.
+                root.querySelectorAll('.shift-grid[data-shift-id="' + it.id + '"], .qs-person[data-shift-id="' + it.id + '"]').forEach(function (el) { el.classList.add('qs-selected'); });
+              } else {
+                // One map entry = ONE open slot: several identical
+                // open-slot buttons share a date+type, so mark only the
+                // first (the one the user tapped).
+                var first = root.querySelector('.open-slot[data-date="' + it.date + '"][data-shifttype="' + it.shiftTypeId + '"]');
+                if (first) first.classList.add('qs-selected');
+              }
+            });
+            var n = itemCount();
+            // The bar shows only once something is selected (a scheduler
+            // who cannot select anything never sees it) and only while
+            // the selection's own tab is active.
+            if (sel.on && n > 0 && activeScopeName() === sel.scope) {
+              bar.classList.remove('hidden');
+              barCount.textContent = n + ' selected';
+              barResult.textContent = sel.result || '';
+            } else {
+              bar.classList.add('hidden');
+            }
+            var rb = document.getElementById('qtr-select');
+            if (rb) {
+              rb.classList.toggle('qs-sel-on', sel.on);
+              rb.classList.toggle('active', sel.on);
+              rb.setAttribute('aria-pressed', sel.on ? 'true' : 'false');
+            }
+            var mt = document.getElementById('ms-select-toggle');
+            if (mt) mt.classList.toggle('qs-sel-on', sel.on);
+            document.body.classList.toggle('qs-selecting', sel.on);
+          }
+
+          function enter(scopeName) {
+            if (sel.on && sel.scope === scopeName) return;
+            if (typeof qsExitPlace === 'function') qsExitPlace();
+            if (typeof qsDrag !== 'undefined' && qsDrag) { qsEndDragVisual(); qsDrag = null; }
+            sel.on = true; sel.scope = scopeName; sel.items = {}; sel.result = '';
+            applyUI();
+          }
+          function exit() {
+            sel.on = false; sel.scope = null; sel.items = {}; sel.result = '';
+            hideMoveDlg();
+            applyUI();
+          }
+          function toggleItem(it) {
+            var k = itemKey(it);
+            if (sel.items[k]) delete sel.items[k];
+            else sel.items[k] = it;
+          }
+          function itemFromEl(el, scopeName) {
+            var sc = sel.scopes[scopeName];
+            if (!sc) return null;
+            var box = el.closest ? el.closest('[data-shift-id]') : null;
+            if (box) {
+              var s = sc.getShift ? sc.getShift(box.getAttribute('data-shift-id')) : null;
+              if (!s) return null;
+              if (sc.isEditable && !sc.isEditable(s)) return null;
+              return itemFromShift(s);
+            }
+            var slot = el.closest ? el.closest('.open-slot[data-date][data-shifttype]') : null;
+            if (slot) {
+              if (sc.canEdit && !sc.canEdit()) return null;
+              var date = slot.getAttribute('data-date'), typeId = slot.getAttribute('data-shifttype');
+              var st = sc.shiftTypeById ? sc.shiftTypeById(typeId) : null;
+              if (st && !window.qsStEditable(st)) return null;
+              return { kind: 'o', date: date, shiftTypeId: typeId };
+            }
+            return null;
+          }
+
+          // Gesture handler (capture phase, registered before the
+          // place-mode handler below resolves its taps): while selection
+          // is on, taps on selectable items toggle them and never reach
+          // the popup / assign flow; Ctrl/Cmd-click enters selection.
+          // Long-press is untouched — it lifts for move, never selects.
+          document.addEventListener('click', function (e) {
+            if (e.target.closest) {
+              if (e.target.closest('#qs-selbar') || e.target.closest('#qs-sel-move') ||
+                  e.target.closest('#sched-day-modal') || e.target.closest('#ms-day-modal') ||
+                  e.target.closest('#shift-popup')) return;
+            }
+            var mod = e.ctrlKey || e.metaKey;
+            if (!sel.on && !mod) return;
+            if (typeof qsPlace !== 'undefined' && qsPlace) return; // a place-mode tap resolves elsewhere
+            var el = e.target, scopeName = null;
+            Object.keys(sel.scopes).forEach(function (nm) {
+              var sc = sel.scopes[nm];
+              if (!scopeName && sc.root && sc.root.contains(el)) scopeName = nm;
+            });
+            if (!scopeName) return;
+            var it = itemFromEl(el, scopeName);
+            if (!it) return;
+            e.stopPropagation();
+            e.preventDefault();
+            if (!sel.on) enter(scopeName);
+            else if (sel.scope !== scopeName) { sel.items = {}; sel.scope = scopeName; }
+            toggleItem(it);
+            applyUI();
+          }, true);
+          document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && sel.on) exit();
+          });
+          window.addEventListener('hashchange', function () { setTimeout(applyUI, 50); });
+
+          // -- bar actions (all reuse the single-shift endpoints) --------
+          function selAction(act) {
+            if (act === 'done') { exit(); return; }
+            if (act === 'move') { openMoveDlg(); return; }
+            if (!itemCount()) return;
+            if (act === 'delete') bulkDelete();
+            else if (act === 'publish' || act === 'unpublish') bulkPublish(act === 'publish');
+            else if (act === 'duplicate') bulkDuplicate();
+            else if (act === 'close') bulkClose();
+          }
+          function bulkDelete() {
+            var shifts = selectedShifts(), opens = selectedOpens();
+            if (!shifts.length) { pageError('Select a shift to delete — open slots are closed with Close slot.'); return; }
+            var label = shifts.length + (shifts.length === 1 ? ' shift' : ' shifts');
+            if (!confirm('Delete ' + label + '? The shift opens for cover, exactly like deleting one shift.' +
+                (opens.length ? ' (' + opens.length + ' selected open slot(s) will be left alone.)' : ''))) return;
+            var done = 0, failed = 0;
+            var jobs = shifts.map(function (it) {
+              var ep, body, method;
+              if (it.rotationId) {
+                ep = '/api/schedule/rotation-shifts/delete'; method = 'POST';
+                body = { rotationId: it.rotationId, userId: it.userId, date: it.date, shiftTypeId: it.shiftTypeId };
+              } else { ep = '/api/schedule/shifts/' + it.id; method = 'DELETE'; body = null; }
+              return api(ep, { method: method, body: body ? JSON.stringify(body) : undefined }).then(function (r) {
+                if (r.ok) done++; else failed++;
+              }).catch(function () { failed++; });
+            });
+            Promise.all(jobs).then(function () {
+              pageSuccess('Deleted ' + done + (failed ? ' · ' + failed + ' could not be deleted.' : '.'));
+              refreshActiveScope(); // before exit() — exit() clears sel.scope, which the refresh needs
+              exit(); // delete exits selection entirely
+            });
+          }
+          function bulkPublish(toPublished) {
+            var shifts = selectedShifts();
+            if (!shifts.length) { pageError('Select a shift to ' + (toPublished ? 'publish.' : 'move to draft.')); return; }
+            var done = 0, failed = 0;
+            var jobs = shifts.map(function (it) {
+              var ep, body;
+              if (it.rotationId) {
+                ep = '/api/schedule/rotation-shifts/publish-state';
+                body = { rotationId: it.rotationId, userId: it.userId, date: it.date, shiftTypeId: it.shiftTypeId, published: toPublished };
+              } else { ep = '/api/schedule/shifts/' + it.id + '/publish-state'; body = { published: toPublished }; }
+              return api(ep, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                if (r.ok) done++; else failed++;
+              }).catch(function () { failed++; });
+            });
+            Promise.all(jobs).then(function () {
+              sel.result = done + (toPublished ? ' published' : ' drafted') + ' · ' + failed + ' skipped';
+              applyUI();
+              refreshActiveScope();
+              if (failed) pageError('Could not ' + (toPublished ? 'publish ' : 'unpublish ') + failed + ' shift(s).');
+            });
+          }
+          function bulkDuplicate() {
+            var items = itemsList();
+            if (!items.length) return;
+            var done = 0, failed = 0;
+            var jobs = items.map(function (it) {
+              return api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [it.date], shiftTypeId: it.shiftTypeId, count: 1 }) }).then(function (r) {
+                if (r.ok) done++; else failed++;
+              }).catch(function () { failed++; });
+            });
+            Promise.all(jobs).then(function () {
+              sel.result = done + ' duplicated · ' + failed + ' skipped';
+              applyUI();
+              refreshActiveScope();
+            });
+          }
+          function bulkClose() {
+            var opens = selectedOpens();
+            if (!opens.length) { pageError('Select an open slot to close.'); return; }
+            var done = 0, failed = 0;
+            var jobs = opens.map(function (it) {
+              return api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [it.date], shiftTypeId: it.shiftTypeId, count: -1 }) }).then(function (r) {
+                if (r.ok) { done++; delete sel.items[itemKey(it)]; } else failed++;
+              }).catch(function () { failed++; });
+            });
+            Promise.all(jobs).then(function () {
+              sel.result = done + ' closed · ' + failed + ' skipped';
+              applyUI();
+              refreshActiveScope();
+            });
+          }
+
+          // -- Move dialog ------------------------------------------------
+          function hideMoveDlg() { if (moveDlg) moveDlg.classList.add('hidden'); }
+          function setMoveTab(tab) {
+            sel._moveTab = tab;
+            var d = ensureMoveDlg();
+            d.querySelectorAll('[data-mtab]').forEach(function (b) {
+              var on = b.getAttribute('data-mtab') === tab;
+              b.classList.toggle('qs-mtab-on', on);
+            });
+            d.querySelector('#qs-sel-move-date-pane').classList.toggle('hidden', tab !== 'date');
+            d.querySelector('#qs-sel-move-person-pane').classList.toggle('hidden', tab !== 'person');
+            d.querySelector('#qs-sel-move-confirm').textContent = tab === 'person' ? 'Change person' : 'Move shifts';
+          }
+          function syncMoveFromDate() {
+            var d = ensureMoveDlg();
+            var earliest = earliestDate();
+            var v = d.querySelector('#qs-sel-move-date').value;
+            if (earliest && v) d.querySelector('#qs-sel-move-forward').value = dayDiff(earliest, v);
+            renderMoveMap();
+          }
+          function syncMoveFromForward() {
+            var d = ensureMoveDlg();
+            var earliest = earliestDate();
+            var n = parseInt(d.querySelector('#qs-sel-move-forward').value, 10);
+            if (earliest && !isNaN(n)) d.querySelector('#qs-sel-move-date').value = addDays(earliest, n);
+            renderMoveMap();
+          }
+          function renderMoveMap() {
+            var d = ensureMoveDlg();
+            var earliest = earliestDate();
+            var v = d.querySelector('#qs-sel-move-date').value;
+            var offset = (earliest && v) ? dayDiff(earliest, v) : null;
+            var sc = sel.scopes[sel.scope];
+            var members = sc && sc.members ? sc.members() : [];
+            function nm(uid) {
+              var m = null;
+              members.forEach(function (x) { if (String(x.id) === String(uid)) m = x; });
+              return memberName(m);
+            }
+            var shifts = selectedShifts().slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+            d.querySelector('#qs-sel-move-map').innerHTML = shifts.map(function (it) {
+              var to = offset == null ? '—' : fmtDayShort(addDays(it.date, offset));
+              return '<div><span>' + esc(nm(it.userId)) + ' · ' + esc(fmtDayShort(it.date)) + '</span><span>→ ' + esc(to) + '</span></div>';
+            }).join('');
+          }
+          function syncMovePeople() {
+            var d = ensureMoveDlg();
+            d.querySelectorAll('#qs-sel-move-people button').forEach(function (b) {
+              b.classList.toggle('sel', b.getAttribute('data-mperson') === sel._movePerson);
+            });
+          }
+          function openMoveDlg() {
+            var d = ensureMoveDlg();
+            var shifts = selectedShifts(), opens = selectedOpens();
+            if (!shifts.length) { pageError('Select a shift to move.'); return; }
+            sel._movePerson = null;
+            var earliest = earliestDate();
+            d.querySelector('#qs-sel-move-title').textContent = 'Move ' + shifts.length + (shifts.length === 1 ? ' shift' : ' shifts');
+            d.querySelector('#qs-sel-move-sub').textContent =
+              'Same person on different dates moves together — every shift moves by the same number of days, so the gaps stay.' +
+              (opens.length ? ' ' + opens.length + ' selected open slot(s) will be skipped (open slots cannot move).' : '');
+            var sc = sel.scopes[sel.scope];
+            var members = (sc && sc.members ? sc.members() : []).slice().sort(function (a, b) {
+              return memberName(a).localeCompare(memberName(b));
+            });
+            d.querySelector('#qs-sel-move-people').innerHTML = members.map(function (m) {
+              return '<button type="button" data-mperson="' + m.id + '">' + esc(memberName(m)) + '</button>';
+            }).join('');
+            d.querySelector('#qs-sel-move-date').value = earliest ? addDays(earliest, 7) : '';
+            d.querySelector('#qs-sel-move-forward').value = 7;
+            setMoveTab('date');
+            renderMoveMap();
+            syncMovePeople();
+            d.classList.remove('hidden');
+          }
+          function confirmMoveDlg() {
+            if (sel._moveTab === 'person') {
+              if (!sel._movePerson) { pageError('Choose a person first.'); return; }
+              hideMoveDlg();
+              changePersonBulk(sel._movePerson);
+            } else {
+              var v = document.getElementById('qs-sel-move-date').value;
+              if (!v) { pageError('Pick a new date for the earliest shift.'); return; }
+              hideMoveDlg();
+              moveToDateBulk(v);
+            }
+          }
+          function moveToDateBulk(newEarliest) {
+            var shifts = selectedShifts(), opens = selectedOpens();
+            var earliest = earliestDate();
+            var offset = dayDiff(earliest, newEarliest);
+            var done = 0, skipped = 0;
+            var jobs = shifts.map(function (it) {
+              var targetDate = addDays(it.date, offset);
+              if (targetDate === it.date) { skipped++; return Promise.resolve(); }
+              return api('/api/schedule/shifts/' + it.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: targetDate, shiftTypeId: it.shiftTypeId }) }).then(function (r) {
+                if (!r.ok) { skipped++; return; }
+                done++;
+                // Undo entry, same shape as qsExecuteDrop's move.
+                var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: it.id, fromDate: it.date, fromType: it.shiftTypeId };
+                entry.redo = { kind: 'move', shiftId: it.id, date: targetDate, typeId: it.shiftTypeId };
+                if (typeof qsUndoStack !== 'undefined') {
+                  qsUndoStack.push(entry);
+                  if (typeof qsRedoStack !== 'undefined') qsRedoStack.length = 0;
+                  if (qsUndoStack.length > 10) qsUndoStack.shift();
+                  if (typeof qsUndoBtnSync === 'function') qsUndoBtnSync();
+                }
+                it.date = targetDate; // the map follows the moved shift
+              }).catch(function () { skipped++; });
+            });
+            Promise.all(jobs).then(function () {
+              sel.result = done + ' moved · ' + (skipped + opens.length) + ' skipped';
+              applyUI();
+              refreshActiveScope();
+            });
+          }
+          function changePersonBulk(newUserId) {
+            var shifts = selectedShifts(), opens = selectedOpens();
+            var changed = 0, skipped = 0;
+            var jobs = shifts.map(function (it) {
+              // POST-first: create the new shift, then delete the old —
+              // a 409 leaves the old shift untouched (never DELETE-first).
+              var body = { userId: newUserId, shiftTypeId: it.shiftTypeId, date: it.date, published: it.published !== false };
+              if (it.notes) body.notes = it.notes;
+              return api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+                if (!r.ok) { skipped++; return; }
+                var newId = r.data && r.data.id;
+                var delEp, delBody, delMethod;
+                if (it.rotationId) {
+                  delEp = '/api/schedule/rotation-shifts/delete'; delMethod = 'POST';
+                  delBody = { rotationId: it.rotationId, userId: it.userId, date: it.date, shiftTypeId: it.shiftTypeId };
+                } else { delEp = '/api/schedule/shifts/' + it.id; delMethod = 'DELETE'; delBody = null; }
+                return api(delEp, { method: delMethod, body: delBody ? JSON.stringify(delBody) : undefined }).then(function (dr) {
+                  if (dr.ok) {
+                    changed++;
+                    delete sel.items[itemKey(it)];
+                    var newIt = { kind: 's', id: newId, date: it.date, shiftTypeId: it.shiftTypeId, userId: newUserId, rotationId: null, published: it.published !== false, notes: it.notes };
+                    sel.items[itemKey(newIt)] = newIt;
+                  } else {
+                    // New shift created but the old one could not be
+                    // removed — roll back so no duplicate is left behind.
+                    if (newId) api('/api/schedule/shifts/' + newId, { method: 'DELETE' }).catch(function () {});
+                    skipped++;
+                  }
+                }).catch(function () {
+                  if (newId) api('/api/schedule/shifts/' + newId, { method: 'DELETE' }).catch(function () {});
+                  skipped++;
+                });
+              }).catch(function () { skipped++; });
+            });
+            Promise.all(jobs).then(function () {
+              sel.result = changed + ' changed · ' + (skipped + opens.length) + ' skipped';
+              applyUI();
+              refreshActiveScope();
+            });
+          }
+
+          // -- public surface ---------------------------------------------
+          window.qsSel = {
+            get on() { return sel.on; },
+            registerScope: function (name, adapter) { sel.scopes[name] = adapter; applyUI(); },
+            enter: enter,
+            exit: exit,
+            toggleItem: toggleItem,
+            applyUI: applyUI,
+            enterWith: function (scopeName, s) {
+              var sc = sel.scopes[scopeName];
+              if (!sc) return;
+              var it = itemFromShift(s);
+              if (!it) return;
+              if (sc.isEditable && !sc.isEditable(s)) return;
+              enter(scopeName);
+              sel.items[itemKey(it)] = it;
+              applyUI();
+            },
+          };
+          window.qsSelToggle = function (scopeName) {
+            if (sel.on) { exit(); return; }
+            var want = scopeName || activeScopeName();
+            if (!want) {
+              // Not on a schedule tab — go there first, then enter
+              // (same navigate-then-retry pattern as qsToolsOpen).
+              location.hash = 'schedule';
+              setTimeout(function () { if (!sel.on) window.qsSelToggle(); }, 250);
+              return;
+            }
+            enter(want);
+          };
+          // Manager scope (this IIFE's own functions, via closure).
+          window.qsSel.registerScope('schedule', {
+            root: document.getElementById('tab-schedule'),
+            getShift: function (id) { return shiftById(id); },
+            isEditable: function (s) { return shiftEditable(s); },
+            canEdit: function () { return sched.canEdit; },
+            shiftTypeById: function (id) { return shiftTypeById(id); },
+            members: function () { return sched.members || []; },
+            refresh: function () { refreshShifts(); },
+          });
+          // Re-mark after every re-render (marks live on DOM elements).
+          var _qsSelRenderView = renderView;
+          renderView = function () { _qsSelRenderView(); applyUI(); };
+        })();
+
         (function initQsDrag() {
           var tab = document.getElementById('tab-schedule');
           if (!tab) return;
@@ -3819,6 +4394,7 @@
 
           tab.addEventListener('pointerdown', function (e) {
             if (qsPlace) return; // place-mode taps are clicks, handled below
+            if (window.qsSel && window.qsSel.on) return; // selection mode: taps select, never drag
             if (e.button !== undefined && e.button !== 0) return;
             var src = qsDragSource(e);
             if (!src) return;
@@ -5207,6 +5783,9 @@
             return '<button class="sp-dot' + (curHue === c.hue ? ' sel' : '') + '" data-hue="' + c.hue + '" style="background:hsl(' + c.hue + ' 85% 65%)" title="' + c.name + '" aria-label="Highlight ' + c.name + '"></button>';
           }).join('') + (curHue != null ? '<button class="sp-dot" data-hue="" style="background:#fff;border:1px dashed #cbdbe5" title="Clear">✕</button>' : '') + '</div>';
           if (editable) {
+            // Select — enters multi-select mode with this shift already
+            // selected (Deepika, 2026-11-17). First among the actions.
+            html += '<button class="sp-item" data-act="select"><span class="sp-ic" style="background:#e6f4f5">☑️</span>Select</button>';
             // Comment
             var dc = commentsFor(s.date).filter(function (c) { return String(c.userId) === String(s.userId); });
             html += '<button class="sp-item" data-act="comment"><span class="sp-ic" style="background:#e8f5f3">💬</span>' + (dc.length ? 'Edit comment' : 'Add comment') + '</button>';
@@ -5218,6 +5797,9 @@
             // materializes just that one shift for real.
             var isDraft = isOccShift(s) || s.published === false;
             html += '<button class="sp-item" data-act="toggle-publish"><span class="sp-ic" style="background:' + (isDraft ? '#9ca3af' : '#00a9a4') + ';color:#fff;font-weight:800;font-size:12px">' + (isDraft ? 'D' : 'P') + '</span>' + (isDraft ? 'Publish shift' : 'Move to draft') + '</button>';
+            // Duplicate — opens a NEW open slot for the same shift type
+            // and date (Deepika, 2026-11-17).
+            html += '<button class="sp-item" data-act="duplicate"><span class="sp-ic" style="background:#e6f4f5">⧉</span>Duplicate (new open slot)</button>';
             // Replace person — the handler opens the same all-members
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
@@ -5400,6 +5982,20 @@
               var repSid = s.id;
               closeShiftPopup();
               window.qsReplaceShift(repSid);
+            } else if (act === 'select') {
+              // Multi-select (Deepika, 2026-11-17): close the popup and
+              // enter selection mode with this shift already selected.
+              closeShiftPopup();
+              if (window.qsSel) window.qsSel.enterWith('schedule', s);
+            } else if (act === 'duplicate') {
+              // Duplicate (Deepika, 2026-11-17): a NEW open slot for the
+              // same shift type and date, via POST /extra-slots +1 — a
+              // real open slot the grid, popup and My Schedule all show.
+              closeShiftPopup();
+              api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [s.date], shiftTypeId: s.shiftTypeId, count: 1 }) }).then(function (r) {
+                if (r.ok) { loadShifts(); pageSuccess('Duplicated — a new open slot is ready to be picked up.'); }
+                else pageError((r.data && r.data.error) || 'Could not duplicate that shift.');
+              }).catch(function () { pageError('Could not duplicate that shift.'); });
             } else if (act === 'delete') {
               // Same flow as the old box 🗑: qsDeleteShift shows the
               // confirm dialog and handles normal shifts and rotation
@@ -18342,6 +18938,7 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" data-msview="month" role="tab" class="active">Month</button>
           <button type="button" data-msview="block" role="tab">Block</button>
         </div>
+        <button type="button" id="ms-select-toggle" class="hidden" onclick="window.qsSelToggle('myschedule')" title="Select shifts to act on together">☑️ Select</button>
         <div class="date-nav" style="display:flex;gap:0.4rem;align-items:center">
           <button type="button" id="ms-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
           <button type="button" id="ms-today" class="btn-secondary">Today</button>
@@ -18663,6 +19260,11 @@ window.qsNpOfferSend = function (btn) {
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
+            // Multi-select (Deepika, 2026-11-17): the Select toggle in
+            // the My Schedule toolbar is manager-only — pure employees
+            // get no action bar, their pickup flow is untouched.
+            var mst = $('ms-select-toggle');
+            if (mst) mst.classList.toggle('hidden', !(me && (me.role === 'owner' || me.role === 'scheduler')));
             return Promise.all([
               api('/api/departments'),
               api('/api/schedule/shift-types'),
@@ -19043,7 +19645,7 @@ window.qsNpOfferSend = function (btn) {
           // keep the plain name box, unchanged.
           var nmBg = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '' : 'background:' + tint(color, 82) + ';';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
-          var html = '<div class="shift-grid">' +
+          var html = '<div class="shift-grid" data-shift-id="' + s.id + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + '</div></div>' +
             '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
@@ -19072,7 +19674,7 @@ window.qsNpOfferSend = function (btn) {
           } else {
             btn = '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>';
           }
-          return '<div class="shift-grid open-slot">' +
+          return '<div class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st.name) + '</div>' +
             '<div class="shift-nm ms-open-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '">' +
             '<span class="open-badge">OPEN</span>' + btn + '</div></div>';
@@ -20154,6 +20756,30 @@ window.qsNpOfferSend = function (btn) {
           if (!t) rangeHorizon = fmtDate(addDays(parseDate(f), 90));
           loadData();
         });
+        // Multi-select shifts (Deepika, 2026-11-17): register the My
+        // Schedule scope with the shared selection module. The Tools
+        // rail is off in this view by design, so entry is via the
+        // #ms-select-toggle in the toolbar (managers only, unhidden in
+        // loadData). Editability reuses the shared department gate.
+        if (window.qsSel) {
+          window.qsSel.registerScope('myschedule', {
+            root: document.getElementById('tab-myschedule'),
+            getShift: function (id) { return shiftById(id); },
+            isEditable: function (s) {
+              if (!me || (me.role !== 'owner' && me.role !== 'scheduler')) return false;
+              var st = stById(s.shiftTypeId);
+              if (!st) return false;
+              return window.qsStEditable(st);
+            },
+            canEdit: function () { return !!(me && (me.role === 'owner' || me.role === 'scheduler')); },
+            shiftTypeById: function (id) { return stById(id); },
+            members: function () { return members || []; },
+            refresh: function () { loadData(); },
+          });
+          // Re-mark after every re-render (marks live on DOM elements).
+          var _qsSelMsRenderView = renderView;
+          renderView = function () { _qsSelMsRenderView(); window.qsSel.applyUI(); };
+        }
       })();
       </script>
       <div id="ms-action-dialog" class="modal-backdrop hidden">

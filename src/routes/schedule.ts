@@ -2038,18 +2038,35 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
     for (const d of dates) {
-      await query(
-        `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (company_id, date, shift_type_id)
-         DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
-        [companyId, d, shiftTypeId, clamped, req.session.userId!]
-      );
-      // Clean up zeroed-out adjustments.
-      await query(
-        'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count = 0',
-        [companyId, d, shiftTypeId]
-      );
+      // The table forbids count = 0 (CHECK count <> 0, migration 020),
+      // so an adjustment that lands exactly on 0 must DELETE the row
+      // instead of updating it to 0 — the plain upsert to 0 threw a
+      // 500, which broke the per-slot × remover and bulk Close whenever
+      // they cancelled the last stored extra slot. Negative counts are
+      // fine (they suppress computed opens) and pass the CHECK. The
+      // read + write run in one transaction with a row lock so two
+      // simultaneous adjustments on the same date can't interleave.
+      await withTransaction(async (tx) => {
+        const cur = await tx.query(
+          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+          [companyId, d, shiftTypeId]
+        );
+        const next = (cur.rows.length ? Number(cur.rows[0].count) : 0) + clamped;
+        if (next === 0) {
+          await tx.query(
+            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, d, shiftTypeId]
+          );
+        } else {
+          await tx.query(
+            `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (company_id, date, shift_type_id)
+             DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+            [companyId, d, shiftTypeId, clamped, req.session.userId!]
+          );
+        }
+      });
     }
     res.json({ ok: true, dates: dates.length });
     // Tell eligible members about newly opened pickup slots.
