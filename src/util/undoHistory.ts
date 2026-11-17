@@ -17,6 +17,12 @@
  *   - { kind: 'delete', undo: { deletedAt, units, sweepExclusions, grants, pauses },
  *       redo: { kind: 'delete', calls: [...], pauses: [...] } }
  *     (a bulk delete is ONE entry, as today)
+ *   - { kind: 'openslot', undo: { slots: [{ date, shiftTypeId,
+ *       totalBefore, draftBefore, wasDraft, adjust }] },
+ *       redo: { kind: 'openslot', calls: [...] } }
+ *     (closing open slots — Deepika, 2026-11-17; a bulk close is ONE
+ *     entry; adjust is what the undo adds back to extra_open_slots:
+ *     +1 per -1 close, or the exact removed row count for a DELETE)
  * Task undo is NOT stored here — it is already server-side
  * (src/util/planUndo.ts) and is untouched.
  *
@@ -120,6 +126,35 @@ function cleanDeleteRedo(r: any): any | null {
   return { kind: 'delete', calls: r.calls, pauses: r.pauses };
 }
 
+/** An open-slot close undo payload: the shape the close endpoints return. */
+function cleanOpenSlotUndo(u: any): any | null {
+  if (!isPlainObject(u)) return null;
+  if (!Array.isArray(u.slots) || !u.slots.length || u.slots.length > 1000) return null;
+  for (const s of u.slots) {
+    if (!isPlainObject(s) || !isValidDate(s.date) || !isNonEmptyString(s.shiftTypeId)) return null;
+    if (!Number.isInteger(s.totalBefore) || s.totalBefore < 0 || s.totalBefore > 10000) return null;
+    if (!Number.isInteger(s.adjust) || s.adjust === 0 || Math.abs(s.adjust) > 1000) return null;
+    if (s.wasDraft !== undefined && typeof s.wasDraft !== 'boolean') return null;
+    if (s.draftBefore !== undefined && (!Number.isInteger(s.draftBefore) || s.draftBefore < 0)) return null;
+  }
+  return {
+    slots: u.slots.map((s: any) => ({
+      date: s.date, shiftTypeId: s.shiftTypeId, totalBefore: s.totalBefore, adjust: s.adjust,
+      ...(s.wasDraft !== undefined ? { wasDraft: s.wasDraft } : {}),
+      ...(s.draftBefore !== undefined ? { draftBefore: s.draftBefore } : {}),
+    })),
+  };
+}
+
+function cleanOpenSlotRedo(r: any): any | null {
+  if (!isPlainObject(r) || r.kind !== 'openslot') return null;
+  if (!Array.isArray(r.calls)) return null;
+  for (const c of r.calls) {
+    if (!isPlainObject(c) || !isNonEmptyString(c.ep) || !isNonEmptyString(c.method)) return null;
+  }
+  return { kind: 'openslot', calls: r.calls };
+}
+
 /** Clean one undo-stack entry; null when it cannot be trusted. */
 export function cleanUndoEntry(e: any): any | null {
   if (!isPlainObject(e) || typeof e.kind !== 'string') return null;
@@ -150,6 +185,13 @@ export function cleanUndoEntry(e: any): any | null {
     if (!redo) return null;
     return { kind: 'delete', undo, redo };
   }
+  if (e.kind === 'openslot') {
+    const undo = cleanOpenSlotUndo(e.undo);
+    if (!undo) return null;
+    const redo = cleanOpenSlotRedo(e.redo);
+    if (!redo) return null;
+    return { kind: 'openslot', undo, redo };
+  }
   return null;
 }
 
@@ -159,6 +201,7 @@ export function cleanRedoEntry(e: any): any | null {
   if (e.kind === 'move') return cleanMoveRedo(e);
   if (e.kind === 'swap') return cleanSwapRedo(e);
   if (e.kind === 'delete') return cleanDeleteRedo(e);
+  if (e.kind === 'openslot') return cleanOpenSlotRedo(e);
   return null;
 }
 

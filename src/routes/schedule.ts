@@ -2198,6 +2198,12 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
+    // Open-slot close undo (Deepika, 2026-11-17): a negative
+    // adjustment closes visible opens, so each date records what it
+    // looked like before the close — the undo endpoint re-opens
+    // exactly that, in the same draft/published state (the draft
+    // count is never touched by a close, so it follows for free).
+    const undoSlots: any[] = [];
     for (const d of dates) {
       // The table forbids count = 0 (CHECK count <> 0, migration 020),
       // so an adjustment that lands exactly on 0 must DELETE the row
@@ -2212,6 +2218,19 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
           'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
           [companyId, d, shiftTypeId]
         );
+        // Totals BEFORE the adjustment (the row is already locked,
+        // so this is the count the close actually removes from).
+        // Only a close that removed a visible open is undoable.
+        if (clamped < 0) {
+          const before = await openSlotTotals(tx.query, companyId, d, shiftTypeId);
+          if (before.total > 0) {
+            undoSlots.push({
+              date: d, shiftTypeId,
+              totalBefore: before.total, draftBefore: before.draft,
+              wasDraft: before.total <= before.draft, adjust: -clamped,
+            });
+          }
+        }
         const next = (cur.rows.length ? Number(cur.rows[0].count) : 0) + clamped;
         if (next === 0) {
           await tx.query(
@@ -2243,7 +2262,7 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
         from: sorted[0], to: sorted[sorted.length - 1], shiftTypeIds: [shiftTypeId],
       });
     }
-    res.json({ ok: true, dates: dates.length });
+    res.json({ ok: true, dates: dates.length, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
     // Tell eligible members about newly opened pickup slots.
     if (clamped > 0) {
       const eligible = await eligibleMemberIds(companyId, shiftTypeId);
@@ -2473,10 +2492,30 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    const { rowCount: removedExtra } = await query(
-      'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3',
-      [companyId, dates, shiftTypeId]
-    );
+    const undoSlots: any[] = [];
+    const { rowCount: removedExtra } = await withTransaction(async (tx) => {
+      // Open-slot close undo (Deepika, 2026-11-17): the day-modal
+      // Restore button calls this to bring suppressed slots back, so
+      // the deleted rows are the undo payload — undoing re-inserts
+      // them exactly, which re-suppresses the same slots. Totals are
+      // captured per date BEFORE the delete, under the same row lock.
+      const { rows: doomed } = await tx.query(
+        'SELECT date::text AS date, count FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3 FOR UPDATE',
+        [companyId, dates, shiftTypeId]
+      );
+      for (const row of doomed) {
+        const before = await openSlotTotals(tx.query, companyId, row.date, shiftTypeId);
+        undoSlots.push({
+          date: row.date, shiftTypeId,
+          totalBefore: before.total, draftBefore: before.draft,
+          wasDraft: before.total > 0 && before.total <= before.draft, adjust: Number(row.count),
+        });
+      }
+      return tx.query(
+        'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3',
+        [companyId, dates, shiftTypeId]
+      );
+    });
     // History snapshot (Deepika, 2026-11-17) — only when slots were
     // actually removed (a delete over empty dates changes nothing).
     if ((removedExtra || 0) > 0) {
@@ -2491,7 +2530,7 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
         from: sorted[0], to: sorted[sorted.length - 1], shiftTypeIds: [shiftTypeId],
       });
     }
-    res.json({ ok: true });
+    res.json({ ok: true, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
   } catch (err) {
     console.error('[schedule] remove extra slots failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -3500,6 +3539,142 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
     }
   } catch (err) {
     console.error('[schedule] delete-undo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/open-slots/undo — undo closing open slots
+// (Deepika, 2026-11-17). Closing an open slot used to save no undo
+// note at all, so Undo did nothing for closed opens. Every close
+// path now returns { undo: { slots } } and the client pushes one
+// 'openslot' entry per close action (a bulk close is one entry).
+// Undo re-applies each slot's `adjust` to extra_open_slots — +1 for a
+// -1 close, the exact removed count for a DELETE — which re-opens the
+// slot in the same draft/published state, because a close never
+// touches the draft-open count. Redo replays the original close
+// calls (client-side, like delete redo).
+// Guard (same spirit as delete-undo: never create a duplicate open):
+// slots are grouped by date+type and the threshold is the highest
+// open count recorded at close time for that group. A slot is
+// re-opened only while the resulting open count stays at or below
+// that threshold (re-adds) — or at or above it (re-suppressions, the
+// DELETE case) — so a slot that already came back another way (a
+// Duplicate, a re-draft, a re-add) is skipped with a plain message
+// instead of duplicating. A claim after a close does NOT block the
+// undo: the claimed slot is a different one, and the count ends
+// correct. Department-scoped like /extra-slots.
+router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const undo = (req.body?.undo ?? {}) as any;
+    const slots = Array.isArray(undo.slots) ? undo.slots : [];
+    const badSlot = (s: any): boolean => {
+      if (!s || typeof s !== 'object') return true;
+      if (!isValidDate(s.date) || typeof s.shiftTypeId !== 'string' || !s.shiftTypeId) return true;
+      if (!Number.isInteger(s.totalBefore) || s.totalBefore < 0 || s.totalBefore > 10000) return true;
+      if (!Number.isInteger(s.adjust) || s.adjust === 0 || Math.abs(s.adjust) > 1000) return true;
+      if (s.wasDraft !== undefined && typeof s.wasDraft !== 'boolean') return true;
+      return false;
+    };
+    if (!slots.length || slots.length > 1000 || slots.some(badSlot)) {
+      res.status(400).json({ error: 'Nothing to undo.' });
+      return;
+    }
+    // Department scoping: the undo touches the same departments the
+    // close did — the caller's active department must be one of them.
+    const typeIds: string[] = [];
+    for (const s of slots) { if (!typeIds.includes(s.shiftTypeId)) typeIds.push(s.shiftTypeId); }
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds(typeIds, companyId)
+    ))) return;
+
+    const skipped: Array<{ date: string; shiftTypeId: string; reason: string; message: string }> = [];
+    const restoredSlots: Array<{ date: string; shiftTypeId: string }> = [];
+    let restored = 0;
+    const skipMsg: Record<string, string> = {
+      'slot-back': 'that open slot has since been filled',
+      'shift-type-gone': 'that shift type no longer exists',
+    };
+    const skip = (date: string, shiftTypeId: string, reason: string) => {
+      skipped.push({ date, shiftTypeId, reason, message: skipMsg[reason] || reason });
+    };
+    // One threshold per date+type: the highest open count recorded
+    // at close time in this entry. A bulk close of two same-day
+    // opens records 2 then 1 (sequential closes); the entry as a
+    // whole must restore up to 2, not 1.
+    const thresholds = new Map<string, number>();
+    for (const s of slots) {
+      const k = s.date + '|' + s.shiftTypeId;
+      thresholds.set(k, Math.max(thresholds.get(k) ?? 0, s.totalBefore));
+    }
+
+    await withTransaction(async (tx) => {
+      for (const s of slots) {
+        const threshold = thresholds.get(s.date + '|' + s.shiftTypeId) ?? s.totalBefore;
+        // The shift type must still exist.
+        const { rows: trows } = await tx.query(
+          'SELECT 1 FROM shift_types WHERE id = $1 AND company_id = $2',
+          [s.shiftTypeId, companyId]
+        );
+        if (!trows.length) { skip(s.date, s.shiftTypeId, 'shift-type-gone'); continue; }
+        const totals = await openSlotTotals(tx.query, companyId, s.date, s.shiftTypeId);
+        // A closed day shows 0 opens no matter what — restoring the
+        // extra count while closed is safe (nothing visible can
+        // duplicate), and the slot shows again when the day reopens.
+        // A re-suppression on a closed day cannot be verified the
+        // same way, so it is skipped rather than guessed.
+        let ok: boolean;
+        if (totals.closed) ok = s.adjust > 0;
+        else {
+          const result = Math.max(0, totals.total + s.adjust);
+          ok = s.adjust > 0 ? result <= threshold : result >= threshold;
+        }
+        if (!ok) { skip(s.date, s.shiftTypeId, 'slot-back'); continue; }
+        // Same write as POST /extra-slots: a result of exactly 0
+        // deletes the row instead of storing a 0 (CHECK count <> 0).
+        const { rows: cur } = await tx.query(
+          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+          [companyId, s.date, s.shiftTypeId]
+        );
+        const next = (cur.length ? Number(cur[0].count) : 0) + s.adjust;
+        if (next === 0) {
+          await tx.query(
+            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, s.date, s.shiftTypeId]
+          );
+        } else {
+          await tx.query(
+            `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (company_id, date, shift_type_id)
+             DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+            [companyId, s.date, s.shiftTypeId, s.adjust, req.session.userId!]
+          );
+        }
+        restored++;
+        restoredSlots.push({ date: s.date, shiftTypeId: s.shiftTypeId });
+      }
+    });
+    // History snapshot (Deepika, 2026-11-17) — undoing a close puts
+    // opens back, so it gets a copy too (only when something came back).
+    if (restored > 0) {
+      const dates = restoredSlots.map((r) => r.date).sort();
+      const typeNames: string[] = [];
+      for (const t of [...new Set(restoredSlots.map((r) => r.shiftTypeId))]) {
+        const { rows: tn } = await query('SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [t, companyId]);
+        if (tn[0]?.name) typeNames.push(tn[0].name);
+      }
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Undid closing open slots — ${restored} open slot${restored === 1 ? '' : 's'} re-opened${typeNames.length ? ' (' + typeNames.join(', ') + ')' : ''}`,
+        from: dates[0], to: dates[dates.length - 1],
+        shiftTypeIds: [...new Set(restoredSlots.map((r) => r.shiftTypeId))],
+      });
+    }
+    res.json({ ok: true, restored, skipped });
+  } catch (err) {
+    console.error('[schedule] open-slot undo failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

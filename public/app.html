@@ -3687,6 +3687,7 @@
           if (e.kind === 'move') return !!(e.shiftId && e.fromDate && e.fromType && e.redo);
           if (e.kind === 'swap') return !!(e.aId && e.bId && e.redo);
           if (e.kind === 'delete') return !!(e.undo && e.redo);
+          if (e.kind === 'openslot') return !!(e.undo && e.redo);
           return false;
         }
         // Load the saved stacks at login; called from the init block.
@@ -3873,6 +3874,26 @@
           return true;
         };
 
+        // Open-slot close undo (Deepika, 2026-11-17): closing an open
+        // slot (multi-select Close, chevron Close, × remover, day-modal
+        // Restore) used to save no undo note at all — Undo only knew
+        // stored shifts. Every close path now returns an undo payload
+        // and pushes one entry here: Undo re-opens the closed slot(s)
+        // in the same draft/published state, Redo re-closes them. One
+        // entry per close action — a bulk close is ONE entry, like a
+        // bulk delete. The redo replays the original close calls and
+        // collects their fresh undo payloads, so redo/undo can
+        // alternate. The chevron Shift action stays NOT undoable — its
+        // -1 shares the endpoint but never pushes an entry.
+        window.qsPushOpenSlotUndo = function (undoPayload, redoCalls) {
+          if (!undoPayload || !Array.isArray(undoPayload.slots) || !undoPayload.slots.length) return false;
+          qsUndoStack.push({ kind: 'openslot', undo: undoPayload, redo: { kind: 'openslot', calls: redoCalls || [] } });
+          qsRedoStack.length = 0;
+          qsUndoCap();
+          qsUndoBtnSync();
+          return true;
+        };
+
         function qsTaskUndo() {
           if (qsTaskUndoBusy) return;
           qsTaskUndoBusy = true;
@@ -3972,6 +3993,36 @@
               }).catch(function () { failed++; nextCall(); });
             };
             nextCall();
+          } else if (r.kind === 'openslot') {
+            // Redo an open-slot close: replay the original close calls
+            // in order; each returns a fresh undo payload, merged into
+            // one entry (a bulk close re-closes as a whole, like it
+            // undoes).
+            var calls = r.calls || [];
+            var fresh = { slots: [] };
+            var ci = 0, failed = 0;
+            var nextCall = function () {
+              if (ci >= calls.length) {
+                if (fresh.slots.length) {
+                  qsUndoStack.push({ kind: 'openslot', undo: fresh, redo: r });
+                  qsUndoCap();
+                  qsUndoBtnSync();
+                }
+                pageSuccess(failed ? 'Redone — ' + failed + ' slot(s) could not be re-closed.' : 'Redone.');
+                refreshShifts();
+                if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+                return;
+              }
+              var c = calls[ci++];
+              api(c.ep, { method: c.method, body: c.body ? JSON.stringify(c.body) : undefined }).then(function (res) {
+                if (res.ok) {
+                  var u = res.data && res.data.undo;
+                  if (u && u.slots) fresh.slots = fresh.slots.concat(u.slots);
+                } else failed++;
+                nextCall();
+              }).catch(function () { failed++; nextCall(); });
+            };
+            nextCall();
           } else {
             var s = shiftById(r.shiftId);
             api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId }) }).then(function (res) {
@@ -4012,6 +4063,20 @@
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that delete.'); });
+          } else if (u.kind === 'openslot') {
+            api('/api/schedule/open-slots/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that close.'); refreshShifts(); return; }
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
+              var restored = (r.data && r.data.restored) || 0;
+              var skipped = (r.data && r.data.skipped) || [];
+              if (skipped.length) {
+                pageError('Close undone — ' + restored + ' open slot(s) back. ' + skipped.length + ' could not be re-opened: ' + skipped.map(function (s) { return (s.date ? s.date + ': ' : '') + (s.message || 'could not be re-opened'); }).join('; ') + '.');
+              } else {
+                pageSuccess('Close undone — ' + restored + ' open slot(s) back. Ctrl+Shift+Z redoes it.');
+              }
+              refreshShifts();
+              if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+            }).catch(function () { pageError('Could not undo that close.'); });
           } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
@@ -4388,12 +4453,20 @@
             var opens = selectedOpens();
             if (!opens.length) { pageError('Select an open slot to close.'); return; }
             var done = 0, failed = 0;
+            var undoSlots = [], redoCalls = [];
             var jobs = opens.map(function (it) {
               return api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [it.date], shiftTypeId: it.shiftTypeId, count: -1 }) }).then(function (r) {
-                if (r.ok) { done++; delete sel.items[itemKey(it)]; } else failed++;
+                if (r.ok) {
+                  done++; delete sel.items[itemKey(it)];
+                  if (r.data && r.data.undo && r.data.undo.slots) undoSlots = undoSlots.concat(r.data.undo.slots);
+                  redoCalls.push({ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [it.date], shiftTypeId: it.shiftTypeId, count: -1 } });
+                } else failed++;
               }).catch(function () { failed++; });
             });
             Promise.all(jobs).then(function () {
+              // One undo step for the whole bulk close (Deepika,
+              // 2026-11-17) — like a bulk delete, it undoes as a whole.
+              if (undoSlots.length && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo({ slots: undoSlots }, redoCalls);
               sel.result = done + ' closed · ' + failed + ' skipped';
               applyUI();
               refreshActiveScope();
@@ -5772,7 +5845,10 @@
                 var stId = b.getAttribute('data-slot-restore');
                 if (!confirm('Restore removed slots for this shift?')) return;
                 api('/api/schedule/extra-slots', { method: 'DELETE', body: JSON.stringify({ dates: [ds], shiftTypeId: stId }) }).then(function (r) {
-                  if (r.ok) { loadShifts(); pageSuccess('Slots restored.'); }
+                  if (r.ok) {
+                    if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'DELETE', body: { dates: [ds], shiftTypeId: stId } }]);
+                    loadShifts(); pageSuccess('Slots restored. Ctrl+Z undoes it.');
+                  }
                 });
               });
             });
@@ -6151,7 +6227,10 @@
             closeShiftPopup();
             if (!confirm('Remove this open slot?')) return;
             api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: -1 }) }).then(function (r) {
-              if (r.ok) { refreshSlotView(); pageSuccess('Open slot removed.'); }
+              if (r.ok) {
+                if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [date], shiftTypeId: typeId, count: -1 } }]);
+                refreshSlotView(); pageSuccess('Open slot removed. Ctrl+Z undoes it.');
+              }
               else pageError((r.data && r.data.error) || 'Could not close that slot.');
             }).catch(function () { pageError('Could not close that slot.'); });
             return;
@@ -6266,7 +6345,10 @@
           if (!d || !stId) return;
           if (!confirm('Remove this open slot?')) return;
           api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [d], shiftTypeId: stId, count: -1 }) }).then(function (r) {
-            if (r.ok) { loadShifts(); pageSuccess('Open slot removed.'); }
+            if (r.ok) {
+              if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [d], shiftTypeId: stId, count: -1 } }]);
+              loadShifts(); pageSuccess('Open slot removed. Ctrl+Z undoes it.');
+            }
           });
         });
         // Open-slot chevron menu (Deepika, 2026-11-17): a small menu
