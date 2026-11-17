@@ -52,6 +52,12 @@ export interface NameAmbiguityItem {
   fragment: string;
   field: string;
   label: string;
+  /** Optional row question, shown instead of the "Who did you
+   * mean by …?" template — used by rows that offer a candidate
+   * list rather than disambiguating a fragment (Deepika,
+   * 2026-11-17: "Give me names" lists who to assign). Absent on
+   * every existing item, so their rendering is unchanged. */
+  question?: string;
   candidates: { id: string; name: string }[];
 }
 

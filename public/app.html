@@ -9117,6 +9117,7 @@ window.qsNpOfferSend = function (btn) {
           wrap.style.cssText = 'margin-top:0.5rem';
           function itemQuestion(it) {
             if (it.kind === 'shift') return it.label;
+            if (it.question) return it.question;
             return 'Who did you mean by "' + it.fragment + '"?';
           }
           function buttonsFor(it) {

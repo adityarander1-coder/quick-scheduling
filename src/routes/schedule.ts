@@ -10206,6 +10206,34 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
         res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
         return;
       }
+      // Candidate listing (Deepika, 2026-11-17): when the planner
+      // asked who to assign and the requester answers "Give me
+      // names", offer the names right here as tappable buttons —
+      // never the flip-to-Ask signpost. Deterministic, before the
+      // planner runs, so Gemini can never misclassify the request
+      // as a question. Only inside an open assignment round (the
+      // thread's history): with no round there is nothing for a
+      // tap to continue, so the request falls through to the
+      // planner as before.
+      const { isCandidateRequest } = await import('../util/askRouting.js');
+      if (isCandidateRequest(message) && history.length > 0) {
+        const joinedHistory = history.map((h: any) => `${h.q}\n${h.a}`).join('\n');
+        if (/\bassign\b/i.test(joinedHistory)) {
+          const candSenderEmail = await sessionUserEmail(req);
+          if (candSenderEmail) {
+            const { buildCandidateClarification } = await import('../util/candidateNames.js');
+            const cand = await buildCandidateClarification(query, companyId, {
+              scopeText: `${joinedHistory}\n${message}`,
+              senderEmail: candSenderEmail,
+              originalTask: history[0].q,
+            });
+            if (cand) {
+              res.json({ kind: 'clarification', question: cand.detail, options: [], items: cand.items, clarificationToken: cand.token, originalTask: cand.originalTask });
+              return;
+            }
+          }
+        }
+      }
       let plan: any, memberNames: string[], shiftNames: string[];
       try {
         ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, message, history));

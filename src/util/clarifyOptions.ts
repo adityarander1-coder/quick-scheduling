@@ -98,10 +98,13 @@ export function pickMatchesFragment(
 }
 
 /** The question line for one item: a name row asks who the
- * fragment means; a shift row asks which shift is being given up. */
+ * fragment means; a shift row asks which shift is being given up.
+ * A name row carrying its own `question` (a candidate list, not a
+ * disambiguation) shows that instead. */
 export function itemQuestion(item: ClarificationItem): string {
   if ((item as ShiftChoiceItem).kind === 'shift') return (item as ShiftChoiceItem).label;
   const nameItem = item as NameAmbiguityItem;
+  if (nameItem.question) return nameItem.question;
   return `Who did you mean by "${nameItem.fragment}"?`;
 }
 

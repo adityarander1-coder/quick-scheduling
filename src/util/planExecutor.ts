@@ -829,7 +829,7 @@ function cleanRecurE(change: PlanChange): { recurRule: string; recurInterval: nu
  * a type with no departments stays open to everyone. Members with no
  * role set fail department-scoped types.
  */
-async function checkPersonEligible(
+export async function checkPersonEligible(
   companyId: string,
   userId: string,
   shiftTypeId: string

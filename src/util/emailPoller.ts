@@ -653,6 +653,7 @@ export type ScheduleEmailOutcome =
   | { kind: 'question_failed' }
   | { kind: 'skipped' }
   | { kind: 'sender_not_staff' }
+  | { kind: 'candidate_list_sent' }
   | { kind: 'clarification_sent'; answeredQuestion?: boolean };
 /**
  * Reply-To for a clarification email: the address this company's
@@ -808,6 +809,63 @@ export async function processScheduleEmail(
         }
       } catch (attErr: any) {
         console.log(`[email-poll] Message ${sourceId}: attachment reading failed: ${attErr.message}`);
+      }
+    }
+
+    // Candidate listing (Deepika, 2026-11-17 — same brain as
+    // Task): when this email replies to a clarification we asked
+    // and the reply asks for names, list the candidates in prose
+    // instead of planning the fragment (the planner would refuse
+    // it as a question). Same detector and same list builder as
+    // the Task door, so both doors offer the same people in the
+    // same order; email has no tappable buttons, so the names ride
+    // as text. The pending row is re-saved with the SAME original
+    // request and this mail's Message-ID, so the name reply
+    // threads back and plans the original. A candidate request
+    // with no open round, or with nobody to list, falls through
+    // to the normal plan path below.
+    if (pendingOriginal) {
+      const { isCandidateRequest } = await import('./askRouting.js');
+      if (isCandidateRequest(email.body)) {
+        const { buildCandidateList, candidateReplyDetail } = await import('./candidateNames.js');
+        const candList = await buildCandidateList(query, companyId, {
+          scopeText: `${pendingOriginal.body}\n${email.body}`,
+          senderEmail: sender.address,
+        });
+        if (candList.candidates.length) {
+          const candDetail = candidateReplyDetail(candList);
+          const candNames = candList.candidates.map((c) => c.name);
+          const fromDomain = ((fromAddr || process.env.RESEND_FROM || '').match(/@([^\s>]+)/) || [])[1] || 'quick-scheduling';
+          const candMessageId = `<qs-cand-${crypto.randomUUID()}@${fromDomain}>`;
+          let candReplyTo: string | null = null;
+          try { candReplyTo = await clarificationReplyTo(query, companyId, fromAddr); } catch { /* no Reply-To */ }
+          try {
+            const { sendMail } = await import('./mailer.js');
+            await sendMail({
+              ...(fromAddr ? { from: fromAddr } : {}),
+              ...(candReplyTo ? { replyTo: candReplyTo } : {}),
+              to: sender.address,
+              subject: `Re: ${email.subject}`,
+              text: `Hi,\n\n${candDetail}\n\n${candNames.map((n) => `- ${n}`).join('\n')}\n\nReply with the name and I'll build the change for approval.\n\n— Quick Scheduling`,
+              html: `<p>Hi,</p><p>${candDetail}</p>${candNames.map((n) => `<p style="margin:4px 0">— ${n}</p>`).join('')}<p>Reply with the name and I'll build the change for approval.</p><p>— Quick Scheduling</p>`,
+              headers: { 'Message-ID': candMessageId },
+            });
+            console.log(`[email-poll] Candidate list sent to ${sender.address}: ${candDetail}`);
+            await recordProcessedMessage(query, companyId, sourceId, 'candidate_list_sent');
+          } catch (mailErr: any) {
+            console.log(`[email-poll] Candidate list email failed: ${mailErr.message}`);
+          }
+          try {
+            await savePendingClarification(
+              query, companyId, sender.address,
+              pendingOriginal.subject, pendingOriginal.body, candDetail, candMessageId
+            );
+          } catch (saveErr: any) {
+            console.log(`[email-poll] Saving candidate pending clarification failed: ${saveErr.message}`);
+          }
+          if (opts?.markRead) await opts.markRead();
+          return { kind: 'candidate_list_sent' };
+        }
       }
     }
 

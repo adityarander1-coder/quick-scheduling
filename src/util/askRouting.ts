@@ -130,6 +130,28 @@ export function looksLikeBareInstruction(message: string): boolean {
   return BARE_INSTRUCTION_VERBS.has(first);
 }
 
+// Candidate requests (Deepika, 2026-11-17): "Give me names" /
+// "Give me candidates" / "list the names" / "who can I assign" —
+// a request for a LIST of people to pick from, mid-assignment.
+// Narrow on purpose: the object must be names / candidates /
+// people (never "the schedule", never a shift), so real questions
+// ("who is on Friday night?", "are we short next week?") and real
+// instructions ("assign Gur to Day Hospitalist Monday") never
+// match. Only the leading request counts — a "give me names"
+// buried inside a longer instruction goes to the planner.
+const CANDIDATE_REQUEST =
+  /^\s*(please\s+)?(give|show|list|send|suggest)\s+(me\s+)?(a\s+)?(the\s+)?(names?|candidates?|people|team|members)\b/i;
+const CANDIDATE_LIST_OF =
+  /^\s*(please\s+)?(give|show|list|send)\s+me\s+(a\s+)?list\s+of\s+(names?|candidates?|people|team|members)\b/i;
+const CANDIDATE_WHO_ASSIGN =
+  /^\s*who\s+(can|should|could)\s+(i|we)\s+assign\b/i;
+
+export function isCandidateRequest(message: string): boolean {
+  const m = (message || '').trim();
+  if (!m) return false;
+  return CANDIDATE_REQUEST.test(m) || CANDIDATE_LIST_OF.test(m) || CANDIDATE_WHO_ASSIGN.test(m);
+}
+
 // Route one Ask/Task message. history is the open clarification thread
 // (empty when no round is open).
 export function routeAskTask(
