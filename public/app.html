@@ -3651,6 +3651,69 @@
         var qsUndoStack = [];
         var qsRedoStack = [];
         var qsTaskUndoBusy = false;
+        // Persistent 3-step Undo/Redo (Deepika, 2026-11-17): the stacks
+        // used to live only in the open page — a reload wiped them.
+        // The last 3 undoable actions (and their redo counterparts) are
+        // now stored server-side per user (table schedule_undo_history,
+        // migration 113), so Undo steps back up to 3 changes and Redo
+        // steps forward up to 3, even after a reload, on phone and
+        // computer alike. Depth is exactly 3, everywhere: the 4th
+        // undoable action pushes the oldest one out. qsUndoBtnSync
+        // persists on every change (it runs at every push/pop site);
+        // the save is chained behind the login-time load so a fast
+        // action can never clobber the loaded history, and it is
+        // skipped when nothing changed. A failed save is silent — undo
+        // still works in the open page; persistence is best-effort.
+        var QS_UNDO_DEPTH = 3;
+        var qsUndoHistoryLastSaved = '';
+        var qsUndoHistoryReady = null;
+        function qsUndoStacksJson() { return JSON.stringify({ undo: qsUndoStack, redo: qsRedoStack }); }
+        function qsUndoCap() {
+          if (qsUndoStack.length > QS_UNDO_DEPTH) qsUndoStack.splice(0, qsUndoStack.length - QS_UNDO_DEPTH);
+          if (qsRedoStack.length > QS_UNDO_DEPTH) qsRedoStack.splice(0, qsRedoStack.length - QS_UNDO_DEPTH);
+        }
+        function qsPersistUndoHistory() {
+          if (!qsUndoHistoryReady) return;
+          qsUndoHistoryReady = qsUndoHistoryReady.then(function () {
+            var j = qsUndoStacksJson();
+            if (j === qsUndoHistoryLastSaved) return;
+            qsUndoHistoryLastSaved = j;
+            return api('/api/schedule/undo-history', { method: 'POST', body: j });
+          }).catch(function () {});
+        }
+        function qsValidUndoEntry(e) {
+          if (!e || typeof e !== 'object' || typeof e.kind !== 'string') return false;
+          if (e.kind === 'server') return !!(e.undo && Array.isArray(e.undo.ops) && e.undo.ops.length && e.redo);
+          if (e.kind === 'move') return !!(e.shiftId && e.fromDate && e.fromType && e.redo);
+          if (e.kind === 'swap') return !!(e.aId && e.bId && e.redo);
+          if (e.kind === 'delete') return !!(e.undo && e.redo);
+          return false;
+        }
+        // Load the saved stacks at login; called from the init block.
+        // A bad or stale entry is dropped, never trusted blindly — the
+        // server guards (delete-undo no-overwrite rules, Rule 7,
+        // drag-undo op checks) still decide whether a restored entry
+        // applies when it is actually used.
+        window.qsLoadUndoHistory = function () {
+          qsUndoHistoryReady = api('/api/schedule/undo-history').then(function (r) {
+            var d = (r.ok && r.data) || {};
+            var u = (Array.isArray(d.undo) ? d.undo : []).filter(qsValidUndoEntry).slice(-QS_UNDO_DEPTH);
+            var rd = (Array.isArray(d.redo) ? d.redo : []).filter(qsValidUndoEntry).slice(-QS_UNDO_DEPTH);
+            // Merge, don't replace: an action in the split second before
+            // this load finished is NEWER than the loaded entries, so it
+            // stays on top; a new action also clears redo, so a loaded
+            // redo only survives when nothing new happened.
+            var curU = qsUndoStack.slice();
+            var curR = qsRedoStack.slice();
+            qsUndoStack.length = 0;
+            Array.prototype.push.apply(qsUndoStack, u.concat(curU).slice(-QS_UNDO_DEPTH));
+            qsRedoStack.length = 0;
+            Array.prototype.push.apply(qsRedoStack, (curR.length ? curR : (curU.length ? [] : rd)).slice(-QS_UNDO_DEPTH));
+            qsUndoHistoryLastSaved = qsUndoStacksJson();
+            qsUndoBtnSync();
+          }).catch(function () {});
+          return qsUndoHistoryReady;
+        };
         var qsDrag = null;      // candidate / active drag
         var qsPlace = null;     // touch place-mode: { shift }
         var qsSwallowClick = false;
@@ -3732,7 +3795,7 @@
               entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
               qsUndoStack.push(entry);
               qsRedoStack.length = 0;
-              if (qsUndoStack.length > 10) qsUndoStack.shift();
+              qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
               refreshShifts();
@@ -3746,7 +3809,7 @@
               entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
               qsUndoStack.push(entry);
               qsRedoStack.length = 0;
-              if (qsUndoStack.length > 10) qsUndoStack.shift();
+              qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Moved. Ctrl+Z undoes it.');
               refreshShifts();
@@ -3782,6 +3845,10 @@
           var tab = document.getElementById('tab-schedule');
           var onTab = tab && tab.classList.contains('active');
           if (btn) btn.style.display = (qsUndoStack.length && onTab) ? '' : 'none';
+          // Persist the stacks whenever they change (this runs at
+          // every push/pop site). No-op before the login-time load
+          // starts, and skipped when nothing changed.
+          if (typeof qsPersistUndoHistory === 'function') qsPersistUndoHistory();
         }
 
         // Delete undo (Deepika, 2026-11-17): every delete endpoint
@@ -3801,7 +3868,7 @@
           if (!has) return false;
           qsUndoStack.push({ kind: 'delete', undo: undoPayload, redo: { kind: 'delete', calls: redoCalls || [], pauses: undoPayload.pauses || [] } });
           qsRedoStack.length = 0;
-          if (qsUndoStack.length > 10) qsUndoStack.shift();
+          qsUndoCap();
           qsUndoBtnSync();
           return true;
         };
@@ -3818,6 +3885,7 @@
             }
             pageSuccess('Task undone — Ctrl+Shift+Z redoes it.');
             qsRedoStack.length = 0;
+            qsPersistUndoHistory();
             refreshShifts();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not undo that task.'); });
         }
@@ -3850,6 +3918,7 @@
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
               qsUndoStack.push(e);
+              qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Redone.');
               refreshShifts();
@@ -3871,6 +3940,7 @@
                   if (pi >= pauses.length) {
                     if (fresh.units.length || fresh.sweepExclusions.length || fresh.grants.length || fresh.pauses.length) {
                       qsUndoStack.push({ kind: 'delete', undo: fresh, redo: r });
+                      qsUndoCap();
                       qsUndoBtnSync();
                     }
                     pageSuccess(failed ? 'Redone — ' + failed + ' shift(s) could not be re-deleted.' : 'Redone.');
@@ -3909,6 +3979,7 @@
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
               qsUndoStack.push(e);
+              qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Redone.');
               refreshShifts();
@@ -3923,14 +3994,14 @@
           if (u.kind === 'server') {
             api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); refreshShifts(); return; }
-              if (u.redo) qsRedoStack.push(u.redo);
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that.'); });
           } else if (u.kind === 'delete') {
             api('/api/schedule/shifts/delete-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that delete.'); refreshShifts(); return; }
-              if (u.redo) qsRedoStack.push(u.redo);
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               var restored = (r.data && r.data.restored) || 0;
               var skipped = (r.data && r.data.skipped) || [];
               if (skipped.length) {
@@ -3944,14 +4015,14 @@
           } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
-              if (u.redo) qsRedoStack.push(u.redo);
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that swap.'); });
           } else {
             api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); refreshShifts(); return; }
-              if (u.redo) qsRedoStack.push(u.redo);
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that move.'); });
@@ -4433,7 +4504,7 @@
                 if (typeof qsUndoStack !== 'undefined') {
                   qsUndoStack.push(entry);
                   if (typeof qsRedoStack !== 'undefined') qsRedoStack.length = 0;
-                  if (qsUndoStack.length > 10) qsUndoStack.shift();
+                  qsUndoCap();
                   if (typeof qsUndoBtnSync === 'function') qsUndoBtnSync();
                 }
                 it.date = targetDate; // the map follows the moved shift
@@ -26345,6 +26416,13 @@ window.qsNpOfferSend = function (btn) {
         if (role === 'owner' || role === 'scheduler') {
           if (bb1) bb1.classList.add('qs-on');
           if (bb2) bb2.classList.add('qs-on');
+        }
+        // Persistent 3-step Undo/Redo (Deepika, 2026-11-17): load the
+        // saved stacks so Undo/Redo work right after a reload, on any
+        // device. The top/band buttons above already call qsUndoClick /
+        // qsRedoClick, which use the stacks once loaded.
+        if (role === 'owner' || role === 'scheduler') {
+          if (typeof window.qsLoadUndoHistory === 'function') window.qsLoadUndoHistory();
         }
       })();
       window.qsCurrentUserEmail = r.data.user.email;

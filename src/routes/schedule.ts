@@ -19,6 +19,7 @@ import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, auditDraftIfAppeared, auditDraftsForResults, resolvePersonId, todayStr } from '../util/audit.js';
 import { recordHistorySnapshot, snapshotPlanExecution, listHistorySnapshots, getHistorySnapshot } from '../util/history.js';
+import { loadUndoHistory, saveUndoHistory } from '../util/undoHistory.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, isGeminiConfigured } from '../util/gemini';
@@ -3499,6 +3500,38 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
     }
   } catch (err) {
     console.error('[schedule] delete-undo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/undo-history + POST /api/schedule/undo-history —
+// persistent 3-step Undo/Redo (Deepika, 2026-11-17). The client
+// POSTs its whole undo/redo stacks whenever they change and GETs
+// them at login, so Undo/Redo survive a reload on any device. One
+// row per (company, user); entries are validated and capped at 3
+// (src/util/undoHistory.ts). Task undo is NOT stored here — it is
+// already server-side and untouched.
+router.get('/undo-history', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const stacks = await loadUndoHistory(req.session.companyId!, req.session.userId!);
+    res.json({ undo: stacks.undo, redo: stacks.redo });
+  } catch (err) {
+    console.error('[schedule] undo-history load failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+router.post('/undo-history', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const body = req.body ?? {};
+    if (!Array.isArray(body.undo) || !Array.isArray(body.redo)) {
+      res.status(400).json({ error: 'Undo history must be { undo: [], redo: [] }.' });
+      return;
+    }
+    const stacks = await saveUndoHistory(req.session.companyId!, req.session.userId!, body.undo, body.redo);
+    res.json({ undo: stacks.undo, redo: stacks.redo });
+  } catch (err) {
+    console.error('[schedule] undo-history save failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
