@@ -36,7 +36,7 @@
 import { matchName } from './planHelpers.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
-import { getGeneratedTypeIds, getUndraftedDatesForType } from './scheduleMode.js';
+import { getGeneratedTypeIds, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
@@ -539,6 +539,73 @@ const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> 
 ];
 
 /**
+ * Open-slot inputs for rotation-less types (Deepika, 2026-11-16 —
+ * the Day NP plan-gate change): the same three sources the display
+ * uses to show open slots (schedule.ts open-slots-message and the
+ * draft shortfall) — the staffing target for the weekday, extra open
+ * slots, and closed days. Filled counts come from the gate's own
+ * `entries` (getShiftsForRange), which for a rotation-less type are
+ * exactly its stored shifts — no rotation ever draws it.
+ */
+interface OpenSlotInputs {
+  targets: { shiftTypeId: string; targetCount: number; weekdays: number[] | null; startDate: string | null; endDate: string | null }[];
+  extra: Map<string, number>;
+  closed: Set<string>;
+}
+
+async function loadOpenSlotInputs(
+  query: QueryFn, companyId: string, from: string, to: string
+): Promise<OpenSlotInputs> {
+  const [{ rows: trows }, { rows: erows }, { rows: crows }] = await Promise.all([
+    query(
+      `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
+              weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
+       FROM staffing_targets WHERE company_id = $1`,
+      [companyId]
+    ),
+    query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    ),
+    query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    ),
+  ]);
+  const extra = new Map<string, number>();
+  for (const r of erows) {
+    const k = `${r.date}|${r.shiftTypeId}`;
+    extra.set(k, (extra.get(k) || 0) + (r.count || 0));
+  }
+  return {
+    targets: trows,
+    extra,
+    closed: new Set(crows.map((r: any) => `${r.date}|${r.shiftTypeId}`)),
+  };
+}
+
+/** Capacity (target + extra) for one type+date; 0 when the day is
+ * closed for the type or no staffing target covers it. Mirrors the
+ * display's first-matching-target rule (weekday, then start/end). */
+function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string): number {
+  if (inputs.closed.has(`${date}|${typeId}`)) return 0;
+  const dt = new Date(date + 'T00:00:00');
+  let target = 0;
+  for (const tg of inputs.targets) {
+    if (tg.shiftTypeId !== typeId) continue;
+    const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+    if (!weekdays.includes(dt.getDay())) continue;
+    if (tg.startDate && date < tg.startDate) continue;
+    if (tg.endDate && date > tg.endDate) continue;
+    target = tg.targetCount || 0;
+    break;
+  }
+  return target + (inputs.extra.get(`${date}|${typeId}`) || 0);
+}
+
+/**
  * Gate a plan's changes. Mutates the changes it can resolve (person
  * fields are rewritten to canonical full names, like the Task path's
  * collectNameProblems already does). Returns the FIRST blocking
@@ -608,6 +675,11 @@ export async function gatePlanChanges(
   const from = shiftDay(dates[0], -2);
   const to = shiftDay(dates[dates.length - 1], 2);
   const entries = await getShiftsForRange(query, companyId, from, to);
+  const heldBy = (userId: string, date: string, typeId?: string | null) =>
+    entries.filter((e) => e.userId === userId && e.date === date && (!typeId || e.shiftTypeId === typeId));
+  const holdersOf = (date: string, typeId: string): string[] =>
+    [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
+
   // N1 (background rotations, Deepika 2026-11-13 — per department,
   // 2026-11-14): for a generated shift type the AI sees stored
   // shifts only — an undrafted date has no holder to verify
@@ -616,8 +688,18 @@ export async function gatePlanChanges(
   // nobody has been drafted for it yet). Clarify FIRST: the date is
   // not drafted yet, and the fix is to draft it. Live types skip
   // this — their holders draw from the rotation as always.
+  //
+  // Rotation-less types are never "not drafted" (Deepika, 2026-11-15
+  // display rule, extended to the gate 2026-11-16): no rotation can
+  // ever draft them, so the draft-first refusal never fires for
+  // them. Assigns onto one still need an open slot (shortfall > 0)
+  // on every touched date — a full date refuses with one
+  // clarification, same as today. Moves/swaps don't consume a slot,
+  // so they skip N1 and the holder checks below govern.
   {
     const generatedTypes = await getGeneratedTypeIds(query, companyId);
+    const withRotations = await getTypesWithRotations(query, companyId);
+    let openInputs: OpenSlotInputs | null = null;
     for (const c of dated) {
       const type = resolveType(c.shiftType);
       if (!type || !generatedTypes.has(type.id)) continue;
@@ -635,6 +717,34 @@ export async function gatePlanChanges(
       }
       if (!touched.length) continue;
       touched.sort();
+      if (!withRotations.has(type.id)) {
+        if (c.action !== 'assign' && c.action !== 'assign_recurring') continue;
+        if (!openInputs) openInputs = await loadOpenSlotInputs(query, companyId, dates[0], dates[dates.length - 1]);
+        const per = resolved.get(c)!;
+        const person = per.get('person');
+        const bad = touched.find((d) => {
+          // Already on it — the workability loop no-ops, no slot needed.
+          if (person && heldBy(person.id, d, type.id).length) return false;
+          const filled = new Set(
+            entries.filter((e) => e.date === d && e.shiftTypeId === type.id).map((e) => e.userId)
+          ).size;
+          return openSlotCapacity(openInputs!, type.id, d) - filled <= 0;
+        });
+        if (bad) {
+          const closedDay = openInputs.closed.has(`${bad}|${type.id}`);
+          const capacity = openSlotCapacity(openInputs, type.id, bad);
+          const why = closedDay
+            ? `that day is closed for ${type.name}`
+            : capacity > 0
+              ? `all ${capacity} are already filled`
+              : `no staffing target is set for ${type.name} that day`;
+          const next = closedDay
+            ? 'Pick a date with an open slot.'
+            : 'Pick a date with an open slot, or add an extra open slot for that day first.';
+          return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}. ${next}` };
+        }
+        continue;
+      }
       const undrafted = new Set(await getUndraftedDatesForType(
         query, companyId, type.id, touched[0], touched[touched.length - 1]
       ));
@@ -644,10 +754,6 @@ export async function gatePlanChanges(
       }
     }
   }
-  const heldBy = (userId: string, date: string, typeId?: string | null) =>
-    entries.filter((e) => e.userId === userId && e.date === date && (!typeId || e.shiftTypeId === typeId));
-  const holdersOf = (date: string, typeId: string): string[] =>
-    [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
 
   // Shift-choice options for a holder mismatch (Deepika, 2026-11-11
   // — the one-email fix): the holders of the requested type that

@@ -442,6 +442,30 @@ export async function buildScheduleContext(
       }
     } catch { /* targets are an enhancement, not a requirement */ }
 
+    // Rotation-less generated types (Deepika, 2026-11-16 — the Day NP
+    // plan-gate change): their opens come from the target alone — no
+    // rotation ever draws holders, so a date with no entries at all
+    // would otherwise vanish from the context and the planner could
+    // never see the open slots. (The gate's open-slot check reads
+    // the same target, so context and gate agree.)
+    const rotationlessOpen = new Set<string>();
+    const typeNames = new Map<string, string>();
+    try {
+      const { getGeneratedTypeIds, getTypesWithRotations } = await import('./scheduleMode.js');
+      const [generated, withRotations] = await Promise.all([
+        getGeneratedTypeIds(query, companyId),
+        getTypesWithRotations(query, companyId),
+      ]);
+      const { rows: nrows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      for (const r of nrows) typeNames.set(r.id, r.name);
+      for (const [typeId, target] of targets) {
+        if (target > 0 && generated.has(typeId) && !withRotations.has(typeId)) rotationlessOpen.add(typeId);
+      }
+    } catch { /* rotation-less opens are an enhancement, not a requirement */ }
+
     // (a) Day-by-day holders.
     const byDate = new Map<string, Map<string, { name: string; people: string[] }>>();
     for (const e of entries) {
@@ -459,6 +483,19 @@ export async function buildScheduleContext(
     for (const [date, byType] of byDate) {
       const bi = blocks.findIndex(([bs, be], i) => date >= bs && date <= be && date > blockFullTo[i]);
       if (bi >= 0) for (const t of byType.values()) compactNames.add(t.name);
+    }
+    // Dates with no entries at all still carry rotation-less opens:
+    // add them as empty days (full-detail portion only — the compact
+    // tail has no open-slot markers by design) so fullLine renders
+    // the OPEN markers for them.
+    if (rotationlessOpen.size) {
+      for (let b = 0; b < blocks.length; b++) {
+        const [bs, be] = blocks[b];
+        const end = be < blockFullTo[b] ? be : blockFullTo[b];
+        for (let d = bs; d <= end; d = shiftDay(d, 1)) {
+          if (!byDate.has(d)) byDate.set(d, new Map());
+        }
+      }
     }
     // Short type codes: the initials of each compact-rendered type
     // name, made unique with a numeric suffix on collision. One
@@ -492,8 +529,12 @@ export async function buildScheduleContext(
       for (const [typeId, target] of targets) {
         if (target > 0 && !byType.has(typeId)) {
           const nameRow = entries.find((e) => e.shiftTypeId === typeId);
-          // Only list fully-open types we have a name for.
-          if (nameRow) parts.push(`${nameRow.shiftTypeName} OPEN ×${target}`);
+          // Only list fully-open types we have a name for — entries,
+          // or the type table for a rotation-less type with no entries
+          // anywhere in the window (it never draws holders).
+          const name = nameRow?.shiftTypeName
+            || (rotationlessOpen.has(typeId) ? typeNames.get(typeId) : undefined);
+          if (name) parts.push(`${name} OPEN ×${target}`);
         }
       }
       const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
