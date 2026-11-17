@@ -3783,6 +3783,28 @@
           if (btn) btn.style.display = (qsUndoStack.length && onTab) ? '' : 'none';
         }
 
+        // Delete undo (Deepika, 2026-11-17): every delete endpoint
+        // returns the undo payload for what IT removed; this pushes
+        // it so Ctrl+Z / the Undo button restores it. One entry per
+        // delete action — a bulk delete is ONE entry (it undoes as a
+        // whole), a single delete is one entry. The redo replays the
+        // original delete calls in order and collects their fresh
+        // undo payloads, so redo/undo can alternate. Publish/unpublish
+        // and change-person stay NOT undoable — delete only.
+        window.qsPushDeleteUndo = function (undoPayload, redoCalls) {
+          if (!undoPayload) return false;
+          var has = (undoPayload.units && undoPayload.units.length)
+            || (undoPayload.sweepExclusions && undoPayload.sweepExclusions.length)
+            || (undoPayload.grants && undoPayload.grants.length)
+            || (undoPayload.pauses && undoPayload.pauses.length);
+          if (!has) return false;
+          qsUndoStack.push({ kind: 'delete', undo: undoPayload, redo: { kind: 'delete', calls: redoCalls || [], pauses: undoPayload.pauses || [] } });
+          qsRedoStack.length = 0;
+          if (qsUndoStack.length > 10) qsUndoStack.shift();
+          qsUndoBtnSync();
+          return true;
+        };
+
         function qsTaskUndo() {
           if (qsTaskUndoBusy) return;
           qsTaskUndoBusy = true;
@@ -3831,6 +3853,54 @@
               pageSuccess('Redone.');
               refreshShifts();
             }).catch(function () { pageError('Could not redo that swap.'); });
+          } else if (r.kind === 'delete') {
+            // Redo a delete: replay the original delete calls in
+            // order; each returns a fresh undo payload, merged into
+            // one entry (a bulk delete re-deletes as a whole, like it
+            // undoes). Pauses the undo removed are re-created
+            // afterwards with their new ids.
+            var calls = r.calls || [];
+            var fresh = { deletedAt: new Date().toISOString(), units: [], sweepExclusions: [], grants: [], pauses: [] };
+            var ci = 0, failed = 0;
+            var nextCall = function () {
+              if (ci >= calls.length) {
+                var pauses = r.pauses || [];
+                var pi = 0;
+                var nextPause = function () {
+                  if (pi >= pauses.length) {
+                    if (fresh.units.length || fresh.sweepExclusions.length || fresh.grants.length || fresh.pauses.length) {
+                      qsUndoStack.push({ kind: 'delete', undo: fresh, redo: r });
+                      qsUndoBtnSync();
+                    }
+                    pageSuccess(failed ? 'Redone — ' + failed + ' shift(s) could not be re-deleted.' : 'Redone.');
+                    refreshShifts();
+                    if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+                    return;
+                  }
+                  var p = pauses[pi++];
+                  api('/api/schedule/rotations/' + p.rotationId + '/pauses', { method: 'POST', body: JSON.stringify({ startDate: p.startDate, endDate: p.endDate, reason: 'Bulk delete' }) }).then(function (res) {
+                    if (res.ok && res.data && res.data.pause) fresh.pauses.push({ id: res.data.pause.id, rotationId: p.rotationId, startDate: p.startDate, endDate: p.endDate });
+                    nextPause();
+                  }).catch(function () { nextPause(); });
+                };
+                nextPause();
+                return;
+              }
+              var c = calls[ci++];
+              api(c.ep, { method: c.method, body: c.body ? JSON.stringify(c.body) : undefined }).then(function (res) {
+                if (res.ok) {
+                  var u = res.data && res.data.undo;
+                  if (u) {
+                    fresh.units = fresh.units.concat(u.units || []);
+                    fresh.sweepExclusions = fresh.sweepExclusions.concat(u.sweepExclusions || []);
+                    fresh.grants = fresh.grants.concat(u.grants || []);
+                    fresh.pauses = fresh.pauses.concat(u.pauses || []);
+                  }
+                } else failed++;
+                nextCall();
+              }).catch(function () { failed++; nextCall(); });
+            };
+            nextCall();
           } else {
             var s = shiftById(r.shiftId);
             api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId }) }).then(function (res) {
@@ -3856,6 +3926,20 @@
               pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that.'); });
+          } else if (u.kind === 'delete') {
+            api('/api/schedule/shifts/delete-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that delete.'); refreshShifts(); return; }
+              if (u.redo) qsRedoStack.push(u.redo);
+              var restored = (r.data && r.data.restored) || 0;
+              var skipped = (r.data && r.data.skipped) || [];
+              if (skipped.length) {
+                pageError('Delete undone — ' + restored + ' shift(s) back. ' + skipped.length + ' could not be restored: ' + skipped.map(function (s) { return s.message || 'could not be restored'; }).join('; ') + '.');
+              } else {
+                pageSuccess('Delete undone — ' + restored + ' shift(s) back. Ctrl+Shift+Z redoes it.');
+              }
+              refreshShifts();
+              if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+            }).catch(function () { pageError('Could not undo that delete.'); });
           } else if (u.kind === 'swap') {
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
@@ -3885,9 +3969,12 @@
         // which tab root contains the tap. Every bar action reuses the
         // single-shift endpoints (delete-completely sweep, publish-state,
         // drag-move, extra-slots) — no server changes, no parallel paths.
-        // Bulk delete / publish / change-person are NOT undoable (their
-        // single-shift equivalents aren't either); bulk move-to-date IS —
-        // one undo entry per moved shift, same shape as qsExecuteDrop.
+        // Bulk delete IS undoable (Deepika, 2026-11-17) — one entry for
+        // the whole bulk delete, same server-returned payload shape as
+        // a single delete. Bulk publish / change-person are NOT
+        // undoable (their single-shift equivalents aren't either);
+        // bulk move-to-date IS — one undo entry per moved shift, same
+        // shape as qsExecuteDrop.
         // -----------------------------------------------------------------
         (function initQsSel() {
           function fmtDayShort(ds) {
@@ -4155,6 +4242,7 @@
             if (!confirm('Delete ' + label + '? The shift opens for cover, exactly like deleting one shift.' +
                 (opens.length ? ' (' + opens.length + ' selected open slot(s) will be left alone.)' : ''))) return;
             var done = 0, failed = 0;
+            var undos = [], redoCalls = [];
             var jobs = shifts.map(function (it) {
               var ep, body, method;
               if (it.rotationId) {
@@ -4162,10 +4250,27 @@
                 body = { rotationId: it.rotationId, userId: it.userId, date: it.date, shiftTypeId: it.shiftTypeId };
               } else { ep = '/api/schedule/shifts/' + it.id; method = 'DELETE'; body = null; }
               return api(ep, { method: method, body: body ? JSON.stringify(body) : undefined }).then(function (r) {
-                if (r.ok) done++; else failed++;
+                if (r.ok) { done++; if (r.data && r.data.undo) undos.push(r.data.undo); redoCalls.push({ ep: ep, method: method, body: body }); }
+                else failed++;
               }).catch(function () { failed++; });
             });
             Promise.all(jobs).then(function () {
+              // ONE undo entry for the whole bulk delete (Deepika,
+              // 2026-11-17): one Ctrl+Z brings them all back. The
+              // merged deletedAt is the EARLIEST delete's, so a slot
+              // taken after any of the deletes still blocks restore.
+              if (undos.length && typeof window.qsPushDeleteUndo === 'function') {
+                var merged = { deletedAt: null, units: [], sweepExclusions: [], grants: [], pauses: [] };
+                undos.forEach(function (u) {
+                  if (u.deletedAt && (!merged.deletedAt || u.deletedAt < merged.deletedAt)) merged.deletedAt = u.deletedAt;
+                  merged.units = merged.units.concat(u.units || []);
+                  merged.sweepExclusions = merged.sweepExclusions.concat(u.sweepExclusions || []);
+                  merged.grants = merged.grants.concat(u.grants || []);
+                  merged.pauses = merged.pauses.concat(u.pauses || []);
+                });
+                if (!merged.deletedAt) merged.deletedAt = new Date().toISOString();
+                window.qsPushDeleteUndo(merged, redoCalls);
+              }
               pageSuccess('Deleted ' + done + (failed ? ' · ' + failed + ' could not be deleted.' : '.'));
               refreshActiveScope(); // before exit() — exit() clears sel.scope, which the refresh needs
               exit(); // delete exits selection entirely
@@ -5281,7 +5386,17 @@
                 p = api('/api/schedule/shifts/' + sid, { method: 'DELETE' });
               }
               p.then(function (r) {
-                if (r.ok) refreshShifts();
+                if (r.ok) {
+                  // Delete undo (Deepika, 2026-11-17): push the payload
+                  // the server returned so Ctrl+Z brings this shift back.
+                  if (r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
+                    var redoCall = (isRot && s && s.rotationId)
+                      ? { ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId } }
+                      : { ep: '/api/schedule/shifts/' + sid, method: 'DELETE', body: null };
+                    window.qsPushDeleteUndo(r.data.undo, [redoCall]);
+                  }
+                  refreshShifts();
+                }
                 else { pageError('Could not delete. Refreshing.'); refreshShifts(); }
               }).catch(function () { pageError('Could not delete. Refreshing.'); refreshShifts(); });
             } }
@@ -5798,7 +5913,13 @@
                       shiftTypeId: s.shiftTypeId
                     })
                   }).then(function (r) {
-                    if (r.ok) { pageSuccess('Shift removed.'); loadShifts(); }
+                    if (r.ok) {
+                      // Delete undo (Deepika, 2026-11-17).
+                      if (r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
+                        window.qsPushDeleteUndo(r.data.undo, [{ ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId } }]);
+                      }
+                      pageSuccess('Shift removed.'); loadShifts();
+                    }
                     else pageError('Could not delete.');
                   });
                 }
@@ -6364,6 +6485,10 @@
           if (btn) { btn.disabled = true; btn.textContent = 'Deleting\u2026'; }
           api('/api/schedule/shifts/' + s.id, { method: 'DELETE' }).then(function (r) {
             if (r.ok) {
+              // Delete undo (Deepika, 2026-11-17).
+              if (r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
+                window.qsPushDeleteUndo(r.data.undo, [{ ep: '/api/schedule/shifts/' + s.id, method: 'DELETE', body: null }]);
+              }
               closePersonActions();
               loadAll();
             } else {
@@ -18332,6 +18457,20 @@ window.qsNpOfferSend = function (btn) {
             if (r.ok) {
               var n = r.data.published || r.data.unpublished || r.data.deleted || r.data.updated || dates.length;
               var extra = r.data.paused ? ' (' + r.data.paused + ' rotation skip(s) added)' : '';
+              // Delete undo (Deepika, 2026-11-17): one entry for the
+              // whole bulk delete — Ctrl+Z on the Schedule tab brings
+              // them all back. The redo replays one delete call per
+              // deleted unit (stored rows by id, drawn occurrences by
+              // their exclusion), so the Bulk Actions tab itself never
+              // needs the undo stack.
+              if (action !== 'publish' && action !== 'unpublish' && r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
+                var redoCalls = [];
+                (r.data.undo.units || []).forEach(function (u) {
+                  if (u.row) redoCalls.push({ ep: '/api/schedule/shifts/' + u.row.id, method: 'DELETE', body: null });
+                  else if (u.primaryExclusion) redoCalls.push({ ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: u.primaryExclusion.rotationId, userId: u.primaryExclusion.userId, date: u.primaryExclusion.date, shiftTypeId: u.primaryExclusion.shiftTypeId } });
+                });
+                if (window.qsPushDeleteUndo(r.data.undo, redoCalls)) extra += ' Undo is available on the Schedule tab (Ctrl+Z).';
+              }
               showResult('Done — ' + n + ' item(s) updated.' + extra, false);
             } else {
               showResult((r.data && r.data.error) || 'Could not complete.', true);

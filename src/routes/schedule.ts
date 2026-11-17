@@ -1694,6 +1694,38 @@ router.post('/import-parse', requireRole('owner', 'scheduler'), async (req: Requ
   }
 });
 
+// ---------------------------------------------------------------------------
+// Delete undo (Deepika, 2026-11-17): deleting a shift never pushed an
+// undo entry, so Ctrl+Z after a delete fell through to the task undo
+// and the shift never came back. Every delete endpoint now returns
+// the undo payload for what IT removed — the stored row(s) as
+// deleted, plus the rotation-occurrence exclusions its sweep wrote,
+// plus any open-slot grant and any 'Bulk delete' pauses — and POST
+// /shifts/delete-undo replays it. Same envelope shape as drag-undo:
+// { undo: {...} } in, { ok, restored, skipped } out. Publish/unpublish
+// and change-person stay NOT undoable (this is delete only).
+// ---------------------------------------------------------------------------
+
+type DeleteUndoRow = {
+  id: string; userId: string; shiftTypeId: string; date: string;
+  published: boolean; notes: string | null; createdBy: string | null;
+  generationId: string | null; createdAt: string | null;
+};
+type DeleteUndoExclusion = { rotationId: string; userId: string; date: string; shiftTypeId: string | null };
+type DeleteUndoGrant = { date: string; shiftTypeId: string };
+type DeleteUndoPause = { id: string; rotationId: string; startDate: string; endDate: string };
+type DeleteUndoPayload = {
+  deletedAt: string;
+  units: Array<{ row: DeleteUndoRow | null; primaryExclusion: DeleteUndoExclusion | null }>;
+  sweepExclusions: DeleteUndoExclusion[];
+  grants: DeleteUndoGrant[];
+  pauses: DeleteUndoPause[];
+};
+
+function emptyDeleteUndo(): DeleteUndoPayload {
+  return { deletedAt: new Date().toISOString(), units: [], sweepExclusions: [], grants: [], pauses: [] };
+}
+
 // POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler; department-scoped).
 // Deletes manual shifts; for rotation shifts, adds skip periods so they don't appear.
 router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
@@ -1742,9 +1774,27 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     );
     const { rows: deletedRows, rowCount } = await query(
       `DELETE FROM shifts WHERE company_id = $1 AND date = ANY($2::date[]) ${userFilter} ${typeFilter}
-       RETURNING user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date`,
+       RETURNING id, user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date,
+                 published, notes, created_by AS "createdBy", generation_id AS "generationId",
+                 created_at AS "createdAt"`,
       params
     );
+    // Undo payload (2026-11-17): the deleted rows as deleted, plus
+    // everything the passes below remove alongside them. Capped —
+    // a range delete bigger than this is not undoable.
+    const undo = emptyDeleteUndo();
+    const undoCap = 500;
+    for (const d of deletedRows || []) {
+      undo.units.push({
+        row: {
+          id: d.id, userId: d.userId, shiftTypeId: d.shiftTypeId, date: d.date,
+          published: d.published !== false, notes: d.notes ?? null,
+          createdBy: d.createdBy ?? null, generationId: d.generationId ?? null,
+          createdAt: d.createdAt ? new Date(d.createdAt).toISOString() : null,
+        },
+        primaryExclusion: null,
+      });
+    }
     // For rotation shifts: add skip periods covering the range for the affected users' rotations.
     let paused = 0;
     const from = valid.slice().sort()[0];
@@ -1770,12 +1820,21 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
           if (!dateSet.has(s.date)) continue;
           if (Array.isArray(userIds) && userIds.length && !userIds.includes(s.userId)) continue;
           if (shiftTypeId && s.shiftTypeId !== shiftTypeId) continue;
-          await query(
+          const gIns = await query(
             `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+             ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING
+             RETURNING rotation_id`,
             [companyId, s.rotationId, s.userId, s.date, s.shiftTypeId]
           );
+          if (gIns.rowCount) {
+            // A drawn group occurrence removed with no stored row:
+            // the exclusion IS the delete, so it is the unit.
+            undo.units.push({
+              row: null,
+              primaryExclusion: { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId },
+            });
+          }
           groupOpenKeys.add(`${s.date}|${s.shiftTypeId}`);
           paused++;
         }
@@ -1825,11 +1884,16 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     for (const rt of rots) {
       if (skipRot.has(rt.rotation_id)) continue;
       try {
-        await query(
+        const pauseId = crypto.randomUUID();
+        const pIns = await query(
           `INSERT INTO rotation_pauses (id, rotation_id, company_id, start_date, end_date, reason)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [crypto.randomUUID(), rt.rotation_id, companyId, from, to, 'Bulk delete']
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id`,
+          [pauseId, rt.rotation_id, companyId, from, to, 'Bulk delete']
         );
+        if (pIns.rowCount) {
+          undo.pauses.push({ id: pauseId, rotationId: rt.rotation_id, startDate: from, endDate: to });
+        }
         paused++;
       } catch { /* skip duplicates */ }
     }
@@ -1852,7 +1916,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         const key = `${d.userId}|${d.date}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        await excludeRotationInstances(companyId, d.userId, d.date);
+        undo.sweepExclusions.push(...await excludeRotationInstances(companyId, d.userId, d.date));
       }
     }
     // Group-rotation deletes (Deepika, 2026-11-13 — Bul/Swing):
@@ -1861,9 +1925,14 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     // pause pass so the filled count is the true post-delete one.
     for (const k of groupOpenKeys) {
       const [d, stId] = k.split('|');
-      await ensureOpenSlotForGroupDelete(companyId, d, stId, req.session.userId!);
+      if (await ensureOpenSlotForGroupDelete(companyId, d, stId, req.session.userId!)) {
+        undo.grants.push({ date: d, shiftTypeId: stId });
+      }
     }
-    res.json({ deleted: rowCount || 0, paused });
+    // Undo is capped: a range delete bigger than the cap returns no
+    // undo payload (the client simply does not push an entry).
+    const undoOut = (undo.units.length + undo.sweepExclusions.length + undo.pauses.length) > undoCap ? null : undo;
+    res.json({ deleted: rowCount || 0, paused, undo: undoOut });
     // Report (Deepika, 2026-11-13): bulk delete used to leave no
     // trace at all — one row per person whose shifts were removed.
     {
@@ -1953,9 +2022,11 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       res.status(404).json({ error: 'Shift not found.' });
       return;
     }
-    // Fetch details for audit before deleting.
+    // Fetch details for audit before deleting — the full row, so the
+    // undo payload (2026-11-17) can restore it exactly as deleted.
     const { rows: srows } = await query(
-      `SELECT s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published
+      `SELECT s.id, s.date::text AS date, s.user_id AS "userId", s.shift_type_id AS "shiftTypeId", s.published,
+              s.notes, s.created_by AS "createdBy", s.generation_id AS "generationId", s.created_at AS "createdAt"
        FROM shifts s WHERE s.id = $1 AND s.company_id = $2`,
       [req.params.id, companyId]
     );
@@ -1985,9 +2056,22 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     // delete is complete and nothing pops back. Day-scoped only —
     // other days untouched, the person's rotations untouched, and
     // stored rows of other types are NOT deleted (drawn occurrences only).
+    // Undo payload (2026-11-17): the row as deleted, the sweep's
+    // exclusions, and any open-slot grant — so Ctrl+Z restores
+    // exactly what was there.
+    const undo = emptyDeleteUndo();
     if (srows.length) {
       const s = srows[0];
-      await excludeRotationInstances(companyId, s.userId, s.date);
+      undo.units.push({
+        row: {
+          id: req.params.id, userId: s.userId, shiftTypeId: s.shiftTypeId, date: s.date,
+          published: s.published !== false, notes: s.notes ?? null,
+          createdBy: s.createdBy ?? null, generationId: s.generationId ?? null,
+          createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : null,
+        },
+        primaryExclusion: null,
+      });
+      undo.sweepExclusions.push(...await excludeRotationInstances(companyId, s.userId, s.date));
       // Report (Deepika, 2026-11-13): if a draft still appears, say so.
       await auditDraftIfAppeared(companyId, s.userId, s.date, s.shiftTypeId, req.session.userId!);
       // Group-rotation delete (Deepika, 2026-11-13 — Bul/Swing):
@@ -2000,11 +2084,13 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
           [occ.map((o: any) => o.rotationId)]
         );
         if (gRows.length) {
-          await ensureOpenSlotForGroupDelete(companyId, s.date, s.shiftTypeId, req.session.userId!);
+          if (await ensureOpenSlotForGroupDelete(companyId, s.date, s.shiftTypeId, req.session.userId!)) {
+            undo.grants.push({ date: s.date, shiftTypeId: s.shiftTypeId });
+          }
         }
       }
     }
-    res.json({ ok: true });
+    res.json({ ok: true, undo });
     if (srows.length) {
       const s = srows[0];
       const names = await shiftDisplayNames(companyId, s.userId, s.shiftTypeId);
@@ -2956,6 +3042,246 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
   }
 });
 
+// POST /api/schedule/shifts/delete-undo — undo a delete (owner/scheduler; department-scoped).
+// Body: { undo } — the payload a delete endpoint returned for what IT
+// removed. Restores each stored row exactly as deleted (same id, user,
+// date, type, published state, notes, created-by, generation) and
+// removes the exclusions the delete's sweep wrote, so drawn
+// occurrences come back. Guards — a unit is SKIPPED, never
+// overwriting, and reported with a plain reason, when:
+//   - the person is gone, inactive, or past their last working day
+//     (Rule 7: never resurrect someone past their last working day);
+//   - the row is already back on the schedule;
+//   - someone else has taken the slot since the delete (a stored row
+//     for the same date/type by another person, created after the
+//     delete);
+//   - the shift type no longer exists;
+//   - the rotation no longer covers that day — ended, inactive, or
+//     the occurrence no longer deals to this person (findRotation-
+//     Occurrences does NOT check rotation end_date, so it is checked
+//     explicitly here; the draw does respect it).
+// Sweep exclusions are removed only when at least one row for that
+// (user, date) was restored — otherwise the sweep's other-type
+// occurrences stay suppressed, exactly as the delete left them.
+// Grants are removed unconditionally — the extra open slot the delete
+// opened is closed again whether or not the row came back (a claimed
+// slot keeps the count right either way). 'Bulk delete' pauses are
+// removed by exact id. Restores audit as action 'created' with
+// details { via: 'delete-undo' }; no notify (matches drag-undo).
+// POST /shifts does not refuse closed days, so the restore does not
+// check closed_shifts either.
+router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const undo = (req.body?.undo ?? {}) as any;
+    const deletedAt = typeof undo.deletedAt === 'string' ? undo.deletedAt : null;
+    const units = Array.isArray(undo.units) ? undo.units : [];
+    const sweepExclusions = Array.isArray(undo.sweepExclusions) ? undo.sweepExclusions : [];
+    const grants = Array.isArray(undo.grants) ? undo.grants : [];
+    const pauses = Array.isArray(undo.pauses) ? undo.pauses : [];
+    const total = units.length + sweepExclusions.length + grants.length + pauses.length;
+    const badUnit = (u: any): boolean => {
+      if (!u || typeof u !== 'object') return true;
+      if (u.row) return !u.row.id || !u.row.userId || !u.row.shiftTypeId || !isValidDate(u.row.date);
+      if (u.primaryExclusion) return !u.primaryExclusion.rotationId || !u.primaryExclusion.userId || !isValidDate(u.primaryExclusion.date);
+      return true;
+    };
+    if (!deletedAt || !total || total > 1000
+      || units.some(badUnit)
+      || sweepExclusions.some((e: any) => !e || typeof e !== 'object' || !e.rotationId || !e.userId || !isValidDate(e.date))
+      || grants.some((g: any) => !g || typeof g !== 'object' || !isValidDate(g.date) || !g.shiftTypeId)
+      || pauses.some((p: any) => !p || typeof p !== 'object' || !p.id || !p.rotationId || !isValidDate(p.startDate) || !isValidDate(p.endDate))) {
+      res.status(400).json({ error: 'Nothing to undo.' });
+      return;
+    }
+    // Department scoping: the undo touches the same departments the
+    // delete did — the caller's active department must be one of them.
+    const scopePairs: Array<{ userId?: string | null; shiftTypeId?: string | null }> = [];
+    for (const u of units) {
+      if (u.row) scopePairs.push({ userId: u.row.userId, shiftTypeId: u.row.shiftTypeId });
+      else if (u.primaryExclusion) scopePairs.push({ userId: u.primaryExclusion.userId, shiftTypeId: u.primaryExclusion.shiftTypeId });
+    }
+    for (const e of sweepExclusions) scopePairs.push({ userId: e.userId, shiftTypeId: e.shiftTypeId });
+    for (const g of grants) scopePairs.push({ userId: null, shiftTypeId: g.shiftTypeId });
+    if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
+
+    const skipped: Array<{ userId: string | null; date: string; shiftTypeId: string | null; reason: string; message: string }> = [];
+    const restoredRows: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
+    const restoredRotUnits: Array<{ userId: string; date: string; shiftTypeId: string | null; rotationId: string }> = [];
+    let restored = 0;
+    const restoredUserDates = new Set<string>();
+    const skipMsg: Record<string, string> = {
+      'person-gone': 'that person is no longer on the team',
+      'person-inactive': 'that person is no longer active',
+      'past-last-day': 'that date is past their last working day',
+      'already-back': 'that shift is already back on the schedule',
+      'slot-taken': 'someone else has taken that slot since the delete',
+      'shift-type-gone': 'that shift type no longer exists',
+      'rotation-ended': 'the rotation no longer covers that day',
+    };
+    const skip = (userId: string | null, date: string, shiftTypeId: string | null, reason: string) => {
+      skipped.push({ userId, date, shiftTypeId, reason, message: skipMsg[reason] || reason });
+    };
+
+    await withTransaction(async (tx) => {
+      for (const u of units) {
+        const row = u.row as any;
+        const pe = u.primaryExclusion as any;
+        const userId = (row?.userId || pe?.userId || null) as string | null;
+        const date = (row?.date || pe?.date || null) as string | null;
+        const shiftTypeId = (row?.shiftTypeId ?? pe?.shiftTypeId ?? null) as string | null;
+        if (!userId || !date) continue; // validated above; unreachable
+        // The person must still be here and still working that day.
+        const { rows: urows } = await tx.query(
+          'SELECT is_active AS "isActive", end_date::text AS "endDate" FROM users WHERE id = $1 AND company_id = $2',
+          [userId, companyId]
+        );
+        if (!urows.length) { skip(userId, date, shiftTypeId, 'person-gone'); continue; }
+        if (!urows[0].isActive) { skip(userId, date, shiftTypeId, 'person-inactive'); continue; }
+        if (urows[0].endDate && date > urows[0].endDate) { skip(userId, date, shiftTypeId, 'past-last-day'); continue; }
+        if (row) {
+          // The shift type must still exist (shift_type_id is
+          // RESTRICT, so the type could only have gone after the row).
+          const { rows: trows } = await tx.query(
+            'SELECT 1 FROM shift_types WHERE id = $1 AND company_id = $2',
+            [row.shiftTypeId, companyId]
+          );
+          if (!trows.length) { skip(userId, date, shiftTypeId, 'shift-type-gone'); continue; }
+          // Already back (a re-add, a re-draft, or an undo run twice).
+          const { rows: exRows } = await tx.query(
+            'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
+            [companyId, userId, date, row.shiftTypeId]
+          );
+          if (exRows.length) { skip(userId, date, shiftTypeId, 'already-back'); continue; }
+          // Someone else has taken the slot since the delete.
+          const { rows: takerRows } = await tx.query(
+            `SELECT 1 FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3
+             AND user_id <> $4 AND created_at > $5 LIMIT 1`,
+            [companyId, date, row.shiftTypeId, userId, deletedAt]
+          );
+          if (takerRows.length) { skip(userId, date, shiftTypeId, 'slot-taken'); continue; }
+          // The stored generation must still exist (FK); a generation
+          // replaced since the delete is dropped, not faked.
+          let generationId = row.generationId ?? null;
+          if (generationId) {
+            const { rows: grows } = await tx.query('SELECT 1 FROM rotation_generations WHERE id = $1', [generationId]);
+            if (!grows.length) generationId = null;
+          }
+          await tx.query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, notes, created_by, generation_id, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [row.id, companyId, userId, row.shiftTypeId, date, row.published !== false,
+             row.notes ?? null, row.createdBy ?? null, generationId,
+             row.createdAt || new Date().toISOString()]
+          );
+          restored++;
+          restoredUserDates.add(`${userId}|${date}`);
+          restoredRows.push({ userId, date, shiftTypeId: row.shiftTypeId });
+          // The unit's own primary exclusion (a row deleted alongside
+          // an occurrence of its own) comes off with the row.
+          if (pe) {
+            await tx.query(
+              `DELETE FROM rotation_shift_exclusions
+               WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id IS NOT DISTINCT FROM $5`,
+              [companyId, pe.rotationId, userId, date, pe.shiftTypeId]
+            );
+          }
+        } else if (pe) {
+          // A drawn occurrence: it restores only when the rotation
+          // still covers this person on this day — active, not ended,
+          // and the occurrence still deals to them. (Rule 7: an ended
+          // rotation never resurrects a shift.)
+          const { rows: rrows } = await tx.query(
+            `SELECT 1 FROM rotations WHERE id = $1 AND company_id = $2 AND is_active = true
+             AND (end_date IS NULL OR end_date::text >= $3)`,
+            [pe.rotationId, companyId, date]
+          );
+          if (!rrows.length) { skip(userId, date, shiftTypeId, 'rotation-ended'); continue; }
+          const occ = await findRotationOccurrences(companyId, userId, date, pe.shiftTypeId, tx.query);
+          if (!occ.some((o: any) => o.rotationId === pe.rotationId)) { skip(userId, date, shiftTypeId, 'rotation-ended'); continue; }
+          await tx.query(
+            `DELETE FROM rotation_shift_exclusions
+             WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id IS NOT DISTINCT FROM $5`,
+            [companyId, pe.rotationId, userId, date, pe.shiftTypeId]
+          );
+          restored++;
+          restoredUserDates.add(`${userId}|${date}`);
+          restoredRotUnits.push({ userId, date, shiftTypeId, rotationId: pe.rotationId });
+        }
+      }
+      // Sweep exclusions: removed only when at least one row for that
+      // (user, date) was restored — otherwise the sweep's other-type
+      // occurrences stay suppressed, exactly as the delete left them.
+      for (const e of sweepExclusions) {
+        if (!restoredUserDates.has(`${e.userId}|${e.date}`)) continue;
+        await tx.query(
+          `DELETE FROM rotation_shift_exclusions
+           WHERE company_id = $1 AND rotation_id = $2 AND user_id = $3 AND date = $4 AND shift_type_id IS NOT DISTINCT FROM $5`,
+          [companyId, e.rotationId, e.userId, e.date, e.shiftTypeId]
+        );
+      }
+      // Grants: removed unconditionally — the extra open slot the
+      // delete opened is closed again whether or not the row came
+      // back (a claimed slot keeps the count right either way). Only
+      // when the count is still positive: a zero-or-negative count
+      // means later closes already netted the grant out, and
+      // decrementing further would over-close.
+      for (const g of grants) {
+        const { rows: cur } = await tx.query(
+          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+          [companyId, g.date, g.shiftTypeId]
+        );
+        if (!cur.length || Number(cur[0].count) <= 0) continue;
+        const next = Number(cur[0].count) - 1;
+        if (next === 0) {
+          await tx.query(
+            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, g.date, g.shiftTypeId]
+          );
+        } else {
+          await tx.query(
+            'UPDATE extra_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
+            [next, companyId, g.date, g.shiftTypeId]
+          );
+        }
+      }
+      // 'Bulk delete' pauses: removed by exact id (company-checked).
+      for (const p of pauses) {
+        await tx.query(
+          'DELETE FROM rotation_pauses WHERE id = $1 AND company_id = $2 AND rotation_id = $3',
+          [p.id, companyId, p.rotationId]
+        );
+      }
+    });
+    res.json({ ok: true, restored, skipped });
+    // Audit: each restored row logs as created via delete-undo.
+    for (const r of restoredRows) {
+      const names = await shiftDisplayNames(companyId, r.userId, r.shiftTypeId);
+      await auditLog({
+        companyId, date: r.date, action: 'created',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'manual', changedBy: req.session.userId!,
+        affectedUserId: r.userId, scheduleDate: r.date, shiftTypeId: r.shiftTypeId,
+        details: { via: 'delete-undo' },
+      });
+    }
+    for (const r of restoredRotUnits) {
+      const { rows: rrows } = await query('SELECT name FROM rotations WHERE id = $1 AND company_id = $2', [r.rotationId, companyId]);
+      const names = r.shiftTypeId ? await shiftDisplayNames(companyId, r.userId, r.shiftTypeId) : { personName: null, shiftTypeName: null };
+      await auditLog({
+        companyId, date: r.date, action: 'created',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'rotation', rotationName: rrows[0]?.name || null, changedBy: req.session.userId!,
+        affectedUserId: r.userId, scheduleDate: r.date,
+        details: { via: 'delete-undo' },
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] delete-undo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/shifts/:id/publish-state — publish/unpublish one manual shift (owner/scheduler; department-scoped).
 router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -3191,19 +3517,31 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       req, res,
       await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
     ))) return;
-    await query(
+    // Undo payload (2026-11-17): the exclusion this delete wrote
+    // (only when THIS call inserted it — a pre-existing exclusion
+    // belongs to an earlier delete and must stay), the sweep's
+    // exclusions, and any open-slot grant.
+    const undo = emptyDeleteUndo();
+    const pIns = await query(
       `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
+       ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING
+       RETURNING rotation_id`,
       [companyId, rotationId, userId, date, shiftTypeId || null]
     );
+    if (pIns.rowCount) {
+      undo.units.push({
+        row: null,
+        primaryExclusion: { rotationId, userId, date, shiftTypeId: shiftTypeId || null },
+      });
+    }
     // Delete completely (Deepika, 2026-11-13 — Bul's Day
     // Hospitalist draft): this occurrence's rotation may not be the
     // only one drawing for this user/date — a stored group-origin
     // row suppressed other types too. Sweep every occurrence for
     // this user/date (day-scoped; rotations and stored rows of other
     // types untouched).
-    await excludeRotationInstances(companyId, userId, date);
+    undo.sweepExclusions.push(...await excludeRotationInstances(companyId, userId, date));
     // Report (Deepika, 2026-11-13): if a draft still appears, say so.
     await auditDraftIfAppeared(companyId, userId, date, shiftTypeId || null, req.session.userId!);
     // Group-rotation occurrence delete (Deepika, 2026-11-13 —
@@ -3216,10 +3554,12 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       );
       if (grRows.length) {
         const typeId = shiftTypeId || grRows[0].groupShiftTypeId;
-        if (typeId) await ensureOpenSlotForGroupDelete(companyId, date, typeId, req.session.userId!);
+        if (typeId && await ensureOpenSlotForGroupDelete(companyId, date, typeId, req.session.userId!)) {
+          undo.grants.push({ date, shiftTypeId: typeId });
+        }
       }
     }
-    res.json({ ok: true });
+    res.json({ ok: true, undo });
     // Audit: rotation shift excluded (removed).
     const { rows: rrows } = await query(
       'SELECT name FROM rotations WHERE id = $1 AND company_id = $2',
