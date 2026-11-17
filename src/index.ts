@@ -144,6 +144,17 @@ app.get('/rotations.html', (req: Request, res: Response, next: NextFunction) => 
   }
   next();
 });
+app.get('/history-view.html', (req: Request, res: Response, next: NextFunction) => {
+  // Frozen History copies (Deepika, 2026-11-17): read-only, login-based,
+  // owner/scheduler like rotations.html. Department scoping is enforced
+  // again by the history API itself.
+  const role = req.session?.role;
+  if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {
+    res.redirect('/login.html');
+    return;
+  }
+  next();
+});
 app.get('/settings.html', (req: Request, res: Response, next: NextFunction) => {
   const role = req.session?.role;
   if (!req.session?.userId || (role !== 'owner' && role !== 'scheduler')) {

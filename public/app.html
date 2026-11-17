@@ -1803,6 +1803,7 @@
     <div class="qtr-head">TOOLS</div>
     <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
     <button type="button" class="qtr-btn" id="qtr-select" data-tool="select" onclick="window.qsSelToggle()" aria-pressed="false" title="Select shifts to act on together"><span class="qtr-ic">☑️</span><span class="qtr-tx">Select</span></button>
+    <button type="button" class="qtr-btn" id="qtr-history" data-tool="history" onclick="window.qsToolsHistory()" title="Frozen copies of the schedule — saved on every publish and change"><span class="qtr-ic">🕘</span><span class="qtr-tx">History</span></button>
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
@@ -8336,6 +8337,12 @@
             $('qtp-title').textContent = '🎨 Highlight';
             qsRenderHlPanel();
           }
+          if (tool === 'history') {
+            // History snapshots (Deepika, 2026-11-17) — frozen copies
+            // of the schedule, read-only, no restore anywhere.
+            $('qtp-title').textContent = '🕘 History';
+            qsRenderHistoryPanel();
+          }
           if (tool === 'groups') {
             // Communication groups manager (moved here from Settings,
             // Deepika 2026-11-07) — the wide panel variant.
@@ -8355,6 +8362,18 @@
         };
         window.qsToolsShortcover = function () { location.hash = 'shortcover'; };
         window.qsToolsGroups = function () { window.qsToolsOpen('groups'); };
+        window.qsToolsHistory = function () { window.qsToolsOpen('history'); };
+        // History is a manager tool (owner/schedulers — the list API
+        // is owner/scheduler-only): hide the rail entry in the
+        // employee view, like Communication groups.
+        function qsGateHistoryBtn() {
+          var btn = $('qtr-history');
+          if (!btn) return;
+          var empNav = $('employee-tabs');
+          var isEmp = (empNav && !empNav.classList.contains('hidden')) || window.currentRole === 'employee';
+          btn.style.display = isEmp ? 'none' : '';
+        }
+        setTimeout(qsGateHistoryBtn, 2600);
         // Communication groups are a manager tool (owner/schedulers —
         // the same gating the Settings section had): hide the rail
         // entry in the employee view.
@@ -8377,6 +8396,92 @@
         });
         setTimeout(qsGateShortcoverBtn, 2600);
         setTimeout(qsGateGroupsBtn, 2600);
+        // --- History snapshots (Deepika, 2026-11-17) -----------------------
+        // A frozen copy of the schedule is saved on every publish, every
+        // change to a published shift, and every draft change. The panel
+        // lists them newest-first — when, who, what, and a link to open
+        // that copy read-only. No restore anywhere: just a copy to look
+        // at when something goes wrong. Last 100 kept.
+        var qsHistoryDate = '';
+        function qsHistoryPill(trigger) {
+          if (trigger === 'publish') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#d9f0f2;color:#0a6270">PUBLISHED</span>';
+          if (trigger === 'draft-change') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#e5e7eb;color:#374151">DRAFT CHANGE</span>';
+          return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#fef3c7;color:#92400e">SCHEDULE CHANGE</span>';
+        }
+        function qsHistoryWhen(createdAt, dateOnly) {
+          var d = new Date(createdAt);
+          var day = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+          var time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          return dateOnly ? time : day + ' · ' + time;
+        }
+        function qsHistoryRange(from, to) {
+          function fmt(s) {
+            var p = s.split('-');
+            return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          }
+          return fmt(from) + ' – ' + fmt(to);
+        }
+        window.qsHistorySetDate = function (v) {
+          qsHistoryDate = v || '';
+          qsRenderHistoryPanel();
+        };
+        window.qsHistoryAllDates = function () {
+          qsHistoryDate = '';
+          qsRenderHistoryPanel();
+        };
+        function qsRenderHistoryPanel() {
+          var body = $('qtp-body');
+          if (!body) return;
+          var dateVal = qsHistoryDate;
+          body.innerHTML =
+            '<div style="padding:0 4px 12px;font-size:12px;color:#64748b">A copy of the schedule is saved on every publish, every change to a published shift, and every draft change. Open a copy to see the schedule exactly as it was.</div>' +
+            '<div style="display:flex;gap:8px;align-items:center;padding-bottom:12px;flex-wrap:wrap">' +
+              '<label style="font-size:12px;font-weight:700;color:#5b6b6f">Show changes for a date</label>' +
+              '<input type="date" id="qs-history-date" value="' + esc(dateVal) + '" onchange="window.qsHistorySetDate(this.value)" style="border:1px solid #c9d6d8;border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit">' +
+              '<button type="button" onclick="window.qsHistoryAllDates()" style="border:1px solid #c9d6d8;background:' + (dateVal ? '#fff' : '#0e7c86') + ';color:' + (dateVal ? '#083f4d' : '#fff') + ';border-color:' + (dateVal ? '#c9d6d8' : '#0e7c86') + ';border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer">All dates</button>' +
+              '<span id="qs-history-count" style="margin-left:auto;font-size:12px;color:#7a8a8e"></span>' +
+            '</div>' +
+            '<div id="qs-history-list"><div style="padding:22px 16px;font-size:13px;color:#7a8a8e;text-align:center">Loading…</div></div>' +
+            '<div style="padding:10px 4px 0;font-size:11px;color:#94a3b8;border-top:1px solid #eef0f0;margin-top:12px">Copies are read-only. Keeping the last 100 — older ones are dropped automatically.</div>';
+          var url = '/api/schedule/history' + (dateVal ? '?date=' + encodeURIComponent(dateVal) : '');
+          api(url).then(function (r) {
+            var list = $('qs-history-list');
+            var count = $('qs-history-count');
+            if (!list) return;
+            if (!r.ok) {
+              list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#991b1b;text-align:center">Could not load History. Please try again.</div>';
+              return;
+            }
+            var entries = (r.data && r.data.entries) || [];
+            var total = (r.data && r.data.total) || entries.length;
+            if (count) count.textContent = dateVal
+              ? (total + (total === 1 ? ' copy on ' : ' copies on ') + new Date(dateVal + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }))
+              : (total + (total === 1 ? ' copy' : ' copies'));
+            if (!entries.length) {
+              list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#7a8a8e;text-align:center">' +
+                (dateVal ? 'No copies saved on that date.' : 'No copies yet — the first one is saved on the next publish or change.') + '</div>';
+              return;
+            }
+            var html = '';
+            if (dateVal) {
+              html += '<div style="padding:10px 4px 4px;font-size:12px;font-weight:800;color:#0a6270;letter-spacing:.02em">' +
+                esc(new Date(dateVal + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()) + '</div>';
+            }
+            entries.forEach(function (e) {
+              html += '<div style="padding:12px 4px;border-bottom:1px solid #eef0f0">' +
+                '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13px;font-weight:800;color:#083f4d">' + esc(qsHistoryWhen(e.createdAt, !!dateVal)) + '</span>' + qsHistoryPill(e.trigger) + '</div>' +
+                (e.createdByName ? '<div style="font-size:12px;color:#64748b;margin-top:2px">' + esc(e.createdByName) + '</div>' : '') +
+                '<div style="font-size:13px;margin-top:4px">' + esc(e.summary || '') + '</div>' +
+                '<div style="margin-top:6px"><a href="' + esc(e.link) + '" target="_blank" rel="noopener" style="color:#0e7c86;font-size:13px;font-weight:700;text-decoration:none">View copy ↗</a>' +
+                '<span style="font-size:12px;color:#94a3b8;margin-left:6px">' + esc(qsHistoryRange(e.windowFrom, e.windowTo)) + '</span></div>' +
+              '</div>';
+            });
+            list.innerHTML = html;
+          }).catch(function () {
+            var list = $('qs-history-list');
+            if (list) list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#991b1b;text-align:center">Could not load History. Please try again.</div>';
+          });
+        }
         // --- Short cover -----------------------------------------------------
         var qsScDept = '';
         function scDatePlus(base, n) {

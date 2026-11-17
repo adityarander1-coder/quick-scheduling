@@ -18,6 +18,7 @@ import bcrypt from 'bcryptjs';
 import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, auditDraftIfAppeared, auditDraftsForResults, resolvePersonId, todayStr } from '../util/audit.js';
+import { recordHistorySnapshot, snapshotPlanExecution, listHistorySnapshots, getHistorySnapshot } from '../util/history.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, isGeminiConfigured } from '../util/gemini';
@@ -1270,9 +1271,20 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
       }
       throw err;
     }
+    // History snapshot (Deepika, 2026-11-17): a frozen copy after
+    // every change to a published shift, and every draft change.
+    // Awaited before the response, so the copy exists by the time
+    // the caller reads the schedule back.
+    const assignNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+    await recordHistorySnapshot({
+      companyId, actorId: req.session.userId!,
+      trigger: published !== false ? 'published-change' : 'draft-change',
+      summary: `Assigned ${assignNames.personName || 'a team member'} — ${assignNames.shiftTypeName || 'shift'} on ${date}`,
+      from: date, to: date, shiftTypeIds: [shiftTypeId], userIds: [userId],
+    });
     res.status(201).json({ id });
     // Audit: shift created.
-    const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
+    const names = assignNames;
     auditLog({
       companyId, date, action: 'created',
       personName: names.personName, shiftTypeName: names.shiftTypeName,
@@ -1377,6 +1389,18 @@ router.post('/shifts/bulk', requireRole('owner', 'scheduler'), async (req: Reque
         if (err?.code === '23505') { skipped++; continue; } // already has this shift
         throw err;
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — after a bulk assign.
+    if (created > 0) {
+      const sortedDates = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: published !== false ? 'published-change' : 'draft-change',
+        summary: `Assigned ${created} shift${created === 1 ? '' : 's'} — ${sortedDates[0]}${sortedDates.length > 1 ? ' – ' + sortedDates[sortedDates.length - 1] : ''}`,
+        from: sortedDates[0], to: sortedDates[sortedDates.length - 1],
+        shiftTypeIds: [shiftTypeId],
+        userIds: [userId],
+      });
     }
     res.status(201).json({ created, skipped });
     if (created > 0 && published !== false) {
@@ -1486,6 +1510,20 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
           throw err;
         }
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — after a block assign.
+    if (created > 0) {
+      const tallies = [...createdByUser.values()];
+      const lo = tallies.map((t) => t.firstDate).sort()[0];
+      const hi = tallies.map((t) => t.lastDate).sort().reverse()[0];
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: published !== false ? 'published-change' : 'draft-change',
+        summary: `Assigned ${created} shift${created === 1 ? '' : 's'} from blocks, ${lo} – ${hi}`,
+        from: lo, to: hi,
+        shiftTypeIds: tallies.map((t) => t.shiftTypeId),
+        userIds: [...createdByUser.keys()],
+      });
     }
     res.status(201).json({ created, already, ineligible, outOfScope, invalid, roleError: firstRoleError });
     // Notify each member who received published shifts (drafts stay silent).
@@ -1932,6 +1970,18 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     // Undo is capped: a range delete bigger than the cap returns no
     // undo payload (the client simply does not push an entry).
     const undoOut = (undo.units.length + undo.sweepExclusions.length + undo.pauses.length) > undoCap ? null : undo;
+    // History snapshot (Deepika, 2026-11-17) — after a bulk delete.
+    if ((rowCount || 0) > 0) {
+      const anyPublished = (deletedRows || []).some((d: any) => d.published !== false);
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: anyPublished ? 'published-change' : 'draft-change',
+        summary: `Deleted ${rowCount} shift${rowCount === 1 ? '' : 's'}, ${from} – ${to}`,
+        from, to,
+        shiftTypeIds: [...new Set((deletedRows || []).map((d: any) => d.shiftTypeId))],
+        userIds: [...new Set((deletedRows || []).map((d: any) => d.userId))],
+      });
+    }
     res.json({ deleted: rowCount || 0, paused, undo: undoOut });
     // Report (Deepika, 2026-11-13): bulk delete used to leave no
     // trace at all — one row per person whose shifts were removed.
@@ -2090,6 +2140,17 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
         }
       }
     }
+    // History snapshot (Deepika, 2026-11-17) — after a delete.
+    if (srows.length) {
+      const s = srows[0];
+      const delNames = await shiftDisplayNames(companyId, s.userId, s.shiftTypeId);
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: s.published !== false ? 'published-change' : 'draft-change',
+        summary: `Deleted ${delNames.personName || 'a team member'} — ${delNames.shiftTypeName || 'shift'} on ${s.date}`,
+        from: s.date, to: s.date, shiftTypeIds: [s.shiftTypeId], userIds: [s.userId],
+      });
+    }
     res.json({ ok: true, undo });
     if (srows.length) {
       const s = srows[0];
@@ -2165,6 +2226,20 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
             [companyId, d, shiftTypeId, clamped, req.session.userId!]
           );
         }
+      });
+    }
+    // History snapshot (Deepika, 2026-11-17) — open slots added or
+    // closed change the published schedule's open rows.
+    {
+      const { rows: tn } = await query(
+        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+        [shiftTypeId, companyId]
+      );
+      const sorted = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `${clamped > 0 ? 'Added' : 'Removed'} ${Math.abs(clamped)} open slot${Math.abs(clamped) === 1 ? '' : 's'} — ${tn[0]?.name || 'shift'}, ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
+        from: sorted[0], to: sorted[sorted.length - 1], shiftTypeIds: [shiftTypeId],
       });
     }
     res.json({ ok: true, dates: dates.length });
@@ -2276,6 +2351,20 @@ router.post('/open-slots/publish-state', requireRole('owner', 'scheduler'), asyn
       res.status(result.status || 409).json({ error: result.error });
       return;
     }
+    // History snapshot (Deepika, 2026-11-17) — a per-slot publish
+    // flip changes a published open. No copy on the idempotent
+    // no-ops (nothing drafted / no opens), which changed nothing.
+    if (result.note !== 'nothing-drafted' && result.note !== 'no-opens') {
+      const { rows: tn } = await query(
+        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+        [shiftTypeId, companyId]
+      );
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `${published ? 'Published' : 'Unpublished'} an open slot — ${tn[0]?.name || 'shift'} on ${date}`,
+        from: date, to: date, shiftTypeIds: [shiftTypeId],
+      });
+    }
     res.json({ ok: true, date, shiftTypeId, published, draftOpenCount: result.draftOpenCount });
   } catch (err) {
     console.error('[schedule] open-slot publish-state failed:', err);
@@ -2383,10 +2472,24 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    await query(
+    const { rowCount: removedExtra } = await query(
       'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3',
       [companyId, dates, shiftTypeId]
     );
+    // History snapshot (Deepika, 2026-11-17) — only when slots were
+    // actually removed (a delete over empty dates changes nothing).
+    if ((removedExtra || 0) > 0) {
+      const { rows: tn } = await query(
+        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+        [shiftTypeId, companyId]
+      );
+      const sorted = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Removed open slots — ${tn[0]?.name || 'shift'}, ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
+        from: sorted[0], to: sorted[sorted.length - 1], shiftTypeIds: [shiftTypeId],
+      });
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] remove extra slots failed:', err);
@@ -2409,11 +2512,24 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    await query(
+    const { rowCount: closedNew } = await query(
       `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
        VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
       [companyId, date, shiftTypeId, req.session.userId!]
     );
+    // History snapshot (Deepika, 2026-11-17) — closing a day hides
+    // its open rows. No copy when it was already closed.
+    if ((closedNew || 0) > 0) {
+      const { rows: tn } = await query(
+        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+        [shiftTypeId, companyId]
+      );
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Closed ${tn[0]?.name || 'shift'} on ${date} (no open slots that day)`,
+        from: date, to: date, shiftTypeIds: [shiftTypeId],
+      });
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] close shift failed:', err);
@@ -2436,10 +2552,23 @@ router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: R
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    await query(
+    const { rowCount: reopened } = await query(
       'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
       [companyId, date, shiftTypeId]
     );
+    // History snapshot (Deepika, 2026-11-17) — reopening a day shows
+    // its open rows again. No copy when it was not closed.
+    if ((reopened || 0) > 0) {
+      const { rows: tn } = await query(
+        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+        [shiftTypeId, companyId]
+      );
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Reopened ${tn[0]?.name || 'shift'} on ${date}`,
+        from: date, to: date, shiftTypeIds: [shiftTypeId],
+      });
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] reopen shift failed:', err);
@@ -2515,6 +2644,20 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
           created++;
         }
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — after an apply-range.
+    if (updated > 0 || created > 0) {
+      const sorted = [...dateList].sort();
+      const arNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      const wasPublished = orig[0].published !== false;
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: (wasPublished || published !== false) ? 'published-change' : 'draft-change',
+        summary: `Changed ${arNames.personName || 'a team member'} — ${arNames.shiftTypeName || 'shift'}, ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''} (${updated} updated, ${created} added)`,
+        from: sorted[0], to: sorted[sorted.length - 1],
+        shiftTypeIds: [shiftTypeId, orig[0].shiftTypeId],
+        userIds: [userId, orig[0].userId],
+      });
     }
     res.json({ ok: true, updated, created });
     // Notify: the original person lost the original date's shift if it was
@@ -2598,6 +2741,23 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
         await excludeRotationInstances(companyId, old.userId, old.date);
         await auditDraftIfAppeared(companyId, old.userId, old.date, old.shiftTypeId, req.session.userId!);
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — after a Replace-person edit.
+    {
+      const old = existRows.length ? existRows[0] : null;
+      const putNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      const finalPublished = published !== null && published !== undefined ? published !== false : (old ? old.published !== false : true);
+      const dates = [date, old ? old.date : date].filter(Boolean).sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: (finalPublished || (old && old.published !== false)) ? 'published-change' : 'draft-change',
+        summary: old && old.userId !== userId
+          ? `Reassigned ${putNames.shiftTypeName || 'shift'} on ${date} to ${putNames.personName || 'a team member'}`
+          : `Changed ${putNames.personName || 'a team member'} — ${putNames.shiftTypeName || 'shift'} on ${date}`,
+        from: dates[0], to: dates[dates.length - 1],
+        shiftTypeIds: [shiftTypeId, old ? old.shiftTypeId : shiftTypeId],
+        userIds: [userId, old ? old.userId : userId],
+      });
     }
     res.json({ ok: true });
     // Audit: shift updated.
@@ -2795,6 +2955,17 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
         ],
       };
     }
+    // History snapshot (Deepika, 2026-11-17) — after a drag move.
+    {
+      const dmDates = [src.date, date].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: src.published ? 'published-change' : 'draft-change',
+        summary: `Moved ${names.personName || 'a team member'} — ${names.shiftTypeName || 'shift'}, ${src.date} → ${date}`,
+        from: dmDates[0], to: dmDates[dmDates.length - 1],
+        shiftTypeIds: [shiftTypeId, src.shiftTypeId], userIds: [src.userId],
+      });
+    }
     res.json(undo ? { ok: true, undo } : { ok: true });
     auditLog({
       companyId, date, action: 'updated',
@@ -2933,6 +3104,17 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
       }
       if (a.kind === 'rotation' || b.kind === 'rotation' || extraUndoOps.length) undo = { ops: [...ops, ...extraUndoOps] };
     });
+    // History snapshot (Deepika, 2026-11-17) — after a drag swap.
+    {
+      const swapDates = [a.date, b.date].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: (a.published || b.published) ? 'published-change' : 'draft-change',
+        summary: `Swapped ${namesA.personName || 'a team member'} and ${namesB.personName || 'a team member'} — ${namesA.shiftTypeName || 'shift'} on ${a.date}, ${namesB.shiftTypeName || 'shift'} on ${b.date}`,
+        from: swapDates[0], to: swapDates[swapDates.length - 1],
+        shiftTypeIds: [a.shiftTypeId, b.shiftTypeId], userIds: [a.userId, b.userId],
+      });
+    }
     res.json(undo ? { ok: true, undo } : { ok: true });
     // Report (Deepika, 2026-11-13): one row per person, naming the
     // person who gave the shift up — never one merged swap line.
@@ -3034,6 +3216,32 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
     });
     for (const u of undone) {
       await auditDraftIfAppeared(companyId, u.userId, u.date, u.shiftTypeId, req.session.userId!);
+    }
+    // History snapshot (Deepika, 2026-11-17) — an undo changes the
+    // schedule back, so it gets a copy too.
+    {
+      const movedIds = ops.filter((o: any) => o.updateShiftUser).map((o: any) => o.updateShiftUser.shiftId);
+      const affected: Array<{ userId: string; date: string; shiftTypeId: string; published?: boolean }> = [...undone];
+      if (movedIds.length) {
+        const { rows: aff } = await query(
+          `SELECT user_id AS "userId", date::text AS date, shift_type_id AS "shiftTypeId", published
+           FROM shifts WHERE id = ANY($1::uuid[]) AND company_id = $2`,
+          [movedIds, companyId]
+        );
+        affected.push(...aff);
+      }
+      if (affected.length) {
+        const dates = affected.map((a) => a.date).sort();
+        const anyPublished = affected.some((a) => (a as any).published !== false);
+        await recordHistorySnapshot({
+          companyId, actorId: req.session.userId!,
+          trigger: anyPublished ? 'published-change' : 'draft-change',
+          summary: 'Undid a move or swap',
+          from: dates[0], to: dates[dates.length - 1],
+          shiftTypeIds: [...new Set(affected.map((a) => a.shiftTypeId))],
+          userIds: [...new Set(affected.map((a) => a.userId))],
+        });
+      }
     }
     res.json({ ok: true });
   } catch (err) {
@@ -3253,6 +3461,19 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
         );
       }
     });
+    // History snapshot (Deepika, 2026-11-17) — undoing a delete puts
+    // shifts back, so it gets a copy too (only when something came back).
+    if (restored > 0) {
+      const restoredAll = [...restoredRows, ...restoredRotUnits.map((r: any) => ({ userId: r.userId, date: r.date, shiftTypeId: r.shiftTypeId }))];
+      const dates = restoredAll.map((r: any) => r.date).sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Undid a delete — ${restored} shift${restored === 1 ? '' : 's'} restored`,
+        from: dates[0], to: dates[dates.length - 1],
+        shiftTypeIds: [...new Set(restoredAll.map((r: any) => r.shiftTypeId).filter(Boolean))],
+        userIds: [...new Set(restoredAll.map((r: any) => r.userId))],
+      });
+    }
     res.json({ ok: true, restored, skipped });
     // Audit: each restored row logs as created via delete-undo.
     for (const r of restoredRows) {
@@ -3306,6 +3527,18 @@ router.post('/shifts/:id/publish-state', requireRole('owner', 'scheduler'), asyn
     if (!rowCount) {
       res.status(404).json({ error: 'Shift not found.' });
       return;
+    }
+    // History snapshot (Deepika, 2026-11-17) — a per-shift publish
+    // flip changes a published shift. No copy when the state did
+    // not actually change.
+    if (srows.length && srows[0].published !== (published !== false)) {
+      const s = srows[0];
+      const psNames = await shiftDisplayNames(companyId, s.userId, s.shiftTypeId);
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `${published !== false ? 'Published' : 'Unpublished'} ${psNames.personName || 'a team member'} — ${psNames.shiftTypeName || 'shift'} on ${s.date}`,
+        from: s.date, to: s.date, shiftTypeIds: [s.shiftTypeId], userIds: [s.userId],
+      });
     }
     res.json({ ok: true, published: published !== false });
     if (srows.length) {
@@ -3413,6 +3646,12 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
         await query('UPDATE shifts SET published = $1 WHERE id = $2 AND company_id = $3',
           [wantPublished, row.id, companyId]);
         const names = wantPublished ? await bellPublished() : await bellUnpublished();
+        // History snapshot (Deepika, 2026-11-17) — per-shift publish flip.
+        await recordHistorySnapshot({
+          companyId, actorId: me, trigger: 'published-change',
+          summary: `${wantPublished ? 'Published' : 'Unpublished'} ${names.personName || 'a team member'} — ${names.shiftTypeName || 'shift'} on ${date}`,
+          from: date, to: date, shiftTypeIds: [shiftTypeId], userIds: [userId],
+        });
         auditLog({
           companyId, date, action: wantPublished ? 'published' : 'unpublished',
           personName: names.personName, shiftTypeName: names.shiftTypeName,
@@ -3436,6 +3675,16 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
       if (!real) {
         res.status(404).json({ error: 'That rotation shift no longer exists.' });
         return;
+      }
+      // History snapshot (Deepika, 2026-11-17) — publishing an
+      // occurrence materializes it into a real published shift.
+      {
+        const matNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+        await recordHistorySnapshot({
+          companyId, actorId: me, trigger: 'published-change',
+          summary: `Published ${matNames.personName || 'a team member'} — ${matNames.shiftTypeName || 'shift'} on ${date} (from rotation)`,
+          from: date, to: date, shiftTypeIds: [shiftTypeId], userIds: [userId],
+        });
       }
       res.json({ ok: true, published: true, shiftId: real.id });
       const names = await bellPublished();
@@ -3467,6 +3716,16 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
        DO UPDATE SET published = EXCLUDED.published`,
       [companyId, rotationId, userId, date, shiftTypeId, published !== false]
     );
+    // History snapshot (Deepika, 2026-11-17) — a draft-flag flip on a
+    // never-materialized occurrence. No copy when nothing changed.
+    if (wasPublished !== (published !== false)) {
+      const scNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+      await recordHistorySnapshot({
+        companyId, actorId: me, trigger: 'published-change',
+        summary: `${published !== false ? 'Published' : 'Unpublished'} ${scNames.personName || 'a team member'} — ${scNames.shiftTypeName || 'shift'} on ${date} (rotation preview)`,
+        from: date, to: date, shiftTypeIds: [shiftTypeId], userIds: [userId],
+      });
+    }
     res.json({ ok: true, published: published !== false });
     if (wasPublished !== (published !== false)) {
       const names = await shiftDisplayNames(companyId, userId, shiftTypeId);
@@ -3559,6 +3818,16 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
         }
       }
     }
+    // History snapshot (Deepika, 2026-11-17) — a drawn occurrence
+    // removed is a draft change (the rotation preview lost a day).
+    {
+      const rdNames = shiftTypeId ? await shiftDisplayNames(companyId, userId, shiftTypeId) : { personName: null, shiftTypeName: null };
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'draft-change',
+        summary: `Removed ${rdNames.personName || 'a team member'} — ${rdNames.shiftTypeName || 'rotation shift'} on ${date}`,
+        from: date, to: date, shiftTypeIds: shiftTypeId ? [shiftTypeId] : [], userIds: [userId],
+      });
+    }
     res.json({ ok: true, undo });
     // Audit: rotation shift excluded (removed).
     const { rows: rrows } = await query(
@@ -3646,6 +3915,15 @@ router.post('/days/publish', requireRole('owner', 'scheduler'), async (req: Requ
       );
       auditLog({ companyId, date: d, action: 'published', changedBy: req.session.userId!, scheduleDate: d });
     }
+    // History snapshot (Deepika, 2026-11-17) — a day publish.
+    {
+      const sorted = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'publish',
+        summary: `Published ${dates.length} day${dates.length === 1 ? '' : 's'} — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
+        from: sorted[0], to: sorted[sorted.length - 1],
+      });
+    }
     res.json({ ok: true, published: dates.length });
   } catch (err) {
     console.error('[schedule] publish failed:', err);
@@ -3671,6 +3949,15 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
         [companyId, d]
       );
       auditLog({ companyId, date: d, action: 'unpublished', changedBy: req.session.userId!, scheduleDate: d });
+    }
+    // History snapshot (Deepika, 2026-11-17) — a day unpublish.
+    {
+      const sorted = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Unpublished ${dates.length} day${dates.length === 1 ? '' : 's'} — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
+        from: sorted[0], to: sorted[sorted.length - 1],
+      });
     }
     res.json({ ok: true, unpublished: dates.length });
   } catch (err) {
@@ -3792,6 +4079,18 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
           rotCount++;
         }
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — a bulk publish flip.
+    if ((rowCount || 0) + rotCount > 0) {
+      const sortedDates = [...dates].sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: published ? 'publish' : 'published-change',
+        summary: `${published ? 'Published' : 'Unpublished'} ${(rowCount || 0) + rotCount} shift${((rowCount || 0) + rotCount) === 1 ? '' : 's'} for ${userIds.length} team member${userIds.length === 1 ? '' : 's'}, ${sortedDates[0]}${sortedDates.length > 1 ? ' – ' + sortedDates[sortedDates.length - 1] : ''}`,
+        from: sortedDates[0], to: sortedDates[sortedDates.length - 1],
+        shiftTypeIds: shiftTypeId ? [shiftTypeId] : [...new Set(flipRows.map((r: any) => r.shiftTypeId).filter(Boolean))],
+        userIds,
+      });
     }
     res.json({ ok: true, updated: (rowCount || 0) + rotCount });
     // Notify per person about the flips (manual + rotation combined).
@@ -5275,6 +5574,19 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     // global query — writing inside the transaction would leave
     // phantom rows on a rollback).
     for (const e of summary.auditEntries || []) await auditLog(e);
+    // History snapshot (Deepika, 2026-11-17): a frozen copy after
+    // every draft change — but only when the draft actually changed
+    // something (a no-op re-draft saves no copy).
+    if (summary.created > 0 || summary.replacedDrafts > 0) {
+      const rotNames = [...new Set((summary.perRotation || []).map((p: any) => p.rotationName).filter(Boolean))];
+      const what = rotNames.length ? rotNames.join(', ') : `${shiftTypeIds.length} shift type${shiftTypeIds.length === 1 ? '' : 's'}`;
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'draft-change',
+        summary: `Drafted ${what}, ${from} – ${to} — ${summary.created} draft shift${summary.created === 1 ? '' : 's'}`,
+        from, to, departmentIds: deptUnion,
+        shiftTypeIds, userIds,
+      });
+    }
     const { createdRows: _cr2, auditEntries: _ae, ...rest2 } = summary;
     res.json({ ok: true, ...rest2 });
   } catch (err: any) {
@@ -5983,6 +6295,33 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
         });
       }
     }
+    // History snapshot (Deepika, 2026-11-17): a frozen copy of the
+    // schedule after every publish — the safety net for mess-ups.
+    {
+      const bits: string[] = [];
+      if (added) bits.push(`${added} shift${added === 1 ? '' : 's'} stamped`);
+      if (flipped) bits.push(`${flipped} draft${flipped === 1 ? '' : 's'} flipped`);
+      if (removed) bits.push(`${removed} removed`);
+      if (opened) bits.push(`${opened} open slot${opened === 1 ? '' : 's'} added`);
+      if (closed) bits.push(`${closed} open slot${closed === 1 ? '' : 's'} closed`);
+      const pubUserIds = [...new Set([
+        ...addsIn.map((a: any) => a.userId).filter(Boolean),
+        ...addedByUser.keys(), ...removedByUser.keys(),
+      ])];
+      const pubTypeIds = [...new Set([
+        ...addsIn.map((a: any) => a.shiftTypeId).filter(Boolean),
+        ...opensIn.map((o: any) => o.shiftTypeId).filter(Boolean),
+      ])];
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'publish',
+        summary: `Published ${from} – ${to}${bits.length ? ' — ' + bits.join(', ') : ''}`,
+        from, to,
+        // scope.depts null = owner publishing everything: fall back to
+        // the touched types/people so schedulers still see their part.
+        departmentIds: scope.depts ? [...scope.depts] : undefined,
+        shiftTypeIds: pubTypeIds, userIds: pubUserIds,
+      });
+    }
     res.json({ ok: true, batchId, added, removed, opened, closed, flipped });
 
     // Notify affected people (never the acting admin about their own
@@ -6164,6 +6503,18 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
           details: { batchId, count: t.count, removedShifts, closedSlots, unflipped },
         });
       }
+    }
+    // History snapshot (Deepika, 2026-11-17) — undoing a publish
+    // changes the schedule back.
+    if (removedShifts > 0 || closedSlots > 0 || unflipped > 0) {
+      const undoTypeIds = [...new Set([...removedByUser.values()].flatMap((t: any) => [...t.types]))];
+      const undoDates = [...removedByUser.values()].flatMap((t: any) => [t.firstDate, t.lastDate]).sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Undid publish (${brows[0].rangeStart} – ${brows[0].rangeEnd}): ${removedShifts} shift${removedShifts === 1 ? '' : 's'} removed, ${unflipped} returned to draft`,
+        from: brows[0].rangeStart, to: brows[0].rangeEnd,
+        shiftTypeIds: undoTypeIds, userIds: [...removedByUser.keys()],
+      });
     }
     res.json({ ok: true, removedShifts, closedSlots, unflipped });
     for (const [uid, t] of removedByUser) {
@@ -10046,6 +10397,40 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
   }
 });
 
+// GET /api/schedule/history — History snapshots (Deepika, 2026-11-17):
+// frozen copies of the schedule, newest first, max 100. ?date=YYYY-MM-DD
+// is the by-date view (the date the copy was saved, in the company's
+// own timezone). A scheduler sees only entries touching a department
+// they can see; entries with no departments are owner-only.
+router.get('/history', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const date = String(req.query.date || '');
+    const out = await listHistorySnapshots(companyId, req.session.userId!, req.session.role!, date || undefined);
+    res.json(out);
+  } catch (err) {
+    console.error('[schedule] history list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/history/:id — one frozen copy (read-only). 404 when
+// missing or outside the caller's departments, so no existence leaks.
+router.get('/history/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const snap = await getHistorySnapshot(companyId, req.session.userId!, req.session.role!, String(req.params.id || ''));
+    if (!snap) {
+      res.status(404).json({ error: 'That copy is not available.' });
+      return;
+    }
+    res.json(snap);
+  } catch (err) {
+    console.error('[schedule] history get failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // GET /api/schedule/ai-scheduler-email — the inbox address the AI scheduler
 // (email-to-plan pipeline) reads. Employees address "Email scheduler" requests here;
 // the pipeline reads it and sends a plan to the human schedulers for approval.
@@ -10885,6 +11270,9 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       } catch (auditErr) {
         console.error('[schedule] plan audit log failed:', (auditErr as any)?.message);
       }
+      // History snapshot (Deepika, 2026-11-17) — an approved plan
+      // changes published shifts, so it gets a copy.
+      await snapshotPlanExecution(companyId, req.session.userId!, plan, results);
       res.json({ ok: true, results, undoable: !!undo });
     } catch (execErr: any) {
       await query(
@@ -11290,6 +11678,9 @@ async function handlePlanApprove(req: Request, res: Response) {
       await auditPlanChanges(plan.company_id, plan, results, decidedBy);
       await auditDraftsForResults(plan.company_id, results, decidedBy);
     } catch { /* audit must never break approval */ }
+    // History snapshot (Deepika, 2026-11-17) — same as in-app: an
+    // email-approved plan changes published shifts, so it gets a copy.
+    await snapshotPlanExecution(plan.company_id, decidedBy, plan, results);
     const itemHtml = results.map((r: any, i: number) => {
       const badge = r.success
         ? '<span style="display:inline-block;font-size:0.75rem;font-weight:700;color:#166534;background:#dcfce7;border-radius:6px;padding:2px 8px;margin-right:6px">Applied</span>'
@@ -12229,6 +12620,16 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
       res.status(409).json({ error: 'That open slot was just taken by someone else.' });
       return;
     }
+    // History snapshot (Deepika, 2026-11-17) — picking up an open slot
+    // fills a published shift.
+    {
+      const clNames = await shiftDisplayNames(companyId, me, shiftTypeId);
+      await recordHistorySnapshot({
+        companyId, actorId: me, trigger: 'published-change',
+        summary: `${clNames.personName || 'A team member'} picked up an open slot — ${clNames.shiftTypeName || 'shift'} on ${date}`,
+        from: date, to: date, shiftTypeIds: [shiftTypeId], userIds: [me],
+      });
+    }
     res.status(201).json({ id: shiftId, date, shiftTypeId, userId: me });
     // Audit: shift created.
     const names = await shiftDisplayNames(companyId, me, shiftTypeId);
@@ -12762,6 +13163,13 @@ router.post('/shift-requests/:id/approve', requireRole('owner', 'scheduler', 'em
       );
       if (arows.length) {
         const names = await shiftDisplayNames(companyId, me, arows[0].shiftTypeId);
+        // History snapshot (Deepika, 2026-11-17) — an approved
+        // pickup/swap changes the published schedule.
+        await recordHistorySnapshot({
+          companyId, actorId: me, trigger: 'published-change',
+          summary: `Approved a ${r.requestType === 'swap' ? 'swap' : 'pickup'} request — ${names.personName || 'a team member'}, ${names.shiftTypeName || 'shift'} on ${arows[0].date}`,
+          from: arows[0].date, to: arows[0].date, shiftTypeIds: [arows[0].shiftTypeId], userIds: [me],
+        });
         await auditLog({
           companyId, date: arows[0].date, action: 'updated',
           personName: names.personName, shiftTypeName: names.shiftTypeName,
@@ -18180,6 +18588,19 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
       if (date < tally.firstDate) tally.firstDate = date;
       if (date > tally.lastDate) tally.lastDate = date;
       createdByUser.set(userId, tally);
+    }
+    // History snapshot (Deepika, 2026-11-17) — a sheet import adds
+    // shifts in bulk (published or draft, per the import's choice).
+    if (imported > 0) {
+      const sortedDates = [...validDates].sort();
+      const impTypeIds = [...new Set([...acceptedByUser.values()].flat().map((s: any) => s.shiftTypeId).filter(Boolean))];
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: publish ? 'published-change' : 'draft-change',
+        summary: `Imported ${imported} shift${imported === 1 ? '' : 's'} from a sheet${publish ? ' (published)' : ' (draft)'}`,
+        from: sortedDates[0], to: sortedDates[sortedDates.length - 1],
+        shiftTypeIds: impTypeIds, userIds: [...acceptedByUser.keys()],
+      });
     }
     res.json({ ok: true, imported, failed, published: publish });
     // Notify each member who received published shifts (drafts stay
