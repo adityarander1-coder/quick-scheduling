@@ -1426,6 +1426,13 @@
     .shift-grid.qs-selected, .open-slot.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; position: relative; }
     .shift-grid.qs-selected::after, .open-slot.qs-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; z-index: 5; width: 22px; height: 22px; border-radius: 50%; background: #0e7c86; color: #fff; font-size: 13px; font-weight: 800; line-height: 22px; text-align: center; box-shadow: 0 2px 6px rgba(8,63,77,.4); pointer-events: none; }
     .qs-person.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; }
+    /* Open-slot chevron (Deepika, 2026-11-17): the down-arrow menu
+       button on an open slot, like the one on filled shift boxes.
+       A <span>, not a <button> — the manager open slot IS a button,
+       and a nested button would break HTML parsing. */
+    .open-slot-chev { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 auto; border-radius: 50%; background: #eef2f5; border: 1px solid #d7e0e6; cursor: pointer; padding: 0; margin-left: 6px; vertical-align: middle; }
+    .open-slot-chev:hover { background: #dfe7ec; }
+    .open-slot-chev:focus-visible { outline: 2px solid #0e7c86; outline-offset: 1px; }
     #qs-selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 900; background: #083f4d; color: #fff; border-radius: 14px; padding: 10px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; box-shadow: 0 10px 28px rgba(8,63,77,.4); max-width: calc(100vw - 24px); }
     #qs-selbar.hidden { display: none; }
     #qs-selbar .qs-sel-count { font-weight: 800; font-size: 15px; margin-right: 2px; white-space: nowrap; }
@@ -2694,6 +2701,7 @@
           closedShifts: [],
           extraSlots: [],
           unpublishedCounts: {},
+          draftOpenCounts: {}, // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
           includesDrafts: true,
           days: {},
           comments: [],
@@ -3015,7 +3023,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3411,15 +3419,39 @@
           return Math.max(0, target + extra - filled);
         }
 
+        // Per-slot open publish state (Deepika, 2026-11-17): how many
+        // of this date+type's computed opens are draft. Positions are
+        // fungible — the count attaches to the first N rendered
+        // positions, not to a slot identity — so positions 1..draft
+        // render draft and the rest published.
+        function draftCountFor(dateStr, shiftTypeId) {
+          return (sched.draftOpenCounts || {})[dateStr + '|' + shiftTypeId] || 0;
+        }
+
         // Clickable open-slot placeholder, styled like a shift box but dashed.
+        // data-position (Deepika, 2026-11-17): each button carries its
+        // 1-based position among the same type+date's opens, so the
+        // selection model can hold two same-day opens at once.
+        // Draft opens (per-slot publish state, Deepika, 2026-11-17)
+        // render grey with a DRAFT badge — the same grey-alone signal
+        // draft shifts carry — and their chevron carries
+        // data-published="0" so the menu offers Publish instead of
+        // Unpublish.
         function openSlotHtml(dateStr, st, n) {
           var color = st.color || '#637a8e';
           var label = st.name;
-          return '<button type="button" class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '"' +
-            ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
-            '<span class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(label) + '</span>' +
-            '<span class="shift-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '"><span class="open-badge">OPEN</span><span class="open-hint">tap to assign</span>' +
-            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') +
+          var isDraft = n <= draftCountFor(dateStr, st.id);
+          var catBg = isDraft ? '#e8edf0' : tint(color, 70);
+          var catBd = isDraft ? '#cbd5e1' : tint(color, 60);
+          var nmBg = isDraft ? '#f4f6f8' : tint(color, 82);
+          var nmBd = isDraft ? '#cbd5e1' : tint(color, 60);
+          var chev = (sched.canEdit && window.qsStEditable && window.qsStEditable(st)) ? '<span class="open-slot-chev" role="button" tabindex="0" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '" data-published="' + (isDraft ? '0' : '1') + '" title="Open slot actions" aria-label="Actions for open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
+            '<svg width="11" height="11" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
+          return '<button type="button" class="shift-grid open-slot' + (isDraft ? ' open-draft' : '') + '" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '"' +
+            ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + (isDraft ? ' (draft)' : '') + '">' +
+            '<span class="shift-cat" style="background:' + catBg + ';border-color:' + catBd + '">' + esc(label) + '</span>' +
+            '<span class="shift-nm" style="background:' + nmBg + ';border-color:' + nmBd + '"><span class="open-badge">OPEN</span>' + (isDraft ? '<span class="open-badge" style="background:#64748b;margin-left:4px">DRAFT</span>' : '') + '<span class="open-hint">tap to assign</span>' +
+            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') + chev +
             '</span></button>';
         }
 
@@ -3874,7 +3906,7 @@
             var n = [m.firstName, m.lastName].filter(Boolean).join(' ');
             return n || m.nickname || m.name || m.email || '';
           }
-          function itemKey(it) { return it.kind === 's' ? 's:' + it.id : 'o:' + it.date + '|' + it.shiftTypeId; }
+          function itemKey(it) { return it.kind === 's' ? 's:' + it.id : 'o:' + it.date + '|' + it.shiftTypeId + '|' + (it.position || 1); }
           function itemFromShift(s) {
             if (!s || !s.id || !s.date || !s.shiftTypeId) return null;
             return {
@@ -3991,10 +4023,14 @@
                 // and marking it too doubles the count.
                 root.querySelectorAll('.shift-grid[data-shift-id="' + it.id + '"], .qs-person[data-shift-id="' + it.id + '"]').forEach(function (el) { el.classList.add('qs-selected'); });
               } else {
-                // One map entry = ONE open slot: several identical
-                // open-slot buttons share a date+type, so mark only the
-                // first (the one the user tapped).
-                var first = root.querySelector('.open-slot[data-date="' + it.date + '"][data-shifttype="' + it.shiftTypeId + '"]');
+                // One map entry = ONE open slot: identical open-slot
+                // buttons share a date+type, so match by position too
+                // (each button carries data-position — Deepika,
+                // 2026-11-17). Fall back to the first match for items
+                // saved before positions existed.
+                var pos = it.position || 1;
+                var first = root.querySelector('.open-slot[data-date="' + it.date + '"][data-shifttype="' + it.shiftTypeId + '"][data-position="' + pos + '"]');
+                if (!first) first = root.querySelector('.open-slot[data-date="' + it.date + '"][data-shifttype="' + it.shiftTypeId + '"]');
                 if (first) first.classList.add('qs-selected');
               }
             });
@@ -4053,7 +4089,8 @@
               var date = slot.getAttribute('data-date'), typeId = slot.getAttribute('data-shifttype');
               var st = sc.shiftTypeById ? sc.shiftTypeById(typeId) : null;
               if (st && !window.qsStEditable(st)) return null;
-              return { kind: 'o', date: date, shiftTypeId: typeId };
+              var pos = parseInt(slot.getAttribute('data-position') || '1', 10) || 1;
+              return { kind: 'o', date: date, shiftTypeId: typeId, position: pos };
             }
             return null;
           }
@@ -4067,7 +4104,7 @@
             if (e.target.closest) {
               if (e.target.closest('#qs-selbar') || e.target.closest('#qs-sel-move') ||
                   e.target.closest('#sched-day-modal') || e.target.closest('#ms-day-modal') ||
-                  e.target.closest('#shift-popup')) return;
+                  e.target.closest('#shift-popup') || e.target.closest('.open-slot-chev')) return;
             }
             var mod = e.ctrlKey || e.metaKey;
             if (!sel.on && !mod) return;
@@ -4989,6 +5026,7 @@
           scope.querySelectorAll('.open-slot').forEach(function (b) {
             b.addEventListener('click', function (e) {
               if (e.target.closest('.open-slot-x')) return; // handled by delegated remover
+              if (e.target.closest('.open-slot-chev')) return; // chevron menu, handled separately
               e.stopPropagation();
               openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'));
             });
@@ -5525,6 +5563,7 @@
             $('sched-day-shifts').querySelectorAll('.open-slot').forEach(function (b) {
               b.addEventListener('click', function (e) {
                 if (e.target.closest('.open-slot-x')) return; // handled by delegated remover
+                if (e.target.closest('.open-slot-chev')) return; // chevron menu, handled separately
                 // openAssignModal refuses types the user cannot edit
                 // (returns false) — only hide the day popup when it
                 // actually opens, or tapping a view-only open slot
@@ -5758,6 +5797,7 @@
             ]);
         }
         var popupShift = null;
+        var popupSlot = null; // open-slot menu target {date, shiftTypeId, position}
         function openShiftPopup(shiftId, btnEl) {
           var s = shiftById(shiftId);
           if (!s) return;
@@ -5827,6 +5867,132 @@
         function closeShiftPopup() {
           hide($('shift-popup'));
           popupShift = null;
+          popupSlot = null;
+        }
+        // Open-slot menu (Deepika, 2026-11-17): the chevron on an open
+        // slot opens this small menu for THAT slot — Close, Shift,
+        // Unpublish/Publish, Duplicate, Add, in her order. Publish /
+        // Unpublish is state-dependent (her rule): a published slot
+        // offers Unpublish, a drafted slot offers Publish — never both
+        // at once. The state comes from the chevron's data-published
+        // attribute (positions 1..draft are draft on the manager grid;
+        // My Schedule only renders published opens). Reuses the shift
+        // popup shell; popupSlot (not popupShift) carries the target.
+        function openSlotPopup(date, shiftTypeId, position, btnEl, published) {
+          var st = shiftTypeById(shiftTypeId);
+          var nm = st ? st.name : 'Open slot';
+          if (!st) {
+            var slotBtn = btnEl && btnEl.closest ? btnEl.closest('.open-slot') : null;
+            var cat = slotBtn ? slotBtn.querySelector('.shift-cat') : null;
+            if (cat) nm = cat.textContent.trim();
+          }
+          var isPublished = published !== false;
+          popupSlot = { date: date, shiftTypeId: shiftTypeId, position: position, published: isPublished };
+          popupShift = null;
+          var popup = $('shift-popup');
+          $('sp-name').textContent = nm + ' · open slot' + (position > 1 ? ' ' + position : '') + (isPublished ? '' : ' · DRAFT');
+          $('sp-date').textContent = fmtDate(parseDate(date));
+          var list = $('sp-list');
+          var html = '';
+          html += '<button class="sp-item danger" data-slot-act="close"><span class="sp-ic" style="background:#fde8ea">✕</span>Close this slot</button>';
+          html += '<button class="sp-item" data-slot-act="shift"><span class="sp-ic" style="background:#e6f4f5">↔</span>Shift to another date</button>';
+          if (isPublished) {
+            html += '<button class="sp-item" data-slot-act="unpublish"><span class="sp-ic" style="background:#fff3cd">◐</span>Unpublish slot</button>';
+          } else {
+            html += '<button class="sp-item" data-slot-act="publish"><span class="sp-ic" style="background:#e6f4f5">●</span>Publish slot</button>';
+          }
+          html += '<button class="sp-item" data-slot-act="duplicate"><span class="sp-ic" style="background:#e6f4f5">⧉</span>Duplicate slot</button>';
+          html += '<button class="sp-item" data-slot-act="add"><span class="sp-ic" style="background:#e3f0fa">👤</span>Add a person</button>';
+          list.innerHTML = html;
+          show(popup);
+          var r = btnEl.getBoundingClientRect();
+          var pw = popup.offsetWidth, ph = popup.offsetHeight;
+          var x = Math.min(r.left, window.innerWidth - pw - 8);
+          var y = r.bottom + 6;
+          if (y + ph > window.innerHeight - 8) y = Math.max(8, r.top - ph - 6);
+          popup.style.left = Math.max(8, x) + 'px';
+          popup.style.top = y + 'px';
+        }
+        // Refresh whichever schedule view is showing after a slot-menu
+        // action (the manager grid, or My Schedule when that tab is up).
+        function refreshSlotView() {
+          var msTab = document.getElementById('tab-myschedule');
+          if (msTab && msTab.classList.contains('active') && typeof window.qsMsLoadData === 'function') { window.qsMsLoadData(); return; }
+          if (typeof loadShifts === 'function') loadShifts();
+        }
+        function handleSlotAct(act) {
+          var sl = popupSlot;
+          if (!sl) return;
+          var date = sl.date, typeId = sl.shiftTypeId;
+          if (act === 'add') {
+            // Add a person — the assign picker, same as tapping the
+            // slot body today.
+            closeShiftPopup();
+            openAssignModal(date, typeId);
+            return;
+          }
+          if (act === 'publish' || act === 'unpublish') {
+            // Per-slot publish state (Deepika, 2026-11-17): flip this
+            // one slot. The menu only ever offers the one that
+            // applies, and the server is the backstop (409 when there
+            // is nothing to flip).
+            closeShiftPopup();
+            var pub = act === 'publish';
+            api('/api/schedule/open-slots/publish-state', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId, published: pub }) }).then(function (r) {
+              if (r.ok) { refreshSlotView(); pageSuccess(pub ? 'Open slot published — it can now be picked up.' : 'Open slot unpublished — it is a draft again.'); }
+              else pageError((r.data && r.data.error) || 'Could not change that slot.');
+            }).catch(function () { pageError('Could not change that slot.'); });
+            return;
+          }
+          if (act === 'close') {
+            // Same path as the existing × remover: -1 for that date+type.
+            closeShiftPopup();
+            if (!confirm('Remove this open slot?')) return;
+            api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: -1 }) }).then(function (r) {
+              if (r.ok) { refreshSlotView(); pageSuccess('Open slot removed.'); }
+              else pageError((r.data && r.data.error) || 'Could not close that slot.');
+            }).catch(function () { pageError('Could not close that slot.'); });
+            return;
+          }
+          if (act === 'duplicate') {
+            // Same path as the bar Duplicate: +1 for that date+type.
+            closeShiftPopup();
+            api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: 1 }) }).then(function (r) {
+              if (r.ok) { refreshSlotView(); pageSuccess('Duplicated — a new open slot is ready to be picked up.'); }
+              else pageError((r.data && r.data.error) || 'Could not duplicate that slot.');
+            }).catch(function () { pageError('Could not duplicate that slot.'); });
+            return;
+          }
+          if (act === 'shift') {
+            // Move this open slot to another date: +1 on the new date,
+            // then -1 on the old one. +1 first, so a failure leaves a
+            // duplicate slot (visible, closable) instead of losing the
+            // slot. Same endpoints as Duplicate/Close — no new server
+            // path, and nothing in them touches generation_open_slots,
+            // so a stored draft-open row cannot block the move; the -1
+            // suppresses the computed open exactly like Close does.
+            closeShiftPopup();
+            window.qsShowDialog('Shift open slot',
+              '<p style="color:var(--dim);font-size:13px;margin-bottom:8px">Move this open slot to another date. The old date loses one slot and the new date gains one.</p>' +
+              '<label style="font-size:13px;font-weight:600">New date <input type="date" id="qs-slot-shift-date" value="' + date + '" style="font:inherit;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px"></label>',
+              [
+                { label: 'Cancel' },
+                { label: 'Shift slot', primary: true, onClick: function () {
+                  var inp = document.getElementById('qs-slot-shift-date');
+                  var nd = inp ? inp.value : '';
+                  if (!nd) { pageError('Pick a date first.'); return; }
+                  if (nd === date) { pageError('Pick a different date.'); return; }
+                  api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [nd], shiftTypeId: typeId, count: 1 }) }).then(function (r1) {
+                    if (!r1.ok) { pageError((r1.data && r1.data.error) || 'Could not shift that slot.'); return; }
+                    api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: -1 }) }).then(function (r2) {
+                      if (r2.ok) { refreshSlotView(); pageSuccess('Open slot shifted to ' + fmtLong(nd) + '.'); }
+                      else pageError('The new slot was opened, but the old one could not be closed. Close it from the menu.');
+                    }).catch(function () { pageError('The new slot was opened, but the old one could not be closed. Close it from the menu.'); });
+                  }).catch(function () { pageError('Could not shift that slot.'); });
+                } }
+              ]);
+            return;
+          }
         }
         // Custom dialog (mobile-friendly replacement for alert/confirm/prompt)
         // Dialog button callbacks (global for inline onclick reliability)
@@ -5901,6 +6067,37 @@
             if (r.ok) { loadShifts(); pageSuccess('Open slot removed.'); }
           });
         });
+        // Open-slot chevron menu (Deepika, 2026-11-17): a small menu
+        // for THAT open slot — Close / Shift / Duplicate / Add. The
+        // chevron carries date+type+position, so the second of two
+        // same-day opens acts on that second slot.
+        document.addEventListener('click', function (e) {
+          var chev = e.target.closest ? e.target.closest('.open-slot-chev') : null;
+          if (!chev) return;
+          e.stopPropagation();
+          e.preventDefault();
+          var slotBtn = chev.closest('.open-slot');
+          var d = chev.getAttribute('data-date') || (slotBtn && slotBtn.getAttribute('data-date'));
+          var stId = chev.getAttribute('data-shifttype') || (slotBtn && slotBtn.getAttribute('data-shifttype'));
+          var pos = parseInt(chev.getAttribute('data-position') || '1', 10) || 1;
+          var isPub = chev.getAttribute('data-published') !== '0';
+          if (!d || !stId) return;
+          openSlotPopup(d, stId, pos, chev, isPub);
+        });
+        // Keyboard: Enter/Space on the chevron opens the menu too.
+        document.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          var chev = e.target && e.target.closest ? e.target.closest('.open-slot-chev') : null;
+          if (!chev) return;
+          e.preventDefault();
+          var slotBtn = chev.closest('.open-slot');
+          var d = chev.getAttribute('data-date') || (slotBtn && slotBtn.getAttribute('data-date'));
+          var stId = chev.getAttribute('data-shifttype') || (slotBtn && slotBtn.getAttribute('data-shifttype'));
+          var pos = parseInt(chev.getAttribute('data-position') || '1', 10) || 1;
+          var isPub = chev.getAttribute('data-published') !== '0';
+          if (!d || !stId) return;
+          openSlotPopup(d, stId, pos, chev, isPub);
+        });
         // Popup item clicks (delegated)
         document.addEventListener('click', function (e) {
           var dot = e.target.closest ? e.target.closest('#shift-popup .sp-dot') : null;
@@ -5914,6 +6111,11 @@
             closeShiftPopup();
             window.qsSetHighlight(hlUserId, (hueAttr === '' || hueAttr == null) ? null : parseInt(hueAttr, 10));
             renderView();
+            return;
+          }
+          var slotItem = e.target.closest ? e.target.closest('#shift-popup .sp-item[data-slot-act]') : null;
+          if (slotItem && popupSlot) {
+            handleSlotAct(slotItem.getAttribute('data-slot-act'));
             return;
           }
           var item = e.target.closest ? e.target.closest('#shift-popup .sp-item') : null;
@@ -6010,7 +6212,7 @@
           var popup = $('shift-popup');
           if (popup && !popup.classList.contains('hidden')) {
             var inPopup = e.target.closest ? e.target.closest('#shift-popup') : null;
-            var onBtn = e.target.closest ? e.target.closest('.shift-actions-btn') : null;
+            var onBtn = e.target.closest ? (e.target.closest('.shift-actions-btn') || e.target.closest('.open-slot-chev')) : null;
             if (!inPopup && !onBtn) closeShiftPopup();
           }
         });
@@ -7450,7 +7652,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -7481,6 +7683,7 @@
               sched.shifts = fresh;
               sched.closedShifts = sR.data.closedShifts || [];
               sched.extraSlots = sR.data.extraSlots || [];
+              sched.draftOpenCounts = sR.data.draftOpenCounts || {};
               sched.scheduleMode = sR.data.scheduleMode || 'live';
               sched.generatedTypeIds = sR.data.generatedTypeIds || [];
               sched.notDraftedDates = sR.data.notDraftedDates || [];
@@ -18998,6 +19201,7 @@ window.qsNpOfferSend = function (btn) {
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
         var msUnpublishedCounts = {}; // draft-open rule: reserved drafts, by date|type
+        var msDraftOpenCounts = {}; // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
         var msIncludesDrafts = false; // employees never see drafts in `shifts`
         var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
         var msNotDraftedByType = {}; // managers only; the server sends employees {}
@@ -19285,6 +19489,7 @@ window.qsNpOfferSend = function (btn) {
               extraSlots = rs[3].data.extraSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
               msUnpublishedCounts = rs[3].data.unpublishedCounts || {};
+              msDraftOpenCounts = rs[3].data.draftOpenCounts || {};
               msIncludesDrafts = rs[3].data.includesDrafts !== false;
               msScheduleMode = rs[3].data.scheduleMode || 'live';
               msNotDraftedByType = rs[3].data.notDraftedByType || {};
@@ -19587,7 +19792,16 @@ window.qsNpOfferSend = function (btn) {
           // drafts, so add their count back here, or the draft's own
           // positions read as open too — the shortfall twice.
           if (!msIncludesDrafts) filled += (msUnpublishedCounts || {})[dateStr + '|' + shiftTypeId] || 0;
-          return Math.max(0, target + extra - filled);
+          // Per-slot open publish state (Deepika, 2026-11-17): draft
+          // opens are hidden here — nobody can pick up an unpublished
+          // slot — so the count below is published opens only. The
+          // positions rendered start after the draft ones, so a
+          // selection key made here matches the manager grid's
+          // position for the same slot.
+          return Math.max(0, target + extra - filled - msDraftCountFor(dateStr, shiftTypeId));
+        }
+        function msDraftCountFor(dateStr, shiftTypeId) {
+          return (msDraftOpenCounts || {})[dateStr + '|' + shiftTypeId] || 0;
         }
         function isWorking(dateStr) {
           return shifts.some(function (s) { return s.date === dateStr && isMine(s); });
@@ -19674,10 +19888,19 @@ window.qsNpOfferSend = function (btn) {
           } else {
             btn = '<button type="button" class="btn" data-ms-pickup="' + dateStr + '|' + st.id + '" style="padding:0.35rem 0.9rem;font-size:0.85rem">Pick up</button>';
           }
-          return '<div class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '">' +
+          // Chevron menu (Deepika, 2026-11-17): managers get the same
+          // down-arrow on open slots here as on the manager grid; the
+          // menu is the shared shift-popup shell. data-position lets
+          // the selection model hold two same-day opens at once.
+          // data-published is always "1" here — draft opens are hidden
+          // in this view, so every rendered open is published and its
+          // menu offers Unpublish.
+          var chev = (me && (me.role === 'owner' || me.role === 'scheduler') && window.qsStEditable && window.qsStEditable(st)) ? '<span class="open-slot-chev" role="button" tabindex="0" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '" data-published="1" title="Open slot actions" aria-label="Actions for open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
+            '<svg width="11" height="11" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
+          return '<div class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st.name) + '</div>' +
             '<div class="shift-nm ms-open-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '">' +
-            '<span class="open-badge">OPEN</span>' + btn + '</div></div>';
+            '<span class="open-badge">OPEN</span>' + btn + chev + '</div></div>';
         }
 
         // --- Dashboard sessions on My Schedule (Deepika, 2026-10-20): same
@@ -19765,7 +19988,10 @@ window.qsNpOfferSend = function (btn) {
             if (!items.length && !open) return;
             hasContent = true;
             items.forEach(function (s) { html += shiftBoxHtml(s); renderedIds[s.id] = true; });
-            for (var i = 0; i < open; i++) html += openSlotHtml(dateStr, st, i + 1);
+            // Published positions only: the first draftCount positions
+            // are draft and hidden here, so the rendered opens start
+            // at draftCount + 1 — the same keys as the manager grid.
+            for (var i = 0; i < open; i++) html += openSlotHtml(dateStr, st, msDraftCountFor(dateStr, st.id) + i + 1);
           });
           list.forEach(function (s) {
             if (!renderedIds[s.id]) { html += shiftBoxHtml(s); hasContent = true; }
@@ -20306,6 +20532,7 @@ window.qsNpOfferSend = function (btn) {
             if (sR.ok) {
               shifts = sR.data.shifts || [];
               msUnpublishedCounts = sR.data.unpublishedCounts || {};
+              msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
               msNotDraftedByType = sR.data.notDraftedByType || {};
@@ -20339,6 +20566,7 @@ window.qsNpOfferSend = function (btn) {
             if (msShiftFingerprint(fresh) !== msShiftFingerprint(shifts)) {
               shifts = fresh;
               msUnpublishedCounts = sR.data.unpublishedCounts || {};
+              msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
               msNotDraftedByType = sR.data.notDraftedByType || {};
@@ -20776,6 +21004,10 @@ window.qsNpOfferSend = function (btn) {
             members: function () { return members || []; },
             refresh: function () { loadData(); },
           });
+          // Slot-menu refresh (Deepika, 2026-11-17): the open-slot
+          // chevron menu lives in the manager scope and refreshes via
+          // refreshSlotView — expose the My Schedule reload for it.
+          window.qsMsLoadData = loadData;
           // Re-mark after every re-render (marks live on DOM elements).
           var _qsSelMsRenderView = renderView;
           renderView = function () { _qsSelMsRenderView(); window.qsSel.applyUI(); };

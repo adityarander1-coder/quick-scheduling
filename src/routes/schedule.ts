@@ -1102,6 +1102,18 @@ router.get('/shifts', async (req: Request, res: Response) => {
     const unpublishedCounts: Record<string, number> = {};
     for (const r of unpublishedRows) unpublishedCounts[`${r.date}|${r.shiftTypeId}`] = r.n;
 
+    // Per-slot open publish state (Deepika, 2026-11-17): how many of
+    // each date+type's computed opens are draft. Managers render the
+    // first N positions grey with a DRAFT badge; employees never see
+    // draft opens (their open count subtracts this map).
+    const { rows: draftOpenRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count AS n
+       FROM draft_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+    const draftOpenCounts: Record<string, number> = {};
+    for (const r of draftOpenRows) draftOpenCounts[`${r.date}|${r.shiftTypeId}`] = r.n;
+
     const all = employeeView ? [...visibleManual] : [...visibleManual, ...rotationShifts];
     all.sort((a: any, b: any) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -1156,6 +1168,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
     res.json({
       shifts: all, closedShifts, extraSlots,
       unpublishedCounts, includesDrafts: !employeeView,
+      draftOpenCounts,
       scheduleMode: await getCompanyModeSummary(query, companyId),
       generatedTypeIds: [...generatedTypes],
       notDraftedDates, notDraftedByType,
@@ -2089,6 +2102,97 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
     }
   } catch (err) {
     console.error('[schedule] adjust slots failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/open-slots/publish-state — flip ONE open slot
+// between published and draft (Deepika, 2026-11-17: the slot menu
+// offers only the one that applies). Opens are computed, so the state
+// is a per-date+type draft count in draft_open_slots: publish
+// decrements it, unpublish increments it (never past the computed
+// total — a slot that is not published cannot be unpublished, and a
+// draft that is not there cannot be published). The row is deleted at
+// 0, like extra_open_slots. Bulk publish is untouched: it flips shift
+// rows only, as today, and never overrides an explicit per-slot
+// choice. No notification is sent — bulk publish does not notify
+// about opened slots either; the slot is pickable on next load.
+router.post('/open-slots/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const { date, shiftTypeId, published } = req.body ?? {};
+    if (!isValidDate(date) || typeof shiftTypeId !== 'string' || !shiftTypeId || typeof published !== 'boolean') {
+      res.status(400).json({ error: 'A valid date, shift type, and published true/false are required.' });
+      return;
+    }
+    // Department scoping, same as /extra-slots: the scheduler's
+    // active department must be one of the shift type's departments.
+    if (!(await requireActiveDepartment(
+      req, res,
+      await shiftTypesDepartmentIds([shiftTypeId], companyId)
+    ))) return;
+    const result = await withTransaction(async (tx) => {
+      const totals = await openSlotTotals(tx.query, companyId, date, shiftTypeId);
+      const cur = await tx.query(
+        'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+        [companyId, date, shiftTypeId]
+      );
+      const stored = cur.rows.length ? Number(cur.rows[0].count) : 0;
+      if (published) {
+        // Publish one draft open. Nothing drafted = nothing to do
+        // (idempotent — a double tap, or a menu opened on stale
+        // data, succeeds without changing anything). If the opens
+        // themselves are gone (total 0), the stored count is stale —
+        // drop the row instead of decrementing a phantom.
+        if (totals.total === 0) {
+          if (stored > 0) {
+            await tx.query(
+              'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+              [companyId, date, shiftTypeId]
+            );
+          }
+          return { ok: true, draftOpenCount: 0, note: 'no-opens' };
+        }
+        if (stored === 0) return { ok: true, draftOpenCount: 0, note: 'nothing-drafted' };
+        if (stored === 1) {
+          await tx.query(
+            'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, date, shiftTypeId]
+          );
+          return { ok: true, draftOpenCount: 0 };
+        }
+        await tx.query(
+          'UPDATE draft_open_slots SET count = count - 1, updated_at = now() WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [companyId, date, shiftTypeId]
+        );
+        return { ok: true, draftOpenCount: stored - 1 };
+      }
+      // Unpublish one published open. Refuse when there is no open
+      // at all, or when every open is already a draft — the menu
+      // should never offer it then, but the server is the backstop.
+      if (totals.total === 0) return { ok: false, status: 409, error: 'There is no open slot on that date to unpublish.' };
+      if (totals.published === 0) return { ok: false, status: 409, error: 'Every open slot on that date is already a draft.' };
+      if (stored === 0) {
+        await tx.query(
+          `INSERT INTO draft_open_slots (company_id, date, shift_type_id, count, created_by)
+           VALUES ($1, $2, $3, 1, $4)`,
+          [companyId, date, shiftTypeId, req.session.userId!]
+        );
+      } else {
+        await tx.query(
+          'UPDATE draft_open_slots SET count = count + 1, updated_at = now() WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [companyId, date, shiftTypeId]
+        );
+      }
+      return { ok: true, draftOpenCount: stored + 1 };
+    });
+    if (!result.ok) {
+      res.status(result.status || 409).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, date, shiftTypeId, published, draftOpenCount: result.draftOpenCount });
+  } catch (err) {
+    console.error('[schedule] open-slot publish-state failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -7870,6 +7974,63 @@ async function consumeExtraOpenSlot(q: any, companyId: string, date: string, shi
   return rows.length > 0;
 }
 
+// Per-slot open publish state (Deepika, 2026-11-17): how many of a
+// date+type's COMPUTED opens are draft, and how many are published.
+// The total is the same formula the grid uses (target + extra -
+// filled), with a closed date counting 0 — but WITHOUT the
+// undrafted-date suppression: the claim endpoint never applied that
+// rule, and this helper must not change what it allows on undrafted
+// dates (a draft count can only be set where the grid renders an
+// open, so on an undrafted date it is 0 and the gate behaves exactly
+// as today). `filled` counts ALL stored shifts, drafts included —
+// the grid's filled for managers, and published + unpublishedCounts
+// for employees, is the same number.
+async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string) {
+  const { rows: crows } = await q(
+    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const closed = crows.length > 0;
+  let target = 0;
+  if (!closed) {
+    const { rows: trows } = await q(
+      `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+       FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+      [companyId, shiftTypeId]
+    );
+    if (trows.length) {
+      const t = trows[0];
+      const dow = new Date(date + 'T12:00:00').getDay();
+      const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      const sd: string | null = t.start_date || null;
+      const ed: string | null = t.end_date || null;
+      if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+        target = Number(t.target_count) || 0;
+      }
+    }
+  }
+  const { rows: erows } = await q(
+    'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const extra = erows[0]?.n || 0;
+  const { rows: frows } = await q(
+    'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const filled = frows[0]?.n || 0;
+  const { rows: drows } = await q(
+    'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const draft = drows.length ? Number(drows[0].count) : 0;
+  const total = closed ? 0 : Math.max(0, target + extra - filled);
+  // `draft` is the raw stored count (the endpoint decrements it); the
+  // UI renders min(draft, total) positions as draft, so a stale row
+  // left behind when opens disappear can never over-claim.
+  return { total, draft, published: Math.max(0, total - draft), closed };
+}
+
 async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: string) {
   const shifts = await getShiftsForRange(q, companyId, date, date);
   const have = shifts.filter((s: any) => s.shiftTypeId === shiftTypeId).length;
@@ -11635,6 +11796,7 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
     const typeName = trows[0].name;
     let claimed = false;
     let conflictMsg: string | null = null;
+    let draftMsg: string | null = null;
     try {
       await withTransaction(async (tx) => {
         // Conflict guard (Deepika 2026-11-03): an open-slot claim must
@@ -11650,6 +11812,20 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
           exclude: [{ date, shiftTypeId }],
         });
         if (conflict) { conflictMsg = conflict; return; }
+        // Per-slot publish state (Deepika, 2026-11-17): a draft open
+        // cannot be picked up. Opens are fungible, so the check is
+        // that at least one PUBLISHED open exists — the computed total
+        // minus the draft count. The gate mirrors the claim's own
+        // notion of availability (target gap + extras, closed dates
+        // counting 0); it does not add the undrafted-date suppression,
+        // so what it allows on undrafted dates is unchanged. Path 1/2
+        // below are untouched — a claim that passes the gate consumes
+        // exactly as it did before.
+        const totals = await openSlotTotals(tx.query, companyId, date, shiftTypeId);
+        if (totals.published <= 0) {
+          draftMsg = 'That open slot has not been published yet, so it cannot be picked up.';
+          return;
+        }
         // Path 1: manually-added extra open slots (atomic consume).
         if (await consumeExtraOpenSlot(tx.query, companyId, date, shiftTypeId)) {
           await tx.query(
@@ -11703,6 +11879,10 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
     }
     if (conflictMsg) {
       res.status(409).json({ error: `You can't pick up this shift — ${conflictMsg}` });
+      return;
+    }
+    if (draftMsg) {
+      res.status(409).json({ error: draftMsg });
       return;
     }
     if (!claimed) {
