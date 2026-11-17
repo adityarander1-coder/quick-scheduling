@@ -1430,9 +1430,18 @@
        button on an open slot, like the one on filled shift boxes.
        A <span>, not a <button> — the manager open slot IS a button,
        and a nested button would break HTML parsing. */
-    .open-slot-chev { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 auto; border-radius: 50%; background: #eef2f5; border: 1px solid #d7e0e6; cursor: pointer; padding: 0; margin-left: 6px; vertical-align: middle; }
+    .open-slot-chev { display: inline-flex; align-items: center; justify-content: center; width: 27px; height: 27px; flex: 0 0 auto; border-radius: 50%; background: #eef2f5; border: 1px solid #d7e0e6; cursor: pointer; padding: 0; margin-left: 6px; vertical-align: middle; }
     .open-slot-chev:hover { background: #dfe7ec; }
     .open-slot-chev:focus-visible { outline: 2px solid #0e7c86; outline-offset: 1px; }
+    /* Chevron alignment (Deepika, 2026-11-17): ALL down arrows in one
+       line — the open-slot chevron sits exactly where the filled-shift
+       chevron (.shift-menu-btn) sits: absolute, top 3px, right 4px,
+       27px, inside the same position:relative .shift-nm. The × remover
+       stays in the flex flow with margin-left:auto, so it lands
+       immediately left of the chevron. My Schedule has no filled-shift
+       chevron — its open chevron stays in the space-between flex row,
+       already at the far right, at the same 27px size. */
+    #tab-schedule .open-slot-chev { position: absolute; top: 3px; right: 4px; margin: 0; }
     #qs-selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 900; background: #083f4d; color: #fff; border-radius: 14px; padding: 10px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; box-shadow: 0 10px 28px rgba(8,63,77,.4); max-width: calc(100vw - 24px); }
     #qs-selbar.hidden { display: none; }
     #qs-selbar .qs-sel-count { font-weight: 800; font-size: 15px; margin-right: 2px; white-space: nowrap; }
@@ -1995,7 +2004,7 @@
         #tab-schedule button.open-slot { border: 0; background: none; padding: 0; width: 100%; cursor: pointer; font: inherit; text-align: left; }
         #tab-schedule button.open-slot:hover .shift-cat { filter: brightness(0.96); }
         #tab-schedule button.open-slot:hover .shift-nm { background: #f8fafc; }
-        #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; gap: 6px; }
+        #tab-schedule button.open-slot .shift-nm { display: flex; align-items: center; font-weight: 700; gap: 6px; padding-right: 2rem; }
         .open-badge { font-size: 9px; font-weight: 800; letter-spacing: .04em; background: #0e7c86; color: #fff; border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
         .open-hint { font-size: 10px; font-weight: 500; color: var(--dim); }
         #tab-schedule .month-open { display: inline-block; border: 1.5px solid #bfe3e1; border-radius: 6px; padding: 0.15rem 0.4rem; margin-bottom: 0.25rem; font-size: 0.75rem; font-weight: 700; color: #0b3b43; background: #eef5f4; }
@@ -3446,12 +3455,12 @@
           var nmBg = isDraft ? '#f4f6f8' : tint(color, 82);
           var nmBd = isDraft ? '#cbd5e1' : tint(color, 60);
           var chev = (sched.canEdit && window.qsStEditable && window.qsStEditable(st)) ? '<span class="open-slot-chev" role="button" tabindex="0" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '" data-published="' + (isDraft ? '0' : '1') + '" title="Open slot actions" aria-label="Actions for open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
-            '<svg width="11" height="11" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
+            '<svg width="13" height="13" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
           return '<button type="button" class="shift-grid open-slot' + (isDraft ? ' open-draft' : '') + '" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '"' +
             ' aria-label="Assign open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + (isDraft ? ' (draft)' : '') + '">' +
             '<span class="shift-cat" style="background:' + catBg + ';border-color:' + catBd + '">' + esc(label) + '</span>' +
             '<span class="shift-nm" style="background:' + nmBg + ';border-color:' + nmBd + '"><span class="open-badge">OPEN</span>' + (isDraft ? '<span class="open-badge" style="background:#64748b;margin-left:4px">DRAFT</span>' : '') + '<span class="open-hint">tap to assign</span>' +
-            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="float:right;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px -6px -6px 4px;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') + chev +
+            (sched.canEdit ? '<span class="open-slot-x" data-remove-slot="' + st.id + '" title="Remove this slot" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;margin:-6px 6px -6px auto;border-radius:50%;background:#fde8e8;cursor:pointer;font-weight:700;font-size:18px;color:#bd3d4a">\u00d7</span>' : '') + chev +
             '</span></button>';
         }
 
@@ -19896,7 +19905,7 @@ window.qsNpOfferSend = function (btn) {
           // in this view, so every rendered open is published and its
           // menu offers Unpublish.
           var chev = (me && (me.role === 'owner' || me.role === 'scheduler') && window.qsStEditable && window.qsStEditable(st)) ? '<span class="open-slot-chev" role="button" tabindex="0" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '" data-published="1" title="Open slot actions" aria-label="Actions for open ' + esc(st.name) + ' position ' + n + ' on ' + fmtLong(dateStr) + '">' +
-            '<svg width="11" height="11" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
+            '<svg width="13" height="13" viewBox="0 0 24 24" fill="#3c4c61" aria-hidden="true"><path d="M12 19.5L2.8 5.8h18.4z"/></svg></span>' : '';
           return '<div class="shift-grid open-slot" data-date="' + dateStr + '" data-shifttype="' + st.id + '" data-position="' + n + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '">' + esc(st.name) + '</div>' +
             '<div class="shift-nm ms-open-nm" style="background:' + tint(color, 82) + ';border-color:' + tint(color, 60) + '">' +
