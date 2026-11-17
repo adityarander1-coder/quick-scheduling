@@ -4414,9 +4414,9 @@
             });
           }
           function bulkPublish(toPublished) {
-            var shifts = selectedShifts();
-            if (!shifts.length) { pageError('Select a shift to ' + (toPublished ? 'publish.' : 'move to draft.')); return; }
-            var done = 0, failed = 0;
+            var shifts = selectedShifts(), opens = selectedOpens();
+            if (!shifts.length && !opens.length) { pageError('Select a shift to ' + (toPublished ? 'publish.' : 'move to draft.')); return; }
+            var done = 0, failed = 0, openDone = 0, openSkipped = 0;
             var jobs = shifts.map(function (it) {
               var ep, body;
               if (it.rotationId) {
@@ -4427,11 +4427,33 @@
                 if (r.ok) done++; else failed++;
               }).catch(function () { failed++; });
             });
+            // Open slots (Deepika, 2026-11-17): the same Publish /
+            // Unpublish from the bar must flip picked opens too — one
+            // call per slot to POST /open-slots/publish-state, exactly
+            // as the chevron menu does. A 409 (already in that state)
+            // or a 200 with a nothing-to-flip note is a SKIP, not a
+            // failure and not a flip: the slot was already there, so
+            // it must not hide the flips that did land. A real failure
+            // (403, 500, network) still counts as failed.
+            opens.forEach(function (it) {
+              jobs.push(api('/api/schedule/open-slots/publish-state', { method: 'POST', body: JSON.stringify({ date: it.date, shiftTypeId: it.shiftTypeId, published: toPublished }) }).then(function (r) {
+                if (r.ok) {
+                  if (r.data && (r.data.note === 'nothing-drafted' || r.data.note === 'no-opens')) openSkipped++;
+                  else openDone++;
+                } else if (r.status === 409) openSkipped++;
+                else failed++;
+              }).catch(function () { failed++; }));
+            });
             Promise.all(jobs).then(function () {
-              sel.result = done + (toPublished ? ' published' : ' drafted') + ' · ' + failed + ' skipped';
+              var parts = [];
+              if (shifts.length) parts.push(done + (toPublished ? ' published' : ' drafted'));
+              if (opens.length) parts.push(openDone + ' open slot' + (openDone === 1 ? '' : 's') + (toPublished ? ' published' : ' unpublished'));
+              var skipped = failed + openSkipped;
+              if (skipped) parts.push(skipped + ' skipped');
+              sel.result = parts.join(' · ');
               applyUI();
               refreshActiveScope();
-              if (failed) pageError('Could not ' + (toPublished ? 'publish ' : 'unpublish ') + failed + ' shift(s).');
+              if (failed) pageError('Could not ' + (toPublished ? 'publish ' : 'unpublish ') + failed + ' item(s).');
             });
           }
           function bulkDuplicate() {

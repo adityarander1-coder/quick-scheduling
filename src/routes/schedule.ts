@@ -2385,7 +2385,7 @@ router.post('/open-slots/publish-state', requireRole('owner', 'scheduler'), asyn
         from: date, to: date, shiftTypeIds: [shiftTypeId],
       });
     }
-    res.json({ ok: true, date, shiftTypeId, published, draftOpenCount: result.draftOpenCount });
+    res.json({ ok: true, date, shiftTypeId, published, draftOpenCount: result.draftOpenCount, note: result.note || undefined });
   } catch (err) {
     console.error('[schedule] open-slot publish-state failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
