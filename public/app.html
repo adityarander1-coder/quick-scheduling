@@ -10636,10 +10636,14 @@ window.qsNpOfferSend = function (btn) {
               var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
                 '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
                 pd.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') +
-                '</ol><div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
-                '<button type="button" class="btn btn-sm" data-approve="' + pd.planId + '">Approve</button>' +
-                '<button type="button" class="btn-secondary btn-sm" data-reject="' + pd.planId + '">Reject</button></div>';
+                '</ol>' +
+                (pd.status === 'awaiting_partner'
+                  ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
+                  : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                    '<button type="button" class="btn btn-sm" data-approve="' + pd.planId + '">Approve</button>' +
+                    '<button type="button" class="btn-secondary btn-sm" data-reject="' + pd.planId + '">Reject</button></div>');
               thinking.innerHTML = html;
+              if (pd.status !== 'awaiting_partner') {
               thinking.querySelector('[data-approve]').addEventListener('click', function () {
                 var b = this; b.disabled = true; b.textContent = 'Applying…';
                 api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' })
@@ -10687,6 +10691,7 @@ window.qsNpOfferSend = function (btn) {
                   thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
                 }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
               });
+              }
             }
           q = (q || '').trim();
           if (!q) return;
@@ -10780,9 +10785,11 @@ window.qsNpOfferSend = function (btn) {
                 var desc = window.qsDescribeChange || function (c) { return c.action; };
                 var html2 = '<div class="tb-q">' + esc(qq) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
                   '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>' +
-                  '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
-                  '<button type="button" class="btn btn-sm" data-tb-approve="' + pd.planId + '">Approve</button>' +
-                  '<button type="button" class="btn-secondary btn-sm" data-tb-reject="' + pd.planId + '">Reject</button></div></div>' + foot();
+                  (pd.status === 'awaiting_partner'
+                    ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
+                    : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                      '<button type="button" class="btn btn-sm" data-tb-approve="' + pd.planId + '">Approve</button>' +
+                      '<button type="button" class="btn-secondary btn-sm" data-tb-reject="' + pd.planId + '">Reject</button></div>') + '</div>' + foot();
                 openPanel(html2); bindFoot();
                 var ap = panel.querySelector('[data-tb-approve]');
                 var rj = panel.querySelector('[data-tb-reject]');

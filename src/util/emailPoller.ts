@@ -1252,46 +1252,176 @@ export function renderChangeList(plan: any): string {
   }).join('\n');
 }
 
-/** Resolve the ONE swap partner a plan involves (Deepika 2026-11-01:
- * a swap goes to the partner first). The caller may hint the partner
- * (the request form knows exactly who was picked); otherwise the
- * swap changes' toUserId / toPerson names resolve within the company.
- * Returns null when the plan has no swap, several partners, or the
- * partner cannot be resolved — those plans keep the direct-to-
- * approvers flow. The requester is never their own partner. */
-async function resolveSwapPartner(
+/** Resolve the swap partners of a plan, in the order they must be
+ * asked (Deepika, 2026-11-17 — partner-first for EVERY AI swap
+ * plan, both doors). A "swap" is a `swap` change (both sides are
+ * involved) OR a complementary pair of `move` changes — the shape
+ * the planner actually returns for "swap X with Y" (two moves,
+ * each handing one person's shift to the other). A lone move is NOT
+ * a swap: the receiving person is never asked for a plain
+ * reassignment. The caller may hint the partner (the request form
+ * knows exactly who was picked); the hint goes first. The requester
+ * is never their own partner: when the requester is one of the two
+ * people, the other is the only partner; when the requester is
+ * neither, BOTH must agree, in order; a plan with several swaps
+ * collects every distinct pair. Sides resolve by id when the change
+ * carries one, else by exact full-name match against active users.
+ * Returns [] when the plan swaps with nobody resolvable — the
+ * caller then falls back to the direct approver flow, as before. */
+export async function resolveSwapPartners(
   query: QueryFn, companyId: string, plan: any,
   requesterId: string | null, hintedPartnerId?: string | null,
-): Promise<{ id: string; name: string | null } | null> {
-  const hasSwap = (plan.changes || []).some((c: any) => c.action === 'swap');
-  if (!hasSwap && !hintedPartnerId) return null;
+): Promise<Array<{ id: string; name: string | null }>> {
+  const changes: any[] = plan.changes || [];
+  const hasSwap = changes.some((c: any) => c.action === 'swap');
+  const moves = changes.filter((c: any) => c.action === 'move' && c.fromPerson && c.toPerson);
+  if (!hasSwap && moves.length < 2 && !hintedPartnerId) return [];
   const nameOf = async (id: string): Promise<string | null> => {
     const { rows } = await query(
       `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1 AND company_id = $2 AND is_active = true`,
       [id, companyId]);
     return rows.length ? (rows[0].name || null) : null;
   };
-  if (hintedPartnerId) {
-    if (requesterId && hintedPartnerId === requesterId) return null;
-    const name = await nameOf(hintedPartnerId);
-    return name !== null ? { id: hintedPartnerId, name } : null;
+  const idOfName = async (name: string): Promise<string | null> => {
+    const { rows } = await query(
+      `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+         AND TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) = $2`,
+      [companyId, String(name)]);
+    return rows.length === 1 ? rows[0].id : null;
+  };
+  // One side of a swap/move, resolved to a user id (the change's id
+  // wins when present, else the exact full name). Null when the
+  // person is not one active user of this company.
+  const resolveSide = async (c: any, side: 'from' | 'to'): Promise<string | null> => {
+    const idField = side === 'from' ? c.fromUserId : c.toUserId;
+    if (idField) {
+      const name = await nameOf(String(idField));
+      return name !== null ? String(idField) : null;
+    }
+    const person = side === 'from' ? c.fromPerson : c.toPerson;
+    return person ? idOfName(String(person)) : null;
+  };
+  const ordered: string[] = [];
+  const push = (id: string | null) => {
+    if (id && id !== requesterId && !ordered.includes(id)) ordered.push(id);
+  };
+  if (hintedPartnerId && hintedPartnerId !== requesterId) {
+    if ((await nameOf(hintedPartnerId)) !== null) push(hintedPartnerId);
   }
-  const partners = new Map<string, string | null>();
-  for (const c of plan.changes || []) {
+  for (const c of changes) {
     if (c.action !== 'swap') continue;
-    if (c.toUserId) { partners.set(String(c.toUserId), c.toPerson || null); continue; }
-    if (c.toPerson) {
-      const { rows } = await query(
-        `SELECT id FROM users WHERE company_id = $1 AND is_active = true
-           AND TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) = $2`,
-        [companyId, String(c.toPerson)]);
-      if (rows.length === 1) partners.set(rows[0].id, String(c.toPerson));
+    push(await resolveSide(c, 'from'));
+    push(await resolveSide(c, 'to'));
+  }
+  // Complementary move pairs are swaps too: each move hands one
+  // person's shift to the other, so both people are partners.
+  // Sides are compared by resolved user id, not by the written
+  // name, so a nickname in one move still pairs with the full name
+  // in the other.
+  const moveSides: Array<{ from: string | null; to: string | null }> = [];
+  for (const m of moves) moveSides.push({ from: await resolveSide(m, 'from'), to: await resolveSide(m, 'to') });
+  for (let i = 0; i < moveSides.length; i++) {
+    for (let j = i + 1; j < moveSides.length; j++) {
+      const a = moveSides[i]; const b = moveSides[j];
+      if (!a.from || !a.to || !b.from || !b.to) continue;
+      if (a.from !== b.to || a.to !== b.from) continue;
+      push(a.from); push(a.to);
     }
   }
-  if (partners.size !== 1) return null;
-  const [id, name] = [...partners.entries()][0];
-  if (requesterId && id === requesterId) return null;
-  return { id, name: name || (await nameOf(id)) };
+  const out: Array<{ id: string; name: string | null }> = [];
+  for (const id of ordered) out.push({ id, name: await nameOf(id) });
+  return out;
+}
+
+/** Ask ONE swap partner FIRST (bell + token email, Agree / Decline,
+ * no login needed) — the shared step for the first partner at plan
+ * creation and for the next partner when a multi-partner plan
+ * advances. Best-effort: a failed notification never breaks the
+ * plan. The caller mints the tokens (so the row can carry them
+ * before anything is sent) and passes them in. */
+export async function askSwapPartner(
+  query: QueryFn, companyId: string,
+  opts: {
+    partner: { id: string; name: string | null };
+    plan: any;
+    requesterName: string | null;
+    fromLine: string;
+    body: string;
+    changeList: string;
+    fromAddr?: string | null;
+    approveToken: string;
+    rejectToken: string;
+  },
+): Promise<void> {
+  try {
+    await notify({
+      companyId, userIds: [opts.partner.id], category: 'schedule', type: 'swap_partner_waiting',
+      title: `${opts.requesterName || 'A team member'} wants to swap shifts with you`,
+      body: opts.plan.summary,
+      link: 'requests', bundleKey: 'swap_partner_waiting',
+      bundleTitle: '{count} swap requests are waiting for your agreement',
+    });
+  } catch { /* non-fatal */ }
+  try {
+    const { rows: prows } = await query(
+      'SELECT email FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [opts.partner.id, companyId]);
+    const partnerEmail = prows.length ? String(prows[0].email || '') : '';
+    if (partnerEmail && partnerEmail.includes('@')) {
+      const { sendMail } = await import('./mailer.js');
+      const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+      const agreeUrl = `${baseUrl}/api/schedule/plans/partner-approve/${opts.approveToken}`;
+      const declineUrl = `${baseUrl}/api/schedule/plans/partner-reject/${opts.rejectToken}`;
+      await sendMail({
+        ...(opts.fromAddr ? { from: opts.fromAddr } : {}),
+        to: partnerEmail,
+        subject: `Swap request: ${(opts.plan.summary || '').substring(0, 60)}`,
+        text: `${opts.fromLine} has asked to swap shifts with you.\n\nWhat they asked:\n${opts.body}\n\nChanges to apply:\n${opts.changeList}\n\nIf you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.\n\nAgree: ${agreeUrl}\nDecline: ${declineUrl}\n\n— Quick Scheduling`,
+        html: `<p><strong>${escHtml(opts.fromLine)}</strong> has asked to swap shifts with you.</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(opts.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(opts.changeList)}</pre><p>If you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.</p><p><a href="${agreeUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Agree to the swap</a><a href="${declineUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Decline</a></p><p>— Quick Scheduling</p>`,
+      });
+      console.log(`[email-poll] Swap partner asked first: ${partnerEmail}`);
+    }
+  } catch (mailErr: any) {
+    console.log(`[email-poll] Swap partner notification failed: ${mailErr.message}`);
+  }
+}
+
+/** Tell the requester a swap partner agreed (bell + email). When
+ * nextName is given the plan is still waiting on another partner;
+ * when it is null the plan is now with the schedulers. Best-effort. */
+async function notifyRequesterPartnerAgreed(
+  query: QueryFn, row: any, agreedName: string, nextName: string | null,
+): Promise<void> {
+  try {
+    const { rows: urows } = await query(
+      `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+         AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
+      [row.company_id, row.source_from || '']);
+    if (urows.length) {
+      await notify({
+        companyId: row.company_id, userIds: [urows[0].id], category: 'schedule', type: 'swap_partner_agreed',
+        title: `${agreedName} agreed to the swap`,
+        body: nextName
+          ? `Now waiting for ${nextName} to agree — then it goes to the schedulers.`
+          : 'It is now with the schedulers for final approval.',
+        link: 'requests', bundleKey: 'swap_partner_agreed',
+      });
+    }
+  } catch { /* non-fatal */ }
+  try {
+    const { sendMail } = await import('./mailer.js');
+    const reqEmail = (row.source_from || '').trim();
+    if (reqEmail && reqEmail.includes('@')) {
+      const nextLine = nextName
+        ? `${agreedName} agreed to the swap. It is now waiting for ${nextName} to agree — if they agree too, it goes to the schedulers for final approval.`
+        : `${agreedName} agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.`;
+      await sendMail({
+        to: reqEmail,
+        subject: `Swap agreed: ${(row.plan_summary || '').substring(0, 60)}`,
+        text: `Hi,\n\n${nextLine}\n\nSummary: ${row.plan_summary}\n\nYou'll get another email with the final decision.\n\n— Quick Scheduling`,
+        html: `<p>Hi,</p><p><strong>${escHtml(agreedName)}</strong> ${nextName ? `agreed to the swap. It is now waiting for <strong>${escHtml(nextName)}</strong> to agree — if they agree too, it goes to the schedulers for final approval.` : 'agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.'}</p><p><strong>Summary:</strong> ${escHtml(row.plan_summary || '')}</p><p>You'll get another email with the final decision.</p><p>— Quick Scheduling</p>`,
+      });
+    }
+  } catch { /* non-fatal */ }
 }
 
 /** Bell + emails telling the APPROVERS a plan is waiting. Runs when a
@@ -1426,54 +1556,78 @@ export async function notifyPlanApprovers(
   }
 }
 
-/** The swap partner agreed: flip the plan to 'pending' and run the
- * approver notifications from the stored row. Returns false when the
- * plan was not waiting for a partner (already decided / raced). */
+/** The swap partner agreed: either advance to the NEXT partner
+ * (multi-partner plans — the requester is neither person, or the
+ * plan swaps with several pairs) or flip the plan to 'pending'
+ * and run the approver notifications from the stored row. Returns
+ * false when the plan was not waiting for a partner (already
+ * decided / raced). The claim UPDATE matches the current partner
+ * as well as the status, so a double-click by the same partner
+ * advances or releases the plan only once. */
 export async function releasePlanToApprovers(query: QueryFn, planId: string): Promise<boolean> {
   const { rows } = await query('SELECT * FROM schedule_plans WHERE id = $1', [planId]);
   if (!rows.length || rows[0].status !== 'awaiting_partner') return false;
   const row = rows[0];
-  const { rows: upd } = await query(
-    `UPDATE schedule_plans SET status = 'pending', partner_status = 'approved'
-     WHERE id = $1 AND status = 'awaiting_partner' RETURNING id`,
-    [planId]
-  );
-  if (!upd.length) return false;
   const plan = typeof row.plan === 'string' ? JSON.parse(row.plan) : row.plan;
   plan.summary = row.plan_summary;
   const fromLine = row.source_from_name ? `${row.source_from_name} <${row.source_from}>` : (row.source_from || '');
+  const agreedName = row.partner_name || 'Your swap partner';
+  // Partners still to agree, in order (migration 115). A partner
+  // who has since been deactivated cannot agree, so they are
+  // skipped — the approvers still decide finally.
+  let remaining: Array<{ id: string; name: string | null }> = [];
+  try {
+    const raw = row.partner_remaining;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (Array.isArray(parsed)) remaining = parsed.filter((p: any) => p && typeof p.id === 'string');
+  } catch { remaining = []; }
+  if (remaining.length) {
+    const { rows: activeRows } = await query(
+      `SELECT id FROM users WHERE company_id = $1 AND is_active = true AND id = ANY($2)`,
+      [row.company_id, remaining.map((p) => p.id)],
+    );
+    const active = new Set(activeRows.map((r: any) => String(r.id)));
+    remaining = remaining.filter((p) => active.has(String(p.id)));
+  }
+  if (remaining.length) {
+    // Advance: the next partner becomes the current one (fresh
+    // tokens — the old links stop working), the rest stay queued.
+    const next = remaining[0];
+    const rest = remaining.slice(1);
+    const nextApproveToken = crypto.randomBytes(32).toString('hex');
+    const nextRejectToken = crypto.randomBytes(32).toString('hex');
+    const { rows: upd } = await query(
+      `UPDATE schedule_plans
+          SET partner_user_id = $2, partner_name = $3, partner_status = 'pending',
+              partner_approve_token = $4, partner_reject_token = $5,
+              partner_remaining = $6
+         WHERE id = $1 AND status = 'awaiting_partner' AND partner_user_id = $7
+         RETURNING id`,
+      [planId, next.id, next.name, nextApproveToken, nextRejectToken,
+       rest.length ? JSON.stringify(rest) : null, row.partner_user_id],
+    );
+    if (!upd.length) return false;
+    await askSwapPartner(query, row.company_id, {
+      partner: next, plan, requesterName: row.source_from_name || null,
+      fromLine, body: row.source_body || '', changeList: renderChangeList(plan),
+      approveToken: nextApproveToken, rejectToken: nextRejectToken,
+    });
+    await notifyRequesterPartnerAgreed(query, row, agreedName, next.name || 'the next swap partner');
+    return true;
+  }
+  const { rows: upd } = await query(
+    `UPDATE schedule_plans SET status = 'pending', partner_status = 'approved', partner_remaining = NULL
+     WHERE id = $1 AND status = 'awaiting_partner' AND partner_user_id = $2 RETURNING id`,
+    [planId, row.partner_user_id]
+  );
+  if (!upd.length) return false;
   await notifyPlanApprovers(query, row.company_id, planId, plan, {
     fromLine, cc: row.source_cc, subject: row.source_subject, body: row.source_body,
     changeList: renderChangeList(plan),
     approveToken: row.approve_token, rejectToken: row.reject_token,
   });
   // Tell the requester the partner agreed — it's with the schedulers now.
-  try {
-    const { rows: urows } = await query(
-      `SELECT id FROM users WHERE company_id = $1 AND is_active = true
-         AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
-      [row.company_id, row.source_from || '']);
-    if (urows.length) {
-      await notify({
-        companyId: row.company_id, userIds: [urows[0].id], category: 'schedule', type: 'swap_partner_agreed',
-        title: `${row.partner_name || 'Your swap partner'} agreed to the swap`,
-        body: 'It is now with the schedulers for final approval.',
-        link: 'requests', bundleKey: 'swap_partner_agreed',
-      });
-    }
-  } catch { /* non-fatal */ }
-  try {
-    const { sendMail } = await import('./mailer.js');
-    const reqEmail = (row.source_from || '').trim();
-    if (reqEmail && reqEmail.includes('@')) {
-      await sendMail({
-        to: reqEmail,
-        subject: `Swap agreed: ${(row.plan_summary || '').substring(0, 60)}`,
-        text: `Hi,\n\n${row.partner_name || 'Your swap partner'} agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.\n\nSummary: ${row.plan_summary}\n\nYou'll get another email with the final decision.\n\n— Quick Scheduling`,
-        html: `<p>Hi,</p><p><strong>${escHtml(row.partner_name || 'Your swap partner')}</strong> agreed to the swap. Your request is now with the schedulers for final approval — the swap happens only once they approve it.</p><p><strong>Summary:</strong> ${escHtml(row.plan_summary || '')}</p><p>You'll get another email with the final decision.</p><p>— Quick Scheduling</p>`,
-      });
-    }
-  } catch { /* non-fatal */ }
+  await notifyRequesterPartnerAgreed(query, row, agreedName, null);
   return true;
 }
 
@@ -1528,17 +1682,19 @@ export async function rejectPlanByPartner(query: QueryFn, planId: string): Promi
  * same. Returns the new plan id. Throws on insert failure; all mail
  * steps are best-effort.
  *
- * Swap staging (Deepika 2026-11-01): a plan that swaps with ONE
- * partner is born 'awaiting_partner' — only the partner is notified
- * (bell + token email); approvers hear about it only if the partner
- * agrees (releasePlanToApprovers).
+ * Swap staging (Deepika 2026-11-01; multi-partner 2026-11-17): a
+ * plan that swaps is born 'awaiting_partner' — the partners are
+ * asked FIRST, in order, and the approvers are notified only when
+ * the last one agrees (releasePlanToApprovers).
  */
 export async function createPendingPlanFromChanges(
   query: QueryFn,
   companyId: string,
   plan: any,
   input: {
-    sourceId: string;
+    /** The source email's Message-ID; null when the plan did not
+     * come from an email (the Task door). */
+    sourceId: string | null;
     subject: string;
     cc: string | null;
     body: string;
@@ -1551,8 +1707,20 @@ export async function createPendingPlanFromChanges(
     requesterFooter?: { text: string; html: string };
     /** The swap partner, when the caller knows exactly who it is
      * (the request form). Swap staging uses it before name
-     * resolution; see resolveSwapPartner. */
+     * resolution; see resolveSwapPartners. */
     partnerUserId?: string | null;
+    /** The requester, when the caller knows the user id (the Task
+     * door — the session user). Wins over the senderAddress
+     * lookup below. */
+    requesterUserId?: string | null;
+    /** Task door only: the requester is looking at the chat, so
+     * skip the "Request received" email (the partner + approver
+     * mails still fire as needed). */
+    skipRequesterEmail?: boolean;
+    /** Task door only: Task plans never notified the approvers at
+     * creation (the requester approves in the chat) — keep that,
+     * and only notify them when a staged swap is released. */
+    skipApproverNotify?: boolean;
   }
 ): Promise<string> {
     // Warn-and-override: flag every change that puts someone on a shift type
@@ -1575,21 +1743,26 @@ export async function createPendingPlanFromChanges(
       plan.summary = `⛔ Schedule conflict: ${conflicted} swap${conflicted === 1 ? '' : 's'} can't happen as written (overlap or too little rest) — if approved, the conflicting swap${conflicted === 1 ? '' : 's'} will be skipped and reported with the reason. ` + (plan.summary || '');
     }
 
-    // Swap staging (Deepika 2026-11-01): a plan that swaps with ONE
-    // partner is born 'awaiting_partner' — the partner is asked
-    // FIRST, and the approvers are notified only if they agree.
-    let requesterId: string | null = null;
+    // Swap staging (Deepika 2026-11-01; multi-partner 2026-11-17):
+    // a plan that swaps is born 'awaiting_partner' — the partners
+    // are asked FIRST, in order, and the approvers are notified
+    // only when the last one agrees.
+    let requesterId: string | null = input.requesterUserId || null;
+    if (!requesterId) {
+      try {
+        const { rows: rrows } = await query(
+          `SELECT id FROM users WHERE company_id = $1 AND is_active = true
+             AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
+          [companyId, input.senderAddress || '']);
+        if (rrows.length) requesterId = rrows[0].id;
+      } catch { /* staging just falls back to the direct flow */ }
+    }
+    let partners: Array<{ id: string; name: string | null }> = [];
     try {
-      const { rows: rrows } = await query(
-        `SELECT id FROM users WHERE company_id = $1 AND is_active = true
-           AND (lower(email) = lower($2) OR lower(alt_email) = lower($2)) LIMIT 1`,
-        [companyId, input.senderAddress || '']);
-      if (rrows.length) requesterId = rrows[0].id;
-    } catch { /* staging just falls back to the direct flow */ }
-    let partner: { id: string; name: string | null } | null = null;
-    try {
-      partner = await resolveSwapPartner(query, companyId, plan, requesterId, input.partnerUserId || null);
-    } catch { partner = null; }
+      partners = await resolveSwapPartners(query, companyId, plan, requesterId, input.partnerUserId || null);
+    } catch { partners = []; }
+    const partner = partners.length ? partners[0] : null;
+    const partnerRemaining = partners.slice(1);
     const partnerApproveToken = partner ? crypto.randomBytes(32).toString('hex') : null;
     const partnerRejectToken = partner ? crypto.randomBytes(32).toString('hex') : null;
 
@@ -1603,8 +1776,9 @@ export async function createPendingPlanFromChanges(
       `INSERT INTO schedule_plans
        (company_id, source_email_id, source_subject, source_from, source_from_name, source_cc, source_body,
         plan_summary, plan, status, approve_token, reject_token, created_at,
-        partner_user_id, partner_name, partner_status, partner_approve_token, partner_reject_token)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13, $14, $15, $16, $17)
+        partner_user_id, partner_name, partner_status, partner_approve_token, partner_reject_token,
+        partner_remaining)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13, $14, $15, $16, $17, $18)
        RETURNING id`,
       [
         companyId,
@@ -1624,6 +1798,7 @@ export async function createPendingPlanFromChanges(
         partner ? 'pending' : null,
         partnerApproveToken,
         partnerRejectToken,
+        partnerRemaining.length ? JSON.stringify(partnerRemaining) : null,
       ]
     );
     const planId = insertedPlans[0].id;
@@ -1636,15 +1811,18 @@ export async function createPendingPlanFromChanges(
     const changeList = renderChangeList(plan);
 
     // Notify requester that their request was received. A staged swap
-    // says plainly where it goes first.
+    // says plainly where it goes first. (The Task door skips this
+    // email — the requester is looking at the chat.)
+    if (!input.skipRequesterEmail) {
     try {
       const { sendMail: sendConfirm } = await import('./mailer.js');
       const reqEmail = input.senderAddress;
       if (reqEmail && reqEmail.includes('@')) {
         // Include original CC recipients so they follow the request too.
         const ccList = String(input.cc || '').split(',').map((s: string) => s.trim()).filter((s: string) => s.includes('@') && s.toLowerCase() !== reqEmail.toLowerCase());
+        const partnerNames = [partner, ...partnerRemaining].map((p) => p && p.name).filter(Boolean);
         const nextStep = partner
-          ? `First, ${partner.name || 'your swap partner'} has to agree to the swap. If they agree, it goes to the schedulers for final approval — you'll hear again at each step.`
+          ? `First, ${partnerNames.length ? partnerNames.join(' and ') : 'your swap partner'} ${partnerNames.length > 1 ? 'have' : 'has'} to agree to the swap. If they agree, it goes to the schedulers for final approval — you'll hear again at each step.`
           : `Your request has been received and is awaiting approval.`;
         await sendConfirm({
           ...(input.fromAddr ? { from: input.fromAddr } : {}),
@@ -1656,59 +1834,24 @@ export async function createPendingPlanFromChanges(
         });
       }
     } catch { /* non-fatal */ }
+    }
 
     if (partner) {
       // Staged: the partner is asked FIRST (bell + a token email —
       // Agree / Decline, no login needed). The approvers hear nothing
       // yet; if the partner agrees, releasePlanToApprovers runs the
-      // full approver notifications. (Per-approver approver links:
+      // full approver notifications (or asks the next partner, when
+      // several must agree). (Per-approver approver links:
       // Deepika 2026-10-31, migration 068 — minted inside
       // notifyPlanApprovers.)
-      try {
-        await notify({
-          companyId, userIds: [partner.id], category: 'schedule', type: 'swap_partner_waiting',
-          title: `${input.senderName || 'A team member'} wants to swap shifts with you`,
-          body: plan.summary,
-          link: 'requests', bundleKey: 'swap_partner_waiting',
-          bundleTitle: '{count} swap requests are waiting for your agreement',
-        });
-      } catch { /* non-fatal */ }
-      try {
-        const { rows: prows } = await query(
-          'SELECT email FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [partner.id, companyId]);
-        const partnerEmail = prows.length ? String(prows[0].email || '') : '';
-        if (partnerEmail && partnerEmail.includes('@')) {
-          const { sendMail } = await import('./mailer.js');
-          const baseUrl = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
-          const agreeUrl = `${baseUrl}/api/schedule/plans/partner-approve/${partnerApproveToken}`;
-          const declineUrl = `${baseUrl}/api/schedule/plans/partner-reject/${partnerRejectToken}`;
-          await sendMail({
-            ...(input.fromAddr ? { from: input.fromAddr } : {}),
-            to: partnerEmail,
-            subject: `Swap request: ${plan.summary.substring(0, 60)}`,
-            text: `${input.fromLine} has asked to swap shifts with you.
-
-What they asked:
-${input.body}
-
-Changes to apply:
-${changeList}
-
-If you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.
-
-Agree: ${agreeUrl}
-Decline: ${declineUrl}
-
-— Quick Scheduling`,
-            html: `<p><strong>${escHtml(input.fromLine)}</strong> has asked to swap shifts with you.</p><p><strong>What they asked:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(input.body)}</pre><p><strong>Changes to apply:</strong></p><pre style="font-family:sans-serif;white-space:pre-wrap">${escHtml(changeList)}</pre><p>If you agree, the request then goes to the schedulers for final approval — the swap only happens after they approve it too.</p><p><a href="${agreeUrl}" style="background:#22c55e;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;margin-right:10px;">Agree to the swap</a><a href="${declineUrl}" style="background:#ef4444;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Decline</a></p><p>— Quick Scheduling</p>`,
-          });
-          console.log(`[email-poll] Swap partner asked first: ${partnerEmail}`);
-        }
-      } catch (mailErr: any) {
-        console.log(`[email-poll] Swap partner notification failed: ${mailErr.message}`);
-      }
-    } else {
-      // No single swap partner: the plan goes straight to the
+      await askSwapPartner(query, companyId, {
+        partner, plan, requesterName: input.senderName || null,
+        fromLine: input.fromLine, body: input.body, changeList,
+        fromAddr: input.fromAddr,
+        approveToken: partnerApproveToken!, rejectToken: partnerRejectToken!,
+      });
+    } else if (!input.skipApproverNotify) {
+      // No swap partner: the plan goes straight to the
       // approvers, as before.
       await notifyPlanApprovers(query, companyId, planId, plan, {
         fromLine: input.fromLine, cc: input.cc, subject: input.subject, body: input.body,

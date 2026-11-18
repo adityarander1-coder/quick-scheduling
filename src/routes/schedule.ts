@@ -10903,7 +10903,7 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
 // gathered first: one problem keeps today's targeted question + tappable
 // options, several become ONE question listing everything needed, so the
 // user answers once instead of one question per detail.
-async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[], senderEmail?: string | null) {
+async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[], senderEmail?: string | null, requesterUserId?: string | null) {
   const { collectNameProblems, decideClarification } = await import('../util/askRouting.js');
   const nameProblems = collectNameProblems(plan, memberNames, shiftNames);
   const { changeProblems } = await import('../util/emailPoller.js');
@@ -10998,29 +10998,45 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
     const d = decideClarification(problems);
     return { type: 'clarification' as const, question: d.question, options: d.options };
   }
-  // Warn-and-override: flag every change that puts someone on a shift type
-  // their job role is not eligible for. The warning rides on the change into
-  // every preview; approving the plan overrides it (execution never blocks).
-  const { validatePlanEligibility } = await import('../util/planExecutor.js');
-  const warned = await validatePlanEligibility(companyId, plan.changes || []);
-  if (warned > 0) {
-    plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
+  // One shared brain (Deepika, 2026-11-11) and partner-first
+  // (2026-11-17): the plan is created through the SAME helper the
+  // email engine and the request form use — same eligibility +
+  // conflict flags, same partner staging (a swap is born
+  // 'awaiting_partner' until every partner agrees), same tokens.
+  // The Task door only differs in notification: the requester is
+  // looking at the chat, so no "Request received" email and no
+  // approver notification at creation — the approvers hear about a
+  // staged swap only when the last partner agrees and releases it.
+  const { createPendingPlanFromChanges } = await import('../util/emailPoller.js');
+  let senderName: string | null = null;
+  if (requesterUserId) {
+    try {
+      const { rows: nrows } = await query(
+        `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name FROM users WHERE id = $1 AND company_id = $2`,
+        [requesterUserId, companyId]);
+      if (nrows.length) senderName = nrows[0].name || null;
+    } catch { /* fromLine falls back to the email */ }
   }
-  // Schedule-conflict flags (Deepika 2026-11-01): swaps that would
-  // double-book someone or leave them under 8 hours of rest are
-  // flagged here and skipped at execution with the reason reported.
-  const { validatePlanConflicts } = await import('../util/planExecutor.js');
-  const conflicted = await validatePlanConflicts(companyId, plan.changes || []);
-  if (conflicted > 0) {
-    plan.summary = `⛔ Schedule conflict: ${conflicted} swap${conflicted === 1 ? '' : 's'} can't happen as written (overlap or too little rest) — if approved, the conflicting swap${conflicted === 1 ? '' : 's'} will be skipped and reported with the reason. ` + (plan.summary || '');
-  }
-  const { rows } = await query(
-    `INSERT INTO schedule_plans
-     (company_id, source_subject, source_body, plan_summary, plan, status, created_at)
-     VALUES ($1, $2, $3, $4, $5, 'pending', NOW()) RETURNING id`,
-    [companyId, 'In-app agent task', task, plan.summary, JSON.stringify(plan)]
-  );
-  return { type: 'plan' as const, planId: rows[0].id, summary: plan.summary, changes: plan.changes };
+  const planId = await createPendingPlanFromChanges(query, companyId, plan, {
+    sourceId: null,
+    subject: 'In-app agent task',
+    cc: null,
+    body: task,
+    senderAddress: senderEmail || '',
+    senderName,
+    fromAddr: null,
+    fromLine: senderName ? `${senderName}${senderEmail ? ` <${senderEmail}>` : ''}` : (senderEmail || 'In-app agent task'),
+    requesterUserId: requesterUserId || null,
+    skipRequesterEmail: true,
+    skipApproverNotify: true,
+  });
+  const { rows: stRows } = await query(
+    'SELECT status, partner_name AS "partnerName" FROM schedule_plans WHERE id = $1',
+    [planId]);
+  return {
+    type: 'plan' as const, planId, summary: plan.summary, changes: plan.changes,
+    status: stRows[0]?.status || 'pending', partnerName: stRows[0]?.partnerName || null,
+  };
 }
 
 // Ask context for /ask-task (same roster + department-visibility rules as
@@ -11089,12 +11105,12 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
       res.json({ ok: false, error: classifyPlanError(planErr?.message || '') });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames, await sessionUserEmail(req));
+    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
     if (fin.type === 'clarification') {
       res.json({ ok: false, needsClarification: fin.question, clarificationOptions: fin.options, clarificationItems: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: task });
       return;
     }
-    res.json({ ok: true, planId: fin.planId, summary: fin.summary, changes: fin.changes });
+    res.json({ ok: true, planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
   } catch (err) {
     console.error('[schedule] agent-plan failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -11116,7 +11132,7 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
 
 type TaskPickResult =
   | { ok: true; allAnswered: false; answers: Record<string, string> }
-  | { ok: true; allAnswered: true; kind: 'plan'; planId: string; summary: string; changes: any[] }
+  | { ok: true; allAnswered: true; kind: 'plan'; planId: string; summary: string; changes: any[]; status?: string; partnerName?: string | null }
   | { ok: true; allAnswered: true; kind: 'clarification'; question: string; options: string[]; items?: any[] | null; token?: string | null; originalTask: string }
   | { ok: false; error: string };
 
@@ -11139,7 +11155,7 @@ async function finishTaskCompletion(
     const { plan, memberNames, shiftNames } = await runTaskPlan(row.company_id, stitched, []);
     const fin = await finalizeTaskPlan(row.company_id, plan, stitched, memberNames, shiftNames, row.sender_address);
     if (fin.type === 'plan') {
-      return { ok: true, allAnswered: true, kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes };
+      return { ok: true, allAnswered: true, kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName };
     }
     return {
       ok: true, allAnswered: true, kind: 'clarification',
@@ -11361,12 +11377,12 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
         res.json({ kind: 'answer', answer: TASK_MODE_SIGNPOST });
         return;
       }
-      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req));
+      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
       if (fin.type === 'clarification') {
         res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
         return;
       }
-      res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });
+      res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
       return;
     }
     // Routing is decided from state + wording (see util/askRouting): a
@@ -11407,12 +11423,12 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
       res.json({ kind: 'answer', answer: fallbackAnswer || (plan as any).summary || 'I could not answer that question.' });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req));
+    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
     if (fin.type === 'clarification') {
       res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
       return;
     }
-    res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes });
+    res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
   } catch (err) {
     console.error('[schedule] ask-task failed:', err);
     res.status(500).json({ kind: 'error', error: 'Something went wrong. Please try again.' });

@@ -1,0 +1,22 @@
+-- 115: sequential multi-partner staging for AI swap plans (Deepika, 2026-11-17).
+-- Migration 072 staged a swap plan at ONE partner (partner_user_id /
+-- partner_name / partner_status / partner_approve_token /
+-- partner_reject_token on schedule_plans). That covered the common
+-- case — the requester is one of the two people swapping — but three
+-- shapes still went straight to the approvers:
+--   (1) the requester is NEITHER person in the swap, so BOTH people
+--       must agree before the admins see it;
+--   (2) a plan with several swaps involving different pairs;
+--   (3) the requester is the toPerson side of the swap (the old
+--       resolver only looked at toPerson, so it resolved to the
+--       requester and gave up).
+-- partner_remaining holds the partners still to agree, in order, as a
+-- JSON array of {id, name}. The CURRENT waiting partner still lives
+-- in partner_user_id / partner_name / partner_*_token, so every
+-- existing route, bell, email link and Requests-tab render keeps
+-- working unchanged: when the current partner agrees, the next one
+-- in partner_remaining is promoted into those columns (fresh tokens,
+-- partner_status back to 'pending') and asked; only when the list is
+-- empty does the plan flip to 'pending' and reach the approvers.
+-- A decline by ANY partner still closes the whole plan as rejected.
+ALTER TABLE schedule_plans ADD COLUMN IF NOT EXISTS partner_remaining jsonb;
