@@ -2406,11 +2406,11 @@
           #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-schedule .sched-control-box .sched-h1-row .sched-h1 { margin: 0; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
-          /* Filter bar arrangement (Deepika, 2026-11-18): on phones the bar
+          /* Filter bar phone fix (Deepika, 2026-11-18): on phones the bar
              wraps into tidy rows — the dropdowns stack full width and Upload
-             goes full width, so nothing is truncated or cut off. */
+             is a compact button at the right, never a full-width slab. */
           #tab-schedule .sched-control-box #sched-dept-filter > [data-pin] { flex: 1 1 100%; }
-          #tab-schedule .sched-control-box #sched-upload-btn { flex: 1 1 100%; }
+          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: auto; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
           #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
@@ -2444,6 +2444,15 @@
           #tab-schedule .sched-toolbar #sched-block-make { flex: 1 1 100%; padding: 11px; }
           #tab-schedule .sched-control-box .date-nav { margin: 0; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
+          /* Filter bar phone fix (Deepika, 2026-11-18): View options sits
+             IN the top row with Undo/Redo/Today — the wrap is pushed left
+             with margin-right:auto, the rest stays right. Undo/Redo are
+             icon-only here (labels hidden) so all four fit on one line;
+             the row may wrap on very narrow screens rather than overflow. */
+          #tab-schedule .sched-control-box .sched-h1-row { flex-wrap: wrap; gap: 8px; }
+          #tab-schedule .sched-control-box .sched-h1-row .qs-vo-wrap { margin-right: auto; }
+          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-btn { padding: 0.5rem 0.6rem; }
+          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-lab { display: none; }
         }
       </style>
 
@@ -2499,8 +2508,8 @@
             <button type="button" data-view="block" role="tab">Block view</button>
           </div>
           <div class="date-nav">
-            <button type="button" id="qs-undo-band" class="qs-ur-btn qs-ur-band" title="Undo (Ctrl+Z)">↩ Undo</button>
-            <button type="button" id="qs-redo-band" class="qs-ur-btn qs-ur-band" title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
+            <button type="button" id="qs-undo-band" class="qs-ur-btn qs-ur-band" title="Undo (Ctrl+Z)">↩ <span class="qs-ur-lab">Undo</span></button>
+            <button type="button" id="qs-redo-band" class="qs-ur-btn qs-ur-band" title="Redo (Ctrl+Shift+Z)">↪ <span class="qs-ur-lab">Redo</span></button>
             <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
@@ -7906,6 +7915,18 @@
             var nx = $('sched-next');
             if (today.parentNode !== nav) { if (nx) nav.insertBefore(today, nx); else nav.appendChild(today); }
             if (schedH1Row && schedH1Row.parentNode) {
+              // Rescue the nodes the phone layout moved into the heading
+              // row before the row itself is removed — once removed,
+              // getElementById can no longer find them and they would be
+              // lost (this stranded View options + Undo/Redo on a
+              // phone->desktop resize, Deepika 2026-11-18 phone fix).
+              var pv = $('sched-prev');
+              var ub2 = $('qs-undo-band'), rb2 = $('qs-redo-band');
+              if (ub2 && ub2.parentNode === schedH1Row) { if (pv) nav.insertBefore(ub2, pv); else nav.appendChild(ub2); }
+              if (rb2 && rb2.parentNode === schedH1Row) { if (pv) nav.insertBefore(rb2, pv); else nav.appendChild(rb2); }
+              var vw = schedH1Row.querySelector('.qs-vo-wrap');
+              var dr = $('sched-date-row');
+              if (vw && dr) dr.parentNode.insertBefore(vw, dr);
               schedH1Row.parentNode.insertBefore(h1, schedH1Row);
               schedH1Row.parentNode.removeChild(schedH1Row);
               schedH1Row = null;
@@ -7933,12 +7954,34 @@
           }
         }
         placeBandBtns();
+        // Phone (<=700px): View options joins the top row with Undo/Redo/
+        // Today (Deepika, 2026-11-18 — her phone screenshot: the button
+        // floated alone on its own line, out of place). The wrap itself is
+        // moved, so its click handler and popup move with it. Wider screens
+        // put it back in front of the date row. Runs after placeSchedToday
+        // (which creates the heading row) and placeBandBtns.
+        function placeVoBtn() {
+          var wrap = document.querySelector('#tab-schedule .qs-vo-wrap');
+          var today = $('sched-today');
+          var dateRow = $('sched-date-row');
+          if (!wrap || !today || !dateRow) return;
+          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          if (phone && today.parentNode && today.parentNode.classList.contains('sched-h1-row')) {
+            var row = today.parentNode;
+            if (wrap.parentNode !== row) row.insertBefore(wrap, row.firstChild);
+          } else {
+            if (wrap.nextElementSibling !== dateRow) dateRow.parentNode.insertBefore(wrap, dateRow);
+          }
+        }
+        placeVoBtn();
         if (window.matchMedia) {
           var schedMql = window.matchMedia('(max-width: 700px)');
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeSchedToday);
           else if (schedMql.addListener) schedMql.addListener(placeSchedToday);
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeBandBtns);
           else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
+          if (schedMql.addEventListener) schedMql.addEventListener('change', placeVoBtn);
+          else if (schedMql.addListener) schedMql.addListener(placeVoBtn);
         }
         document.addEventListener('qs-cover-claimed', function () {
           // Pickup lands in place (Deepika 2026-11-02): refresh only the
