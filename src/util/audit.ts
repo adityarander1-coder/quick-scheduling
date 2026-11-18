@@ -292,7 +292,7 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
     const typeIdByName = new Map<string, string | null>();
     const settingsActions = new Set(['add_job_role', 'rename_job_role', 'delete_job_role',
       'add_department', 'rename_department', 'add_team_member', 'update_team_member',
-      'add_shift_type', 'rename_shift_type', 'set_staffing_target']);
+      'add_shift_type', 'rename_shift_type', 'add_rotation', 'set_staffing_target']);
     for (let i = 0; i < changes.length; i++) {
       const c = changes[i];
       const r = (results as any[])[i];

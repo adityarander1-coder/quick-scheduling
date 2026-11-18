@@ -10414,6 +10414,7 @@ window.qsNpOfferSend = function (btn) {
             case 'add_team_member': return 'Add team member ' + c.firstName + ' ' + c.lastName + (c.department ? ' to ' + c.department : '');
             case 'update_team_member': return 'Update ' + c.person + (c.jobRoleName ? ' → role ' + c.jobRoleName : '') + (c.department ? ' → ' + c.department : '');
             case 'add_shift_type': return 'Add shift type "' + c.shiftType + '"' + (c.department ? ' to ' + c.department : '');
+            case 'add_rotation': return 'Create rotation for ' + c.person + ' — ' + c.shiftType + ' (' + (Array.isArray(c.weekdays) && c.weekdays.length ? c.weekdays.map(function (w) { return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][w]; }).join(', ') + (c.cycleWeeks && c.cycleWeeks > 1 ? ' every ' + c.cycleWeeks + ' weeks' : ' every week') : (Array.isArray(c.days) && c.days.length ? 'cycle days ' + c.days.join(', ') + ' of a ' + (c.cycleDays || 7) + '-day cycle' : 'no pattern')) + ' from ' + (c.startDate || '?') + ')';
             case 'rename_shift_type': return 'Rename shift "' + c.shiftType + '" → "' + c.newShiftType + '"';
             case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
             case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;

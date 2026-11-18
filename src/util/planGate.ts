@@ -34,6 +34,7 @@
 // the clarification reply), never a parallel system.
 
 import { matchName } from './planHelpers.js';
+import { resolveRotationPattern } from './planExecutor.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
 import { getGeneratedTypeIds, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
@@ -537,7 +538,7 @@ export async function deriveHolderMismatch(
 }
 
 const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> = [
-  { actions: ['assign', 'assign_recurring', 'unassign', 'update_team_member'], field: 'person', label: 'the person' },
+  { actions: ['assign', 'assign_recurring', 'unassign', 'update_team_member', 'add_rotation'], field: 'person', label: 'the person' },
   { actions: ['move', 'swap'], field: 'fromPerson', label: 'the person to move from' },
   { actions: ['move', 'swap'], field: 'toPerson', label: 'the person to move to' },
   { actions: ['add_session', 'update_session'], field: 'presenter', label: 'the presenter' },
@@ -626,6 +627,16 @@ export async function gatePlanChanges(
   const list = Array.isArray(changes) ? changes : [];
   if (!list.length) return { ok: true };
 
+  // The AI can NEVER delete a job role (Deepika, 2026-11-17 — "it
+  // can add but cannot delete"): refuse plainly, in both doors,
+  // before any other check. This is the deterministic backstop for
+  // a planner slip or a stale plan written before the removal — the
+  // planner no longer lists the action, and the executor no longer
+  // has a branch for it, so this is the third lock.
+  if (list.some((c) => c.action === 'delete_job_role')) {
+    return { ok: false, question: `I can't delete job roles — the AI can add a job role but never delete one. An admin can delete it in Settings → Job roles.` };
+  }
+
   const roster = await loadGateRoster(query, companyId);
   // ---- 1. exact names -------------------------------------------------
   const resolved = new Map<any, Map<string, RosterUser>>();
@@ -653,6 +664,44 @@ export async function gatePlanChanges(
       }
       per.set(field, res.user);
       c[field] = res.user.fullName; // canonical — downstream lookups stay exact
+    }
+  }
+
+  // ---- 1b. rotation changes ------------------------------------------
+  // add_rotation: the person is resolved exactly by step 1 above.
+  // The shift type must exist, the start date must be valid, and the
+  // pattern must resolve — anything missing or ambiguous is one
+  // clarification, never a guess. No eligibility gate, matching the
+  // manual flow (known open gap, flagged 2026-11-14).
+  {
+    const rotChanges = list.filter((c) => c.action === 'add_rotation');
+    if (rotChanges.length) {
+      const { rows: strows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      for (const c of rotChanges) {
+        if (!c.person || !String(c.person).trim()) {
+          return { ok: false, question: `Who should the rotation be for?` };
+        }
+        const personName = String(c.person);
+        const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
+        if (!type) {
+          return { ok: false, question: c.shiftType
+            ? `I couldn't find a shift type called "${c.shiftType}". Which shift type should the rotation be for?`
+            : `Which shift type should ${personName}'s rotation be for?` };
+        }
+        if (!c.startDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(c.startDate))
+          || Number.isNaN(new Date(String(c.startDate) + 'T00:00:00Z').getTime())) {
+          return { ok: false, question: `When should ${personName}'s ${type.name} rotation start?` };
+        }
+        try {
+          resolveRotationPattern(c);
+        } catch (err: any) {
+          return { ok: false, question: err?.message || `Which days should ${personName} work on the ${type.name} rotation?` };
+        }
+      }
     }
   }
 

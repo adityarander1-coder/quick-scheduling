@@ -63,6 +63,19 @@ export async function mergeClarificationItems(
     const requestText = opts.requestText;
     const gateShiftItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind === 'shift'));
     const gateNameItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind !== 'shift'));
+    // A gate refusal with no click rows is the whole answer (Deepika,
+    // 2026-11-17 — the AI can never delete a job role): the request's
+    // words must not be re-read as name fragments. "Nurse" in "Nurse
+    // Practitioner" is a job role, not Nancy Nurse, and "role" is not
+    // Ron Roleless — without this the merge below replaces the refusal
+    // with a "did you mean …?" question about people who were never
+    // asked about. Question-only refusals (undrafted dates, no open
+    // slots, a missing rotation pattern) keep their plain wording the
+    // same way; anything carrying click rows, a holder mismatch, a
+    // conflict, or incomplete fields still flows through the merge.
+    if (gateQuestion && !gateNameItems.length && !gateShiftItems.length && !gateHolderMismatch && !opts.gateBlockedByConflict && !(opts.incompleteCount || 0)) {
+      return { detail: gateQuestion, items: null };
+    }
     const seenFrag = new Set<string>();
     const nameItems: any[] = [];
     const pushName = (it: any) => {

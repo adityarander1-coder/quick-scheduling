@@ -155,6 +155,15 @@ export function changeProblems(change: any): string[] {
       if (missing(change.shiftType)) problems.push('no shift type name given');
       if (missing(change.department)) problems.push('no department given');
       break;
+    case 'add_rotation': {
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      if (missing(change.startDate)) problems.push('no start date given');
+      const hasWeekdays = Array.isArray(change.weekdays) && change.weekdays.length > 0;
+      const hasDays = Array.isArray(change.days) && change.days.length > 0;
+      if (!hasWeekdays && !hasDays) problems.push('no pattern days given');
+      break;
+    }
     case 'rename_shift_type':
       if (missing(change.shiftType)) problems.push('no shift type name given');
       if (missing(change.newShiftType)) problems.push('no new shift type name given');
@@ -1236,12 +1245,24 @@ export async function processScheduleEmail(
  * requester confirmation, the approver email and the swap-partner
  * email so everyone reads exactly what will happen. */
 export function renderChangeList(plan: any): string {
+  const wdName = (n: number) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][n] || '';
+  const rotPattern = (c: any): string => {
+    if (Array.isArray(c.weekdays) && c.weekdays.length) {
+      const cw = c.cycleWeeks && Number(c.cycleWeeks) > 1 ? ` every ${c.cycleWeeks} weeks` : ' every week';
+      return `${c.weekdays.map(wdName).join(', ')}${cw}`;
+    }
+    if (Array.isArray(c.days) && c.days.length) {
+      return `cycle days ${c.days.join(', ')} of a ${c.cycleDays || 7}-day cycle`;
+    }
+    return 'no pattern given';
+  };
   return (plan.changes || []).map((c: any, i: number) => {
     const desc = c.action === 'assign_recurring' ? `${c.person} → ${c.shiftType} every ${c.intervalWeeks} weeks from ${c.startDate}${c.weekendsOff ? ', weekdays only' : ''}${c.untilDate ? ` until ${c.untilDate}` : ''}`
       : c.action === 'assign' ? `${c.person} → ${c.shiftType} on ${c.date}`
       : c.action === 'unassign' ? `Remove ${c.person} from ${c.shiftType ? `${c.shiftType} ` : ''}on ${c.date}`
       : c.action === 'swap' ? `Swap: ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.fromDate || c.date} ↔ ${c.toPerson}'s shift on ${c.toDate || c.date}`
       : c.action === 'move' ? `Move ${c.fromPerson}'s ${c.shiftType || 'shift'} on ${c.date} to ${c.toPerson}`
+      : c.action === 'add_rotation' ? `Create rotation for ${c.person} — ${c.shiftType}, ${rotPattern(c)} from ${c.startDate || 'no start date'}`
       : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
       : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
       : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`

@@ -196,12 +196,12 @@ export function collectNameProblems(
   const personFields: Array<[any, string]> = [];
   const shiftFields: Array<[any, string]> = [];
   for (const c of plan.changes || []) {
-    if (['assign', 'assign_recurring', 'unassign', 'update_team_member'].includes(c.action) && c.person) personFields.push([c, 'person']);
+    if (['assign', 'assign_recurring', 'unassign', 'update_team_member', 'add_rotation'].includes(c.action) && c.person) personFields.push([c, 'person']);
     if (['move', 'swap'].includes(c.action)) {
       if (c.fromPerson) personFields.push([c, 'fromPerson']);
       if (c.toPerson) personFields.push([c, 'toPerson']);
     }
-    if (['assign', 'assign_recurring', 'set_staffing_target'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
+    if (['assign', 'assign_recurring', 'set_staffing_target', 'add_rotation'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
   }
   for (const [c, f] of personFields) {
     const m = matchName(c[f], memberNames);

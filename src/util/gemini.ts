@@ -159,10 +159,11 @@ function geminiCallSucceeded(): void {
 }
 
 interface PlanChange {
-  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
+  action: 'assign' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
           'add_department' | 'rename_department' |
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
+          'add_rotation' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
           'add_session' | 'update_session' | 'cancel_session';
@@ -182,6 +183,13 @@ interface PlanChange {
   email?: string;           // for add_team_member
   newShiftType?: string;    // for rename_shift_type
   targetCount?: number;     // for set_staffing_target
+  // Per-person rotation fields (add_rotation)
+  weekdays?: number[];      // 0=Sun..6=Sat, e.g. [1,3,5] = Mon/Wed/Fri
+  cycleWeeks?: number;      // 1 = every week, 2 = every other week
+  days?: number[];          // explicit cycle days, 1-based (e.g. 7 on / 7 off)
+  cycleDays?: number;       // cycle length in days, 1-84 (with days)
+  endDate?: string;         // optional last day of the rotation (YYYY-MM-DD)
+  rotationName?: string;    // optional rotation name
   // Calendar session fields (add_session / update_session / cancel_session)
   dashboard?: string;       // dashboard name, e.g. "Calendars"
   title?: string;           // add_session: the title; update_session: the NEW title
@@ -291,7 +299,7 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
+      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
       "person": "Full Name (for assign/unassign/update_team_member)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
@@ -308,6 +316,12 @@ Respond with JSON only, no other text:
       "email": "Email (for add_team_member)",
       "newShiftType": "New shift type name (for rename_shift_type)",
       "targetCount": "Number (for set_staffing_target)",
+      "weekdays": "Array of weekday numbers 0=Sun..6=Sat (for add_rotation, e.g. [1,3,5] = Mon/Wed/Fri)",
+      "cycleWeeks": "Number, every N weeks (for add_rotation, 1 = every week, 2 = every other week)",
+      "days": "Array of cycle-day numbers, 1-based (for add_rotation, e.g. [1,2,3,4,5,6,7] for 7 on / 7 off)",
+      "cycleDays": "Number, cycle length in days 1-84 (for add_rotation with days)",
+      "endDate": "YYYY-MM-DD, last day of the rotation (for add_rotation, optional)",
+      "rotationName": "Rotation name (for add_rotation, optional)",
       "dashboard": "Dashboard name (for session actions)",
       "title": "Session title (for add_session; the NEW title for update_session)",
       "sessionTitle": "The session's current title (for update_session/cancel_session)",
@@ -349,7 +363,6 @@ Rules:
 - For "settings_change": fill in "changes" with settings actions. Supported actions:
   - "add_job_role": needs jobRoleName + department. Example: "Add PGY4 role to IM Residency" → jobRoleName "PGY4", department "IM Residency".
   - "rename_job_role": needs jobRoleName + newJobRoleName + department.
-  - "delete_job_role": needs jobRoleName + department. Example: "Delete secretary from internal medicine" → jobRoleName "secretary", department "internal medicine".
   - "add_department": needs department. Example: "Add Cardiology department" → department "Cardiology".
   - "rename_department": needs department + newDepartment.
   - "add_team_member": needs firstName + lastName; department and jobRoleName optional. Example: "Add John Smith to IM Residency as PGY2" → firstName "John", lastName "Smith", department "IM Residency", jobRoleName "PGY2".
@@ -357,6 +370,8 @@ Rules:
   - "add_shift_type": needs shiftType + department. Example: "Add Cardiology shift to IM Residency" → shiftType "Cardiology", department "IM Residency".
   - "rename_shift_type": needs shiftType + newShiftType.
   - "set_staffing_target": needs shiftType + targetCount. Example: "Set staffing of 2 for Cardiology" → shiftType "Cardiology", targetCount 2.
+  - "add_rotation": a per-person rotation — one person, one shift type, one repeating pattern, a start date. Needs person + shiftType + startDate + a pattern: weekdays + cycleWeeks (1 = every week, 2 = every other week), OR days + cycleDays. Weekdays are numbers 0=Sun..6=Sat. Example: "Give Gaj a Night Hospitalist rotation, Monday Wednesday Friday every week starting Dec 1" → person "Gaj Cha", shiftType "Night Hospitalist", startDate "2026-12-01", weekdays [1,3,5], cycleWeeks 1. "7 on / 7 off starting Dec 1" → days [1,2,3,4,5,6,7], cycleDays 14. If the pattern (which days) or the start date is missing, do NOT emit the change — set needsClarification to ask for it, and confidence to "low". Group rotations and pairing are NOT supported — never plan them. Optional: endDate (the rotation's last day) and rotationName.
+  - NEVER delete a job role: there is no delete action for job roles — the AI can add a job role but can NEVER delete one. If the request asks to delete a job role, do NOT emit any change — set needsClarification to "I can't delete job roles — the AI can add a job role but never delete one. An admin can delete it in Settings → Job roles." and confidence to "low".
   Match department/shift type names against the lists above; if none matches, ask in needsClarification. If critical info is missing, set needsClarification.
 - For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today.
 - Calendar sessions live on dashboards (see the dashboard / session lists above). Use these actions, classified as "change_request":
@@ -450,11 +465,9 @@ Rules:
 function fallbackSuggestions(action: string, task: string): string[] {
   const t = task.toLowerCase();
   if (action.includes('job_role')) {
-    if (action.includes('delete')) return ['Add a replacement job role', 'Reassign affected team members'];
     return ['Assign this role to a team member', 'Allow this role on a shift type'];
   }
   if (action.includes('team_member')) {
-    if (action.includes('delete')) return ['Reassign their shifts to someone else'];
     return ['Assign them to a shift', 'Set their job role'];
   }
   if (action.includes('department')) {
@@ -465,6 +478,7 @@ function fallbackSuggestions(action: string, task: string): string[] {
   }
   if (action === 'assign') return ['Assign another person to this shift', 'Publish this shift'];
   if (action === 'unassign') return ['Find a replacement for this shift', 'Publish the updated day'];
+  if (action === 'add_rotation') return ['Add a rotation for someone else', 'Publish the updated shifts'];
   // No suggestion after a publish: the old 'Check the schedule for gaps'
   // entry was removed (Deepika, 2026-11-12) — tapping it only re-sent
   // those words as a plain Task and the planner re-planned the change,
@@ -492,7 +506,7 @@ What was done: "${planSummary}"
 
 Suggest 1-3 logical NEXT tasks the admin would likely want to do now, as short plain-language commands (each under 12 words, written as a direct command like "Assign Priya to night shift Oct 20").
 Rules:
-- Only suggest tasks this scheduling app can do: assign/unassign/move/swap shifts, add/rename departments, job roles, team members, shift types, set staffing targets, publish/unpublish shifts.
+- Only suggest tasks this scheduling app can do: assign/unassign/move/swap shifts, add/rename departments, job roles, team members, shift types, add rotations, set staffing targets, publish/unpublish shifts.
 - Make them specific follow-ups to what was just done (e.g. after adding a job role → assign it to people; after removing someone → fill the gap).
 - If nothing logically follows, return an empty list.
 - Return ONLY a JSON array of strings, no other text. Example: ["Assign the Night NP role to Priya", "Set staffing target for Night shift"]`;

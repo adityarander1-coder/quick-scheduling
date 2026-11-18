@@ -7,10 +7,11 @@ import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 
 interface PlanChange {
-  action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' | 'delete_job_role' |
+  action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
           'add_department' | 'rename_department' |
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
+          'add_rotation' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
           'add_session' | 'update_session' | 'cancel_session';
@@ -35,6 +36,13 @@ interface PlanChange {
   email?: string;
   newShiftType?: string;
   targetCount?: number;
+  // Per-person rotation fields (add_rotation, Deepika 2026-11-17)
+  weekdays?: number[]; // 0=Sun..6=Sat, weekly pattern
+  cycleWeeks?: number; // 1 = every week, 2 = every other week (default 1)
+  days?: number[]; // explicit cycle days, 1-based (alternative to weekdays)
+  cycleDays?: number; // cycle length in days, 1-84 (with days; default 7)
+  endDate?: string; // optional last day of the rotation (Rule 7)
+  rotationName?: string; // optional name; default "Person — ShiftType"
   // Calendar session fields (add_session / update_session / cancel_session)
   dashboard?: string;
   title?: string;
@@ -175,6 +183,64 @@ async function findDepartment(companyId: string, name: string): Promise<{ id: st
 
 async function findMember(companyId: string, name: string): Promise<{ id: string; display: string } | null> {
   return findUser(companyId, name);
+}
+
+/**
+ * Resolve an add_rotation change's pattern into the manual flow's
+ * shape — a cycle length (1–84 days) and the 1-based cycle days the
+ * person works (cycle day 1 = the start date), exactly what Settings
+ * → Rotations stores in rotations + rotation_assignments. The
+ * planner speaks weekdays ("Monday Wednesday Friday every week"),
+ * so the weekday form is converted here, deterministically, from the
+ * start date — the planner never does calendar math by hand. The
+ * explicit form ("7 on / 7 off" → days 1–7 of a 14-day cycle) passes
+ * through as given. Shared with the plan gate, so a bad pattern is
+ * refused as a clarification before any plan is built. Throws a
+ * plain-words error when the pattern cannot be resolved.
+ */
+export function resolveRotationPattern(change: {
+  startDate?: string; weekdays?: unknown; cycleWeeks?: unknown; days?: unknown; cycleDays?: unknown;
+}): { cycleDays: number; days: number[] } {
+  const start = String(change.startDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || Number.isNaN(new Date(start + 'T00:00:00Z').getTime())) {
+    throw new Error('A valid start date is needed for the rotation.');
+  }
+  const startWeekday = new Date(start + 'T00:00:00Z').getUTCDay();
+  const daysArr = Array.isArray(change.days)
+    ? (change.days as any[]).map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n)) : [];
+  const wds = Array.isArray(change.weekdays)
+    ? (change.weekdays as any[]).map((n: any) => Number(n)).filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 6) : [];
+  if (daysArr.length) {
+    let cd: number;
+    if (change.cycleDays === undefined || change.cycleDays === null || change.cycleDays === '') {
+      const maxDay = Math.max(...daysArr);
+      if (maxDay > 7) throw new Error('How long is the rotation cycle in days? The pattern days go past one week.');
+      cd = 7;
+    } else {
+      cd = Number(change.cycleDays);
+    }
+    if (!Number.isInteger(cd) || cd < 1 || cd > 84) throw new Error('The rotation cycle must be 1–84 days.');
+    const bad = daysArr.find((d) => d < 1 || d > cd);
+    if (bad !== undefined) throw new Error(`Day ${bad} of the pattern falls outside the ${cd}-day cycle.`);
+    return { cycleDays: cd, days: [...new Set(daysArr)].sort((a, b) => a - b) };
+  }
+  if (wds.length) {
+    const cw = change.cycleWeeks === undefined || change.cycleWeeks === null || change.cycleWeeks === ''
+      ? 1 : Number(change.cycleWeeks);
+    if (!Number.isInteger(cw) || cw < 1 || cw > 12) throw new Error('The rotation must repeat every 1–12 weeks.');
+    const cycleDays = cw * 7;
+    const out = new Set<number>();
+    for (let w = 0; w < cw; w++) {
+      for (const wd of wds) out.add(w * 7 + ((wd - startWeekday + 7) % 7) + 1);
+    }
+    return { cycleDays, days: [...out].sort((a, b) => a - b) };
+  }
+  throw new Error('The rotation needs its days — for example, Monday Wednesday Friday every week.');
+}
+
+/** Short weekday names for rotation pattern descriptions (0=Sun). */
+export function weekdayShort(wd: number): string {
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][wd] || '';
 }
 
 /**
@@ -1367,24 +1433,6 @@ export async function executePlan(
           );
           results.push({ action: 'add_job_role', success: true, message: `Added job role "${change.jobRoleName}" to ${dept.name}` });
         }
-      } else if (change.action === 'delete_job_role' && change.jobRoleName && change.department) {
-        const dept = await findDepartment(companyId, change.department);
-        if (!dept) throw new Error(`Department not found: ${change.department}`);
-        const { rows: roleRows } = await query(
-          'SELECT id FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
-          [companyId, dept.id, change.jobRoleName.trim()]
-        );
-        if (!roleRows.length) throw new Error(`Job role not found: ${change.jobRoleName}`);
-        const roleId = roleRows[0].id;
-        // Clear the role from team members and shift-type eligibility, then delete.
-        await query('UPDATE users SET job_role_id = NULL WHERE company_id = $1 AND job_role_id = $2', [companyId, roleId]);
-        await query(
-          `UPDATE shift_types SET eligible_job_role_ids = array_remove(eligible_job_role_ids, $2)
-           WHERE company_id = $1 AND $2 = ANY(eligible_job_role_ids)`,
-          [companyId, roleId]
-        );
-        await query('DELETE FROM job_roles WHERE id = $1 AND company_id = $2', [roleId, companyId]);
-        results.push({ action: 'delete_job_role', success: true, message: `Deleted job role "${change.jobRoleName}" from ${dept.name}` });
       } else if (change.action === 'rename_job_role' && change.jobRoleName && change.newJobRoleName && change.department) {
         const dept = await findDepartment(companyId, change.department);
         if (!dept) throw new Error(`Department not found: ${change.department}`);
@@ -1492,6 +1540,62 @@ export async function executePlan(
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         await query('UPDATE shift_types SET name = $1 WHERE id = $2', [change.newShiftType.trim(), st.id]);
         results.push({ action: 'rename_shift_type', success: true, message: `Renamed shift type "${change.shiftType}" → "${change.newShiftType}"` });
+      } else if (change.action === 'add_rotation' && change.person && change.shiftType && change.startDate) {
+        // Per-person rotation (Deepika, 2026-11-17): mirrors the
+        // manual Settings → Rotations create exactly — same rows
+        // (rotations + one rotation_assignments row per pattern day),
+        // same validation, same defaults. Group rotations and pairing
+        // are NOT covered: this is one person, one shift type, one
+        // repeating pattern. No eligibility gate — the manual flow
+        // has none (known open gap, flagged 2026-11-14). Times come
+        // from the shift type's Settings times, as the manual form
+        // pulls them on the type pick (Deepika, 2026-11-09).
+        const member = await findMember(companyId, change.person);
+        if (!member) throw new Error(noExactMatch(change.person));
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const { cycleDays, days } = resolveRotationPattern(change);
+        const { rows: trows } = await query(
+          'SELECT start_time, end_time FROM shift_types WHERE id = $1 AND company_id = $2',
+          [st.id, companyId]
+        );
+        const rotStartTime = trows[0]?.start_time || null;
+        const rotEndTime = trows[0]?.end_time || null;
+        const endDate = change.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(change.endDate))
+          && String(change.endDate) >= String(change.startDate) ? String(change.endDate) : null;
+        const rotName = (change.rotationName || '').trim() || `${member.display} — ${st.name}`;
+        const rotId = crypto.randomUUID();
+        await query(
+          `INSERT INTO rotations (id, company_id, name, cycle_days, start_date, created_by, start_time, end_time, notes,
+                                  group_id, group_ids, group_shift_type_id, group_days, turn_unit, turn_days, week_start, end_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+          [rotId, companyId, rotName, cycleDays, change.startDate, createdBy, rotStartTime, rotEndTime, null,
+           null, null, null, null, null, null, null, endDate]
+        );
+        let insertFailed = false;
+        for (const d of days) {
+          try {
+            await query(
+              `INSERT INTO rotation_assignments (id, rotation_id, user_id, cycle_day, shift_type_id)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [crypto.randomUUID(), rotId, member.id, d, st.id]
+            );
+          } catch { insertFailed = true; break; }
+        }
+        if (insertFailed) {
+          // Roll the whole create back — a half-saved pattern is the
+          // same silent trap the manual route guards against.
+          await query('DELETE FROM rotations WHERE id = $1', [rotId]);
+          throw new Error('Could not save the rotation pattern — the person or shift type no longer exists.');
+        }
+        const wds = Array.isArray(change.weekdays) ? change.weekdays : null;
+        const patternText = wds && wds.length
+          ? `${wds.map((w: number) => weekdayShort(w)).join(', ')} every ${change.cycleWeeks && Number(change.cycleWeeks) > 1 ? `${change.cycleWeeks} weeks` : 'week'}`
+          : `cycle days ${days.join(', ')} of a ${cycleDays}-day cycle`;
+        results.push({
+          action: 'add_rotation', success: true,
+          message: `Created rotation "${rotName}" — ${patternText} from ${change.startDate}${endDate ? ` until ${endDate}` : ''}`,
+        });
       } else if (change.action === 'set_staffing_target' && change.shiftType && change.targetCount !== undefined) {
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
