@@ -205,7 +205,6 @@ export async function getShiftsForRange(
   }
 
   const rotationShifts: ShiftEntry[] = [];
-  const userPauseMap = new Map<string, Array<{ start: string; end: string }>>();
 
   for (const rot of rotations) {
     const assignments = assignmentsByRotation.get(rot.id) || [];
@@ -315,15 +314,6 @@ export async function getShiftsForRange(
 
     if (assignments.length === 0) continue;
 
-    // Track pause periods per user
-    const periods = pauseMap.get(rot.id);
-    if (periods) {
-      for (const a of assignments) {
-        if (!userPauseMap.has(a.userId)) userPauseMap.set(a.userId, []);
-        userPauseMap.get(a.userId)!.push(...periods);
-      }
-    }
-
     const byDay = new Map<number, typeof assignments>();
     for (const a of assignments) {
       if (generatedTypes.has(a.shiftTypeId)) continue; // generated type: stored rows only, never drawn
@@ -378,16 +368,17 @@ export async function getShiftsForRange(
     }
   }
 
-  // Hide manual shifts for users paused on that date — except a
-  // generated type's stored rows, which are never hidden (stored is
-  // real; the pause-hiding was a draw-bookkeeping quirk).
-  const isUserPaused = (userId: string, dateStr: string): boolean => {
-    const periods = userPauseMap.get(userId);
-    if (!periods) return false;
-    return periods.some((pd) => dateStr >= pd.start && dateStr <= pd.end);
-  };
+  // Manual shifts are NEVER hidden by a pause (Deepika, 2026-11-17 —
+  // the pause-hides-stored-shifts fix): a pause stops the rotation
+  // from drawing new occurrences; it never erases a real stored
+  // shift. rotation_pauses carries no user, so a pause made for one
+  // member (e.g. a Bulk delete for a departed member) used to hide
+  // every assignee's stored shifts from the feed, Short cover, gaps
+  // and every other reader of this helper — while the grid kept
+  // showing them. The grid settled this the same way on 2026-11-03,
+  // when Deepika hit it on her own vacation dates. Employee view
+  // still withholds draft stored shifts (2026-11-09 rule).
   const visibleManual: ShiftEntry[] = manualRows
-    .filter((s: any) => !s.userId || generatedTypes.has(s.shiftTypeId) || !isUserPaused(s.userId, s.date))
     .filter((s: any) => !employeeView || s.published)
     .map((s: any) => ({
       id: `manual-${s.date}-${s.userId}`,
