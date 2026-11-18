@@ -1671,7 +1671,6 @@
        the text inside the bands flips light. */
     #tab-schedule .sched-control-box .sched-h1,
     #tab-myschedule .sched-control-box .sched-h1,
-    #tab-schedule .sched-control-box .sched-toggles label,
     #tab-myschedule .sched-control-box .sched-toggles label,
     #tab-schedule .sched-control-box .range-picker label,
     #tab-myschedule .sched-control-box .range-picker label,
@@ -1863,6 +1862,20 @@
       <style>
         #tab-schedule .sched-h1 { margin: 0 0 1rem; font-size: 1.5rem; color: var(--text); }
         #tab-schedule .sched-toolbar { display: flex; gap: 0.8rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+        /* Filter bar redesign (Deepika, 2026-11-18): the date row (view
+           tabs, date nav, From/To + Apply) stays always visible in one row;
+           the View options popup holds every filter with a pin button. */
+        #tab-schedule #sched-date-row { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+        #tab-schedule #sched-date-row .range-picker { margin-bottom: 0; }
+        .qs-vo-wrap { position: relative; display: inline-block; }
+        .qs-vo-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 90; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.16); padding: 6px; min-width: 300px; max-width: calc(100vw - 32px); }
+        .qs-vo-group-h { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); padding: 8px 10px 4px; }
+        .qs-vo-row { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px; }
+        .qs-vo-row:hover { background: #f1f5f9; }
+        .qs-vo-row .qs-vo-lab { flex: 1; font-size: 0.92rem; }
+        .qs-vo-row button { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 4px 8px; font-size: 0.85rem; font-weight: 700; cursor: pointer; color: var(--text); }
+        .qs-vo-row button:disabled { opacity: 0.35; cursor: default; }
+        .qs-vo-row button[data-vo-pin][aria-pressed="true"] { background: #e0f2f1; border-color: #0e7c86; color: #0b5560; }
         #tab-schedule .view-tabs { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
         #tab-schedule .view-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 1rem; padding: 0.6rem 1.1rem; cursor: pointer; }
         #tab-schedule .view-tabs button.active { background: var(--accent); color: #fff; }
@@ -1979,20 +1992,35 @@
            inside the Block options forces row 2. */
         @media (min-width: 900px) {
           #tab-schedule .sched-control-box, #tab-myschedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px 2rem; margin: 0 -2rem 1rem; box-shadow: none; gap: 10px; }
-          #tab-schedule .sched-control-box #sched-dept-filter, #tab-myschedule .sched-control-box #ms-filters { flex: none; margin-bottom: 0 !important; order: 1; }
-          #tab-schedule .sched-control-box .sched-toolbar, #tab-myschedule .sched-control-box .sched-toolbar { display: contents; }
-          #tab-schedule .sched-control-box .sched-toggles { display: contents; }
-          #tab-schedule .sched-control-box .sched-toggles > label:first-child { order: 2; }
-          #tab-schedule .sched-control-box .view-tabs, #tab-myschedule .sched-control-box .view-tabs { order: 3; }
-          #tab-schedule .sched-control-box .view-tabs button, #tab-myschedule .sched-control-box .view-tabs button { padding: 0.6rem 0.75rem; }
-          #tab-schedule .sched-control-box .date-nav, #tab-myschedule .sched-control-box .date-nav { order: 4; }
-          #tab-schedule .sched-control-box .sched-toggles > label:last-child { order: 5; }
-          #tab-schedule .sched-control-box .sched-row-break, #tab-myschedule .sched-control-box .sched-row-break { flex-basis: 100%; order: 6; }
-          #tab-schedule .sched-control-box #sched-block-mode-wrap, #tab-myschedule .sched-control-box #ms-block-mode-wrap { order: 7; }
-          #tab-schedule .sched-control-box #sched-block-start-wrap, #tab-myschedule .sched-control-box #ms-block-start-wrap { order: 8; }
-          #tab-schedule .sched-control-box #sched-block-member-wrap, #tab-myschedule .sched-control-box #ms-block-member-wrap { order: 9; }
-          #tab-schedule .sched-control-box #sched-block-make { order: 10; margin-left: auto; }
-          #tab-schedule .sched-control-box #sched-range-picker, #tab-myschedule .sched-control-box #ms-range-picker { order: 20; flex: 1 1 100%; }
+          /* Filter bar redesign (Deepika, 2026-11-18): the bar is the View
+             options button, then the date row (always one row), then the
+             pinned filter boxes in the user's order, then Upload. The
+             calendar-events checkbox and Week starts live only in the View
+             options popup now — they are not on the bar. */
+          #tab-schedule .sched-control-box #qs-vo-btn { order: 1; }
+          #tab-schedule .sched-control-box #sched-date-row { order: 2; }
+          #tab-schedule .sched-control-box #sched-dept-filter { flex: none; margin-bottom: 0 !important; order: 3; }
+          #tab-schedule .sched-control-box #sched-upload-btn { order: 4; }
+          #tab-schedule .sched-control-box .sched-row-break { flex-basis: 100%; order: 5; }
+          #tab-schedule .sched-control-box #sched-block-mode-wrap { order: 6; }
+          #tab-schedule .sched-control-box #sched-block-start-wrap { order: 7; }
+          #tab-schedule .sched-control-box #sched-block-member-wrap { order: 8; }
+          #tab-schedule .sched-control-box #sched-block-make { order: 9; margin-left: auto; }
+          #tab-schedule .sched-control-box .sched-toolbar { display: contents; }
+          #tab-schedule .sched-control-box .view-tabs button { padding: 0.6rem 0.75rem; }
+          #tab-myschedule .sched-control-box #ms-filters { flex: none; margin-bottom: 0 !important; order: 1; }
+          #tab-myschedule .sched-control-box .sched-toolbar { display: contents; }
+          #tab-myschedule .sched-control-box .sched-toggles { display: contents; }
+          #tab-myschedule .sched-control-box .sched-toggles > label:first-child { order: 2; }
+          #tab-myschedule .sched-control-box .view-tabs { order: 3; }
+          #tab-myschedule .sched-control-box .view-tabs button { padding: 0.6rem 0.75rem; }
+          #tab-myschedule .sched-control-box .date-nav { order: 4; }
+          #tab-myschedule .sched-control-box .sched-toggles > label:last-child { order: 5; }
+          #tab-myschedule .sched-control-box .sched-row-break { flex-basis: 100%; order: 6; }
+          #tab-myschedule .sched-control-box #ms-block-mode-wrap { order: 7; }
+          #tab-myschedule .sched-control-box #ms-block-start-wrap { order: 8; }
+          #tab-myschedule .sched-control-box #ms-block-member-wrap { order: 9; }
+          #tab-myschedule .sched-control-box #ms-range-picker { order: 20; flex: 1 1 100%; }
         }
         #tab-schedule .shift-cat, .qs-shift-preview .shift-cat { border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; display: flex; align-items: center; border: 1px solid; }
         #tab-schedule .shift-nm, .qs-shift-preview .shift-nm { background: #ffffff; border-radius: 5px; padding: 0.15rem 0.4rem; font-size: 11px; font-weight: 750; color: #0a0a0a; border: 1px solid; overflow: hidden; }
@@ -2392,8 +2420,6 @@
           #tab-schedule .sched-toolbar #sched-block-make { flex: 1 1 100%; padding: 11px; }
           #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
-          #tab-schedule .sched-control-box .sched-toggles { flex: 1 1 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
-          #tab-schedule .sched-control-box .sched-toggles > label:first-child { white-space: nowrap; }
         }
       </style>
 
@@ -2408,23 +2434,45 @@
       <div class="sched-control-box">
         <h2 id="sched-h1" class="sched-h1">Schedule</h2>
 
-        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
+        <!-- Filter bar redesign (Deepika, 2026-11-18): View options holds
+             every filter with a pin button; pinned ones stick to the bar.
+             The date row stays always visible in one row. Calendar events
+             is a checkbox that lives ONLY in this popup — it never joins
+             the bar even when pinned. No Yes/No anywhere. -->
+        <div class="qs-vo-wrap">
+          <button type="button" id="qs-vo-btn" class="btn-secondary" aria-haspopup="true" aria-expanded="false" title="Choose which filters sit on this bar, and in what order">⚙ View options</button>
+          <div id="qs-vo-pop" class="qs-vo-pop hidden" role="menu" aria-label="View options">
+            <div class="qs-vo-group" data-vo-group="pinned"><div class="qs-vo-group-h">Pinned to the bar</div><div class="qs-vo-rows"></div></div>
+            <div class="qs-vo-group" data-vo-group="rest"><div class="qs-vo-group-h">In View options only</div><div class="qs-vo-rows"></div></div>
+            <div class="qs-vo-group" data-vo-group="settings"><div class="qs-vo-group-h">Settings</div>
+              <div class="qs-vo-row" data-vo-id="calendar">
+                <label style="display:flex;align-items:center;gap:8px;font-size:0.92rem;cursor:pointer;flex:1">
+                  <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Calendar events
+                </label>
+                <button type="button" data-vo-pin aria-pressed="false" title="Pin Calendar events">📍 Pin</button>
+              </div>
+              <div class="qs-vo-row" data-vo-id="weekstarts">
+                <span style="flex:1;font-size:0.92rem">Week starts</span>
+                <select id="sched-week-start" aria-label="Week starts on" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
+                  <option value="sunday">Sunday</option>
+                  <option value="monday">Monday</option>
+                  <option value="tuesday">Tuesday</option>
+                  <option value="wednesday">Wednesday</option>
+                  <option value="thursday">Thursday</option>
+                  <option value="friday">Friday</option>
+                  <option value="saturday">Saturday</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
 
-        <div class="sched-toolbar">
+        <div id="sched-date-row">
           <div class="view-tabs" role="tablist" aria-label="Schedule view">
             <button type="button" data-view="range" role="tab">Range</button>
             <button type="button" data-view="month" role="tab">Month</button>
             <button type="button" data-view="week" role="tab" class="active">Week</button>
             <button type="button" data-view="block" role="tab">Block view</button>
-          </div>
-          <div class="sched-view-select-wrap">
-            <label for="sched-view-select">View</label>
-            <select id="sched-view-select" aria-label="Schedule view">
-              <option value="range">Range</option>
-              <option value="month">Month</option>
-              <option value="week">Week</option>
-              <option value="block">Block view</option>
-            </select>
           </div>
           <div class="date-nav">
             <button type="button" id="qs-undo-band" class="qs-ur-btn qs-ur-band" title="Undo (Ctrl+Z)">↩ Undo</button>
@@ -2433,22 +2481,24 @@
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
           </div>
-          <div class="sched-toggles">
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
-            <input type="checkbox" id="sched-events-toggle" style="width:auto"> 🎓 Calendar events
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem" title="Choose which day your weeks start on — applies everywhere, including Block view and the dashboard calendars">
-            Week starts
-            <select id="sched-week-start" aria-label="Week starts on" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:#fff;font-size:0.85rem">
-              <option value="sunday">Sunday</option>
-              <option value="monday">Monday</option>
-              <option value="tuesday">Tuesday</option>
-              <option value="wednesday">Wednesday</option>
-              <option value="thursday">Thursday</option>
-              <option value="friday">Friday</option>
-              <option value="saturday">Saturday</option>
+          <div id="sched-range-picker" class="range-picker">
+            <label>From <input type="date" id="sched-range-from"></label>
+            <label>To (optional) <input type="date" id="sched-range-to"></label>
+            <button type="button" id="sched-range-apply" class="btn">Apply</button>
+          </div>
+        </div>
+
+        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
+
+        <div class="sched-toolbar">
+          <div class="sched-view-select-wrap">
+            <label for="sched-view-select">View</label>
+            <select id="sched-view-select" aria-label="Schedule view">
+              <option value="range">Range</option>
+              <option value="month">Month</option>
+              <option value="week">Week</option>
+              <option value="block">Block view</option>
             </select>
-          </label>
           </div>
           <div id="sched-block-opts" style="display:none">
             <hr class="sched-block-divider">
@@ -2479,11 +2529,6 @@
           <!-- Publish moved into Bulk Actions (Deepika, 2026-11-10: one publish button — "I will use the publish button in bulk action"). The coverage strip below still nudges and links there via qsOpenPublish. -->
         </div>
 
-        <div id="sched-range-picker" class="range-picker hidden">
-          <label>From <input type="date" id="sched-range-from"></label>
-          <label>To (optional) <input type="date" id="sched-range-to"></label>
-          <button type="button" id="sched-range-apply" class="btn">Apply</button>
-        </div>
       </div>
 
       <div class="legend hidden" id="sched-legend"></div>
@@ -2995,8 +3040,8 @@
           // Pick up a role filter chosen on another tab (shared view state).
           sched.roleFilter = window.qsRoleFilter || null;
           var isRange = sched.view === 'range';
-          if (isRange) show($('sched-range-picker'));
-          else hide($('sched-range-picker'));
+          // Filter bar redesign (Deepika, 2026-11-18): the From/To/Apply
+          // row is part of the always-visible date row now — never hidden.
           // Arrows live in the month grid (Month view) or nowhere (Range
           // views); Block keeps the toolbar arrows — they step the year
           // (Deepika, 2026-11-15: "i have arrow to go to next year").
@@ -3152,7 +3197,7 @@
             : 'All departments';
           el.innerHTML =
             (viewDepts.length ?
-            '<div style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
+            '<div data-pin="dept" style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
             '<button type="button" id="sched-dept-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-dept-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             depts.map(function (d) {
@@ -3161,7 +3206,7 @@
                 '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
             }).join('') +
             '</div></div>' +
-            '<div style="flex:1;min-width:130px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
+            '<div data-pin="shift" style="flex:1;min-width:130px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
             (function () {
               var sts = visibleShiftTypes();
               var btnLabel = sched.shiftFilters.length
@@ -3179,7 +3224,7 @@
               '</div>';
             })() + '</div>' : '') +
             (roles.length ?
-            '<div style="flex:1;min-width:150px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
+            '<div data-pin="role" style="flex:1;min-width:150px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
             '<button type="button" id="sched-role-filter" aria-label="Filter by job role" aria-haspopup="true" aria-expanded="false" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(roleBtnLabel()) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;font-weight:700;border-radius:6px;cursor:pointer;border-bottom:1px solid var(--border)">' +
@@ -3279,6 +3324,9 @@
             });
           });
           }
+          // Filter bar redesign (Deepika, 2026-11-18): re-apply pin
+          // visibility + order after every re-render of the dropdowns.
+          if (window.qsVoApply) window.qsVoApply('schedule');
         }
 
         // The per-date P/D publish pill was REMOVED (Deepika,
@@ -7881,6 +7929,14 @@
           if (!f) { pageError('Pick a from date.'); return; }
           if (t && t < f) { pageError('The to date must be after the from date.'); return; }
           sched.rangeFrom = f; sched.rangeTo = t || '';
+          // Filter bar redesign (Deepika, 2026-11-18): the date row is
+          // always visible, so Apply can be hit from any view — applying a
+          // range shows that range.
+          if (sched.view !== 'range') {
+            sched.view = 'range';
+            document.querySelectorAll('#tab-schedule .view-tabs button').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-view') === 'range'); });
+            var svs = $('sched-view-select'); if (svs) svs.value = 'range';
+          }
           if (!t) {
             // Open-ended: render the first 3 months; Load more extends it, no end.
             var hz = parseDate(f); hz.setDate(hz.getDate() + 90);
@@ -10049,6 +10105,171 @@ window.qsNpOfferSend = function (btn) {
         });
       })();
       </script>
+      <script>
+      // Filter bar redesign (Deepika, 2026-11-18) — shared by the schedule
+      // view and the calendar view. "View options" holds every filter with
+      // a pin button; pinned ones stick to the bar and still act as a
+      // filter box. The date row stays always visible. Calendar events is
+      // a checkbox that lives ONLY in the schedule popup — pinning it never
+      // puts it on the bar. No Yes/No anywhere. Pinned order is the user's
+      // (up/down in View options); prefs live in localStorage per view.
+      (function () {
+        var ITEMS = {
+          schedule: [
+            { id: 'dept', label: 'Department' },
+            { id: 'shift', label: 'Shift' },
+            { id: 'role', label: 'Job role' },
+            { id: 'calendar', label: 'Calendar events', barless: true }
+          ],
+          calendar: [
+            { id: 'dept', label: 'Department' },
+            { id: 'show', label: 'Show' },
+            { id: 'kind', label: 'Session type' },
+            { id: 'role', label: 'Job role' }
+          ]
+        };
+        var DEFAULTS = {
+          schedule: { order: ['dept', 'shift', 'role'], pinned: { dept: true, shift: true, role: true, calendar: false } },
+          calendar: { order: ['dept', 'show', 'kind', 'role'], pinned: { dept: true, show: true, kind: true, role: true } }
+        };
+        function key(view) { return view === 'calendar' ? 'qs-vo-pins-calendar' : 'qs-vo-pins-schedule'; }
+        function load(view) {
+          var d = DEFAULTS[view];
+          try {
+            var raw = localStorage.getItem(key(view));
+            if (!raw) return { order: d.order.slice(), pinned: Object.assign({}, d.pinned) };
+            var p = JSON.parse(raw);
+            var order = (p.order || []).filter(function (id) { return d.order.indexOf(id) !== -1; });
+            d.order.forEach(function (id) { if (order.indexOf(id) === -1) order.push(id); });
+            var pinned = Object.assign({}, d.pinned, p.pinned || {});
+            return { order: order, pinned: pinned };
+          } catch (e) {
+            return { order: d.order.slice(), pinned: Object.assign({}, d.pinned) };
+          }
+        }
+        function save(view, prefs) {
+          try { localStorage.setItem(key(view), JSON.stringify(prefs)); } catch (e) {}
+        }
+        function barEl(view) {
+          return view === 'calendar' ? document.getElementById('db-filters') : document.getElementById('sched-dept-filter');
+        }
+        function popEl(view) {
+          return document.getElementById(view === 'calendar' ? 'qs-vo-pop-dash' : 'qs-vo-pop');
+        }
+        function btnEl(view) {
+          return document.getElementById(view === 'calendar' ? 'qs-vo-btn-dash' : 'qs-vo-btn');
+        }
+        function rowHtml(it, pinned, pos, total) {
+          return '<div class="qs-vo-row" data-vo-id="' + it.id + '">' +
+            '<span class="qs-vo-lab">' + esc(it.label) + '</span>' +
+            '<button type="button" data-vo-up title="Move up"' + ((!pinned || pos === 0) ? ' disabled' : '') + '>↑</button>' +
+            '<button type="button" data-vo-down title="Move down"' + ((!pinned || pos === total - 1) ? ' disabled' : '') + '>↓</button>' +
+            '<button type="button" data-vo-pin aria-pressed="' + !!pinned + '" title="' + (pinned ? 'Unpin from the bar' : 'Pin to the bar') + '">' + (pinned ? '📌 Pinned' : '📍 Pin') + '</button></div>';
+        }
+        function renderPop(view) {
+          var pop = popEl(view); if (!pop) return;
+          var prefs = load(view);
+          var items = ITEMS[view].filter(function (it) { return !it.barless; });
+          var pinnedIds = prefs.order.filter(function (id) { return prefs.pinned[id]; });
+          var restIds = prefs.order.filter(function (id) { return !prefs.pinned[id]; });
+          var pinBox = pop.querySelector('[data-vo-group="pinned"] .qs-vo-rows');
+          var restBox = pop.querySelector('[data-vo-group="rest"] .qs-vo-rows');
+          if (pinBox) pinBox.innerHTML = pinnedIds.map(function (id, i) {
+            var it = items.filter(function (x) { return x.id === id; })[0]; if (!it) return '';
+            return rowHtml(it, true, i, pinnedIds.length);
+          }).join('');
+          if (restBox) restBox.innerHTML = restIds.map(function (id) {
+            var it = items.filter(function (x) { return x.id === id; })[0]; if (!it) return '';
+            return rowHtml(it, false, -1, 0);
+          }).join('');
+          syncCalendarPin(view);
+        }
+        function syncCalendarPin(view) {
+          if (view !== 'schedule') return;
+          var prefs = load(view);
+          var btn = document.querySelector('#qs-vo-pop [data-vo-id="calendar"] [data-vo-pin]');
+          if (!btn) return;
+          var pinned = !!prefs.pinned.calendar;
+          btn.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+          btn.textContent = pinned ? '📌 Pinned' : '📍 Pin';
+          btn.title = pinned ? 'Unpin Calendar events' : 'Pin Calendar events';
+        }
+        function apply(view) {
+          var bar = barEl(view); if (!bar) return;
+          var prefs = load(view);
+          var slots = Array.prototype.slice.call(bar.querySelectorAll('[data-pin]'));
+          if (!slots.length) return;
+          // Bar order = pinned ids in the user's order; unpinned slots hide.
+          var ordered = prefs.order.map(function (id) {
+            return slots.filter(function (el) { return el.getAttribute('data-pin') === id; })[0];
+          }).filter(Boolean);
+          slots.forEach(function (el) { if (ordered.indexOf(el) === -1) ordered.push(el); });
+          var acts = view === 'calendar' ? document.getElementById('db-actions') : null;
+          ordered.forEach(function (el) {
+            var on = !!prefs.pinned[el.getAttribute('data-pin')];
+            el.style.display = on ? '' : 'none';
+            if (acts) bar.insertBefore(el, acts); else bar.appendChild(el);
+          });
+          if (view === 'schedule') {
+            var anyVisible = ordered.some(function (el) { return el.style.display !== 'none'; });
+            bar.style.display = anyVisible ? 'flex' : 'none';
+          }
+        }
+        function closeAll() {
+          document.querySelectorAll('.qs-vo-pop').forEach(function (p) { p.classList.add('hidden'); });
+          document.querySelectorAll('[id^="qs-vo-btn"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+        }
+        function toggle(view) {
+          var pop = popEl(view), btn = btnEl(view); if (!pop || !btn) return;
+          var opening = pop.classList.contains('hidden');
+          closeAll();
+          if (opening) { renderPop(view); pop.classList.remove('hidden'); btn.setAttribute('aria-expanded', 'true'); }
+        }
+        function onPopClick(view, ev) {
+          var btn = ev.target.closest ? ev.target.closest('[data-vo-pin],[data-vo-up],[data-vo-down]') : null;
+          if (!btn) return;
+          // Pin/up/down re-render the popup rows, which detaches the
+          // clicked button mid-bubble — stop the click here or the
+          // document-level outside-click handler sees a detached target
+          // and closes the popup we just re-rendered.
+          ev.stopPropagation();
+          var row = btn.closest('[data-vo-id]'); if (!row) return;
+          var id = row.getAttribute('data-vo-id');
+          var prefs = load(view);
+          if (btn.hasAttribute('data-vo-pin')) {
+            // Calendar events is barless by design: pinning it only marks
+            // it pinned in the popup — it never joins the bar.
+            prefs.pinned[id] = !prefs.pinned[id];
+            save(view, prefs); renderPop(view); apply(view);
+          } else {
+            var pinnedIds = prefs.order.filter(function (x) { return prefs.pinned[x]; });
+            var i = pinnedIds.indexOf(id); if (i === -1) return;
+            var j = btn.hasAttribute('data-vo-up') ? i - 1 : i + 1;
+            if (j < 0 || j >= pinnedIds.length) return;
+            var tmp = pinnedIds[i]; pinnedIds[i] = pinnedIds[j]; pinnedIds[j] = tmp;
+            var rest = prefs.order.filter(function (x) { return !prefs.pinned[x]; });
+            prefs.order = pinnedIds.concat(rest);
+            save(view, prefs); renderPop(view); apply(view);
+          }
+        }
+        function init(view) {
+          var btn = btnEl(view), pop = popEl(view);
+          if (!btn || !pop || btn.dataset.voInit) return;
+          btn.dataset.voInit = '1';
+          btn.addEventListener('click', function (e) { e.stopPropagation(); toggle(view); });
+          pop.addEventListener('click', function (e) { onPopClick(view, e); });
+          apply(view);
+        }
+        document.addEventListener('click', function (e) {
+          if (!e.target.closest || !e.target.closest('.qs-vo-wrap')) closeAll();
+        });
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeAll(); });
+        window.qsVoLoad = load; window.qsVoSave = save;
+        window.qsVoRenderPop = renderPop; window.qsVoApply = apply;
+        window.qsVoToggle = toggle; window.qsVoInit = init;
+        init('schedule');
+      })();
+      </script>
     </section>
 
     <!-- Ask Q-Scheduler tab -->
@@ -10290,21 +10511,31 @@ window.qsNpOfferSend = function (btn) {
         </div>
       </div>
       <div id="db-archived-banner" style="display:none;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:10px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-weight:600"></div>
-      <div id="db-filters"><div id="db-today-slot"></div>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Department
+      <div id="db-filters">
+        <!-- Filter bar redesign (Deepika, 2026-11-18): same View options +
+             pin design as the schedule bar. -->
+        <div class="qs-vo-wrap">
+          <button type="button" id="qs-vo-btn-dash" class="btn-secondary" aria-haspopup="true" aria-expanded="false" title="Choose which filters sit on this bar, and in what order" style="padding:0.5rem 0.7rem;border-radius:10px">⚙ View options</button>
+          <div id="qs-vo-pop-dash" class="qs-vo-pop hidden" role="menu" aria-label="View options">
+            <div class="qs-vo-group" data-vo-group="pinned"><div class="qs-vo-group-h">Pinned to the bar</div><div class="qs-vo-rows"></div></div>
+            <div class="qs-vo-group" data-vo-group="rest"><div class="qs-vo-group-h">In View options only</div><div class="qs-vo-rows"></div></div>
+          </div>
+        </div>
+        <div id="db-today-slot"></div>
+        <label data-pin="dept" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Department
           <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Show
+        <label data-pin="show" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Show
           <select id="db-show-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:190px;background:var(--surface);color:var(--text)">
             <option value="all">All sessions</option>
             <option value="mine">⭐ Mine</option>
             <option value="open">Needs speaker</option>
           </select>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Session type
+        <label data-pin="kind" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Session type
           <select id="db-kind-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text)"></select>
         </label>
-        <div id="db-role-wrap" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff;position:relative">Job role
+        <div id="db-role-wrap" data-pin="role" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff;position:relative">Job role
           <button type="button" id="db-role-filter" aria-label="Filter by job role" aria-haspopup="true" aria-expanded="false" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:170px;background:var(--surface);color:var(--text);display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;text-align:left;font-weight:400"><span id="db-role-btn-label">All roles</span><span style="color:var(--dim)">▾</span></button>
           <div id="db-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;color:var(--text);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px;font-size:0.92rem;font-weight:400"></div>
         </div>
@@ -26690,6 +26921,9 @@ window.qsNpOfferSend = function (btn) {
       window.qsSetAppView(savedView);
       if (window.qsRefreshReqBadge) window.qsRefreshReqBadge();
     });
+    // Filter bar redesign (Deepika, 2026-11-18): View options + pins on
+    // the calendar filters band, same design as the schedule bar.
+    if (window.qsVoInit) window.qsVoInit('calendar');
   </script>
   <style>
     /* Floating Email Q-Scheduler button — visible on every tab, all roles. */
