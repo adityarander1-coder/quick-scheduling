@@ -1867,6 +1867,10 @@
            the View options popup holds every filter with a pin button. */
         #tab-schedule #sched-date-row { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
         #tab-schedule #sched-date-row .range-picker { margin-bottom: 0; }
+        /* Filter bar arrangement (Deepika, 2026-11-18): the pinned filter
+           slots share the row equally at every width — the size is set here
+           in CSS, not inline, so the phone rule below can stack them. */
+        #tab-schedule #sched-dept-filter > [data-pin] { flex: 1 1 0; min-width: 0; }
         .qs-vo-wrap { position: relative; display: inline-block; }
         .qs-vo-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 90; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.16); padding: 6px; min-width: 300px; max-width: calc(100vw - 32px); }
         .qs-vo-group-h { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--dim); padding: 8px 10px 4px; }
@@ -1998,16 +2002,31 @@
              calendar-events checkbox and Week starts live only in the View
              options popup now — they are not on the bar. */
           #tab-schedule .sched-control-box #qs-vo-btn { order: 1; }
-          #tab-schedule .sched-control-box #sched-date-row { order: 2; }
-          #tab-schedule .sched-control-box #sched-dept-filter { flex: none; margin-bottom: 0 !important; order: 3; }
-          #tab-schedule .sched-control-box #sched-upload-btn { order: 4; }
+          /* Filter bar arrangement (Deepika, 2026-11-18, approved mock):
+             row 1 is the date row with breathing room — View options, then
+             compact tabs, Today nav, and wider From/To inputs; row 2 is the
+             pinned filters sharing the full width equally, with Upload at
+             the far right end of the same row. No dead space. */
+          #tab-schedule .sched-control-box #sched-date-row { order: 2; flex: 1 1 auto; min-width: 0; gap: 10px; }
+          #tab-schedule .sched-control-box #sched-date-row .range-picker input[type="date"] { width: 150px; }
+          /* Compact date nav so the whole date row (View options + tabs +
+             Today nav + dates + Apply) fits on one line at 1440px. */
+          #tab-schedule .sched-control-box #sched-date-row #sched-prev,
+          #tab-schedule .sched-control-box #sched-date-row #sched-next { padding: 0.5rem 0.55rem; }
+          #tab-schedule .sched-control-box #sched-date-row #sched-today { padding: 0.5rem 0.75rem; }
+          #tab-schedule .sched-control-box #sched-date-row #sched-range-apply { padding: 0.5rem 0.8rem; }
+          /* The filters' basis reserves ~200px for Upload on the same line:
+             it is too wide to squeeze onto the date row's line, so the
+             filters always start a fresh row with Upload at the far right. */
+          #tab-schedule .sched-control-box #sched-dept-filter { flex: 1 1 calc(100% - 200px); min-width: 0; margin-bottom: 0 !important; order: 3; }
+          #tab-schedule .sched-control-box #sched-upload-btn { order: 4; align-self: flex-end; }
           #tab-schedule .sched-control-box .sched-row-break { flex-basis: 100%; order: 5; }
           #tab-schedule .sched-control-box #sched-block-mode-wrap { order: 6; }
           #tab-schedule .sched-control-box #sched-block-start-wrap { order: 7; }
           #tab-schedule .sched-control-box #sched-block-member-wrap { order: 8; }
           #tab-schedule .sched-control-box #sched-block-make { order: 9; margin-left: auto; }
           #tab-schedule .sched-control-box .sched-toolbar { display: contents; }
-          #tab-schedule .sched-control-box .view-tabs button { padding: 0.6rem 0.75rem; }
+          #tab-schedule .sched-control-box .view-tabs button { padding: 0.6rem 0.5rem; }
           #tab-myschedule .sched-control-box #ms-filters { flex: none; margin-bottom: 0 !important; order: 1; }
           #tab-myschedule .sched-control-box .sched-toolbar { display: contents; }
           #tab-myschedule .sched-control-box .sched-toggles { display: contents; }
@@ -2387,6 +2406,11 @@
           #tab-schedule .sched-control-box .sched-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
           #tab-schedule .sched-control-box .sched-h1-row .sched-h1 { margin: 0; }
           #tab-schedule .sched-control-box #sched-dept-filter { margin-bottom: 12px; gap: 8px; }
+          /* Filter bar arrangement (Deepika, 2026-11-18): on phones the bar
+             wraps into tidy rows — the dropdowns stack full width and Upload
+             goes full width, so nothing is truncated or cut off. */
+          #tab-schedule .sched-control-box #sched-dept-filter > [data-pin] { flex: 1 1 100%; }
+          #tab-schedule .sched-control-box #sched-upload-btn { flex: 1 1 100%; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; }
           #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
@@ -2395,7 +2419,7 @@
           #tab-schedule .sched-control-box .range-picker { flex-direction: row; flex-wrap: wrap; gap: 8px; margin-bottom: 0; }
           #tab-schedule .sched-control-box .range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
-          #tab-schedule .sched-control-box .range-picker button { width: 100%; }
+          #tab-schedule .sched-control-box .range-picker button { width: auto; flex: 0 0 auto; align-self: flex-end; }
           /* My schedule phone: same light-teal full-width band look */
           #tab-myschedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
@@ -2418,7 +2442,7 @@
           #tab-schedule #sched-block-member-wrap select, #tab-myschedule #ms-block-member-wrap select { width: 100%; }
           #tab-schedule .blk-lab, #tab-myschedule .blk-lab { font-weight: 600; }
           #tab-schedule .sched-toolbar #sched-block-make { flex: 1 1 100%; padding: 11px; }
-          #tab-schedule .sched-control-box .date-nav { margin: 0 auto; }
+          #tab-schedule .sched-control-box .date-nav { margin: 0; }
           #tab-schedule .sched-control-box #sched-today { background: var(--accent); color: #fff; border-color: var(--accent); }
         }
       </style>
@@ -2483,12 +2507,12 @@
           </div>
           <div id="sched-range-picker" class="range-picker">
             <label>From <input type="date" id="sched-range-from"></label>
-            <label>To (optional) <input type="date" id="sched-range-to"></label>
+            <label>To <input type="date" id="sched-range-to"></label>
             <button type="button" id="sched-range-apply" class="btn">Apply</button>
           </div>
         </div>
 
-        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-end;flex-wrap:wrap"></div>
+        <div id="sched-dept-filter" class="dept-filter" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap"></div>
 
         <div class="sched-toolbar">
           <div class="sched-view-select-wrap">
@@ -3197,7 +3221,7 @@
             : 'All departments';
           el.innerHTML =
             (viewDepts.length ?
-            '<div data-pin="dept" style="flex:1;min-width:180px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
+            '<div data-pin="dept" style="position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Department</label>' +
             '<button type="button" id="sched-dept-btn" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(btnLabel) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-dept-menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             depts.map(function (d) {
@@ -3206,7 +3230,7 @@
                 '<input type="checkbox" data-dept="' + d.id + '"' + (on ? ' checked' : '') + ' style="accent-color:#2563eb;margin:0;width:16px;height:16px">' + esc(d.name) + '</label>';
             }).join('') +
             '</div></div>' +
-            '<div data-pin="shift" style="flex:1;min-width:130px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
+            '<div data-pin="shift" style="position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Shift</label>' +
             (function () {
               var sts = visibleShiftTypes();
               var btnLabel = sched.shiftFilters.length
@@ -3224,7 +3248,7 @@
               '</div>';
             })() + '</div>' : '') +
             (roles.length ?
-            '<div data-pin="role" style="flex:1;min-width:150px;position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
+            '<div data-pin="role" style="position:relative"><label style="font-size:0.9rem;font-weight:600;color:#fff;display:block;margin-bottom:4px">Job role</label>' +
             '<button type="button" id="sched-role-filter" aria-label="Filter by job role" aria-haspopup="true" aria-expanded="false" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;background:#fff;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span>' + esc(roleBtnLabel()) + '</span><span style="color:var(--dim)">▾</span></button>' +
             '<div id="sched-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px">' +
             '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:0.92rem;font-weight:700;border-radius:6px;cursor:pointer;border-bottom:1px solid var(--border)">' +
