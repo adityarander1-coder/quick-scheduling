@@ -21650,6 +21650,12 @@ window.qsNpOfferSend = function (btn) {
             <button type="button" id="ms-feed-copy" class="btn-secondary" style="padding:0.45rem 0.9rem">Copy</button>
             <button type="button" id="ms-feed-reset" class="btn-secondary" style="padding:0.45rem 0.9rem">Reset link</button>
           </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+            <a id="ms-feed-google" class="btn-secondary" target="_blank" rel="noopener" style="padding:0.45rem 0.9rem;text-decoration:none;display:none">Add to Google Calendar</a>
+            <a id="ms-feed-outlook" class="btn-secondary" target="_blank" rel="noopener" style="padding:0.45rem 0.9rem;text-decoration:none;display:none">Add to Outlook</a>
+            <a id="ms-feed-apple" class="btn-secondary" style="padding:0.45rem 0.9rem;text-decoration:none;display:none">Add to Apple Calendar</a>
+          </div>
+          <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">One tap subscribes — still one-way: changes you make in Google, Outlook or Apple never come back to the app.</p>
           <span id="ms-feed-msg" style="font-size:0.85rem"></span>
           <div style="font-size:0.83rem;color:var(--dim);margin-top:10px;display:grid;gap:4px">
             <div><strong>Google Calendar:</strong> Settings → Add calendar → From URL → paste the link.</div>
@@ -27703,10 +27709,25 @@ window.qsNpOfferSend = function (btn) {
     api('/api/users/me/calendar-feed').then(function (r) {
       var url = r && r.data && r.data.url;
       var inp = $('ms-feed-url');
-      if (inp && url) inp.value = url;
+      if (inp && url) { inp.value = url; qsSyncFeedButtons(); }
     }).catch(function () {});
     if (window.qsInitPushSettings) window.qsInitPushSettings();
   };
+
+  // ---- Calendar feed one-tap subscribe buttons (2026-11-17) ----
+  // One-way only: the buttons open each calendar's own subscribe flow with
+  // the signed-in user's private feed URL pre-filled. Apple has no web
+  // subscribe button, so it gets a webcal:// link instead.
+  function qsSyncFeedButtons() {
+    var inp = $('ms-feed-url');
+    var url = inp && inp.value;
+    var g = $('ms-feed-google'), o = $('ms-feed-outlook'), a = $('ms-feed-apple');
+    if (!url || !g || !o || !a) return;
+    g.href = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(url);
+    o.href = 'https://outlook.live.com/calendar/0/addcalendar?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent('Quick Scheduling');
+    a.href = url.replace(/^https:\/\//, 'webcal://');
+    g.style.display = ''; o.style.display = ''; a.style.display = '';
+  }
 
   // ---- Calendar feed (2026-11-06): private .ics subscription link ----
   var msFeedCopy = $('ms-feed-copy');
@@ -27725,7 +27746,7 @@ window.qsNpOfferSend = function (btn) {
       var url = r && r.data && r.data.url;
       if (!r || !r.ok || !url) throw new Error('reset failed');
       var inp = $('ms-feed-url');
-      if (inp) inp.value = url;
+      if (inp) { inp.value = url; qsSyncFeedButtons(); }
       msg('ms-feed-msg', 'New link created ✓ — subscribe again in your calendar app.', true);
     }).catch(function () { msg('ms-feed-msg', 'Could not reset — try again.', false); });
   });
