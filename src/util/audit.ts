@@ -16,7 +16,8 @@ export interface AuditEntry {
   companyId: string;
   date: string; // YYYY-MM-DD (schedule date, or today for settings changes)
   action: 'created' | 'updated' | 'deleted' | 'published' | 'unpublished' | 'rotation_excluded'
-    | 'archived' | 'restored' | 'delete_requested' | 'delete_rejected' | 'delete_cancelled';
+    | 'archived' | 'restored' | 'delete_requested' | 'delete_rejected' | 'delete_cancelled'
+    | 'access_requested' | 'access_granted' | 'access_rejected';
   category?: 'schedule' | 'settings' | 'calendar';
   personName?: string | null;
   shiftTypeName?: string | null;

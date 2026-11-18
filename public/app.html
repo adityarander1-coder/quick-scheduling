@@ -1804,6 +1804,7 @@
     <button type="button" class="qtr-btn" data-tool="highlight" onclick="window.qsToolsOpen('highlight')"><span class="qtr-ic">🎨</span><span class="qtr-tx">Highlight</span></button>
     <button type="button" class="qtr-btn" id="qtr-select" data-tool="select" onclick="window.qsSelToggle()" aria-pressed="false" title="Select shifts to act on together"><span class="qtr-ic">☑️</span><span class="qtr-tx">Select</span></button>
     <button type="button" class="qtr-btn" id="qtr-history" data-tool="history" onclick="window.qsToolsHistory()" title="Frozen copies of the schedule — saved on every publish and change"><span class="qtr-ic">🕘</span><span class="qtr-tx">History</span></button>
+    <button type="button" class="qtr-btn" id="qtr-access" data-tool="access" onclick="window.qsToolsAccess()" title="Request access to a department you cannot see yet"><span class="qtr-ic">🔑</span><span class="qtr-tx">Access</span></button>
     <button type="button" class="qtr-btn" id="qtr-shortcover" data-tool="shortcover" onclick="window.qsToolsShortcover()"><span class="qtr-ic">🩹</span><span class="qtr-tx">Short cover</span><span class="req-badge qtr-badge" data-sc-badge hidden></span></button>
     <button type="button" class="qtr-btn" data-tool="fairness" onclick="window.qsToolsFairness()"><span class="qtr-ic">⚖️</span><span class="qtr-tx">Fairness</span></button>
     <button type="button" class="qtr-btn" id="qtr-credentials" data-tool="credentials" onclick="window.qsToolsCredentials()"><span class="qtr-ic">🪪</span><span class="qtr-tx">Credentials</span><span class="req-badge qtr-badge" data-cred-badge hidden></span></button>
@@ -8518,6 +8519,13 @@
             $('qtp-title').textContent = '🕘 History';
             qsRenderHistoryPanel();
           }
+          if (tool === 'access') {
+            // Department access requests (Deepika, 2026-11-17) — ask
+            // for view-only or admin access to a department you cannot
+            // see yet; department admins + owner decide.
+            $('qtp-title').textContent = '🔑 Department access';
+            qsRenderAccessPanel();
+          }
           if (tool === 'groups') {
             // Communication groups manager (moved here from Settings,
             // Deepika 2026-11-07) — the wide panel variant.
@@ -8538,6 +8546,7 @@
         window.qsToolsShortcover = function () { location.hash = 'shortcover'; };
         window.qsToolsGroups = function () { window.qsToolsOpen('groups'); };
         window.qsToolsHistory = function () { window.qsToolsOpen('history'); };
+        window.qsToolsAccess = function () { window.qsToolsOpen('access'); };
         // History is a manager tool (owner/schedulers — the list API
         // is owner/scheduler-only): hide the rail entry in the
         // employee view, like Communication groups.
@@ -8549,6 +8558,16 @@
           btn.style.display = isEmp ? 'none' : '';
         }
         setTimeout(qsGateHistoryBtn, 2600);
+        // Access is a manager tool in the rail (owner/schedulers):
+        // hide the rail entry in the employee view, like History.
+        function qsGateAccessBtn() {
+          var btn = $('qtr-access');
+          if (!btn) return;
+          var empNav = $('employee-tabs');
+          var isEmp = (empNav && !empNav.classList.contains('hidden')) || window.currentRole === 'employee';
+          btn.style.display = isEmp ? 'none' : '';
+        }
+        setTimeout(qsGateAccessBtn, 2600);
         // Communication groups are a manager tool (owner/schedulers —
         // the same gating the Settings section had): hide the rail
         // entry in the employee view.
@@ -8655,6 +8674,95 @@
           }).catch(function () {
             var list = $('qs-history-list');
             if (list) list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#991b1b;text-align:center">Could not load History. Please try again.</div>';
+          });
+        }
+        // --- Department access requests (Deepika, 2026-11-17) ------------
+        // Ask for view-only or admin access to a department you cannot
+        // see yet. Department admins (edit access) + the owner decide;
+        // the first approver to act decides, and approval grants the
+        // access right away. One panel holds all three views: requests
+        // waiting for YOUR decision, departments you can ask for, and
+        // your own requests with their status.
+        function qsAccessLevelLabel(level) { return level === 'edit' ? 'Admin' : 'View-only'; }
+        function qsAccessStatusPill(status) {
+          if (status === 'approved') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#d9f0f2;color:#0a6270">APPROVED</span>';
+          if (status === 'rejected') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#fee2e2;color:#991b1b">REJECTED</span>';
+          return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#fef3c7;color:#92400e">PENDING</span>';
+        }
+        window.qsAccessRequest = function (deptId, level) {
+          api('/api/schedule/department-access/requests', { method: 'POST', body: JSON.stringify({ departmentId: deptId, level: level }) }).then(function (r) {
+            if (!r.ok) { pageError((r.data && r.data.error) || 'Could not send that request. Please try again.'); return; }
+            pageSuccess('Request sent — an admin of that department will review it.');
+            qsRenderAccessPanel();
+          }).catch(function () { pageError('Could not send that request. Please try again.'); });
+        };
+        window.qsAccessDecide = function (reqId, decision) {
+          api('/api/schedule/department-access/requests/' + reqId + '/' + decision, { method: 'POST' }).then(function (r) {
+            if (!r.ok) { pageError((r.data && r.data.error) || 'Could not decide that request. Please try again.'); return; }
+            pageSuccess(decision === 'approve' ? 'Access granted.' : 'Request rejected — nothing changed.');
+            qsRenderAccessPanel();
+          }).catch(function () { pageError('Could not decide that request. Please try again.'); });
+        };
+        function qsRenderAccessPanel() {
+          var body = $('qtp-body');
+          if (!body) return;
+          body.innerHTML =
+            '<div style="padding:0 4px 12px;font-size:12px;color:#64748b">Ask for access to a department you cannot see yet. Department admins and the owner decide — the first admin to act decides, and approval grants the access right away.</div>' +
+            '<div id="qs-access-list"><div style="padding:22px 16px;font-size:13px;color:#7a8a8e;text-align:center">Loading…</div></div>';
+          api('/api/schedule/department-access/requests').then(function (r) {
+            var list = $('qs-access-list');
+            if (!list) return;
+            if (!r.ok) {
+              list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#991b1b;text-align:center">Could not load Access. Please try again.</div>';
+              return;
+            }
+            var d = r.data || {};
+            var html = '';
+            var toDecide = d.toDecide || [];
+            if (toDecide.length) {
+              html += '<div style="font-size:12px;font-weight:800;color:#0a6270;letter-spacing:.02em;padding:4px 4px 8px">REQUESTS TO DECIDE (' + toDecide.length + ')</div>';
+              toDecide.forEach(function (req) {
+                html += '<div data-acc-decide data-acc-req-id="' + esc(req.id) + '" style="padding:12px 4px;border-bottom:1px solid #eef0f0">' +
+                  '<div style="font-size:13px;font-weight:700;color:#083f4d">' + esc(req.requestedByName || '') + ' · ' + esc(req.departmentName || '') + '</div>' +
+                  '<div style="font-size:12px;color:#64748b;margin-top:2px">Asking for ' + qsAccessLevelLabel(req.level) + ' access · ' + esc(qsHistoryWhen(req.createdAt)) + '</div>' +
+                  '<div style="display:flex;gap:8px;margin-top:8px">' +
+                    '<button type="button" data-acc-approve onclick="window.qsAccessDecide(\'' + esc(req.id) + '\', \'approve\')" style="border:1px solid #0e7c86;background:#0e7c86;color:#fff;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer">Approve</button>' +
+                    '<button type="button" data-acc-reject onclick="window.qsAccessDecide(\'' + esc(req.id) + '\', \'reject\')" style="border:1px solid #c9d6d8;background:#fff;color:#083f4d;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer">Reject</button>' +
+                  '</div></div>';
+              });
+            }
+            var askable = (d.departments || []).filter(function (x) { return x.myAccess !== 'edit'; });
+            html += '<div style="font-size:12px;font-weight:800;color:#0a6270;letter-spacing:.02em;padding:14px 4px 8px">REQUEST ACCESS</div>';
+            if (!askable.length) {
+              html += '<div style="padding:8px 4px;font-size:13px;color:#7a8a8e">You already have access to every department.</div>';
+            } else {
+              askable.forEach(function (x) {
+                html += '<div data-acc-dept="' + esc(x.id) + '" style="padding:12px 4px;border-bottom:1px solid #eef0f0">' +
+                  '<div style="font-size:13px;font-weight:700;color:#083f4d">' + esc(x.name) + '</div>';
+                if (x.pending) {
+                  html += '<div style="font-size:12px;color:#92400e;margin-top:4px">Requested — pending (' + qsAccessLevelLabel(x.pending.level) + ')</div>';
+                } else {
+                  if (x.myAccess === 'view') html += '<div style="font-size:12px;color:#64748b;margin-top:2px">You have view-only access.</div>';
+                  html += '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">';
+                  if (x.myAccess !== 'view') html += '<button type="button" data-acc-req="view" onclick="window.qsAccessRequest(\'' + esc(x.id) + '\', \'view\')" style="border:1px solid #0e7c86;background:#fff;color:#0e7c86;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer">Request view-only</button>';
+                  html += '<button type="button" data-acc-req="edit" onclick="window.qsAccessRequest(\'' + esc(x.id) + '\', \'edit\')" style="border:1px solid #0e7c86;background:#0e7c86;color:#fff;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer">Request admin access</button></div>';
+                }
+                html += '</div>';
+              });
+            }
+            var mine = d.myRequests || [];
+            if (mine.length) {
+              html += '<div style="font-size:12px;font-weight:800;color:#0a6270;letter-spacing:.02em;padding:14px 4px 8px">MY REQUESTS</div>';
+              mine.forEach(function (req) {
+                html += '<div style="padding:10px 4px;border-bottom:1px solid #eef0f0">' +
+                  '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13px;font-weight:700;color:#083f4d">' + esc(req.departmentName || '') + '</span>' + qsAccessStatusPill(req.status) + '</div>' +
+                  '<div style="font-size:12px;color:#64748b;margin-top:2px">' + qsAccessLevelLabel(req.level) + ' access · asked ' + esc(qsHistoryWhen(req.createdAt)) + (req.decidedByName ? ' · decided by ' + esc(req.decidedByName) : '') + '</div></div>';
+              });
+            }
+            list.innerHTML = html;
+          }).catch(function () {
+            var list = $('qs-access-list');
+            if (list) list.innerHTML = '<div style="padding:22px 16px;font-size:13px;color:#991b1b;text-align:center">Could not load Access. Please try again.</div>';
           });
         }
         // --- Short cover -----------------------------------------------------
@@ -27410,6 +27518,12 @@ window.qsNpOfferSend = function (btn) {
     } else if (link === 'schedule') {
       if (window.qsSetAppView) window.qsSetAppView('admin');
       window.location.hash = 'schedule';
+    } else if (link === 'tools/access') {
+      // Bell link from a department-access request: land on the
+      // Schedule tab and open the Access tool.
+      if (window.qsSetAppView) window.qsSetAppView('admin');
+      window.location.hash = 'schedule';
+      setTimeout(function () { if (window.qsToolsOpen) window.qsToolsOpen('access'); }, 350);
     } else if (link.charAt(0) === '/') {
       // Absolute-path links (clarification answer page, cross-branch
       // page) navigate the whole browser there.

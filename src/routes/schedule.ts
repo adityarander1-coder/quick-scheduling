@@ -15514,10 +15514,286 @@ router.post('/dashboards/:id/delete-request/cancel', requireRole('owner', 'sched
   }
 });
 
+// ---------------------------------------------------------------------------
+// Department access requests (Deepika, 2026-11-17; migration 114).
+// A signed-in person asks for access to a department they cannot see
+// yet — view-only for the whole department, or admin (edit) access —
+// for themselves. The admins of that department (edit access) plus the
+// company owner decide; the FIRST approver to act decides, following
+// the dashboard-delete approval-request pattern above. Approval grants
+// the access immediately via the existing scheduler_department_access
+// table (migration 033); rejection grants nothing. No parallel access
+// system, no cancel — a request stands until an approver decides it.
+// ---------------------------------------------------------------------------
+
+type AccessRequestRow = {
+  id: string; company_id: string; department_id: string; requested_by: string;
+  level: string; status: string; decided_by: string | null;
+  created_at: string; decided_at: string | null;
+  department_name?: string; requested_by_name?: string; decided_by_name?: string;
+};
+
+async function accessRequestById(companyId: string, id: string): Promise<AccessRequestRow | null> {
+  const { rows } = await query<AccessRequestRow>(
+    `SELECT r.*, d.name AS department_name
+     FROM department_access_requests r
+     JOIN departments d ON d.id = r.department_id
+     WHERE r.id = $1 AND r.company_id = $2`,
+    [id, companyId]);
+  return rows[0] || null;
+}
+
+/** Owners + schedulers with Edit access to the department — the approvers. */
+async function departmentAccessApproverIds(companyId: string, departmentId: string): Promise<string[]> {
+  return deptApproverIds(companyId, departmentId);
+}
+
+function publicAccessRequest(r: AccessRequestRow) {
+  return {
+    id: r.id, departmentId: r.department_id, departmentName: r.department_name || '',
+    requestedBy: r.requested_by, requestedByName: r.requested_by_name || '',
+    level: r.level, status: r.status,
+    decidedBy: r.decided_by, decidedByName: r.decided_by_name || null,
+    createdAt: r.created_at, decidedAt: r.decided_at,
+  };
+}
+
+// GET /api/schedule/department-access/requests — everything the Access
+// panel needs in one call: every company department with MY access
+// level for it (owner reads 'edit' everywhere) and any pending request
+// of mine for it; my requests with their status; and the pending
+// requests I may decide (admin of that department, or owner).
+router.get('/department-access/requests', async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const isOwner = req.session.role === 'owner';
+    const { rows: depts } = await query<{ id: string; name: string }>(
+      `SELECT id, name FROM departments WHERE company_id = $1 ORDER BY lower(name)`, [companyId]);
+    const myAccess = isOwner
+      ? null
+      : await getDepartmentAccess(me, companyId);
+    const { rows: mine } = await query<AccessRequestRow>(
+      `SELECT r.*, d.name AS department_name
+       FROM department_access_requests r
+       JOIN departments d ON d.id = r.department_id
+       WHERE r.requested_by = $1 AND r.company_id = $2
+       ORDER BY r.created_at DESC LIMIT 20`,
+      [me, companyId]);
+    const pendingMine = new Map<string, AccessRequestRow>();
+    for (const r of mine) if (r.status === 'pending') pendingMine.set(r.department_id, r);
+    // Pending requests I may decide: departments I admin (edit), or all
+    // of them when I am the owner. The requester never decides their own.
+    const { rows: pendRows } = await query<AccessRequestRow>(
+      `SELECT r.*, d.name AS department_name
+       FROM department_access_requests r
+       JOIN departments d ON d.id = r.department_id
+       WHERE r.company_id = $1 AND r.status = 'pending' AND r.requested_by <> $2
+       ORDER BY r.created_at ASC`,
+      [companyId, me]);
+    const toDecide: AccessRequestRow[] = [];
+    for (const r of pendRows) {
+      if (isOwner || (myAccess && myAccess.edit.includes(r.department_id))) {
+        r.requested_by_name = await userDisplayName(r.requested_by);
+        toDecide.push(r);
+      }
+    }
+    const departments = await Promise.all(depts.map(async (d) => {
+      const access = isOwner ? 'edit' : (myAccess!.edit.includes(d.id) ? 'edit' : myAccess!.view.includes(d.id) ? 'view' : 'none');
+      const pend = pendingMine.get(d.id);
+      return {
+        id: d.id, name: d.name, myAccess: access,
+        pending: pend ? { id: pend.id, level: pend.level, createdAt: pend.created_at } : null,
+      };
+    }));
+    const myRequests = await Promise.all(mine.map(async (r) => {
+      r.requested_by_name = await userDisplayName(r.requested_by);
+      if (r.decided_by) r.decided_by_name = await userDisplayName(r.decided_by);
+      return publicAccessRequest(r);
+    }));
+    res.json({
+      departments,
+      myRequests,
+      toDecide: toDecide.map(publicAccessRequest),
+    });
+  } catch (err) {
+    console.error('[schedule] department-access list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/department-access/requests — ask for access to a
+// department, for myself. Body: { departmentId, level: 'view'|'edit' }.
+router.post('/department-access/requests', async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const departmentId = String(req.body?.departmentId ?? '').trim();
+    const level = req.body?.level;
+    if (level !== 'view' && level !== 'edit') {
+      res.status(400).json({ error: "level must be 'view' or 'edit'." });
+      return;
+    }
+    const { rows: depts } = await query<{ id: string; name: string }>(
+      `SELECT id, name FROM departments WHERE id = $1 AND company_id = $2`, [departmentId, companyId]);
+    if (!depts.length) { res.status(404).json({ error: 'Department not found.' }); return; }
+    if (req.session.role === 'owner') {
+      res.status(409).json({ error: 'You already have access to every department.' });
+      return;
+    }
+    const access = await getDepartmentAccess(me, companyId);
+    const have = access.edit.includes(departmentId) ? 'edit' : access.view.includes(departmentId) ? 'view' : 'none';
+    if (have === 'edit' || (have === 'view' && level === 'view')) {
+      res.status(409).json({ error: `You already have ${have === 'edit' ? 'admin' : 'view-only'} access to ${depts[0].name}.` });
+      return;
+    }
+    const { rows: existing } = await query(
+      `SELECT id FROM department_access_requests
+       WHERE requested_by = $1 AND department_id = $2 AND status = 'pending'`,
+      [me, departmentId]);
+    if (existing.length) {
+      res.status(409).json({ error: `You already have a request waiting for ${depts[0].name}.` });
+      return;
+    }
+    const { rows } = await query(
+      `INSERT INTO department_access_requests (company_id, department_id, requested_by, level)
+       VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
+      [companyId, departmentId, me, level]);
+    const myName = await userDisplayName(me);
+    const approvers = await departmentAccessApproverIds(companyId, departmentId);
+    notify({
+      companyId, userIds: approvers, category: 'approvals', type: 'department_access_request',
+      title: `${myName} asked for ${level === 'edit' ? 'admin' : 'view-only'} access to ${depts[0].name}`,
+      body: `${myName} asked for ${level === 'edit' ? 'admin' : 'view-only'} access to ${depts[0].name}. Review it in the Access tool — the first admin to act decides.`,
+      link: 'tools/access',
+      excludeUserId: me,
+    });
+    await auditLog({
+      companyId, date: todayStr(), action: 'access_requested', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Asked for ${level === 'edit' ? 'admin' : 'view-only'} access to ${depts[0].name}`,
+      departmentId,
+    });
+    res.status(201).json({ ok: true, request: { id: rows[0].id, departmentId, level, status: 'pending', createdAt: rows[0].created_at } });
+  } catch (err: any) {
+    if (err?.code === '23505') { // one-pending-per-person-per-department race
+      res.status(409).json({ error: 'You already have a request waiting for this department.' });
+      return;
+    }
+    console.error('[schedule] department-access request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// Shared loader for the decision endpoints: resolves the pending
+// request and whether THIS caller may decide it (an eligible approver
+// who is not the requester).
+async function loadDecidableAccessRequest(req: Request, res: Response): Promise<AccessRequestRow | null> {
+  const companyId = req.session.companyId!;
+  const r = await accessRequestById(companyId, req.params.id);
+  if (!r) { res.status(404).json({ error: 'Request not found.' }); return null; }
+  if (r.status !== 'pending') { res.status(409).json({ error: 'This request has already been decided.' }); return null; }
+  if (r.requested_by === req.session.userId) {
+    res.status(403).json({ error: "You can't decide your own access request — another admin has to." });
+    return null;
+  }
+  if (req.session.role !== 'owner' && req.session.role !== 'scheduler') {
+    res.status(403).json({ error: 'Only an admin of this department (or the owner) can decide this request.' });
+    return null;
+  }
+  const approvers = await departmentAccessApproverIds(companyId, r.department_id);
+  if (!approvers.includes(req.session.userId!)) {
+    res.status(403).json({ error: 'Only an admin of this department (or the owner) can decide this request.' });
+    return null;
+  }
+  return r;
+}
+
+// POST /api/schedule/department-access/requests/:id/approve — grant the
+// access immediately (existing rows win when they are already higher:
+// an 'edit' row stays 'edit' if the request was only 'view') and close
+// the request. The first approver to act decides.
+router.post('/department-access/requests/:id/approve', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadDecidableAccessRequest(req, res);
+    if (!ctx) return;
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const finalLevel = ctx.level === 'edit' ? 'edit' : 'view';
+    await query(
+      `INSERT INTO scheduler_department_access (company_id, user_id, department_id, access_level)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, department_id) DO UPDATE
+       SET access_level = CASE WHEN scheduler_department_access.access_level = 'edit' THEN 'edit' ELSE EXCLUDED.access_level END`,
+      [companyId, ctx.requested_by, ctx.department_id, finalLevel]);
+    await query(
+      `UPDATE department_access_requests SET status = 'approved', decided_by = $2, decided_at = now() WHERE id = $1`,
+      [ctx.id, me]);
+    const myName = await userDisplayName(me);
+    const requesterName = await userDisplayName(ctx.requested_by);
+    notify({
+      companyId, userIds: [ctx.requested_by], category: 'approvals', type: 'department_access_decided',
+      title: `Your ${finalLevel === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name} was approved`,
+      body: `Your request for ${finalLevel === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name} was approved by ${myName} — you can see the department now.`,
+      link: 'tools/access',
+    });
+    const others = (await departmentAccessApproverIds(companyId, ctx.department_id))
+      .filter((id: string) => id !== ctx.requested_by && id !== me);
+    if (others.length) {
+      notify({
+        companyId, userIds: others, category: 'approvals', type: 'department_access_decided',
+        title: `${requesterName} now has ${finalLevel === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name}`,
+        body: `${requesterName}'s request for ${finalLevel === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name} was approved by ${myName}.`,
+        link: 'tools/access',
+      });
+    }
+    await auditLog({
+      companyId, date: todayStr(), action: 'access_granted', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Approved ${requesterName}'s request — granted ${finalLevel === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name}`,
+      departmentId: ctx.department_id,
+    });
+    res.json({ ok: true, approved: true, level: finalLevel });
+  } catch (err) {
+    console.error('[schedule] department-access approve failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/department-access/requests/:id/reject — close the
+// request; no access is granted.
+router.post('/department-access/requests/:id/reject', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const ctx = await loadDecidableAccessRequest(req, res);
+    if (!ctx) return;
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    await query(
+      `UPDATE department_access_requests SET status = 'rejected', decided_by = $2, decided_at = now() WHERE id = $1`,
+      [ctx.id, me]);
+    const myName = await userDisplayName(me);
+    notify({
+      companyId, userIds: [ctx.requested_by], category: 'approvals', type: 'department_access_decided',
+      title: `Your ${ctx.level === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name} was rejected`,
+      body: `Your request for ${ctx.level === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name} was rejected by ${myName} — nothing changed.`,
+      link: 'tools/access',
+    });
+    await auditLog({
+      companyId, date: todayStr(), action: 'access_rejected', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Rejected the request for ${ctx.level === 'edit' ? 'admin' : 'view-only'} access to ${ctx.department_name}`,
+      departmentId: ctx.department_id,
+    });
+    res.json({ ok: true, rejected: true });
+  } catch (err) {
+    console.error('[schedule] department-access reject failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/dashboards/:id/restore — bring an archived
 // dashboard back, sessions and all. Direct, no approval.
-router.post('/dashboards/:id/restore', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
-  try {
+router.post('/dashboards/:id/restore', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {  try {
     const companyId = req.session.companyId!;
     const dash = await dashboardRowById(companyId, req.params.id);
     if (!dash) { res.status(404).json({ error: 'Dashboard not found.' }); return; }
