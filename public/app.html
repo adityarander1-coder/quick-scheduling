@@ -2427,8 +2427,12 @@
              Apply row — away from the right edge and the chevron. It was
              margin-left:auto (far right). The 173807e breathing room stays:
              the 12px right margin is harmless on its own row, and the
-             toolbar keeps its 8px bottom padding. */
-          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: 0; margin-right: 12px; }
+             toolbar keeps its 8px bottom padding.
+             Upload smaller (Deepika, 2026-11-18, approved mock): the button
+             itself is compact — 7px 12px padding, 13px font, 9px radius —
+             so the bar feels less crowded. Phone only; desktop keeps the
+             full-size .btn-secondary. */
+          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: 0; margin-right: 12px; padding: 7px 12px; font-size: 13px; border-radius: 9px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; padding-bottom: 8px; }
           #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
