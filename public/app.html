@@ -1474,6 +1474,157 @@
     .app-header.light-chrome .qs-ur-btn { color: #21414c; border-color: rgba(33,65,76,.45); background: rgba(33,65,76,.08); }
     .qs-pal-pop { position: absolute; z-index: 1200; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(16,24,40,.22); padding: 10px 12px; width: 232px; }
     html[data-theme="dark"] .qs-pal-pop { background: #1f2937; }
+    /* ---- Dark-mode visibility fixes (Deepika, 2026-11-19) ----
+       Dark mode flips the text tokens to near-white, but a dozen surfaces
+       kept hardcoded white/pale backgrounds (and a few kept hardcoded dark
+       ink), and the dark --accent (#6c8cff) is too light for white text.
+       These overrides switch the hardcoded-light surfaces to the theme
+       surface tokens and darken the accent-button backgrounds to #3b5bdb
+       (white text = 5.66). The --accent token itself is untouched: 28
+       link-style `color: var(--accent)` uses sit at 6.22 on dark surfaces.
+       Light mode is unchanged except .notif-item .nm (2.33 -> ~5.4, a fix). */
+    /* Topbar: the accent topbar is too light for its white text. */
+    html[data-theme="dark"] #topbar { background: #2b4acb; }
+    /* Accent buttons: white text on the light dark-mode accent fails. */
+    html[data-theme="dark"] .btn,
+    html[data-theme="dark"] .btn-primary,
+    html[data-theme="dark"] .brand-mark,
+    html[data-theme="dark"] .today-tag,
+    html[data-theme="dark"] #tab-schedule .sched-control-box #sched-today,
+    html[data-theme="dark"] #tab-myschedule .sched-control-box #ms-today,
+    html[data-theme="dark"] #tab-schedule .mini-day.selected,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day.selected,
+    html[data-theme="dark"] .qs-mode-toggle-light button.active,
+    html[data-theme="dark"] #tab-settings .day-toggle.on,
+    html[data-theme="dark"] #tab-settings .cand-tabs button.active,
+    html[data-theme="dark"] #tab-requests .req-subtab.active,
+    html[data-theme="dark"] #tab-dash .db-tbar .ac-nav[data-nav="today"],
+    html[data-theme="dark"] #tab-schedule .comment-who .who-avatar,
+    html[data-theme="dark"] #tab-schedule .shift-comment-btn:hover,
+    html[data-theme="dark"] #fab-email-ai,
+    html[data-theme="dark"] .msg-ch.active,
+    html[data-theme="dark"] .msg-input button { background: #3b5bdb; }
+    html[data-theme="dark"] .btn-primary:hover { background: #2b4acb; }
+    /* .btn-primary sets no text colour of its own (UA default black) — on
+       the darkened background the text must be white. */
+    html[data-theme="dark"] .btn-primary { color: #fff; }
+    /* Messages info button: inline var(--accent) background. */
+    html[data-theme="dark"] #msg-members-info { background: #3b5bdb !important; }
+    /* The Requests band keeps its white-pill active tab. */
+    html[data-theme="dark"] #tab-requests .req-band .req-subtab.active { background: #fff; color: #21414c; }
+    /* Comment button with a comment: accent icon on the white day card. */
+    html[data-theme="dark"] #tab-schedule .shift-comment-btn.has-comment { color: #3b5bdb; border-color: #3b5bdb; }
+    /* Mini-day publish states (phone month strip). */
+    html[data-theme="dark"] #tab-schedule .mini-day.pub,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day.has-mine { background: #0e7c86; }
+    /* View options popup + picker (both views, phone + desktop). */
+    html[data-theme="dark"] .qs-vo-pop { background: var(--surface); }
+    html[data-theme="dark"] .qs-vo-row:hover { background: rgba(255,255,255,.07); }
+    html[data-theme="dark"] .qs-vo-row.open { background: var(--surface-alt); }
+    html[data-theme="dark"] .qs-vo-row button { background: var(--surface-alt); }
+    html[data-theme="dark"] .vo-picker { background: var(--surface-alt); }
+    html[data-theme="dark"] .vo-picker label:hover { background: rgba(255,255,255,.07); }
+    html[data-theme="dark"] .qs-vo-row .qs-vo-lab .qs-vo-val { color: var(--teal); }
+    html[data-theme="dark"] .qs-vo-row .qs-vo-lab .qs-vo-val.none { color: var(--dim); }
+    html[data-theme="dark"] .vo-picker .hint b { color: var(--teal); }
+    /* Day popup + all modals. */
+    html[data-theme="dark"] #action-dialog .modal,
+    html[data-theme="dark"] #tab-myschedule .modal,
+    html[data-theme="dark"] #tab-ask .modal,
+    html[data-theme="dark"] #tab-schedule .modal,
+    html[data-theme="dark"] #tab-settings .modal,
+    html[data-theme="dark"] #fab-email-dialog .modal { background: var(--surface); }
+    /* P/D publish toggle in the day modal (inline backgrounds). */
+    html[data-theme="dark"] #sched-day-modal .dm-shift-row button[style*="#9ca3af"] { background: #64748b !important; }
+    html[data-theme="dark"] #sched-day-modal .dm-shift-row button[style*="#00a9a4"] { background: #0e7c86 !important; }
+    /* Range / Week shift names: draft + occurrence names have no inline
+       background, so they sit on the grid's dark surface-alt. Published
+       names keep their light tint background (inline style) and dark text,
+       so they are excluded here. Selected grids keep their pale background
+       and dark text. */
+    html[data-theme="dark"] #tab-schedule .shift-grid:not(.qs-selected) .shift-nm:not([style*="background:"]),
+    html[data-theme="dark"] #tab-myschedule .shift-grid:not(.qs-selected) .shift-nm:not([style*="background:"]),
+    html[data-theme="dark"] .qs-shift-preview .shift-grid:not(.qs-selected) .shift-nm:not([style*="background:"]) { color: var(--text); }
+    /* Filter chevron: the label is dark on the white button; only the
+       chevron (inline var(--dim)) needs darkening. */
+    html[data-theme="dark"] #sched-dept-btn span:last-child,
+    html[data-theme="dark"] #ms-dept-btn span:last-child { color: #64748b !important; }
+    /* "No shifts assigned." in day rows (not the day modal, where the
+       same grey reads 6.66 on the dark modal). */
+    html[data-theme="dark"] #tab-schedule .day-row .empty-day,
+    html[data-theme="dark"] #tab-myschedule .day-row .empty-day { color: #64748b; }
+    /* Day-row headers: the .dow is var(--text) (near-white in dark mode) and
+       some range/week renderings leave the header on the white day card
+       (1.1). Pin the header to surface-alt so the day name always reads. */
+    html[data-theme="dark"] #tab-schedule .day-row-head,
+    html[data-theme="dark"] #tab-myschedule .day-row-head { background: var(--surface-alt); }
+    /* Block view: row headers, week headers and shift boxes. */
+    html[data-theme="dark"] #tab-schedule .sbw-rowhead,
+    html[data-theme="dark"] #tab-myschedule .sbw-rowhead { background: var(--surface); }
+    html[data-theme="dark"] #tab-schedule .sbw-whead,
+    html[data-theme="dark"] #tab-myschedule .sbw-whead { background: var(--surface); }
+    html[data-theme="dark"] #tab-schedule .sbw-whead:first-child,
+    html[data-theme="dark"] #tab-schedule .sbw-grid > .sbw-whead:first-child,
+    html[data-theme="dark"] #tab-myschedule .sbw-whead:first-child,
+    html[data-theme="dark"] #tab-myschedule .sbw-grid > .sbw-whead:first-child { background: var(--surface); }
+    html[data-theme="dark"] #tab-schedule .sbw-whead.now,
+    html[data-theme="dark"] #tab-myschedule .sbw-whead.now { color: #8ba4ff; }
+    html[data-theme="dark"] #tab-schedule .sbw-box,
+    html[data-theme="dark"] #tab-myschedule .sbw-box { color: #131a2c; }
+    html[data-theme="dark"] #tab-schedule .sbw-box div[style*="#9ca3af"],
+    html[data-theme="dark"] #tab-myschedule .sbw-box div[style*="#9ca3af"] { color: #5b6673 !important; }
+    /* Settings: team roster + department / job-role rows. */
+    html[data-theme="dark"] .team-row { background: var(--surface); }
+    html[data-theme="dark"] #team-members-list .team-row:nth-child(even) { background: var(--surface-alt); }
+    html[data-theme="dark"] #team-dept-list .set-row:nth-child(even),
+    html[data-theme="dark"] #jr-list .set-row:nth-child(even) { background: var(--surface-alt); }
+    /* History: date header, timestamp, author and View-copy link
+       (inline dark colours that fail on the dark surface). */
+    html[data-theme="dark"] #qs-history-list div[style*="#0a6270"] { color: var(--teal) !important; }
+    html[data-theme="dark"] #qs-history-list span[style*="#083f4d"] { color: var(--dim) !important; }
+    html[data-theme="dark"] #qs-history-list div[style*="#64748b"] { color: var(--dim) !important; }
+    html[data-theme="dark"] #qs-history-list a[style*="#0e7c86"] { color: var(--teal) !important; }
+    /* History date-filter label ("Show changes for a date", inline #5b6b6f). */
+    html[data-theme="dark"] #qtp-body label[style*="#5b6b6f"] { color: var(--dim) !important; }
+    /* Empty-week state. */
+    html[data-theme="dark"] .empty-week { background: var(--surface); }
+    /* Phone month strip: the mini date grid is a white card in dark mode. */
+    html[data-theme="dark"] #tab-schedule .month-mini-grid,
+    html[data-theme="dark"] #tab-myschedule .ms-month-mini-grid { background: var(--surface); }
+    html[data-theme="dark"] #tab-schedule .mini-day,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day { color: var(--text); }
+    html[data-theme="dark"] #tab-schedule .mini-day.other,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day.other { color: var(--dim); }
+    /* The broad .mini-day colour above would put near-white text on the
+       pale today/draft chips — restore their dark text on the pale chip. */
+    html[data-theme="dark"] #tab-schedule .mini-day.today,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day.today { color: #00796b; }
+    html[data-theme="dark"] #tab-schedule .mini-day.draft,
+    html[data-theme="dark"] #tab-myschedule .ms-mini-day.has-others { color: #4b5563; }
+    /* Access panel (divs only — the Reject button keeps its white bg +
+       dark text, and the Approve / Request buttons keep their teal). */
+    html[data-theme="dark"] #qs-access-list div[style*="#0a6270"] { color: var(--teal) !important; }
+    html[data-theme="dark"] #qs-access-list div[style*="#083f4d"] { color: var(--text) !important; }
+    html[data-theme="dark"] #qs-access-list div[style*="#64748b"] { color: var(--dim) !important; }
+    html[data-theme="dark"] #qs-access-list div[style*="#92400e"] { color: #fbbf24 !important; }
+    html[data-theme="dark"] #qtp-body > div[style*="#64748b"] { color: var(--dim) !important; }
+    /* Avatar initials (Messages + team roster): darken the failing hues. */
+    html[data-theme="dark"] .ch-av[style*="#f59e0b"] { background: #b45309 !important; }
+    html[data-theme="dark"] .ch-av[style*="#6366f1"] { background: #4f46e5 !important; }
+    html[data-theme="dark"] .ch-av[style*="#0891b2"] { background: #0e7490 !important; }
+    html[data-theme="dark"] .ch-av[style*="#db2777"] { background: #be185d !important; }
+    html[data-theme="dark"] .ch-av[style*="#16a34a"] { background: #15803d !important; }
+    html[data-theme="dark"] .ch-av[style*="#ea580c"] { background: #c2410c !important; }
+    html[data-theme="dark"] .avatar.color-coral { background: #b03a2e; }
+    html[data-theme="dark"] .avatar.color-sage { background: #2e7d5b; }
+    html[data-theme="dark"] .avatar.color-blue { background: #1d4ed8; }
+    html[data-theme="dark"] .avatar.color-gold { background: #b45309; }
+    html[data-theme="dark"] .avatar.color-plum { background: #6b21a8; }
+    html[data-theme="dark"] .avatar.color-slate { background: #475569; }
+    /* Notification timestamps: #9ca3af fails on the white panel in both
+       modes (2.33). #5b6673 passes on white (5.83) and on the unread
+       #eff6ff item background (5.37). */
+    .notif-item .nm { color: #5b6673 !important; }
     .qs-pal-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
     .qs-pal-name { width: 76px; font-size: 0.78rem; font-weight: 700; color: var(--dim); flex: none; }
     .qs-pal-sw { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(0,0,0,.12); cursor: pointer; padding: 0; flex: none; }
