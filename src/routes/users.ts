@@ -1187,6 +1187,16 @@ router.patch('/:id', async (req: Request, res: Response) => {
       } else if (target.department_id) {
         relevant = [target.department_id];
       }
+      // Place-first (Deepika 2026-11-19): a scheduler saving a member who
+      // would stay department-less is refused with a clear message — they
+      // must pick one of their edit departments first. (The owner bypasses
+      // this and can still save a member without a department, as before.)
+      // requireActiveDepartment would refuse this too, but with the generic
+      // "only the owner can change it" wording.
+      if (callerRole === 'scheduler' && !relevant.length) {
+        res.status(403).json({ error: 'Pick a department first — this team member has no department yet. Choose one of your departments to place them.' });
+        return;
+      }
       if (!(await requireActiveDepartment(req, res, relevant))) return;
     }
     const sets: string[] = [];

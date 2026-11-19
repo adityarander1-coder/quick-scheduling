@@ -28,7 +28,9 @@
       var method = String(opts.method || 'GET').toUpperCase();
       if (method !== 'GET' && method !== 'HEAD' && window.currentRole === 'scheduler' && window.qsActiveDeptId &&
           path.indexOf('/api/auth') !== 0 && path.indexOf('/api/billing') !== 0) {
-        opts.headers['X-Active-Department'] = window.qsActiveDeptId;
+        // A caller-provided active department wins (place-first saves run
+        // in the picked department's context); otherwise use the top switcher.
+        if (!opts.headers['X-Active-Department']) opts.headers['X-Active-Department'] = window.qsActiveDeptId;
       }
       return fetch(path, opts).then(function (res) {
         return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
@@ -14754,11 +14756,24 @@ window.qsNpOfferSend = function (btn) {
 
                   // Department scope: members outside the active department render read-only.
                   var memberEditable = window.qsMemberEditable(u);
-                  var nameBtn = document.createElement(memberEditable ? 'button' : 'div');
+                  // Place-first (Deepika 2026-11-19): a scheduler with any edit
+                  // department can OPEN a department-less member's row to place
+                  // them — the first save must assign one of their edit
+                  // departments (enforced in the edit form and server-side in
+                  // PATCH /api/users/:id). Deliberately scoped to this row
+                  // only: qsCanEditDept's null rule is unchanged, so "+ Add
+                  // rotation" etc. still treat unassigned content as
+                  // owner-only. Row actions (invite / Active toggle) stay
+                  // gated on memberEditable — they only appear once placed.
+                  var placeFirst = !memberEditable && !u.departmentId && window.qsDeptAccess &&
+                    (window.qsDeptAccess.edit || []).length > 0;
+                  var rowClickable = memberEditable || placeFirst;
+                  var nameBtn = document.createElement(rowClickable ? 'button' : 'div');
                   nameBtn.className = 'team-name';
-                  if (memberEditable) {
+                  if (rowClickable) {
                     nameBtn.type = 'button';
-                    nameBtn.setAttribute('aria-label', 'Edit ' + displayName(u));
+                    nameBtn.setAttribute('aria-label', (placeFirst ? 'Place ' : 'Edit ') + displayName(u));
+                    if (placeFirst) nameBtn.title = 'Place in a department';
                     nameBtn.addEventListener('click', function () { startEdit(u.id); });
                   } else if (window.qsDeptAccess) {
                     nameBtn.title = 'Switch active department to edit';
@@ -14905,18 +14920,54 @@ window.qsNpOfferSend = function (btn) {
                 }).catch(function () { pageError('Network error. Could not load team members.'); });
               }
 
-              function fillDeptSelect(selectEl, selectedId) {
+              // onlyEdit (place-first, Deepika 2026-11-19): when placing a
+              // department-less member, the dropdown offers EXACTLY the
+              // scheduler's edit departments — one → only that one, two →
+              // only those two, never any other — and the blank option reads
+              // as a required pick. Otherwise the full viewable list as before.
+              function fillDeptSelect(selectEl, selectedId, onlyEdit) {
                 selectEl.textContent = '';
                 var none = document.createElement('option');
-                none.value = ''; none.textContent = '— None —';
+                none.value = ''; none.textContent = onlyEdit ? '— Pick a department —' : '— None —';
                 selectEl.appendChild(none);
-                departments.filter(function (d) { return window.qsCanViewDept(d.id); }).forEach(function (d) {
+                var list = departments.filter(function (d) { return window.qsCanViewDept(d.id); });
+                if (onlyEdit && window.qsDeptAccess) {
+                  var edits = (window.qsDeptAccess.edit || []).map(String);
+                  list = list.filter(function (d) { return edits.indexOf(String(d.id)) !== -1; });
+                }
+                list.forEach(function (d) {
                   var opt = document.createElement('option');
                   opt.value = d.id; opt.textContent = d.name;
                   if (d.id === selectedId) opt.selected = true;
                   selectEl.appendChild(opt);
                 });
                 if (window.qsDeptLockApply) window.qsDeptLockApply();
+              }
+
+              // Place-first lock fix (Deepika 2026-11-19): the department
+              // lock freezes team-edit-dept to the active department — for a
+              // department-less member that would freeze an EMPTY select.
+              // If the active department is one of the scheduler's edit
+              // departments, preset it (locked, as the lock intends) and
+              // populate its roles; otherwise leave the select enabled with
+              // exactly their edit departments. Owner / departmented members:
+              // no-op.
+              function qsPlaceFirstDept(member) {
+                if (!member || member.departmentId) return;
+                var a = window.qsDeptAccess;
+                if (!a || !(a.edit || []).length) return;
+                var sel = $('team-edit-dept');
+                if (!sel) return;
+                var active = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
+                if (active && (a.edit || []).map(String).indexOf(active) !== -1) {
+                  sel.value = active;
+                  sel.disabled = true;
+                  sel.title = 'Placed in the department selected at the top — pick a different department there to place it elsewhere.';
+                  fillRoleSelect($('team-edit-jobrole'), active, '');
+                } else {
+                  sel.disabled = false;
+                  sel.title = '';
+                }
               }
 
               // ---- General settings ----
@@ -15140,11 +15191,16 @@ window.qsNpOfferSend = function (btn) {
                   if (!result || !result.ok) return;
                   departments = result.data.departments || [];
                   var editMember = editingId ? memberById(editingId) : null;
+                  // Place-first: a department-less member being edited by a
+                  // scheduler gets exactly their edit departments as options.
+                  var placeFirst = !!(editMember && !editMember.departmentId && window.qsDeptAccess &&
+                    (window.qsDeptAccess.edit || []).length);
                   fillDeptSelect($('team-add-dept'), '');
-                  fillDeptSelect($('team-edit-dept'), editMember ? editMember.departmentId : '');
+                  fillDeptSelect($('team-edit-dept'), editMember ? editMember.departmentId : '', placeFirst);
                   fillRoleSelect($('team-add-jobrole'), '', '');
                   if (editMember) fillRoleSelect($('team-edit-jobrole'), editMember.departmentId, editMember.jobRoleId);
                   else fillRoleSelect($('team-edit-jobrole'), '', '');
+                  if (editMember) qsPlaceFirstDept(editMember);
                   renderDeptList();
                 });
               }
@@ -15293,8 +15349,10 @@ window.qsNpOfferSend = function (btn) {
                 $('team-edit-lastname').value = u.lastName || '';
                 $('team-edit-nickname').value = u.nickname || '';
                 $('team-edit-phone').value = u.phone || '';
-                fillDeptSelect($('team-edit-dept'), u.departmentId);
+                fillDeptSelect($('team-edit-dept'), u.departmentId,
+                  !!(!u.departmentId && window.qsDeptAccess && (window.qsDeptAccess.edit || []).length));
                 fillRoleSelect($('team-edit-jobrole'), u.departmentId, u.jobRoleId);
+                qsPlaceFirstDept(u);
                 $('team-edit-enddate').value = u.endDate || '';
                 $('team-edit-instructions').value = u.specialInstructions || '';
                 var roleWrap = $('team-edit-role-wrap');
@@ -16358,10 +16416,25 @@ window.qsNpOfferSend = function (btn) {
                     showErr(errEl, 'First name cannot be empty.');
                     return;
                   }
+                  // Place-first (Deepika 2026-11-19): a scheduler saving a
+                  // department-less member must pick a department first — the
+                  // form does not submit without one. The save then runs in
+                  // the picked department's context (needed when "All
+                  // departments" is active and the scheduler has 2+ edit
+                  // departments, where no header would otherwise be sent).
+                  var placingMember = editingId ? memberById(editingId) : null;
+                  var placing = !!(placingMember && !placingMember.departmentId && window.qsDeptAccess &&
+                    (window.qsDeptAccess.edit || []).length);
+                  if (placing && !payload.departmentId) {
+                    showErr(errEl, 'Pick a department first — choose one of your departments to place this team member.');
+                    return;
+                  }
                   $('team-edit-submit').disabled = true;
+                  var editHeaders = { 'Content-Type': 'application/json' };
+                  if (placing && payload.departmentId) editHeaders['X-Active-Department'] = payload.departmentId;
                   api('/api/users/' + editingId, {
                     method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: editHeaders,
                     body: JSON.stringify(payload)
                   }).then(function (result) {
                     $('team-edit-submit').disabled = false;
