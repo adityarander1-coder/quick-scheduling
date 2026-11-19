@@ -5,6 +5,7 @@ import { query } from '../db.js';
 import { getDepartmentAccess } from './departmentAccess.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
+import { unusablePasswordHash } from './invites.js';
 
 interface PlanChange {
   action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
@@ -1482,11 +1483,18 @@ export async function executePlan(
         }
         const { v4: uuidv4 } = await import('crypto').then(m => ({ v4: () => m.randomUUID() }));
         const memberId = uuidv4();
+        // 004_names.sql contract: new writes set first_name, last_name,
+        // AND name. The AI can never supply a password, so the new member
+        // gets an unusable hash (mirroring the manual invite flow) and
+        // email stays NULL when the plan supplies none (migration 116) —
+        // no login until invited, exactly like a manually added member.
+        const passwordHash = await unusablePasswordHash();
         await query(
-          `INSERT INTO users (id, company_id, first_name, last_name, email, department_id, job_role_id, role, is_active)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'employee', true)`,
+          `INSERT INTO users (id, company_id, first_name, last_name, name, email, department_id, job_role_id, password_hash, role, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'employee', true)`,
           [memberId, companyId, change.firstName.trim(), change.lastName.trim(),
-           change.email ? change.email.trim() : null, deptId, roleId]
+           `${change.firstName.trim()} ${change.lastName.trim()}`,
+           change.email ? change.email.trim() : null, deptId, roleId, passwordHash]
         );
         results.push({ action: 'add_team_member', success: true, message: `Added team member ${change.firstName} ${change.lastName}${change.department ? ` to ${change.department}` : ''}` });
       } else if (change.action === 'update_team_member' && change.person) {

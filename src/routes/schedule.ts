@@ -11481,10 +11481,16 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
     const { executePlanWithUndo } = await import('../util/planUndo.js');
     try {
       const { results, undo } = await executePlanWithUndo(companyId, plan.plan, req.session.userId!);
+      // Only mark fully executed when every change succeeded; otherwise
+      // mark 'partial' so the failure stays visible (mirrors the email
+      // approve door, which already counts honestly). A failed change
+      // used to be reported as "Done — applied 1 change" (Rah Kum,
+      // 2026-11-19) because nothing here distinguished success.
+      const allOk = (results as any[]).every((r: any) => r.success);
       await query(
-        `UPDATE schedule_plans SET status = 'executed', decided_at = now(),
-         decided_by = $2, executed_at = now(), undo_payload = $3 WHERE id = $1`,
-        [plan.id, req.session.userId!, undo ? JSON.stringify(undo) : null]
+        `UPDATE schedule_plans SET status = $2, decided_at = now(),
+         decided_by = $3, executed_at = now(), undo_payload = $4 WHERE id = $1`,
+        [plan.id, allOk ? 'executed' : 'partial', req.session.userId!, undo ? JSON.stringify(undo) : null]
       );
       // Audit: record each applied change — shared with the email approve
       // path so no approved change is missing from the Change report.

@@ -11446,8 +11446,17 @@ window.qsNpOfferSend = function (btn) {
                 api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' })
                   .then(function (res2) {
                     if (res2.ok) {
-                      var n = ((res2.data && res2.data.results) || []).length;
-                      thinking.innerHTML = '<b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.' + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '');
+                      // Count successes, not attempts: a failed change used
+                      // to be reported as "Done — applied 1 change" (Rah
+                      // Kum, 2026-11-19) because this counted results.
+                      var resList = ((res2.data && res2.data.results) || []);
+                      var nOk = resList.filter(function (r) { return r && r.success; }).length;
+                      var nFail = resList.length - nOk;
+                      var failMsgs = resList.filter(function (r) { return r && !r.success && r.message; }).map(function (r) { return r.message; });
+                      var doneText = nFail
+                        ? 'Applied ' + nOk + ' of ' + resList.length + ' change' + (resList.length === 1 ? '' : 's') + ' — ' + nFail + ' failed' + (failMsgs.length ? ': ' + esc(failMsgs.join('; ')) : '') + '.'
+                        : 'Done — applied ' + nOk + ' change' + (nOk === 1 ? '' : 's') + '.';
+                      thinking.innerHTML = '<b>Q-Scheduler:</b> ' + doneText + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '');
                       var firstAction = (pd.changes && pd.changes[0] && pd.changes[0].action) || '';
                       api('/api/schedule/agent-suggest', {
                         method: 'POST',
@@ -11593,8 +11602,17 @@ window.qsNpOfferSend = function (btn) {
                 if (ap) ap.addEventListener('click', function () { var b = this; b.disabled = true; b.textContent = 'Applying…';
                   api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' }).then(function (res2) {
                     if (res2.ok) {
-                      var n = ((res2.data && res2.data.results) || []).length;
-                      openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Done — applied ' + n + ' change' + (n === 1 ? '' : 's') + '.' + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '') + '</div>' + foot()); bindFoot();
+                      // Count successes, not attempts: a failed change used
+                      // to be reported as "Done — applied 1 change" (Rah
+                      // Kum, 2026-11-19) because this counted results.
+                      var resList2 = ((res2.data && res2.data.results) || []);
+                      var nOk2 = resList2.filter(function (r) { return r && r.success; }).length;
+                      var nFail2 = resList2.length - nOk2;
+                      var failMsgs2 = resList2.filter(function (r) { return r && !r.success && r.message; }).map(function (r) { return r.message; });
+                      var doneText2 = nFail2
+                        ? 'Applied ' + nOk2 + ' of ' + resList2.length + ' change' + (resList2.length === 1 ? '' : 's') + ' — ' + nFail2 + ' failed' + (failMsgs2.length ? ': ' + esc(failMsgs2.join('; ')) : '') + '.'
+                        : 'Done — applied ' + nOk2 + ' change' + (nOk2 === 1 ? '' : 's') + '.';
+                      openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + doneText2 + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '') + '</div>' + foot()); bindFoot();
                     } else {
                       openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot()); bindFoot();
                     }
@@ -14694,7 +14712,12 @@ window.qsNpOfferSend = function (btn) {
                   // Department scope: hide people in departments with no view access.
                   if (!window.qsMemberViewable(u)) return false;
                   // Global department filter: show only members of the selected department.
-                  if (!window.qsDeptFilterAllows(u.departmentId)) return false;
+                  // Members with NO department are always shown — a real person must never
+                  // be invisible in this list (Rah Kum, 2026-11-19: added by the AI with
+                  // no department, hidden while Internal medicine was active at the top).
+                  // This is list-only: the schedule grid's own department filtering is
+                  // untouched (qsDeptFilterAllows itself is unchanged).
+                  if (u.departmentId && !window.qsDeptFilterAllows(u.departmentId)) return false;
                   if (!q) return true;
                   var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
                   return nm.toLowerCase().indexOf(q) >= 0;
