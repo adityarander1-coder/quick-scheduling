@@ -10775,6 +10775,10 @@ window.qsNpOfferSend = function (btn) {
         #tab-dash #db-pinned-filters > [data-pin] { flex: 1 1 0; min-width: 0; }
         #tab-dash #db-actions { margin-left: 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
         #tab-dash #db-today-slot { display: none; }
+        /* Two-row phone split (Deepika, 2026-11-18): the break element
+           below is hidden everywhere except phone, where it forces the
+           tool row to wrap after Session types. */
+        #tab-dash .db-tools-break { display: none; }
         #tab-dash .db-tbar { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; margin: 0 -1.5rem 0.9rem; padding: 0 1.5rem 14px; }
         @media (min-width: 900px) {
           body:has(#tab-dash.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
@@ -10784,21 +10788,32 @@ window.qsNpOfferSend = function (btn) {
         }
         @media (max-width: 700px) {
           /* Calendar bar phone arrangement (Deepika, 2026-11-18, approved
-             phone mock): row 1 = View options + tools in ONE flowing
-             left-aligned block — #db-actions renders its buttons straight
-             into the band (display: contents) so they flow with View
-             options, compact, two per line at 390px; row 2 = Month | Block
-             compact, then the month label, then Today on ONE line, left
-             and close. The old top-right Today slot is retired —
-             #db-today-slot stays hidden (base rule above). */
-          #tab-dash #db-filters { gap: 8px; padding-left: 1rem; padding-right: 1rem; }
+             phone mock; two-row split 2026-11-18): row 1 (tools) = TWO
+             rows of three — View options, Select sessions, Session types
+             / Go to Thalamus, Add session, Upload schedule. #db-actions
+             renders its buttons straight into the band (display: contents)
+             so they flow with View options; the .db-tools-break span
+             (flex-basis 100%) forces the wrap after Session types. Each
+             button takes exactly one third of the row
+             (flex-basis calc((100% - 12px) / 3), two 6px gaps) — a fixed
+             basis, not flex-grow, so every row's buttons are the same
+             width at any phone width. Compact 11px so three fit at 390px.
+             The break takes a flex line of its own, so the band's row-gap
+             is 0 and the break's 8px top margin is the only spacing
+             between the two tool rows, like the mock. Row 2 = Month |
+             Block compact, then the month label, then Today on ONE line,
+             left and close. The old top-right Today slot is retired —
+             #db-today-slot stays hidden (base rule). */
+          #tab-dash #db-filters { gap: 0 6px; padding-left: 1rem; padding-right: 1rem; }
           #tab-dash #db-pinned-filters { padding-left: 1rem; padding-right: 1rem; }
           #tab-dash .db-tbar { padding-left: 1rem; padding-right: 1rem; }
           #tab-dash .ac-tbar { gap: 0.4rem; }
           #tab-dash #db-actions { display: contents !important; margin-left: 0; }
-          #tab-dash #qs-vo-btn-dash,
+          #tab-dash #db-filters .qs-vo-wrap { flex: 0 1 calc((100% - 12px) / 3); min-width: 0; }
+          #tab-dash #qs-vo-btn-dash { width: 100%; padding: 7px 4px !important; font-size: 11px; line-height: 1.25; text-align: center; white-space: nowrap; overflow: hidden; }
           #tab-dash #db-actions .btn,
-          #tab-dash #db-actions .btn-secondary { padding: 8px 11px !important; font-size: 0.85rem; }
+          #tab-dash #db-actions .btn-secondary { flex: 0 1 calc((100% - 12px) / 3); min-width: 0; padding: 7px 4px !important; font-size: 11px; line-height: 1.25; text-align: center; white-space: nowrap; overflow: hidden; }
+          #tab-dash .db-tools-break { display: block; flex: 0 0 100%; height: 0; margin-top: 8px; }
           #tab-dash .ac-views { flex: 0 0 auto; order: 0; }
           #tab-dash .ac-views button { flex: 0 0 auto; padding: 0.3rem 0.5rem; font-size: 0.8rem; text-align: center; }
           #tab-dash .ac-tleft { order: 0; align-items: center; }
@@ -10835,6 +10850,7 @@ window.qsNpOfferSend = function (btn) {
           <span class="db-date" id="db-date"></span>
           <button type="button" class="btn-secondary" id="db-select" style="padding:0.6rem 1rem;border-radius:10px;display:none">☑ Select sessions</button>
           <button type="button" class="btn-secondary" id="db-kinds" style="padding:0.6rem 1rem;border-radius:10px">🏷️ Session types</button>
+          <span class="db-tools-break" aria-hidden="true"></span>
           <a id="db-interview" href="#" target="_blank" rel="noopener" class="btn-secondary" style="display:none;padding:0.6rem 1rem;border-radius:10px;text-decoration:none"></a>
           <button type="button" class="btn" id="db-add" style="padding:0.6rem 1rem;border-radius:10px">＋ Add session</button>
           <button type="button" class="btn-secondary" id="db-upload" style="padding:0.6rem 1rem;border-radius:10px;display:none">⬆ Upload schedule</button>
