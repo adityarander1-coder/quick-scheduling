@@ -2422,23 +2422,16 @@
              wraps into tidy rows — the dropdowns stack full width and Upload
              is a compact button at the right, never a full-width slab. */
           #tab-schedule .sched-control-box #sched-dept-filter > [data-pin] { flex: 1 1 100%; }
-          /* Upload-left (Deepika, 2026-11-18, approved mock): on phones
-             Upload sits on its own row, LEFT-aligned under the From/To/
-             Apply row — away from the right edge and the chevron. It was
-             margin-left:auto (far right). The 173807e breathing room stays:
-             the 12px right margin is harmless on its own row, and the
-             toolbar keeps its 8px bottom padding.
-             Upload smaller (Deepika, 2026-11-18, approved mock): the button
-             itself is compact — 7px 12px padding, 13px font, 9px radius —
-             so the bar feels less crowded. Phone only; desktop keeps the
-             full-size .btn-secondary.
-             Upload gap (Deepika, 2026-11-18: "almost touching the dates"):
-             Upload is the toolbar's only visible item in Range view, so the
-             toolbar row gap never applied and the button sat flush against
-             the From/To/Apply row (measured gap 0px). 20px margin-top gives
-             it ~20px of air. Placement, size and label unchanged; the
-             toolbar's bottom padding is untouched. */
-          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: 0; margin-right: 12px; margin-top: 20px; padding: 7px 12px; font-size: 13px; border-radius: 9px; }
+          /* Top line (Deepika, 2026-11-19, approved mock): Upload joins
+             the top line next to View options — both white buttons, similar
+             size, sharing the row in proportion. This REPLACES the
+             9d5f115/6751550/671e501 placement (own row, left, smaller, 20px
+             gap above) — that row is gone, and so is its margin-top.
+             NOTE: flex-basis 0 does NOT share this row equally in this
+             browser (measured 133/151 — the items sized to content);
+             a definite 100px basis shares it exactly (measured 142/142).
+             Phone only; desktop keeps the full-size .btn-secondary. */
+          #tab-schedule .sched-control-box #sched-upload-btn { flex: 1 1 100px; min-width: 0; margin: 0; padding: 8px 8px; font-size: 13px; border-radius: 10px; white-space: nowrap; overflow: hidden; text-align: center; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; padding-bottom: 8px; }
           #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
@@ -2448,6 +2441,13 @@
           #tab-schedule .sched-control-box .range-picker label { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 0; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker input[type="date"] { flex: none; width: 100%; min-width: 0; }
           #tab-schedule .sched-control-box .range-picker button { width: auto; flex: 0 0 auto; align-self: flex-end; }
+          /* Top line (Deepika, 2026-11-19, approved mock): Today sits
+             beside Apply in the dates row on phones — compact teal buttons
+             so From/To/Apply/Today all fit on one line. */
+          #tab-schedule .sched-control-box #sched-range-picker { gap: 6px; }
+          #tab-schedule .sched-control-box #sched-range-picker input[type="date"] { font-size: 13.5px; padding: 9px 6px; }
+          #tab-schedule .sched-control-box #sched-range-picker #sched-range-apply { padding: 9px 12px; font-size: 13.5px; }
+          #tab-schedule .sched-control-box #sched-range-picker #sched-today { padding: 9px 10px; font-size: 13.5px; }
           /* My schedule phone: same light-teal full-width band look */
           #tab-myschedule .sched-control-box { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; padding: 14px; margin: 0 -1.5rem 1rem; box-shadow: none; }
           #tab-myschedule .sched-control-box .ms-h1-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 10px; }
@@ -2477,9 +2477,14 @@
              with margin-right:auto, the rest stays right. Undo/Redo are
              icon-only here (labels hidden) so all four fit on one line;
              the row may wrap on very narrow screens rather than overflow. */
-          #tab-schedule .sched-control-box .sched-h1-row { flex-wrap: wrap; gap: 8px; }
-          #tab-schedule .sched-control-box .sched-h1-row .qs-vo-wrap { margin-right: auto; }
-          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-btn { padding: 0.5rem 0.6rem; }
+          /* Top line (Deepika, 2026-11-19, approved mock): View options +
+             Upload share the row in proportion (both flex 1, 13px, 8px
+             padding), Undo/Redo stay in the same row as 30px icon-only
+             circles. */
+          #tab-schedule .sched-control-box .sched-h1-row { flex-wrap: wrap; gap: 6px; }
+          #tab-schedule .sched-control-box .sched-h1-row .qs-vo-wrap { flex: 1 1 100px; min-width: 0; margin-right: 0; }
+          #tab-schedule .sched-control-box .sched-h1-row #qs-vo-btn { width: 100%; padding: 8px 8px; font-size: 13px; white-space: nowrap; overflow: hidden; text-align: center; }
+          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
           #tab-schedule .sched-control-box .sched-h1-row .qs-ur-lab { display: none; }
         }
       </style>
@@ -7983,8 +7988,10 @@
           saveSchedView();
           loadAll();
         });
-        // Phone: Today sits next to the Schedule heading (approved full-width mock).
-        // The node itself is moved, so its click handler moves with it.
+        // Phone: the heading row holds View options + Upload + Undo/Redo
+        // (Deepika, 2026-11-19, approved mock), and Today sits beside
+        // Apply in the dates row. The nodes themselves are moved, so their
+        // click handlers move with them.
         var schedH1Row = null;
         function placeSchedToday() {
           var today = $('sched-today'), h1 = $('sched-h1');
@@ -7998,7 +8005,11 @@
               h1.parentNode.insertBefore(schedH1Row, h1);
             }
             if (h1.parentNode !== schedH1Row) schedH1Row.appendChild(h1);
-            if (today.parentNode !== schedH1Row) schedH1Row.appendChild(today);
+            // Top line (Deepika, 2026-11-19, approved mock): Today moves
+            // DOWN beside Apply in the dates row — it no longer rides in
+            // the heading row.
+            var ap = $('sched-range-apply'), picker = $('sched-range-picker');
+            if (ap && picker && today.parentNode !== picker) picker.insertBefore(today, ap.nextSibling);
           } else {
             var nx = $('sched-next');
             if (today.parentNode !== nav) { if (nx) nav.insertBefore(today, nx); else nav.appendChild(today); }
@@ -8007,7 +8018,8 @@
               // row before the row itself is removed — once removed,
               // getElementById can no longer find them and they would be
               // lost (this stranded View options + Undo/Redo on a
-              // phone->desktop resize, Deepika 2026-11-18 phone fix).
+              // phone->desktop resize, Deepika 2026-11-18 phone fix;
+              // Upload joined the row 2026-11-19 and needs the same).
               var pv = $('sched-prev');
               var ub2 = $('qs-undo-band'), rb2 = $('qs-redo-band');
               if (ub2 && ub2.parentNode === schedH1Row) { if (pv) nav.insertBefore(ub2, pv); else nav.appendChild(ub2); }
@@ -8015,6 +8027,11 @@
               var vw = schedH1Row.querySelector('.qs-vo-wrap');
               var dr = $('sched-date-row');
               if (vw && dr) dr.parentNode.insertBefore(vw, dr);
+              // Top line (Deepika, 2026-11-19): Upload rode in the heading
+              // row on phones — put it back in the toolbar before the row
+              // itself is removed, or it would be lost with it.
+              var up = $('sched-upload-btn'), tb = document.querySelector('#tab-schedule .sched-toolbar');
+              if (up && tb && up.parentNode === schedH1Row) tb.appendChild(up);
               schedH1Row.parentNode.insertBefore(h1, schedH1Row);
               schedH1Row.parentNode.removeChild(schedH1Row);
               schedH1Row = null;
@@ -8022,19 +8039,20 @@
           }
         }
         placeSchedToday();
-        // Phone (<=700px): Today moves up beside the heading, so the band
-        // Undo/Redo pair moves with it — beside Today in the heading row
-        // (Spot A as Deepika pictured it, 2026-11-01). Wider screens keep
-        // the pair in the date-nav, before the arrows.
+        // Phone (<=700px): the band Undo/Redo pair stays in the heading
+        // row with View options + Upload (Deepika, 2026-11-19, approved
+        // mock) — appended after them. Today moved down beside Apply, so
+        // it no longer anchors the pair. Wider screens keep the pair in
+        // the date-nav, before the arrows.
         function placeBandBtns() {
           var ub = $('qs-undo-band'), rb = $('qs-redo-band'), today = $('sched-today');
           var nav = document.querySelector('#tab-schedule .date-nav');
           if (!ub || !rb || !nav) return;
           var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
-          if (phone && today && today.parentNode && today.parentNode.classList.contains('sched-h1-row')) {
-            var row = today.parentNode;
-            if (ub.parentNode !== row) row.insertBefore(ub, today);
-            if (rb.parentNode !== row) row.insertBefore(rb, today);
+          if (phone && schedH1Row && schedH1Row.parentNode) {
+            var row = schedH1Row;
+            if (ub.parentNode !== row) row.appendChild(ub);
+            if (rb.parentNode !== row) row.appendChild(rb);
           } else {
             var pv = $('sched-prev');
             if (ub.parentNode !== nav) { if (pv) nav.insertBefore(ub, pv); else nav.appendChild(ub); }
@@ -8042,26 +8060,47 @@
           }
         }
         placeBandBtns();
-        // Phone (<=700px): View options joins the top row with Undo/Redo/
-        // Today (Deepika, 2026-11-18 — her phone screenshot: the button
-        // floated alone on its own line, out of place). The wrap itself is
-        // moved, so its click handler and popup move with it. Wider screens
-        // put it back in front of the date row. Runs after placeSchedToday
-        // (which creates the heading row) and placeBandBtns.
+        // Phone (<=700px): View options joins the top row with Upload +
+        // Undo/Redo (Deepika, 2026-11-19 — top line, approved mock; Today
+        // moved down beside Apply). The wrap itself is moved, so its click
+        // handler and popup move with it. Wider screens put it back in
+        // front of the date row. Runs after placeSchedToday (which creates
+        // the heading row) and placeBandBtns.
         function placeVoBtn() {
           var wrap = document.querySelector('#tab-schedule .qs-vo-wrap');
           var today = $('sched-today');
           var dateRow = $('sched-date-row');
           if (!wrap || !today || !dateRow) return;
           var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
-          if (phone && today.parentNode && today.parentNode.classList.contains('sched-h1-row')) {
-            var row = today.parentNode;
+          if (phone && schedH1Row && schedH1Row.parentNode) {
+            var row = schedH1Row;
             if (wrap.parentNode !== row) row.insertBefore(wrap, row.firstChild);
           } else {
             if (wrap.nextElementSibling !== dateRow) dateRow.parentNode.insertBefore(wrap, dateRow);
           }
         }
         placeVoBtn();
+        // Phone (<=700px): Upload joins the top line next to View options
+        // (Deepika, 2026-11-19, approved mock) — similar size, sharing
+        // the row in proportion. Wider screens put it back in the toolbar.
+        // Runs after placeVoBtn (which puts View options first) so Upload
+        // lands directly after it, before Undo/Redo.
+        function placeUploadBtn() {
+          var up = $('sched-upload-btn');
+          var tb = document.querySelector('#tab-schedule .sched-toolbar');
+          var wrap = document.querySelector('#tab-schedule .qs-vo-wrap');
+          if (!up || !tb) return;
+          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+          if (phone && schedH1Row && schedH1Row.parentNode) {
+            if (up.parentNode !== schedH1Row) {
+              if (wrap && wrap.parentNode === schedH1Row) schedH1Row.insertBefore(up, wrap.nextSibling);
+              else schedH1Row.appendChild(up);
+            }
+          } else {
+            if (up.parentNode !== tb) tb.appendChild(up);
+          }
+        }
+        placeUploadBtn();
         if (window.matchMedia) {
           var schedMql = window.matchMedia('(max-width: 700px)');
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeSchedToday);
@@ -8070,6 +8109,8 @@
           else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeVoBtn);
           else if (schedMql.addListener) schedMql.addListener(placeVoBtn);
+          if (schedMql.addEventListener) schedMql.addEventListener('change', placeUploadBtn);
+          else if (schedMql.addListener) schedMql.addListener(placeUploadBtn);
         }
         document.addEventListener('qs-cover-claimed', function () {
           // Pickup lands in place (Deepika 2026-11-02): refresh only the
