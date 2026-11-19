@@ -10545,8 +10545,28 @@ window.qsNpOfferSend = function (btn) {
           #tab-dash .db-tbar { margin: 0 -2rem 0.9rem; padding: 0 2rem 14px; }
         }
         @media (max-width: 700px) {
-          #tab-dash #db-today-slot { display: flex; justify-content: flex-end; flex: 1 1 100%; margin-bottom: 10px; }
-          #tab-dash #db-today-slot .ac-nav { background: var(--accent); color: #fff; border-color: var(--accent); }
+          /* Calendar bar phone arrangement (Deepika, 2026-11-18, approved
+             phone mock): row 1 = View options + tools in ONE flowing
+             left-aligned block — #db-actions renders its buttons straight
+             into the band (display: contents) so they flow with View
+             options, compact, two per line at 390px; row 2 = Month | Block
+             compact, then the month label, then Today on ONE line, left
+             and close. The old top-right Today slot is retired —
+             #db-today-slot stays hidden (base rule above). */
+          #tab-dash #db-filters { gap: 8px; padding-left: 1rem; padding-right: 1rem; }
+          #tab-dash #db-pinned-filters { padding-left: 1rem; padding-right: 1rem; }
+          #tab-dash .db-tbar { padding-left: 1rem; padding-right: 1rem; }
+          #tab-dash .ac-tbar { gap: 0.4rem; }
+          #tab-dash #db-actions { display: contents !important; margin-left: 0; }
+          #tab-dash #qs-vo-btn-dash,
+          #tab-dash #db-actions .btn,
+          #tab-dash #db-actions .btn-secondary { padding: 8px 11px !important; font-size: 0.85rem; }
+          #tab-dash .ac-views { flex: 0 0 auto; order: 0; }
+          #tab-dash .ac-views button { flex: 0 0 auto; padding: 0.3rem 0.5rem; font-size: 0.8rem; text-align: center; }
+          #tab-dash .ac-tleft { order: 0; align-items: center; }
+          #tab-dash .ac-title { font-size: 0.85rem; margin: 0 0.25rem; }
+          #tab-dash .ac-nav { padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+          #tab-dash .ac-tleft [data-nav="-1"], #tab-dash .ac-tleft [data-nav="1"] { padding: 0.35rem 0.4rem; }
           #tab-dash #db-filters label { flex: 1 1 100%; }
           #tab-dash #db-filters label select { width: 100%; }
           #tab-dash #db-filters #db-role-wrap { flex: 1 1 100%; }
@@ -10554,11 +10574,7 @@ window.qsNpOfferSend = function (btn) {
           #tab-dash #db-pinned-filters > [data-pin] { flex: 1 1 100%; }
           #tab-dash #db-pinned-filters label select { width: 100%; }
           #tab-dash #db-pinned-filters #db-role-filter { width: 100%; }
-          #tab-dash #db-actions { margin-left: 0; }
-          #tab-dash .ac-views { flex: 1 1 100%; order: 1; }
-          #tab-dash .ac-tleft { order: 2; }
           #tab-dash #db-view { padding-bottom: 9rem; }
-          #tab-dash .ac-views button { flex: 1; padding: 0.6rem 0.5rem; text-align: center; }
         }
         @media (max-width: 860px) {
           #tab-dash .ac-week { grid-template-columns: 1fr; }
@@ -24325,9 +24341,11 @@ window.qsNpOfferSend = function (btn) {
         acRenderSelBar();
       }
 
-      // Calendars phone nav (mirrors the Schedule phone Today move): on
-      // phones the Today button sits top-right of the band and the month
-      // title sits between the arrows; on desktop both stay in the toolbar.
+      // Calendar bar phone arrangement (Deepika, 2026-11-18, approved phone
+      // mock): on phones Today stays in the toolbar next to the month
+      // label — ‹ November 2026 › Today — all left and close. The old
+      // top-right Today slot is retired; the month title still sits
+      // between the arrows. On desktop both stay in the toolbar as before.
       function placeDashPhoneNav() {
         var tb = document.getElementById('db-toolbar');
         if (!tb) return;
@@ -24343,14 +24361,17 @@ window.qsNpOfferSend = function (btn) {
         if (!today || !prev || !next) return;
         var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
         // The toolbar is rebuilt on every render, so each render creates a
-        // fresh Today button while the previous one still sits in the slot
-        // (the slot lives outside the toolbar, so rebuilding never destroys
-        // it). Drop every stale copy before placing the current one, or the
-        // slot grows by one button per click (seen live 2026-10-25).
+        // fresh Today button while a previous one could still sit in the
+        // retired slot (the slot lives outside the toolbar, so rebuilding
+        // never destroys it). Drop every stale copy, or the slot grows by
+        // one button per click (seen live 2026-10-25).
         slot.querySelectorAll('[data-nav="today"]').forEach(function (b) { if (b !== today) b.remove(); });
         if (phone) {
-          if (today.parentNode !== slot) slot.appendChild(today);
           if (title.parentNode !== tleft) tleft.insertBefore(title, next);
+          // Today always goes last in the nav row, even when it is already
+          // in .ac-tleft (renderToolbar builds it between the arrows) —
+          // appendChild moves it to the end.
+          tleft.appendChild(today);
         } else {
           if (title.parentNode !== tbar) tbar.insertBefore(title, tleft);
           if (today.parentNode !== tleft) tleft.insertBefore(today, next);
