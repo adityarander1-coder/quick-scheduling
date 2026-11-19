@@ -166,6 +166,7 @@ interface PlanChange {
           'add_rotation' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
+          'close_open_slots' |
           'add_session' | 'update_session' | 'cancel_session';
   person?: string;          // name for assign/unassign/update_team_member
   fromPerson?: string;       // for move/swap
@@ -288,7 +289,7 @@ The sender also attached PDF file(s): ${(context.pdfAttachments || []).map(p => 
 Some attachments could not be read: ${(context.attachmentNotes || []).join('; ')}. If the request cannot be completed without them, say so in needsClarification.
 ` : ''}
 First, classify the email into one of:
-- "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts) or change the calendar (add, move, cancel a session, change a session's presenter/supervisor/room/time)
+- "change_request": the sender wants to change the schedule (assign, unassign, move, swap shifts, close open slots) or change the calendar (add, move, cancel a session, change a session's presenter/supervisor/room/time)
 - "schedule_question": the sender is asking about the schedule (who is working when, what is the schedule for certain dates)
 - "settings_change": the sender wants to manage settings (add a job role, add a department, add a team member)
 - "bulk_action": the sender wants a bulk operation (publish/unpublish shifts for a date range)
@@ -299,7 +300,7 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|set_staffing_target|bulk_publish|bulk_unpublish|add_session|update_session|cancel_session",
+      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|set_staffing_target|bulk_publish|bulk_unpublish|close_open_slots|add_session|update_session|cancel_session",
       "person": "Full Name (for assign/unassign/update_team_member)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
@@ -316,6 +317,9 @@ Respond with JSON only, no other text:
       "email": "Email (for add_team_member)",
       "newShiftType": "New shift type name (for rename_shift_type)",
       "targetCount": "Number (for set_staffing_target)",
+      "closeCount": "Number, how many open slots to close per date (for close_open_slots, e.g. 1)",
+      "keepCount": "Number, how many open slots to KEEP per date, closing the rest (for close_open_slots, e.g. 13)",
+      "closeAll": "true to close the whole shift type for the date(s) (for close_open_slots)",
       "weekdays": "Array of weekday numbers 0=Sun..6=Sat (for add_rotation, e.g. [1,3,5] = Mon/Wed/Fri)",
       "cycleWeeks": "Number, every N weeks (for add_rotation, 1 = every week, 2 = every other week)",
       "days": "Array of cycle-day numbers, 1-based (for add_rotation, e.g. [1,2,3,4,5,6,7] for 7 on / 7 off)",
@@ -357,7 +361,7 @@ Respond with JSON only, no other text:
 
 Rules:
 - Respect the job-role rules above when choosing people: prefer someone whose role is listed for that shift type. If the request explicitly names someone whose role is NOT listed, still build the change exactly as asked (the approver will see a role-rule warning and may override) — never silently substitute a different person.
-- For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; assign_recurring needs person + shiftType + startDate + intervalWeeks + untilDate.
+- For "change_request": fill in "changes". Every change MUST have all its required fields filled in with real values — never null or empty. Required: assign needs person + date + shiftType; assign_recurring needs person + shiftType + startDate + intervalWeeks + untilDate. close_open_slots needs shiftType + (date, or fromDate + toDate for a range) + EXACTLY ONE of: closeCount (close that many open slots per date — "Close the open Day Hospitalist slot on Dec 2" → closeCount 1), keepCount (keep that many open per date and close the rest — "close all open slots in excess of 13 for Day Hospitalist Dec 2–Dec 5" → keepCount 13, fromDate "2026-12-02", toDate "2026-12-05"), or closeAll true (close the whole shift type for the date — "Close Night NP for Nov 21" → closeAll true). A close only ever removes EMPTY slots — it never touches a filled shift or a person. If the request doesn't say how many to close (a number, "keep N", or the whole type), do NOT guess — set needsClarification to ask, and confidence to "low".
 - Repeating shifts: when a request repeats on a pattern ("every 5 weeks", "every other week", "every Monday"), return ONE "assign_recurring" change — NEVER expand it into many "assign" changes and NEVER do calendar math by hand beyond the first date. Compute startDate from the request against today's date ("first Monday of November" with today in late October → the first Monday of the coming November). Set intervalWeeks from the pattern ("every 5 weeks" → 5, "every other week" → 2). Set weekendsOff true when the request says weekends are off. Set untilDate when an end is given ("for a year", "till November next year"); if no end is given, set "needsClarification" to ask until when, and "confidence" to "low". unassign needs person + date; move needs fromPerson + toPerson + date; swap needs fromPerson + toPerson + date. If you cannot determine any required field (e.g. the email doesn't name the person), do NOT emit an incomplete change — instead set "needsClarification" to a specific question (e.g. "Who should be unassigned on 2026-10-24?") and set "confidence" to "low". Resolve relative dates (Friday, tomorrow, next week) against today's date. Copy person names EXACTLY as listed in the team members above — never shorten, expand, complete or guess a name: a request that says "Kum" does NOT name "Binod Kumar". If the wording matches no listed name exactly, do NOT emit the change — set "needsClarification" to a specific question naming the closest candidates (e.g. "You wrote 'Kum' — did you mean Binod Kumar or Sha Kum?") and set "confidence" to "low". Match shift descriptions (night, day) against shift type names. The Schedule section above is authoritative for who holds each shift: never name a from-person for a move/swap who does not hold that shift on that date in the Schedule; if the request names a different holder than the Schedule shows, ask in needsClarification, naming the person the Schedule shows as holding it; if nobody holds it, the request is most likely an "assign" for the other person, not a move — ask if unsure. If critical info is missing (who, when), set confidence to "low" and ask in needsClarification. Set "question" to null.
 - Attachments: when the email has attached file contents or PDFs, they are part of the request. If an attachment is a schedule list or grid of shifts, create one "assign" change per person per shift per day — expand week-long blocks and date ranges into one change per day — following any instructions in the email body. If the email body is empty, the attachment alone is the request. Attached documents can also hold the details for any other request type (e.g. a list of team members to add).
 - For "settings_change": fill in "changes" with settings actions. Supported actions:

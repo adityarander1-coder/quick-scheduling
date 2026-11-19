@@ -48,6 +48,10 @@ const TABLES: TableDef[] = [
               'has_supervisor', 'has_location', 'has_meeting_url', 'has_times', 'created_at', 'updated_at'] },
   { name: 'staffing_targets', key: ['id'], scoped: true,
     columns: ['id', 'company_id', 'shift_type_id', 'target_count', 'weekdays', 'start_date', 'end_date', 'created_at'] },
+  { name: 'extra_open_slots', key: ['id'], scoped: true,
+    columns: ['id', 'company_id', 'date', 'shift_type_id', 'count', 'created_by', 'created_at'] },
+  { name: 'closed_shifts', key: ['id'], scoped: true,
+    columns: ['id', 'company_id', 'date', 'shift_type_id', 'created_by', 'created_at'] },
   { name: 'shift_type_departments', key: ['shift_type_id', 'department_id'], scoped: false,
     columns: ['shift_type_id', 'department_id'] },
 ];
@@ -243,7 +247,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
     // 3a) Restore rows that existed before the task (re-insert or update),
     //     parents before dependents.
     const RESTORE_FIRST = ['departments', 'job_roles', 'shift_types', 'users', 'academic_sessions',
-      'shifts', 'rotation_shift_exclusions', 'academic_session_overrides', 'staffing_targets', 'shift_type_departments'];
+      'shifts', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions', 'academic_session_overrides', 'staffing_targets', 'shift_type_departments'];
     for (const name of RESTORE_FIRST) {
       const def = defOf(name);
       for (const e of entries.filter((x) => x.table === name && x.before)) {
@@ -265,7 +269,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
       }
     }
     // 3b) Delete rows the task created, dependents before parents.
-    const DELETE_FIRST = ['shift_type_departments', 'staffing_targets', 'rotation_shift_exclusions',
+    const DELETE_FIRST = ['shift_type_departments', 'staffing_targets', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions',
       'academic_session_overrides', 'shifts', 'academic_sessions', 'users', 'shift_types', 'job_roles', 'departments'];
     for (const name of DELETE_FIRST) {
       const def = defOf(name);

@@ -705,6 +705,104 @@ export async function gatePlanChanges(
     }
   }
 
+  // ---- 1c. close open slots -----------------------------------------
+  // close_open_slots (Deepika, 2026-11-19 — walkthrough item 1): the
+  // shift type must exist (exact name, never a guess), the date or
+  // range must be valid, and exactly one close mode must be given
+  // (closeCount / keepCount / closeAll). The gate also refuses a
+  // plan that would close nothing — no opens on a date, already at
+  // or below the keep count, or already closed — with one plain
+  // clarification, the same as the N1 refusals above. The executor
+  // re-checks at approval time, so a plan that was fine when written
+  // but has since become empty still fails honestly instead of
+  // silently closing nothing.
+  {
+    const closeChanges = list.filter((c) => c.action === 'close_open_slots');
+    if (closeChanges.length) {
+      const { rows: strows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      const validDate = (d: any) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+        && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
+      for (const c of closeChanges) {
+        const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
+        if (!type) {
+          return { ok: false, question: c.shiftType
+            ? `I couldn't find a shift type called "${c.shiftType}". Which shift type should I close open slots for?`
+            : `Which shift type should I close open slots for?` };
+        }
+        const first = c.date || c.fromDate;
+        const last = c.toDate || c.date || c.fromDate;
+        if (!first || !validDate(first) || (c.toDate && !validDate(c.toDate)) || (first && last && String(first) > String(last))) {
+          return { ok: false, question: `Which date${c.fromDate || c.toDate ? 's' : ''} should I close open ${type.name} slots for?` };
+        }
+        const modes = [
+          c.closeAll === true ? 'all' : null,
+          typeof c.keepCount === 'number' ? 'keep' : null,
+          typeof c.closeCount === 'number' ? 'count' : null,
+        ].filter(Boolean);
+        if (modes.length !== 1) {
+          return { ok: false, question: `How many open ${type.name} slots should I close ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''} — one, all of them, or keep a number and close the rest?` };
+        }
+        const mode = modes[0];
+        if (mode === 'count' && !(Number.isInteger(c.closeCount) && c.closeCount >= 1)) {
+          return { ok: false, question: `How many open ${type.name} slots should I close? Give a whole number of 1 or more.` };
+        }
+        if (mode === 'keep' && !(Number.isInteger(c.keepCount) && c.keepCount >= 0)) {
+          return { ok: false, question: `How many open ${type.name} slots should I keep? Give a whole number of 0 or more.` };
+        }
+        // Existence check: is there anything open to close on every
+        // touched date? Capacity = target + extra (0 when closed);
+        // filled = stored shifts that date/type.
+        const touched: string[] = [];
+        {
+          let cur = String(first);
+          while (cur <= String(last) && touched.length < 400) {
+            touched.push(cur);
+            const dd = new Date(cur + 'T00:00:00Z');
+            dd.setUTCDate(dd.getUTCDate() + 1);
+            cur = dd.toISOString().slice(0, 10);
+          }
+        }
+        const inputs = await loadOpenSlotInputs(query, companyId, touched[0], touched[touched.length - 1]);
+        const { rows: frows } = await query(
+          `SELECT date::text AS date, COUNT(*)::int AS n FROM shifts
+           WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4 GROUP BY date`,
+          [companyId, type.id, touched[0], touched[touched.length - 1]]
+        );
+        const filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
+        const opensOn = (d: string) => {
+          const capacity = openSlotCapacity(inputs, type.id, d);
+          return { opens: Math.max(0, capacity - (filledByDate.get(d) || 0)), closed: inputs.closed.has(`${d}|${type.id}`), capacity };
+        };
+        if (mode === 'all') {
+          if (touched.every((d) => inputs.closed.has(`${d}|${type.id}`))) {
+            return { ok: false, question: `${type.name} is already closed${touched.length > 1 ? ` for ${String(first)} – ${String(last)}` : ` on ${String(first)}`}.` };
+          }
+        } else {
+          const bad = touched.find((d) => {
+            const { opens } = opensOn(d);
+            return mode === 'count' ? opens <= 0 : opens <= (c.keepCount as number);
+          });
+          if (bad) {
+            const { opens, closed, capacity } = opensOn(bad);
+            if (mode === 'count') {
+              const why = closed
+                ? `that day is closed for ${type.name}`
+                : capacity > 0
+                  ? `all ${capacity} are already filled`
+                  : `no staffing target is set for ${type.name} that day`;
+              return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}.` };
+            }
+            return { ok: false, question: `There are only ${opens} open ${type.name} slot${opens === 1 ? '' : 's'} on ${bad} — already at or below ${c.keepCount} to keep, so there is nothing over ${c.keepCount} to close.` };
+          }
+        }
+      }
+    }
+  }
+
   // ---- 2. workability ---------------------------------------------------
   const SHIFT_ACTIONS = ['assign', 'assign_recurring', 'move', 'swap'];
   const dated = list.filter((c) => SHIFT_ACTIONS.includes(c.action) && (c.date || c.fromDate || c.startDate));

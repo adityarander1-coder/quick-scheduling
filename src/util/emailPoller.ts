@@ -177,6 +177,17 @@ export function changeProblems(change: any): string[] {
       if (missing(change.fromDate)) problems.push('no start date given');
       if (missing(change.toDate)) problems.push('no end date given');
       break;
+    case 'close_open_slots': {
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      if (missing(change.date) && (missing(change.fromDate) || missing(change.toDate))) problems.push('no date given');
+      const modes = [
+        change.closeAll === true ? 'all' : null,
+        typeof change.keepCount === 'number' ? 'keep' : null,
+        typeof change.closeCount === 'number' ? 'count' : null,
+      ].filter(Boolean);
+      if (modes.length !== 1) problems.push('no close amount given (a number, "keep N", or the whole type)');
+      break;
+    }
     case 'add_session':
       if (missing(change.dashboard)) problems.push('no dashboard named');
       if (missing(change.title)) problems.push('no session title given');

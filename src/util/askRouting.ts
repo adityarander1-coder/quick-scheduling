@@ -201,7 +201,7 @@ export function collectNameProblems(
       if (c.fromPerson) personFields.push([c, 'fromPerson']);
       if (c.toPerson) personFields.push([c, 'toPerson']);
     }
-    if (['assign', 'assign_recurring', 'set_staffing_target', 'add_rotation'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
+    if (['assign', 'assign_recurring', 'set_staffing_target', 'add_rotation', 'close_open_slots'].includes(c.action) && c.shiftType) shiftFields.push([c, 'shiftType']);
   }
   for (const [c, f] of personFields) {
     const m = matchName(c[f], memberNames);

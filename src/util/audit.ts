@@ -256,7 +256,7 @@ function planChangeDates(c: any, r: any): string[] {
   if (c.action === 'assign_recurring' && Array.isArray(r?.dates) && r.dates.length) {
     return r.dates;
   }
-  if ((c.action === 'bulk_publish' || c.action === 'bulk_unpublish') && c.fromDate && c.toDate && c.fromDate <= c.toDate) {
+  if ((c.action === 'bulk_publish' || c.action === 'bulk_unpublish' || c.action === 'close_open_slots') && c.fromDate && c.toDate && c.fromDate <= c.toDate) {
     const out: string[] = [];
     const [y, m, d] = String(c.fromDate).split('-').map(Number);
     const [y2, m2, d2] = String(c.toDate).split('-').map(Number);
@@ -306,7 +306,7 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
       const isSession = c.action === 'add_session' || c.action === 'update_session' || c.action === 'cancel_session';
       const action = isSession
         ? (c.action === 'add_session' ? 'created' : c.action === 'cancel_session' ? 'deleted' : 'updated')
-        : (c.action === 'unassign' || String(c.action).startsWith('delete')) ? 'deleted'
+        : (c.action === 'unassign' || c.action === 'close_open_slots' || String(c.action).startsWith('delete')) ? 'deleted'
         : (c.action === 'bulk_publish') ? 'published'
         : (c.action === 'bulk_unpublish') ? 'unpublished'
         : (c.action === 'assign' || c.action === 'assign_recurring' || String(c.action).startsWith('add')) ? 'created' : 'updated';

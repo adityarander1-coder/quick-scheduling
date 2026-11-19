@@ -15,6 +15,7 @@ interface PlanChange {
           'add_rotation' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
+          'close_open_slots' |
           'add_session' | 'update_session' | 'cancel_session';
   person?: string;
   fromPerson?: string;
@@ -37,6 +38,11 @@ interface PlanChange {
   email?: string;
   newShiftType?: string;
   targetCount?: number;
+  // Close-open-slots fields (close_open_slots, Deepika 2026-11-19):
+  // exactly one of these three says HOW MUCH to close.
+  closeCount?: number; // close this many open slots per date
+  keepCount?: number; // keep this many open per date, close the rest
+  closeAll?: boolean; // close the whole type for the date(s)
   // Per-person rotation fields (add_rotation, Deepika 2026-11-17)
   weekdays?: number[]; // 0=Sun..6=Sat, weekly pattern
   cycleWeeks?: number; // 1 = every week, 2 = every other week (default 1)
@@ -1129,6 +1135,82 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
   ];
 }
 
+/**
+ * Open-slot totals for one type+date, mirroring the manual route's
+ * openSlotTotals (schedule.ts:8892) — the formula the grid itself
+ * uses: max(0, target + extra − filled), 0 when the day is closed
+ * for the type. Rotation occurrences are NOT counted in `filled`
+ * (same as the manual close): a close only ever suppresses
+ * computed opens, never a stored shift row, so it can never remove
+ * a person. Used by close_open_slots (gate re-checks at execution).
+ */
+async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean }> {
+  const { rows: crows } = await query(
+    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  if (crows.length) return { total: 0, closed: true };
+  const { rows: trows } = await query(
+    `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+    [companyId, shiftTypeId]
+  );
+  let target = 0;
+  if (trows.length) {
+    const t = trows[0];
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+    const sd: string | null = t.start_date || null;
+    const ed: string | null = t.end_date || null;
+    if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+      target = Number(t.target_count) || 0;
+    }
+  }
+  const { rows: erows } = await query(
+    'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const extra = erows[0]?.n || 0;
+  const { rows: frows } = await query(
+    'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const filled = frows[0]?.n || 0;
+  return { total: Math.max(0, target + extra - filled), closed: false };
+}
+
+/**
+ * Adjust extra_open_slots by `delta` (negative closes opens), the
+ * same write the manual POST /extra-slots route makes: the row is
+ * deleted when the adjustment lands exactly on 0 (CHECK count <> 0,
+ * migration 020), and the read + write run in one transaction with a
+ * row lock so two simultaneous adjustments can't interleave.
+ */
+async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId: string, delta: number, createdBy: string | null): Promise<void> {
+  const { withTransaction } = await import('../db.js');
+  await withTransaction(async (tx) => {
+    const cur = await tx.query(
+      'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+      [companyId, date, shiftTypeId]
+    );
+    const next = (cur.rows.length ? Number(cur.rows[0].count) : 0) + delta;
+    if (next === 0) {
+      await tx.query(
+        'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+        [companyId, date, shiftTypeId]
+      );
+    } else {
+      await tx.query(
+        `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (company_id, date, shift_type_id)
+         DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+        [companyId, date, shiftTypeId, delta, createdBy]
+      );
+    }
+  });
+}
+
 export async function executePlan(
   companyId: string,
   plan: { changes: PlanChange[] },
@@ -1635,6 +1717,91 @@ export async function executePlan(
           action: change.action, success: true,
           message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
         });
+      } else if (change.action === 'close_open_slots' && change.shiftType && (change.date || (change.fromDate && change.toDate))) {
+        // Close open slots (Deepika, 2026-11-19 — walkthrough item 1):
+        // the AI's first way to touch open slots. Only ever closes
+        // EMPTY slots — the write only ever touches extra_open_slots
+        // (negative counts suppress computed opens) and closed_shifts;
+        // no stored shift row is ever deleted, so no person is ever
+        // removed. Exactly one mode: closeCount (close N per date),
+        // keepCount (keep N per date, close the rest), or closeAll
+        // (close the whole type for the date — a closed_shifts row).
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const modes = [
+          change.closeAll === true ? 'all' : null,
+          typeof change.keepCount === 'number' ? 'keep' : null,
+          typeof change.closeCount === 'number' ? 'count' : null,
+        ].filter(Boolean) as string[];
+        if (modes.length !== 1) {
+          throw new Error(`Say how many open ${st.name} slots to close — a number, "keep N", or the whole type for the day.`);
+        }
+        const mode = modes[0];
+        if (mode === 'count' && !(Number.isInteger(change.closeCount) && (change.closeCount as number) >= 1)) {
+          throw new Error(`Close how many open ${st.name} slots? Give a whole number of 1 or more.`);
+        }
+        if (mode === 'keep' && !(Number.isInteger(change.keepCount) && (change.keepCount as number) >= 0)) {
+          throw new Error(`Keep how many open ${st.name} slots? Give a whole number of 0 or more.`);
+        }
+        const first = String(change.date || change.fromDate);
+        const last = String(change.toDate || change.date || change.fromDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(first) || !/^\d{4}-\d{2}-\d{2}$/.test(last) || first > last) {
+          throw new Error(`Give a valid date or date range to close ${st.name} slots for.`);
+        }
+        const dates: string[] = [];
+        {
+          let cur = first;
+          while (cur <= last && dates.length < 400) {
+            dates.push(cur);
+            const dd = new Date(cur + 'T00:00:00Z');
+            dd.setUTCDate(dd.getUTCDate() + 1);
+            cur = dd.toISOString().slice(0, 10);
+          }
+          if (cur <= last) throw new Error('That date range is too long — pick a range under a year.');
+        }
+        let slotsClosed = 0;
+        let daysClosed = 0;
+        const skipped: string[] = [];
+        for (const d of dates) {
+          const t = await openTotals(companyId, d, st.id);
+          if (mode === 'all') {
+            if (t.closed) { skipped.push(`${d} (already closed)`); continue; }
+            const ins = await query(
+              `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
+               VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
+              [companyId, d, st.id, createdBy]
+            );
+            if ((ins.rowCount || 0) > 0) daysClosed++;
+            else skipped.push(`${d} (already closed)`);
+          } else {
+            const want = mode === 'count'
+              ? Math.min(change.closeCount as number, t.total)
+              : Math.max(0, t.total - (change.keepCount as number));
+            if (want <= 0) {
+              skipped.push(t.closed
+                ? `${d} (closed for ${st.name})`
+                : `${d} (no open slots${mode === 'keep' ? ` over ${change.keepCount}` : ''})`);
+              continue;
+            }
+            await adjustExtraOpenSlots(companyId, d, st.id, -want, createdBy);
+            slotsClosed += want;
+          }
+        }
+        const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
+        if (mode === 'all') {
+          if (daysClosed === 0) {
+            results.push({ action: change.action, success: false, message: `${st.name} is already closed${range.replace(/^, /, ' for ')}.` });
+          } else {
+            results.push({ action: change.action, success: true, message: `Closed ${st.name}${range} (no open slots that day${dates.length > 1 ? 's' : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
+          }
+        } else if (slotsClosed === 0) {
+          results.push({ action: change.action, success: false, message: `No open ${st.name} slots to close${range.replace(/^, /, ' for ')}${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
+        } else {
+          results.push({
+            action: change.action, success: true,
+            message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
+          });
+        }
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {
         const dash = await findDashboard(companyId, change.dashboard);
         if (!dash) throw new Error(`Dashboard not found: ${change.dashboard}`);
