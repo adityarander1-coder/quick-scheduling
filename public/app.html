@@ -1887,6 +1887,13 @@
         .qs-vo-row .qs-vo-chev { font-size: 0.85rem; color: var(--dim); padding: 4px 2px; }
         .vo-picker { background: #f8fafc; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; padding: 6px; margin: -6px 0 4px; max-height: 260px; overflow-y: auto; }
         .vo-picker label { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 0.92rem; border-radius: 6px; cursor: pointer; color: var(--text); }
+        /* Calendar popup (Deepika 2026-11-19): the calendar popup lives
+           inside #tab-dash #db-filters, whose `label { color: #fff }`
+           rule (two IDs) beat the rule above and painted the option
+           labels white on the pale picker background — hard to read.
+           Restore the dark text here; the schedule popup is not under
+           #tab-dash, so it was never affected. */
+        #tab-dash #db-filters .qs-vo-pop .vo-picker label { color: var(--text); }
         .vo-picker label:hover { background: #eef2f7; }
         .vo-picker label.all { font-weight: 700; border-bottom: 1px solid var(--border); }
         .vo-picker input { accent-color: #2563eb; width: 16px; height: 16px; margin: 0; flex: none; }
