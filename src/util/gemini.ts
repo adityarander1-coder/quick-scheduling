@@ -164,6 +164,7 @@ interface PlanChange {
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
           'add_rotation' |
+          'change_member_role_in_department' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
           'close_open_slots' |
@@ -175,7 +176,7 @@ interface PlanChange {
   fromDate?: string;
   toDate?: string;
   shiftType?: string;       // shift type name
-  jobRoleName?: string;     // for add_job_role, add_team_member, update_team_member
+  jobRoleName?: string;     // for add_job_role, add_team_member, update_team_member, change_member_role_in_department
   newJobRoleName?: string;  // for rename_job_role
   department?: string;      // department name
   newDepartment?: string;   // for rename_department
@@ -300,8 +301,8 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|set_staffing_target|bulk_publish|bulk_unpublish|close_open_slots|add_session|update_session|cancel_session",
-      "person": "Full Name (for assign/unassign/update_team_member)",
+      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|change_member_role_in_department|set_staffing_target|bulk_publish|bulk_unpublish|close_open_slots|add_session|update_session|cancel_session",
+      "person": "Full Name (for assign/unassign/update_team_member/change_member_role_in_department)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
       "date": "YYYY-MM-DD",
@@ -371,6 +372,7 @@ Rules:
   - "rename_department": needs department + newDepartment.
   - "add_team_member": needs firstName + lastName; department and jobRoleName optional. Example: "Add John Smith to IM Residency as PGY2" → firstName "John", lastName "Smith", department "IM Residency", jobRoleName "PGY2".
   - "update_team_member": needs person; department and/or jobRoleName to update.
+  - "change_member_role_in_department": change ONE person's job role in ONE specific department — needs person + department + jobRoleName. Example: "Change Gaj Cha's job role in Internal Medicine to Day Hospitalist" → person "Gaj Cha", department "Internal Medicine", jobRoleName "Day Hospitalist". The role must exist in THAT department (roles are per-department — never carry a role over from another department), and the person must already be a team member of that department (their home department, or one they were pulled into). If the department or the role is missing or unclear, do NOT emit the change — set needsClarification to ask for it, and confidence to "low".
   - "add_shift_type": needs shiftType + department. Example: "Add Cardiology shift to IM Residency" → shiftType "Cardiology", department "IM Residency".
   - "rename_shift_type": needs shiftType + newShiftType.
   - "set_staffing_target": needs shiftType + targetCount. Example: "Set staffing of 2 for Cardiology" → shiftType "Cardiology", targetCount 2.

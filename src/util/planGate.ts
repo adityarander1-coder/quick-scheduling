@@ -539,6 +539,7 @@ export async function deriveHolderMismatch(
 
 const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> = [
   { actions: ['assign', 'assign_recurring', 'unassign', 'update_team_member', 'add_rotation'], field: 'person', label: 'the person' },
+  { actions: ['change_member_role_in_department'], field: 'person', label: 'the person' },
   { actions: ['move', 'swap'], field: 'fromPerson', label: 'the person to move from' },
   { actions: ['move', 'swap'], field: 'toPerson', label: 'the person to move to' },
   { actions: ['add_session', 'update_session'], field: 'presenter', label: 'the presenter' },
@@ -798,6 +799,62 @@ export async function gatePlanChanges(
             }
             return { ok: false, question: `There are only ${opens} open ${type.name} slot${opens === 1 ? '' : 's'} on ${bad} — already at or below ${c.keepCount} to keep, so there is nothing over ${c.keepCount} to close.` };
           }
+        }
+      }
+    }
+  }
+
+  // ---- 1d. per-department role change --------------------------------
+  // change_member_role_in_department (Deepika, 2026-11-19 — "Can i
+  // change role later?" + "add this to the list of things AI can
+  // do"): the person is resolved exactly by step 1 above. The
+  // department must exist (exact name, never a guess), the role must
+  // exist IN that department (roles are per-department — a role from
+  // another department never carries over), and the person must be a
+  // member of that department (home or pulled-in — otherwise the
+  // answer is to pull them in first). Anything missing or
+  // unresolvable is one clarification, never a guess. The executor
+  // re-checks at approval time, so a plan that was fine when written
+  // but whose membership has since changed still fails honestly.
+  {
+    const roleChanges = list.filter((c) => c.action === 'change_member_role_in_department');
+    if (roleChanges.length) {
+      const { rows: drows } = await query(
+        'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
+      );
+      const deptByName = new Map(drows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      for (const c of roleChanges) {
+        const personName = String(c.person || '').trim();
+        const dept = c.department ? deptByName.get(norm(c.department)) || null : null;
+        if (!dept) {
+          return { ok: false, question: c.department
+            ? `I couldn't find a department called "${c.department}". Which department should ${personName || 'this person'}'s role change be in?`
+            : `Which department should ${personName || 'this person'}'s role change be in?` };
+        }
+        if (!c.jobRoleName || !String(c.jobRoleName).trim()) {
+          return { ok: false, question: `Which job role should ${personName} have in ${dept.name}?` };
+        }
+        const { rows: rrows } = await query(
+          'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, dept.id, String(c.jobRoleName).trim()]
+        );
+        if (!rrows.length) {
+          return { ok: false, question: `I couldn't find a job role called "${c.jobRoleName}" in ${dept.name}. Which role in ${dept.name} should ${personName} have?` };
+        }
+        c.jobRoleName = rrows[0].name; // canonical — the executor matches by name
+        const person = resolved.get(c)?.get('person');
+        if (!person) continue; // step 1 already refused an unresolvable person
+        const { rows: urows } = await query(
+          `SELECT u.department_id, EXISTS (
+             SELECT 1 FROM user_department_memberships m
+             WHERE m.user_id = u.id AND m.company_id = $1 AND m.department_id = $2
+           ) AS is_member
+           FROM users u WHERE u.id = $3 AND u.company_id = $1`,
+          [companyId, dept.id, person.id]
+        );
+        const isHome = String(urows[0]?.department_id || '') === dept.id;
+        if (!isHome && !urows[0]?.is_member) {
+          return { ok: false, question: `${personName} is not a team member of ${dept.name} yet — should I pull them into ${dept.name} first, or did you mean a different department?` };
         }
       }
     }

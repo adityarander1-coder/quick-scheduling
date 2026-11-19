@@ -54,6 +54,13 @@ const TABLES: TableDef[] = [
     columns: ['id', 'company_id', 'date', 'shift_type_id', 'created_by', 'created_at'] },
   { name: 'shift_type_departments', key: ['shift_type_id', 'department_id'], scoped: false,
     columns: ['shift_type_id', 'department_id'] },
+  // Per-department roles (Deepika, 2026-11-19 — change_member_role_in_
+  // department): the AI can change a member's role in one department,
+  // so the membership row must snapshot + restore like every other
+  // plan-touchable table. Key is (user_id, department_id) — the
+  // UNIQUE pair from migration 117.
+  { name: 'user_department_memberships', key: ['user_id', 'department_id'], scoped: true,
+    columns: ['id', 'user_id', 'company_id', 'department_id', 'job_role_id', 'created_at'] },
 ];
 const defOf = (name: string) => TABLES.find((t) => t.name === name)!;
 
@@ -246,7 +253,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
     }
     // 3a) Restore rows that existed before the task (re-insert or update),
     //     parents before dependents.
-    const RESTORE_FIRST = ['departments', 'job_roles', 'shift_types', 'users', 'academic_sessions',
+    const RESTORE_FIRST = ['departments', 'job_roles', 'shift_types', 'users', 'user_department_memberships', 'academic_sessions',
       'shifts', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions', 'academic_session_overrides', 'staffing_targets', 'shift_type_departments'];
     for (const name of RESTORE_FIRST) {
       const def = defOf(name);
@@ -269,7 +276,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
       }
     }
     // 3b) Delete rows the task created, dependents before parents.
-    const DELETE_FIRST = ['shift_type_departments', 'staffing_targets', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions',
+    const DELETE_FIRST = ['shift_type_departments', 'user_department_memberships', 'staffing_targets', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions',
       'academic_session_overrides', 'shifts', 'academic_sessions', 'users', 'shift_types', 'job_roles', 'departments'];
     for (const name of DELETE_FIRST) {
       const def = defOf(name);

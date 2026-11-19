@@ -682,6 +682,15 @@
       } catch (e) {}
     };
     window.qsMemberEditable = function (u) { return window.qsCanEditDept(u && u.departmentId); };
+    // Cross-department pull (Deepika, 2026-11-19): a scheduler who can
+    // edit a pulled-in department can change the role there, even when
+    // they cannot edit the member's home department.
+    window.qsMemberHasEditableMembership = function (u) {
+      if (!u) return false;
+      return window.qsUserDepartments(u).some(function (d) {
+        return !d.isHome && window.qsInEditList(d.id);
+      });
+    };
     // Cross-department pull (Deepika, 2026-11-19): one account, several
     // departments. A member's departments are home + pulled-in memberships;
     // the role that applies in a department is the membership's role there,
@@ -14752,6 +14761,7 @@ window.qsNpOfferSend = function (btn) {
                   <div class="form-row"><label>Phone</label><input type="tel" id="team-edit-phone" autocomplete="off"></div>
                   <div class="form-row"><label>Department</label><select id="team-edit-dept"><option value="">— None —</option></select></div>
                   <div class="form-row"><label>Job role</label><select id="team-edit-jobrole"><option value="">— None —</option></select></div>
+                  <div id="team-edit-membership-roles" style="grid-column:1/-1"></div>
                   <div class="form-row"><label>End date <span class="hint">Last day on the schedule</span></label><input type="date" id="team-edit-enddate"></div>
                   <div class="form-row" id="team-edit-role-wrap"><label>System role</label><select id="team-edit-role"></select></div>
                   <div class="form-row" style="grid-column:1/-1"><label>Special instructions <span class="hint">(optional)</span></label><textarea id="team-edit-instructions" rows="2" maxlength="500" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px" autocomplete="off"></textarea></div>
@@ -14898,7 +14908,14 @@ window.qsNpOfferSend = function (btn) {
                   // gated on memberEditable — they only appear once placed.
                   var placeFirst = !memberEditable && !u.departmentId && window.qsDeptAccess &&
                     (window.qsDeptAccess.edit || []).length > 0;
-                  var rowClickable = memberEditable || placeFirst;
+                  // Per-department role edit (Deepika 2026-11-19): a
+                  // scheduler who can edit a pulled-in department can
+                  // OPEN the row to change the role there, even when
+                  // they cannot edit the home department — the form
+                  // opens in membership-only mode.
+                  var canEditMembership = window.qsMemberHasEditableMembership
+                    ? window.qsMemberHasEditableMembership(u) : false;
+                  var rowClickable = memberEditable || placeFirst || canEditMembership;
                   var nameBtn = document.createElement(rowClickable ? 'button' : 'div');
                   nameBtn.className = 'team-name';
                   if (rowClickable) {
@@ -15483,6 +15500,93 @@ window.qsNpOfferSend = function (btn) {
               bindAvatarInput('team-edit-avatar', 'team-edit-avatar-preview', 'team-edit-avatar-clear',
                 function () { return editAvatarData; }, function (v) { editAvatarData = v; editAvatarRemoved = (v === null); });
 
+              // Per-department role edit (Deepika, 2026-11-19 — "Can i
+              // change role later?"): one role picker per department
+              // the member belongs to (home + each pulled-in
+              // department), so the role in each department can be
+              // changed later — today it is set only at pull time. A
+              // row is enabled only for departments in the caller's
+              // Edit list (place-first); the home role stays on the
+              // main Job role picker. When the caller cannot edit the
+              // home department at all but CAN edit a membership
+              // department, the form opens in membership-only mode:
+              // every home field is disabled and the save sends ONLY
+              // the membership roles (no PATCH — a scheduler saving
+              // someone else's home department would 403).
+              var membershipOnlyEdit = false;
+              function renderEditMembershipRoles(u) {
+                var box = $('team-edit-membership-roles');
+                box.textContent = '';
+                membershipOnlyEdit = false;
+                if (!u) return;
+                var depts = window.qsUserDepartments ? window.qsUserDepartments(u) : [];
+                var others = depts.filter(function (d) { return !d.isHome; });
+                var canEditHome = window.qsCanEditDept ? window.qsCanEditDept(u.departmentId) : true;
+                var canEditAnyMembership = others.some(function (d) {
+                  return window.qsInEditList ? window.qsInEditList(d.id) : true;
+                });
+                // Membership-only mode: the member HAS a home
+                // department the caller cannot edit right now, but
+                // the caller can edit at least one pulled-in
+                // department. (Department-less members opened via
+                // place-first are NOT membership-only — the home
+                // fields are the placement form.)
+                membershipOnlyEdit = !!(u.departmentId && !canEditHome && canEditAnyMembership);
+                var homeFieldIds = ['team-edit-firstname', 'team-edit-lastname', 'team-edit-nickname',
+                  'team-edit-phone', 'team-edit-jobrole', 'team-edit-enddate',
+                  'team-edit-instructions', 'team-edit-avatar', 'team-edit-role'];
+                homeFieldIds.forEach(function (id) {
+                  var el = $(id);
+                  if (el) el.disabled = !!membershipOnlyEdit;
+                });
+                if (membershipOnlyEdit) {
+                  var deptSel = $('team-edit-dept');
+                  if (deptSel) deptSel.disabled = true;
+                }
+                if (!others.length) return;
+                others.forEach(function (d) {
+                  var row = document.createElement('div');
+                  row.className = 'form-row';
+                  var label = document.createElement('label');
+                  label.textContent = 'Job role in ' + (d.name || 'department');
+                  row.appendChild(label);
+                  var sel = document.createElement('select');
+                  sel.setAttribute('data-dept-id', String(d.id));
+                  sel.setAttribute('data-current-role-id', d.jobRoleId ? String(d.jobRoleId) : '');
+                  var editable = window.qsInEditList ? window.qsInEditList(d.id) : true;
+                  sel.disabled = !editable;
+                  if (!editable) {
+                    sel.title = 'You can only change roles in departments you administer.';
+                    // Read-only row: show the member's CURRENT role
+                    // without needing the department's role list
+                    // (which the caller may not be able to see).
+                    var cur = document.createElement('option');
+                    cur.value = d.jobRoleId || '';
+                    cur.textContent = d.jobRole || '— None —';
+                    cur.selected = true;
+                    sel.appendChild(cur);
+                  } else {
+                    fillRoleSelect(sel, d.id, d.jobRoleId);
+                  }
+                  row.appendChild(sel);
+                  box.appendChild(row);
+                });
+              }
+              function collectEditMembershipRoles() {
+                var out = [];
+                var box = $('team-edit-membership-roles');
+                if (!box) return out;
+                var selects = box.querySelectorAll('select[data-dept-id]');
+                selects.forEach(function (sel) {
+                  if (sel.disabled) return;
+                  var current = sel.getAttribute('data-current-role-id') || '';
+                  if (String(sel.value || '') !== current) {
+                    out.push({ departmentId: sel.getAttribute('data-dept-id'), jobRoleId: sel.value || null });
+                  }
+                });
+                return out;
+              }
+
               function startEdit(id) {
                 var u = memberById(id);
                 if (!u) return;
@@ -15504,6 +15608,7 @@ window.qsNpOfferSend = function (btn) {
                   !!(!u.departmentId && window.qsDeptAccess && (window.qsDeptAccess.edit || []).length));
                 fillRoleSelect($('team-edit-jobrole'), u.departmentId, u.jobRoleId);
                 qsPlaceFirstDept(u);
+                renderEditMembershipRoles(u);
                 $('team-edit-enddate').value = u.endDate || '';
                 $('team-edit-instructions').value = u.specialInstructions || '';
                 var roleWrap = $('team-edit-role-wrap');
@@ -16928,17 +17033,58 @@ window.qsNpOfferSend = function (btn) {
                   $('team-edit-submit').disabled = true;
                   var editHeaders = { 'Content-Type': 'application/json' };
                   if (placing && payload.departmentId) editHeaders['X-Active-Department'] = payload.departmentId;
+                  // Per-department role edit (Deepika, 2026-11-19):
+                  // changed roles in pulled-in departments go to the
+                  // membership-roles endpoint. In membership-only mode
+                  // the home fields are disabled, so there is no PATCH
+                  // to send — the membership roles are the whole save.
+                  var membershipChanges = collectEditMembershipRoles();
+                  function saveMembershipRoles() {
+                    if (!membershipChanges.length) {
+                      $('team-edit-submit').disabled = false;
+                      okEl.textContent = 'Saved.';
+                      okEl.classList.remove('hidden');
+                      loadMembers();
+                      return;
+                    }
+                    api('/api/users/' + editingId + '/membership-roles', {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ roles: membershipChanges })
+                    }).then(function (mresult) {
+                      $('team-edit-submit').disabled = false;
+                      if (mresult.ok) {
+                        okEl.textContent = 'Saved.';
+                        okEl.classList.remove('hidden');
+                        // The saved values are the new baseline, so a
+                        // second save without further changes is a
+                        // clean no-op.
+                        var box = $('team-edit-membership-roles');
+                        if (box) box.querySelectorAll('select[data-dept-id]').forEach(function (sel) {
+                          sel.setAttribute('data-current-role-id', sel.value || '');
+                        });
+                        loadMembers();
+                      } else {
+                        showErr(errEl, (mresult.data && mresult.data.error) || 'Could not save the department roles.');
+                      }
+                    }).catch(function () {
+                      $('team-edit-submit').disabled = false;
+                      showErr(errEl, 'Network error. Please try again.');
+                    });
+                  }
+                  if (membershipOnlyEdit) {
+                    saveMembershipRoles();
+                    return;
+                  }
                   api('/api/users/' + editingId, {
                     method: 'PATCH',
                     headers: editHeaders,
                     body: JSON.stringify(payload)
                   }).then(function (result) {
-                    $('team-edit-submit').disabled = false;
                     if (result.ok) {
-                      okEl.textContent = 'Saved.';
-                      okEl.classList.remove('hidden');
-                      loadMembers();
+                      saveMembershipRoles();
                     } else {
+                      $('team-edit-submit').disabled = false;
                       showErr(errEl, (result.data && result.data.error) || 'Could not save.');
                     }
                   }).catch(function () {

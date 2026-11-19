@@ -447,6 +447,125 @@ router.post('/:id/pull', requireRole('owner', 'scheduler'), async (req: Request,
 // Invite flow: no password is set by the admin. The new member gets an unusable
 // password hash and an invite link (/accept-invite.html?token=...) which the
 // admin copies/shares manually. Response: 201 {user, inviteLink}.
+// PATCH /api/users/:id/membership-roles — change a team member's job
+// role in one or more PULLED-IN departments (Deepika, 2026-11-19 — "Can
+// i change role later?"). The pull sets the per-department role once,
+// at pull time; this is the later edit. Body: { roles: [{ departmentId,
+// jobRoleId }] } — jobRoleId '' (or null) clears the role. Secondary
+// memberships ONLY: the home department is refused here (400 — use the
+// main edit form / PATCH /api/users/:id for the home role), and a
+// department the member was never pulled into is refused (400 — pull
+// them in first). The role must belong to the named department
+// (resolveJobRole) — the old role never carries over.
+// Scoping (place-first, same rule as the pull): a scheduler changes
+// roles ONLY for departments in their Edit list — one save can span
+// several departments, so the check runs against the list, not the
+// active-department header. Owner unrestricted. Employees are refused
+// by requireRole. A role change affects future eligibility and
+// assignments only; past shifts are untouched (shifts never store a
+// role — eligibility is checked at assignment time).
+router.patch('/:id/membership-roles', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const targetId = req.params.id;
+    const roles = (req.body ?? {}).roles;
+    if (!Array.isArray(roles) || !roles.length) {
+      res.status(400).json({ error: 'No role changes given.' });
+      return;
+    }
+    const { rows: trows } = await query(
+      `SELECT u.id, u.first_name, u.last_name, u.name, u.email, u.is_active,
+              u.department_id, u.job_role_id
+       FROM users u WHERE u.id = $1 AND u.company_id = $2`,
+      [targetId, companyId]
+    );
+    if (!trows.length) {
+      res.status(404).json({ error: 'Team member not found.' });
+      return;
+    }
+    const target = trows[0];
+    if (!target.is_active) {
+      res.status(400).json({ error: 'This team member is deactivated.' });
+      return;
+    }
+    const displayName = joinName(target.first_name, target.last_name) || target.name || 'Team member';
+    const isOwner = req.session.role === 'owner';
+    const editIds = isOwner
+      ? null
+      : (await getDepartmentAccess(req.session.userId!, companyId)).edit.map(String);
+    const changed: Array<{ departmentId: string; departmentName: string; jobRoleId: string | null; jobRoleName: string | null }> = [];
+    for (const entry of roles) {
+      const departmentId = entry?.departmentId;
+      const jobRoleId = entry?.jobRoleId === '' ? null : (entry?.jobRoleId ?? null);
+      const dept = await resolveDepartment(departmentId, companyId);
+      if (!dept.ok) {
+        res.status(400).json({ error: dept.error });
+        return;
+      }
+      if (!dept.id) {
+        res.status(400).json({ error: 'A department is required.' });
+        return;
+      }
+      const { rows: drows } = await query(
+        'SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+        [dept.id, companyId]
+      );
+      const deptName = drows.length ? drows[0].name : 'this department';
+      // The home department's role lives on the users row — change it in
+      // the main edit form, never here.
+      if (String(target.department_id || '') === dept.id) {
+        res.status(400).json({ error: `${deptName} is ${displayName}'s home department — change that role in the main edit form.` });
+        return;
+      }
+      if (editIds !== null && !editIds.includes(String(dept.id))) {
+        res.status(403).json({ error: `You don't have edit access to ${deptName}.` });
+        return;
+      }
+      const { rows: mrows } = await query(
+        `SELECT id, job_role_id FROM user_department_memberships
+         WHERE user_id = $1 AND company_id = $2 AND department_id = $3`,
+        [targetId, companyId, dept.id]
+      );
+      if (!mrows.length) {
+        res.status(400).json({ error: `${displayName} is not a team member of ${deptName} yet — pull them in first.` });
+        return;
+      }
+      let roleName: string | null = null;
+      if (jobRoleId) {
+        const jr = await resolveJobRole(jobRoleId, dept.id, companyId);
+        if (!jr.ok) {
+          res.status(400).json({ error: jr.error });
+          return;
+        }
+        roleName = jr.name;
+      }
+      const currentRoleId = mrows[0].job_role_id ? String(mrows[0].job_role_id) : null;
+      if (currentRoleId === (jobRoleId ? String(jobRoleId) : null)) continue; // no-op
+      await query(
+        `UPDATE user_department_memberships SET job_role_id = $1
+         WHERE user_id = $2 AND company_id = $3 AND department_id = $4`,
+        [jobRoleId, targetId, companyId, dept.id]
+      );
+      changed.push({ departmentId: dept.id, departmentName: deptName, jobRoleId, jobRoleName: roleName });
+    }
+    if (changed.length) {
+      await auditLog({
+        companyId, date: todayStr(), action: 'updated', category: 'settings', source: 'manual',
+        changedBy: req.session.userId!, personName: displayName, affectedUserId: targetId,
+        description: changed.map((c) => `Changed ${displayName}'s job role in ${c.departmentName} to ${c.jobRoleName ?? 'none'}`).join('; '),
+        departmentId: changed[0].departmentId,
+      });
+    }
+    const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
+    const memberMap = await membershipsForUsers(companyId, [targetId]);
+    rows[0].memberships = memberMap.get(targetId) || [];
+    res.json({ user: publicProfile(rows[0]), changed });
+  } catch (err) {
+    console.error('[users] membership-roles failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 router.post('/', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const { firstName, lastName, name, email, role, nickname, phone, departmentId, jobRole, jobRoleId, specialInstructions, profileColor, avatarData } =

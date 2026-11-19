@@ -196,7 +196,7 @@ export function collectNameProblems(
   const personFields: Array<[any, string]> = [];
   const shiftFields: Array<[any, string]> = [];
   for (const c of plan.changes || []) {
-    if (['assign', 'assign_recurring', 'unassign', 'update_team_member', 'add_rotation'].includes(c.action) && c.person) personFields.push([c, 'person']);
+    if (['assign', 'assign_recurring', 'unassign', 'update_team_member', 'add_rotation', 'change_member_role_in_department'].includes(c.action) && c.person) personFields.push([c, 'person']);
     if (['move', 'swap'].includes(c.action)) {
       if (c.fromPerson) personFields.push([c, 'fromPerson']);
       if (c.toPerson) personFields.push([c, 'toPerson']);

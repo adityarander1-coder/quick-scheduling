@@ -151,6 +151,11 @@ export function changeProblems(change: any): string[] {
       if (missing(change.person)) problems.push('no person named');
       if (missing(change.department) && missing(change.jobRoleName)) problems.push('no updates specified');
       break;
+    case 'change_member_role_in_department':
+      if (missing(change.person)) problems.push('no person named');
+      if (missing(change.department)) problems.push('no department given');
+      if (missing(change.jobRoleName)) problems.push('no job role name given');
+      break;
     case 'add_shift_type':
       if (missing(change.shiftType)) problems.push('no shift type name given');
       if (missing(change.department)) problems.push('no department given');

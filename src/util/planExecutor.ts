@@ -13,6 +13,7 @@ interface PlanChange {
           'add_team_member' | 'update_team_member' |
           'add_shift_type' | 'rename_shift_type' |
           'add_rotation' |
+          'change_member_role_in_department' |
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
           'close_open_slots' |
@@ -642,6 +643,29 @@ async function canEditSessionTarget(
     return dd.some((d) => edit.includes(d));
   }
   return false;
+}
+
+/**
+ * Permission mirror of the manual membership-roles route, for plan
+ * execution (Deepika, 2026-11-19 — the AI must follow the same
+ * department scoping as the manual edit; the update_team_member
+ * bypass — a direct UPDATE with no department-access check — is
+ * flagged and deliberately NOT repeated here). Owner passes; a
+ * scheduler needs the department in their Edit list; the email
+ * approve link passes null createdBy because the email door already
+ * ran the department-access pre-check (getPlanDepartmentIds picks
+ * the change's department up).
+ */
+async function canEditDepartmentRole(
+  companyId: string, createdBy: string | null, departmentId: string
+): Promise<boolean> {
+  if (!createdBy) return true; // email approve link: the token is the auth
+  const { rows } = await query('SELECT role FROM users WHERE id = $1 AND company_id = $2 AND is_active = true', [createdBy, companyId]);
+  const role = rows[0]?.role;
+  if (role === 'owner') return true;
+  if (role !== 'scheduler') return false;
+  const access = await getDepartmentAccess(createdBy, companyId);
+  return access.edit.includes(departmentId);
 }
 
 function toDateStr(v: any): string {
@@ -1603,6 +1627,52 @@ export async function executePlan(
         params.push(member.id);
         await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${pi}`, params);
         results.push({ action: 'update_team_member', success: true, message: `Updated ${member.display}` });
+      } else if (change.action === 'change_member_role_in_department' && change.person && change.department && change.jobRoleName) {
+        // Per-department role change (Deepika, 2026-11-19 — "Can i change
+        // role later?" + "add this to the list of things AI can do"): the
+        // job role in ONE specific department, on instruction. The named
+        // department is the person's HOME department → users.job_role_id;
+        // a pulled-in department → the membership row. The person must
+        // be a member of that department (home or pulled-in), and the
+        // role must belong to that department — the old role never
+        // carries over. Scoping is enforced here (canEditDepartmentRole),
+        // unlike update_team_member above, whose direct UPDATE has no
+        // department-access check (flagged 2026-11-19, not repeated).
+        const member = await findMember(companyId, change.person);
+        if (!member) throw new Error(noExactMatch(change.person));
+        const dept = await findDepartment(companyId, change.department);
+        if (!dept) throw new Error(`Department not found: ${change.department}`);
+        if (!(await canEditDepartmentRole(companyId, createdBy, dept.id))) {
+          throw new Error(`You don't have edit access to ${dept.name} — a scheduler can only change roles in departments they administer.`);
+        }
+        const { rows: roleRows } = await query(
+          'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, dept.id, change.jobRoleName.trim()]
+        );
+        if (!roleRows.length) throw new Error(`Job role not found in ${dept.name}: ${change.jobRoleName}`);
+        const role = roleRows[0];
+        const { rows: urows } = await query(
+          'SELECT department_id FROM users WHERE id = $1 AND company_id = $2',
+          [member.id, companyId]
+        );
+        if (String(urows[0]?.department_id || '') === dept.id) {
+          await query('UPDATE users SET job_role_id = $1 WHERE id = $2', [role.id, member.id]);
+        } else {
+          const { rows: mrows } = await query(
+            'SELECT id FROM user_department_memberships WHERE user_id = $1 AND company_id = $2 AND department_id = $3',
+            [member.id, companyId, dept.id]
+          );
+          if (!mrows.length) throw new Error(`${member.display} is not a team member of ${dept.name} yet — pull them in first.`);
+          await query(
+            'UPDATE user_department_memberships SET job_role_id = $1 WHERE user_id = $2 AND company_id = $3 AND department_id = $4',
+            [role.id, member.id, companyId, dept.id]
+          );
+        }
+        results.push({
+          action: 'change_member_role_in_department', success: true,
+          message: `Changed ${member.display}'s job role in ${dept.name} to ${role.name}`,
+          personDisplay: member.display,
+        });
       } else if (change.action === 'add_shift_type' && change.shiftType && change.department) {
         const dept = await findDepartment(companyId, change.department);
         if (!dept) throw new Error(`Department not found: ${change.department}`);
