@@ -2422,7 +2422,13 @@
              wraps into tidy rows — the dropdowns stack full width and Upload
              is a compact button at the right, never a full-width slab. */
           #tab-schedule .sched-control-box #sched-dept-filter > [data-pin] { flex: 1 1 100%; }
-          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: auto; margin-right: 12px; }
+          /* Upload-left (Deepika, 2026-11-18, approved mock): on phones
+             Upload sits on its own row, LEFT-aligned under the From/To/
+             Apply row — away from the right edge and the chevron. It was
+             margin-left:auto (far right). The 173807e breathing room stays:
+             the 12px right margin is harmless on its own row, and the
+             toolbar keeps its 8px bottom padding. */
+          #tab-schedule .sched-control-box #sched-upload-btn { flex: 0 0 auto; margin-left: 0; margin-right: 12px; }
           #tab-schedule .sched-control-box .sched-toolbar { margin-bottom: 0; gap: 12px; padding-bottom: 8px; }
           #tab-schedule .sched-control-box .view-tabs { display: flex; flex: 1 1 100%; }
           #tab-schedule .sched-control-box .view-tabs [data-view="week"] { display: none; }
