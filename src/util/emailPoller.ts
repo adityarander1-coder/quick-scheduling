@@ -1129,6 +1129,62 @@ export async function processScheduleEmail(
       // Resend address, so a missing value is logged with the
       // company and recipient instead of disappearing.
       if (!clarReplyTo) console.log(`[email-poll] Clarification to ${sender.address} (company ${companyId}) has NO Reply-To — a reply will go to the dead sender address.`);
+      // Add-team-member form link (Deepika, 2026-11-19): when the
+      // request is to add a team member and there are no clickable
+      // options to preserve, the reply is the add-member form link —
+      // the same form as Settings → Team members — instead of the
+      // generic clarification email. A plain-words reply still
+      // works: the pending clarification below is saved either way,
+      // and the send is recorded so it can never go out twice.
+      // The request counts as an add-member request when the plan's
+      // changes are all add_team_member (the planner asks for a
+      // missing detail while still carrying the change), OR when
+      // there are no changes at all and the request itself opens
+      // with "add a team member" (the planner asked who to add
+      // without emitting a change). A mixed request — an add plus
+      // other changes — keeps the generic clarification, so the
+      // other questions are not lost.
+      const addChanges = (plan.changes || []).filter((c: any) => c.action === 'add_team_member');
+      const onlyAddMember = (plan.changes || []).every((c: any) => c.action === 'add_team_member');
+      const addAskRe = /^(?:please\s+|can you\s+|could you\s+)?add\s+(?:(?:a|an|new)\s+)*team\s+members?\b/i;
+      const bodyNoGreet = String(pendingOriginal ? pendingOriginal.body : email.body || '')
+        .replace(/^\s*(hi|hello|hey|dear)[^,\n]*,?\s*\n?/i, '').trim();
+      const textAsksAddMember = addAskRe.test(String(pendingOriginal ? pendingOriginal.subject : email.subject || '').trim())
+        || addAskRe.test(bodyNoGreet);
+      const isAddMemberRequest = onlyAddMember && (addChanges.length > 0 || textAsksAddMember);
+      if (isAddMemberRequest && (!clickItems || !clickItems.length)) {
+        const appBase = process.env.APP_URL || 'https://quick-scheduling.onrender.com';
+        const addMemberFormUrl = `${appBase}/app.html?add-member=1#settings/team`;
+        try {
+          const { sendMail } = await import('./mailer.js');
+          await sendMail({
+            ...(fromAddr ? { from: fromAddr } : {}),
+            ...(clarReplyTo ? { replyTo: clarReplyTo } : {}),
+            to: sender.address,
+            subject: 'New team member — a few details needed',
+            text: `Hi,\n\nYou asked to add a new team member. I need a few details before I can add them — first name and email are required, plus last name, department and job role if you know them.\n\nFill in the new team member's details:\n${addMemberFormUrl}\n\nThe link opens the form in the app — sign in if asked. Once you submit the form, the person will be added to your team.\n\n— Q-Scheduler`,
+            html: `<p>Hi,</p><p>You asked to add a new team member. I need a few details before I can add them — first name and email are required, plus last name, department and job role if you know them.</p><p><a href="${addMemberFormUrl}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Fill in the new team member's details</a></p><p>The link opens the form in the app — sign in if asked. Once you submit the form, the person will be added to your team.</p><p>— Q-Scheduler</p>`,
+            headers: { 'Message-ID': clarMessageId },
+          });
+          console.log(`[email-poll] Add-member form link sent to ${sender.address}`);
+          await recordProcessedMessage(query, companyId, sourceId, 'clarification_sent');
+        } catch (mailErr: any) {
+          console.log(`[email-poll] Add-member form link email failed: ${mailErr.message}`);
+        }
+        try {
+          await savePendingClarification(
+            query, companyId, sender.address,
+            pendingOriginal ? pendingOriginal.subject : email.subject,
+            pendingOriginal ? pendingOriginal.body : email.body,
+            detail, clarMessageId,
+            undefined
+          );
+        } catch (saveErr: any) {
+          console.log(`[email-poll] Saving pending clarification failed: ${saveErr.message}`);
+        }
+        if (opts?.markRead) await opts.markRead();
+        return { kind: 'clarification_sent', answeredQuestion };
+      }
       try {
         const { sendMail } = await import('./mailer.js');
         await sendMail({

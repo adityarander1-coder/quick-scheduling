@@ -1531,6 +1531,7 @@
     html[data-theme="dark"] .vo-picker .hint b { color: var(--teal); }
     /* Day popup + all modals. */
     html[data-theme="dark"] #action-dialog .modal,
+    html[data-theme="dark"] #qs-add-member-modal .modal,
     html[data-theme="dark"] #tab-myschedule .modal,
     html[data-theme="dark"] #tab-ask .modal,
     html[data-theme="dark"] #tab-schedule .modal,
@@ -1656,6 +1657,15 @@
     #action-dialog.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
     #action-dialog .modal { background: #fff; border-radius: 16px; padding: 1.5rem; width: min(480px, 92vw); max-height: 88vh; overflow-y: auto; }
     #action-dialog .modal-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; flex-wrap: wrap; }
+    /* Add-team-member popup (Deepika, 2026-11-19): the Settings → Team
+       members form, shown as a modal over the Task chat. Body-level like
+       #action-dialog, so the per-tab .modal-backdrop/.modal rules don't
+       reach it — repeat their declarations unscoped for this element.
+       The card inside keeps its own .sub-card styling; the dialog's
+       padding is the only padding, so the card's is removed here. */
+    #qs-add-member-modal.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: flex-start; justify-content: center; z-index: 100; padding: 4vh 12px; overflow-y: auto; }
+    #qs-add-member-modal .modal { background: #fff; border-radius: 16px; padding: 1.25rem; width: min(560px, 94vw); max-height: 92vh; overflow-y: auto; }
+    #qs-add-member-modal .modal .sub-card { border: none; padding: 0; margin: 0; }
     /* ---- Restyle B, stage 6: Messages polish (cards + avatars + bubbles) ---- */
     .msg-side { display: flex; flex-direction: column; width: 280px; flex-shrink: 0; min-height: 0; }
     .msg-search { margin-bottom: 8px; }
@@ -11401,6 +11411,44 @@ window.qsNpOfferSend = function (btn) {
           if (b) b.addEventListener('click', function () { qsSetMode(pair[1]); });
         });
         qsPaintMode();
+        // Add-team-member popup (Deepika, 2026-11-19): in Task mode, a
+        // message asking to add a team member opens the SAME form as
+        // Settings → Team members as a popup over the chat, instead of
+        // the AI asking one question at a time. Returns a prefill
+        // { firstName, lastName, deptName } or null when the message
+        // is not an add-member request.
+        window.qsAddMemberPrefill = function (text) {
+          var t = String(text || '').replace(/\s+/g, ' ').trim();
+          var m = t.match(/^(?:please\s+|can you\s+|could you\s+)?add\s+(?:(?:a|an|new)\s+)*team\s+members?\b\s*(.*)$/i);
+          if (!m) return null;
+          // A member + rotation request needs the planner (it can create
+          // the member AND the rotation) — the popup only adds the person.
+          if (/rotation/i.test(t)) return null;
+          var rest = (m[1] || '').trim();
+          var pre = { firstName: '', lastName: '', deptName: '' };
+          var namePart = rest;
+          var dm = rest.match(/^(.*\S)\s+(?:to|in|for)\s+(.+)$/i);
+          if (dm) { namePart = dm[1]; pre.deptName = dm[2].trim(); }
+          else {
+            var dm2 = rest.match(/^(?:to|in|for)\s+(.+)$/i);
+            if (dm2) { pre.deptName = dm2[1].trim(); namePart = ''; }
+          }
+          var words = namePart.split(' ').filter(Boolean);
+          var nameOk = words.length > 0 && words.every(function (w) { return /^[A-Za-z][A-Za-z'\u2019-]*$/.test(w); });
+          if (nameOk) {
+            pre.firstName = words[0];
+            pre.lastName = words.slice(1).join(' ');
+          }
+          return pre;
+        };
+        // Called by the add-member popup after a successful add so the
+        // Task chat shows the result once the popup closes.
+        window.qsNoteAddMemberDone = function (name) {
+          try {
+            addHtml('<b>Q-Scheduler:</b> Added ' + esc(name) + ' to the team.', 'ai');
+            var c = $('ask-chat'); if (c) c.scrollTop = c.scrollHeight;
+          } catch (e) {}
+        };
         function send(q) {
             function showClarification(cd) {
               thread.push({ q: q, a: cd.question });
@@ -11505,6 +11553,13 @@ window.qsNpOfferSend = function (btn) {
           if (!q) return;
           addMsg(q, 'you');
           $('ask-input').value = '';
+          // Add-team-member popup (Deepika, 2026-11-19): Task mode only.
+          // The popup IS the Team members form — no planner round-trip,
+          // no one-question-at-a-time flow.
+          if (qsMode === 'task' && window.qsAddMemberPrefill && window.qsOpenAddMemberPopup) {
+            var amp = window.qsAddMemberPrefill(q);
+            if (amp) { window.qsOpenAddMemberPopup(amp); return; }
+          }
           var thinking = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
           api('/api/schedule/ask-task', {
             method: 'POST',
@@ -11648,6 +11703,17 @@ window.qsNpOfferSend = function (btn) {
           function submit() {
             var q = (input.value || '').trim(); if (!q) return;
             openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><i style="color:#5b6b76">Thinking…</i></div>');
+            // Add-team-member popup (Deepika, 2026-11-19): Task mode
+            // only — same interception as the Ask tab's send().
+            if (qsMode === 'task' && window.qsAddMemberPrefill && window.qsOpenAddMemberPopup) {
+              var amp2 = window.qsAddMemberPrefill(q);
+              if (amp2) {
+                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> Fill in the details in the form.</div>' + foot());
+                bindFoot();
+                window.qsOpenAddMemberPopup(amp2);
+                return;
+              }
+            }
             api('/api/schedule/ask-task', { method: 'POST', body: JSON.stringify({ message: q, history: tbThread, mode: qsMode }) }).then(function (res) {
               var d = res.data || {};
               if (!res.ok) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc((d && d.error) || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
@@ -15187,7 +15253,7 @@ window.qsNpOfferSend = function (btn) {
               loadGeneralSettings();
 
               function loadDepartments() {
-                api('/api/departments').then(function (result) {
+                return api('/api/departments').then(function (result) {
                   if (!result || !result.ok) return;
                   departments = result.data.departments || [];
                   var editMember = editingId ? memberById(editingId) : null;
@@ -15195,7 +15261,12 @@ window.qsNpOfferSend = function (btn) {
                   // scheduler gets exactly their edit departments as options.
                   var placeFirst = !!(editMember && !editMember.departmentId && window.qsDeptAccess &&
                     (window.qsDeptAccess.edit || []).length);
-                  fillDeptSelect($('team-add-dept'), '');
+                  // Place-first (Deepika 2026-11-19): a scheduler ADDING a
+                  // team member is offered exactly their edit departments
+                  // too — never any other — the same scoping as the
+                  // place-first edit form. The owner is unchanged (all
+                  // departments, blank "— None —").
+                  fillDeptSelect($('team-add-dept'), '', window.currentRole === 'scheduler');
                   fillDeptSelect($('team-edit-dept'), editMember ? editMember.departmentId : '', placeFirst);
                   fillRoleSelect($('team-add-jobrole'), '', '');
                   if (editMember) fillRoleSelect($('team-edit-jobrole'), editMember.departmentId, editMember.jobRoleId);
@@ -15389,6 +15460,123 @@ window.qsNpOfferSend = function (btn) {
                 $('team-invite-note').classList.add('hidden');
                 $('team-invite-box').scrollIntoView();
               }
+
+              // ---- Add-team-member popup (Deepika, 2026-11-19) ----
+              // The popup IS the Settings → Team members form: the same
+              // #team-add-card node is moved into a body-level modal over
+              // the Task chat and moved back on close — same fields, same
+              // handlers, same POST /api/users, same Send invite box.
+              // Nothing is duplicated; the form is never rebuilt.
+              var addPopupOpen = false;
+              var addPopupHome = null; // { parent, next, wasHidden }
+              var addPopupEl = null;
+              var addPopupNoAccess = null;
+              function addPopupElements() {
+                if (addPopupEl) return addPopupEl;
+                var back = document.createElement('div');
+                back.id = 'qs-add-member-modal';
+                back.className = 'modal-backdrop hidden';
+                var dialog = document.createElement('div');
+                dialog.className = 'modal';
+                dialog.setAttribute('role', 'dialog');
+                dialog.setAttribute('aria-label', 'Add a team member');
+                var x = document.createElement('button');
+                x.type = 'button';
+                x.className = 'btn-secondary';
+                x.textContent = '✕';
+                x.setAttribute('aria-label', 'Close');
+                x.style.cssText = 'float:right;padding:0.2rem 0.6rem;font-size:14px';
+                x.addEventListener('click', function () { closeAddMemberPopup(); });
+                dialog.appendChild(x);
+                back.appendChild(dialog);
+                back.addEventListener('click', function (e) { if (e.target === back) closeAddMemberPopup(); });
+                document.body.appendChild(back);
+                addPopupEl = { back: back, dialog: dialog };
+                return addPopupEl;
+              }
+              function addPopupEsc(e) { if (e.key === 'Escape') closeAddMemberPopup(); }
+              // The form's own Cancel hides the card; when the popup is
+              // open that must close the modal too (and move the card home).
+              $('team-add-cancel').addEventListener('click', function () { if (addPopupOpen) closeAddMemberPopup(); });
+              function openAddMemberPopup(prefill) {
+                // Resolves true when the popup is open (or an access
+                // message is shown instead), false only if the module
+                // itself could not load.
+                return ensureTeamInit().then(function () {
+                  var els = addPopupElements();
+                  // No edit access anywhere -> the form is not usable.
+                  // Show that plainly in the modal rather than opening
+                  // a form that can only fail (the planner would refuse
+                  // an add from this user too).
+                  if (!window.isOwner && !(window.qsDeptAccess && (window.qsDeptAccess.edit || []).length)) {
+                    if (!addPopupNoAccess) {
+                      addPopupNoAccess = document.createElement('p');
+                      addPopupNoAccess.style.cssText = 'margin-top:0.5rem;color:var(--dim)';
+                      addPopupNoAccess.textContent = 'You don\u2019t have access to add team members. Ask an admin for your department.';
+                    }
+                    els.dialog.appendChild(addPopupNoAccess);
+                    els.back.classList.remove('hidden');
+                    addPopupOpen = true;
+                    document.addEventListener('keydown', addPopupEsc);
+                    return true;
+                  }
+                  var card = $('team-add-card');
+                  if (!card) return false;
+                  if (!addPopupHome) addPopupHome = { parent: card.parentNode, next: card.nextSibling, wasHidden: card.classList.contains('hidden') };
+                  // Fresh state: the card may hold a previous add's
+                  // values (Settings use) or a success/invite box.
+                  var form = $('team-add-form');
+                  if (form) form.reset();
+                  addAvatarData = null;
+                  var aprev = $('team-add-avatar-preview'); if (aprev) aprev.classList.add('hidden');
+                  var aclear = $('team-add-avatar-clear'); if (aclear) aclear.classList.add('hidden');
+                  hideErr($('team-add-error'));
+                  $('team-add-success').classList.add('hidden');
+                  $('team-invite-box').classList.add('hidden');
+                  $('team-invite-note').classList.add('hidden');
+                  inviteUserId = null;
+                  // Prefill from the Task message ("Add a team member
+                  // Rah Kum"): first/last name, and the department
+                  // when it names one of the live departments.
+                  if (prefill) {
+                    if (prefill.firstName) $('team-add-firstname').value = prefill.firstName;
+                    if (prefill.lastName) $('team-add-lastname').value = prefill.lastName;
+                    if (prefill.deptName) {
+                      var match = null;
+                      (departments || []).forEach(function (d) { if (String(d.name).toLowerCase() === String(prefill.deptName).toLowerCase()) match = d; });
+                      if (match) $('team-add-dept').value = match.id;
+                    }
+                  }
+                  // Department lock + job roles follow the (possibly
+                  // prefilled) department; the lock may force the
+                  // active top department instead.
+                  if (window.qsDeptLockApply) window.qsDeptLockApply();
+                  fillRoleSelect($('team-add-jobrole'), $('team-add-dept').value, '');
+                  els.dialog.appendChild(card);
+                  card.classList.remove('hidden');
+                  els.back.classList.remove('hidden');
+                  addPopupOpen = true;
+                  document.addEventListener('keydown', addPopupEsc);
+                  var fn = $('team-add-firstname');
+                  if (fn) fn.focus();
+                  return true;
+                }).catch(function () { return false; });
+              }
+              function closeAddMemberPopup() {
+                if (!addPopupOpen && !addPopupEl) return;
+                addPopupOpen = false;
+                document.removeEventListener('keydown', addPopupEsc);
+                if (addPopupNoAccess && addPopupNoAccess.parentNode) addPopupNoAccess.parentNode.removeChild(addPopupNoAccess);
+                var card = $('team-add-card');
+                if (card && addPopupHome && addPopupHome.parent) {
+                  if (addPopupHome.next) addPopupHome.parent.insertBefore(card, addPopupHome.next);
+                  else addPopupHome.parent.appendChild(card);
+                  if (addPopupHome.wasHidden) card.classList.add('hidden');
+                }
+                if (addPopupEl) addPopupEl.back.classList.add('hidden');
+              }
+              window.qsOpenAddMemberPopup = openAddMemberPopup;
+              window.qsCloseAddMemberPopup = closeAddMemberPopup;
               function markInviteSent(userId) {
                 api('/api/users/' + userId + '/invite-sent', { method: 'POST' }).then(function (result) {
                   if (result.ok) { loadMembers(); showInviteNote('Marked as sent.', false); }
@@ -15417,7 +15605,12 @@ window.qsNpOfferSend = function (btn) {
                   var opt = document.createElement('option');
                   opt.value = r;
                   opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
-                  if (r === 'employee') opt.selected = true;
+                  // Employee is the default — as a content attribute, so
+                  // form.reset() (after a successful add, and when the
+                  // Task popup reopens the form) restores Employee
+                  // instead of the first option (Owner for owners,
+                  // Scheduler for schedulers).
+                  if (r === 'employee') { opt.selected = true; opt.setAttribute('selected', ''); }
                   roleSelect.appendChild(opt);
                 });
                 // Add form stays closed until the + Add team member button
@@ -15459,9 +15652,20 @@ window.qsNpOfferSend = function (btn) {
                     return;
                   }
                   $('team-add-submit').disabled = true;
+                  // Place-first (Deepika 2026-11-19): a scheduler with 2+
+                  // edit departments on "All departments" has no active
+                  // department header, so the picked department runs in
+                  // its own context — otherwise the server refuses with
+                  // "Select an active department". Mirrors the edit
+                  // form's placing save (a caller-provided header wins
+                  // over the shared api() helper's top-switcher one).
+                  var addHeaders = { 'Content-Type': 'application/json' };
+                  if (payload.departmentId && window.currentRole === 'scheduler') {
+                    addHeaders['X-Active-Department'] = payload.departmentId;
+                  }
                   api('/api/users', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: addHeaders,
                     body: JSON.stringify(payload)
                   }).then(function (result) {
                     $('team-add-submit').disabled = false;
@@ -15475,6 +15679,11 @@ window.qsNpOfferSend = function (btn) {
                       loadMembers();
                       if (result.data && result.data.user && result.data.user.id) {
                         showInviteBox(result.data.user.id);
+                      }
+                      // Task popup: tell the chat the add landed, so the
+                      // conversation shows the result once the popup closes.
+                      if (addPopupOpen && window.qsNoteAddMemberDone) {
+                        try { window.qsNoteAddMemberDone((payload.firstName + ' ' + payload.lastName).trim()); } catch (e) {}
                       }
                     } else {
                       showErr(errEl, (result.data && result.data.error) || 'Could not add team member.');
@@ -16593,9 +16802,9 @@ window.qsNpOfferSend = function (btn) {
                 window.qsSyncPromoteDept = fillDepts;
               }
 
-              function init() {
+              function init(done) {
                 api('/api/auth/me').then(function (r) {
-                  if (!r.ok) return; // app shell handles redirect
+                  if (!r.ok) { if (done) done(); return; } // app shell handles redirect
                   myUserId = r.data.user.id;
                   myRole = r.data.user.role;
                   window.isOwner = (myRole === 'owner');
@@ -16625,15 +16834,53 @@ window.qsNpOfferSend = function (btn) {
                   loadDepartments();
                   loadMembers();
                   loadRoleRepairs();
+                  if (done) done();
                 });
               }
 
-              window.addEventListener('hashchange', function () { if (isActive()) { loadDepartments(); loadMembers(); loadRoleRepairs(); } });
-              if (isActive()) init();
+              // Deep link (Deepika, 2026-11-19): an email's "Fill in the
+              // new team member's details" link lands here —
+              // ?add-member=1#settings/team — and the add form opens
+              // as the popup (the same form as Task). The param is
+              // removed after opening so a later reload doesn't
+              // reopen the form.
+              function maybeOpenAddFromLink() {
+                try {
+                  if (new URLSearchParams(window.location.search).get('add-member') !== '1') return;
+                  var u = new URL(window.location.href);
+                  u.searchParams.delete('add-member');
+                  window.history.replaceState(null, '', u.pathname + u.search + u.hash);
+                  openAddMemberPopup();
+                } catch (e) {}
+              }
+
+              // The add-member popup (Task, Deepika 2026-11-19) needs
+              // this module before Settings → Team is ever visited, so
+              // init is idempotent and callable on demand. Resolves
+              // once the first department load has finished, so the
+              // popup's dropdowns are populated when it opens.
+              var teamInitPromise = null;
+              function ensureTeamInit() {
+                if (teamInitPromise) return teamInitPromise;
+                teamInitPromise = new Promise(function (resolve) {
+                  init(function () {
+                    try {
+                      var p = loadDepartments();
+                      if (p && p.then) p.then(function () { maybeOpenAddFromLink(); resolve(); }, function () { resolve(); });
+                      else { maybeOpenAddFromLink(); resolve(); }
+                    } catch (e) { resolve(); }
+                  });
+                });
+                return teamInitPromise;
+              }
+              window.qsEnsureTeamInit = ensureTeamInit;
+
+              window.addEventListener('hashchange', function () { if (isActive()) { loadDepartments(); loadMembers(); loadRoleRepairs(); maybeOpenAddFromLink(); } });
+              if (isActive()) ensureTeamInit();
               else {
                 // Defer init until first activation
                 var onHash = function () {
-                  if (isActive()) { window.removeEventListener('hashchange', onHash); init(); }
+                  if (isActive()) { window.removeEventListener('hashchange', onHash); ensureTeamInit(); }
                 };
                 window.addEventListener('hashchange', onHash);
               }
