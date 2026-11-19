@@ -1880,6 +1880,18 @@
         .qs-vo-row button { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 4px 8px; font-size: 0.85rem; font-weight: 700; cursor: pointer; color: var(--text); }
         .qs-vo-row button:disabled { opacity: 0.35; cursor: default; }
         .qs-vo-row button[data-vo-pin][aria-pressed="true"] { background: #e0f2f1; border-color: #0e7c86; color: #0b5560; }
+        .qs-vo-row .qs-vo-lab .qs-vo-val { display: block; font-size: 0.78rem; color: #0b5560; font-weight: 700; margin-top: 1px; }
+        .qs-vo-row .qs-vo-lab .qs-vo-val.none { color: #94a3b8; font-weight: 600; }
+        .qs-vo-row.qs-vo-pickable { cursor: pointer; }
+        .qs-vo-row.open { background: #e0f2f1; border-radius: 8px 8px 0 0; }
+        .qs-vo-row .qs-vo-chev { font-size: 0.85rem; color: var(--dim); padding: 4px 2px; }
+        .vo-picker { background: #f8fafc; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; padding: 6px; margin: -6px 0 4px; max-height: 260px; overflow-y: auto; }
+        .vo-picker label { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 0.92rem; border-radius: 6px; cursor: pointer; color: var(--text); }
+        .vo-picker label:hover { background: #eef2f7; }
+        .vo-picker label.all { font-weight: 700; border-bottom: 1px solid var(--border); }
+        .vo-picker input { accent-color: #2563eb; width: 16px; height: 16px; margin: 0; flex: none; }
+        .vo-picker .hint { font-size: 0.8rem; color: var(--dim); padding: 6px 10px 4px; line-height: 1.45; }
+        .vo-picker .hint b { color: #0b5560; }
         #tab-schedule .view-tabs { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
         #tab-schedule .view-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 1rem; padding: 0.6rem 1.1rem; cursor: pointer; }
         #tab-schedule .view-tabs button.active { background: var(--accent); color: #fff; }
@@ -2991,6 +3003,57 @@
           sched.roleFilter = normRoleSel(list);
           window.qsRoleFilter = sched.roleFilter;
         }
+        // View-options filter picker (Deepika, 2026-11-18): the popup
+        // reads the live filter options + values through these, and
+        // applies a pick through the same setters the bar dropdowns use
+        // (so a pick re-renders the bar and the view at once).
+        window.qsVoScheduleFilters = function () {
+          var depts = (sched.departments || []).filter(function (d) { return window.qsCanViewDept(d.id); });
+          return {
+            dept: { multi: true, options: depts.map(function (d) { return { id: String(d.id), name: d.name }; }), values: (sched.deptFilters || []).slice() },
+            shift: { multi: true, options: visibleShiftTypes().map(function (st) { return { id: String(st.id), name: st.name }; }), values: (sched.shiftFilters || []).slice() },
+            role: { multi: true, options: roleOptions().map(function (r) { return { key: r.key, name: r.name }; }), values: roleSelSet().map(function (r) { return r.key; }) }
+          };
+        };
+        window.qsVoScheduleSetFilter = function (id, values) {
+          if (id === 'dept') {
+            sched.deptFilters = (values || []).slice();
+            sched.shiftFilters = [];
+          } else if (id === 'shift') {
+            sched.shiftFilters = (values || []).slice();
+          } else if (id === 'role') {
+            var opts = roleOptions();
+            setRoleFilterSet((values || []).map(function (k) { var o = null; opts.forEach(function (x) { if (x.key === k) o = x; }); return o; }).filter(Boolean));
+          } else return;
+          saveVoScheduleValues();
+          renderDeptFilter();
+          renderView();
+        };
+        function saveVoScheduleValues() {
+          if (!window.qsVoValuesSave) return;
+          window.qsVoValuesSave('schedule', {
+            dept: (sched.deptFilters || []).slice(),
+            shift: (sched.shiftFilters || []).slice(),
+            role: roleSelSet().map(function (r) { return r.key; })
+          });
+        }
+        // The value store is the single source for the BAR filter: a
+        // remembered pick comes back on load (pruned to what still
+        // exists). The top department switcher is left as-is — its
+        // seeding below still wins when it was used this session, and
+        // its setter writes through to the store.
+        function restoreVoScheduleValues() {
+          if (!window.qsVoValuesLoad) return;
+          var v = window.qsVoValuesLoad('schedule') || {};
+          var depts = (sched.departments || []).filter(function (d) { return window.qsCanViewDept(d.id); });
+          var deptIds = (v.dept || []).filter(function (id) { return depts.some(function (d) { return String(d.id) === String(id); }); }).map(String);
+          var shiftIds = (v.shift || []).filter(function (id) { return (sched.shiftTypes || []).some(function (st) { return st.isActive && String(st.id) === String(id); }); }).map(String);
+          var opts = roleOptions();
+          var roles = (v.role || []).map(function (k) { var o = null; opts.forEach(function (x) { if (x.key === k) o = x; }); return o; }).filter(Boolean);
+          sched.deptFilters = deptIds;
+          sched.shiftFilters = shiftIds;
+          setRoleFilterSet(roles);
+        }
 
         function shiftsFor(dateStr) {
           return sched.shifts.filter(function (s) {
@@ -3139,12 +3202,17 @@
             window.qsDepartments = sched.departments;
             renderActiveDeptSwitcher();
             renderDeptFilter();
+            // View-options filter picker (Deepika, 2026-11-18): restore
+            // the remembered filter values before the first paint.
+            restoreVoScheduleValues();
+            renderDeptFilter();
             renderLegend();
             if (window.qsRenderDeptSwitcherBar) window.qsRenderDeptSwitcherBar();
             // Apply the global department filter if the switcher set one.
             if (window.qsDesiredDeptFilter) {
               sched.deptFilters = [String(window.qsDesiredDeptFilter)];
               sched.shiftFilters = [];
+              saveVoScheduleValues();
               renderDeptFilter();
             }
             renderView();
@@ -3300,6 +3368,7 @@
                   if (!cb.checked && idx !== -1) set.splice(idx, 1);
                 }
                 setRoleFilterSet(set);
+                saveVoScheduleValues();
                 renderDeptFilter();
                 var m2 = $('sched-role-menu'); if (m2) m2.style.display = 'block';
                 var b2 = $('sched-role-filter'); if (b2) b2.setAttribute('aria-expanded', 'true');
@@ -3336,6 +3405,7 @@
               if (cb.checked && i === -1) sched.deptFilters.push(id);
               if (!cb.checked && i !== -1) sched.deptFilters.splice(i, 1);
               sched.shiftFilters = [];
+              saveVoScheduleValues();
               renderDeptFilter();
               var m2 = $('sched-dept-menu'); if (m2) m2.style.display = 'block';
               renderView();
@@ -3351,6 +3421,7 @@
                 if (cb.checked && i === -1) sched.shiftFilters.push(id);
                 if (!cb.checked && i !== -1) sched.shiftFilters.splice(i, 1);
               }
+              saveVoScheduleValues();
               renderDeptFilter();
               var m2 = $('sched-shift-menu'); if (m2) m2.style.display = 'block';
               renderView();
@@ -5058,6 +5129,7 @@
           if (!window.sched) return;
           window.sched.deptFilters = deptId ? [String(deptId)] : [];
           window.sched.shiftFilters = [];
+          saveVoScheduleValues();
           try { renderDeptFilter(); } catch (e) {}
           try { renderView(); } catch (e) {}
         };
@@ -10217,6 +10289,67 @@ window.qsNpOfferSend = function (btn) {
         function save(view, prefs) {
           try { localStorage.setItem(key(view), JSON.stringify(prefs)); } catch (e) {}
         }
+        // Filter VALUE store (Deepika, 2026-11-18): the picked value of
+        // every filter, per view, remembered in localStorage — same
+        // pattern as the pin prefs, per device/browser. Schedule:
+        // { dept: [ids], shift: [ids], role: [keys] }. Calendar:
+        // { dept: id|'', show: 'all'|'mine'|'open', kind: key|'',
+        //   role: [keys] }.
+        function valuesKey(view) { return view === 'calendar' ? 'qs-vo-values-calendar' : 'qs-vo-values-schedule'; }
+        function loadValues(view) {
+          try {
+            var raw = localStorage.getItem(valuesKey(view));
+            if (!raw) return {};
+            var v = JSON.parse(raw);
+            return (v && typeof v === 'object') ? v : {};
+          } catch (e) { return {}; }
+        }
+        function saveValues(view, values) {
+          try { localStorage.setItem(valuesKey(view), JSON.stringify(values || {})); } catch (e) {}
+        }
+        window.qsVoValuesLoad = loadValues; window.qsVoValuesSave = saveValues;
+        // Which row is expanded (picker open) in each view's popup.
+        var expanded = {};
+        var ALL_LABELS = {
+          schedule: { dept: 'All departments', shift: 'All shifts', role: 'All roles' },
+          calendar: { dept: 'All departments', show: 'All sessions', kind: 'All session types', role: 'All roles' }
+        };
+        var PICK_NOUN = { dept: 'a department', shift: 'a shift', role: 'a job role', show: 'an option', kind: 'a session type' };
+        // The live filter options + values come from the view itself
+        // (window.qsVoScheduleFilters / window.qsVoCalendarFilters);
+        // picks go back through its setter (same setters + re-render
+        // the bar dropdowns use).
+        function viewFilters(view) {
+          try {
+            if (view === 'calendar' && window.qsVoCalendarFilters) return window.qsVoCalendarFilters();
+            if (view === 'schedule' && window.qsVoScheduleFilters) return window.qsVoScheduleFilters();
+          } catch (e) {}
+          return null;
+        }
+        function viewSetFilter(view, id, value) {
+          if (view === 'calendar' && window.qsVoCalendarSetFilter) window.qsVoCalendarSetFilter(id, value);
+          else if (view === 'schedule' && window.qsVoScheduleSetFilter) window.qsVoScheduleSetFilter(id, value);
+        }
+        function optionByKey(options, k) {
+          var found = null;
+          (options || []).forEach(function (o) { if (String(o.id || o.key) === String(k)) found = o; });
+          return found;
+        }
+        function valueLabel(view, id, f) {
+          var all = ALL_LABELS[view][id] || 'All';
+          if (!f) return { text: all, none: true };
+          if (f.multi) {
+            var vals = f.values || [];
+            if (!vals.length) return { text: all, none: true };
+            if (vals.length === 1) { var o = optionByKey(f.options, vals[0]); return { text: o ? o.name : all, none: false }; }
+            var unit = id === 'role' ? 'roles' : (id === 'dept' ? 'departments' : 'shifts');
+            return { text: vals.length + ' ' + unit, none: false };
+          }
+          var v = f.value;
+          if (v === '' || v == null || (id === 'show' && v === 'all')) return { text: all, none: true };
+          var opt = optionByKey(f.options, v);
+          return { text: opt ? opt.name : all, none: false };
+        }
         function barEl(view) {
           return view === 'calendar' ? document.getElementById('db-pinned-filters') : document.getElementById('sched-dept-filter');
         }
@@ -10226,12 +10359,48 @@ window.qsNpOfferSend = function (btn) {
         function btnEl(view) {
           return document.getElementById(view === 'calendar' ? 'qs-vo-btn-dash' : 'qs-vo-btn');
         }
-        function rowHtml(it, pinned, pos, total) {
-          return '<div class="qs-vo-row" data-vo-id="' + it.id + '">' +
-            '<span class="qs-vo-lab">' + esc(it.label) + '</span>' +
+        function rowHtml(it, pinned, pos, total, view) {
+          var f = (viewFilters(view) || {})[it.id];
+          var vl = valueLabel(view, it.id, f);
+          var isOpen = expanded[view] === it.id;
+          return '<div class="qs-vo-row qs-vo-pickable' + (isOpen ? ' open' : '') + '" data-vo-id="' + it.id + '">' +
+            '<span class="qs-vo-lab">' + esc(it.label) + '<span class="qs-vo-val' + (vl.none ? ' none' : '') + '">' + esc(vl.text) + '</span></span>' +
+            '<span class="qs-vo-chev">' + (isOpen ? '▾' : '▸') + '</span>' +
             '<button type="button" data-vo-up title="Move up"' + ((!pinned || pos === 0) ? ' disabled' : '') + '>↑</button>' +
             '<button type="button" data-vo-down title="Move down"' + ((!pinned || pos === total - 1) ? ' disabled' : '') + '>↓</button>' +
             '<button type="button" data-vo-pin aria-pressed="' + !!pinned + '" title="' + (pinned ? 'Unpin from the bar' : 'Pin to the bar') + '">' + (pinned ? '📌 Pinned' : '📍 Pin') + '</button></div>';
+        }
+        // Inline picker for one filter row (Deepika, 2026-11-18): the
+        // same options as the bar dropdown it mirrors. Multi-select
+        // (checkboxes) for Schedule Dept/Shift/Role and Calendar Role;
+        // single-select (radios) for Calendar Dept/Show/Session type.
+        function pickerHtml(view, id) {
+          var filters = viewFilters(view) || {};
+          var f = filters[id]; if (!f) return '';
+          var allLabel = ALL_LABELS[view][id] || 'All';
+          var rows = '';
+          if (f.multi) {
+            var vals = f.values || [];
+            rows += '<label class="all"><input type="checkbox" data-vo-val="__all"' + (vals.length === 0 ? ' checked' : '') + '> ' + esc(allLabel) + '</label>';
+            (f.options || []).forEach(function (o) {
+              var k = o.key || o.id;
+              rows += '<label><input type="checkbox" data-vo-val="' + esc(k) + '"' + (vals.indexOf(k) !== -1 ? ' checked' : '') + '> ' + esc(o.name) + '</label>';
+            });
+            if (!(f.options || []).length) rows += '<p class="hint">No ' + esc(id === 'role' ? 'roles' : (id === 'dept' ? 'departments' : 'shifts')) + ' yet.</p>';
+          } else {
+            var cur = f.value == null ? '' : String(f.value);
+            var allVal = id === 'show' ? 'all' : '';
+            rows += '<label class="all"><input type="radio" name="vo-pick-' + view + '-' + id + '" data-vo-val="' + esc(allVal) + '"' + (String(cur) === String(allVal) ? ' checked' : '') + '> ' + esc(allLabel) + '</label>';
+            (f.options || []).forEach(function (o) {
+              rows += '<label><input type="radio" name="vo-pick-' + view + '-' + id + '" data-vo-val="' + esc(o.id) + '"' + (String(cur) === String(o.id) ? ' checked' : '') + '> ' + esc(o.name) + '</label>';
+            });
+            if (!(f.options || []).length) rows += '<p class="hint">No options yet.</p>';
+          }
+          var vl = valueLabel(view, id, f);
+          var dev = (window.matchMedia && window.matchMedia('(max-width: 700px)').matches) ? 'phone' : 'computer';
+          var viewWord = view === 'calendar' ? 'calendar' : 'schedule';
+          return '<div class="vo-picker" data-vo-picker="' + id + '">' + rows +
+            '<p class="hint"><b>✓ Applied — ' + esc(vl.text) + '.</b> Tap ' + (PICK_NOUN[id] || 'an option') + ' and the ' + viewWord + ' filters at once. Your pick is remembered on this ' + dev + ' for next time.</p></div>';
         }
         function renderPop(view) {
           var pop = popEl(view); if (!pop) return;
@@ -10243,12 +10412,25 @@ window.qsNpOfferSend = function (btn) {
           var restBox = pop.querySelector('[data-vo-group="rest"] .qs-vo-rows');
           if (pinBox) pinBox.innerHTML = pinnedIds.map(function (id, i) {
             var it = items.filter(function (x) { return x.id === id; })[0]; if (!it) return '';
-            return rowHtml(it, true, i, pinnedIds.length);
+            return rowHtml(it, true, i, pinnedIds.length, view);
           }).join('');
           if (restBox) restBox.innerHTML = restIds.map(function (id) {
             var it = items.filter(function (x) { return x.id === id; })[0]; if (!it) return '';
-            return rowHtml(it, false, -1, 0);
+            return rowHtml(it, false, -1, 0, view);
           }).join('');
+          // Re-open the expanded row's picker after a re-render (a pick
+          // re-renders the rows, so the picker is rebuilt from the
+          // current values instead of closing mid-pick — and an
+          // auto-pinned row carries its open picker into its new group).
+          var openId = expanded[view];
+          if (openId) {
+            var openRow = pop.querySelector('.qs-vo-row[data-vo-id="' + openId + '"]');
+            if (openRow) {
+              var oldPicker = pop.querySelector('[data-vo-picker="' + openId + '"]');
+              if (oldPicker) oldPicker.remove();
+              openRow.insertAdjacentHTML('afterend', pickerHtml(view, openId));
+            } else expanded[view] = null;
+          }
           syncCalendarPin(view);
         }
         function syncCalendarPin(view) {
@@ -10285,6 +10467,9 @@ window.qsNpOfferSend = function (btn) {
         function closeAll() {
           document.querySelectorAll('.qs-vo-pop').forEach(function (p) { p.classList.add('hidden'); });
           document.querySelectorAll('[id^="qs-vo-btn"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+          // A closed popup reopens with every picker shut (the picks
+          // themselves are remembered — the open picker is not).
+          expanded = {};
         }
         function toggle(view) {
           var pop = popEl(view), btn = btnEl(view); if (!pop || !btn) return;
@@ -10293,31 +10478,83 @@ window.qsNpOfferSend = function (btn) {
           if (opening) { renderPop(view); pop.classList.remove('hidden'); btn.setAttribute('aria-expanded', 'true'); }
         }
         function onPopClick(view, ev) {
-          var btn = ev.target.closest ? ev.target.closest('[data-vo-pin],[data-vo-up],[data-vo-down]') : null;
-          if (!btn) return;
-          // Pin/up/down re-render the popup rows, which detaches the
-          // clicked button mid-bubble — stop the click here or the
-          // document-level outside-click handler sees a detached target
-          // and closes the popup we just re-rendered.
-          ev.stopPropagation();
-          var row = btn.closest('[data-vo-id]'); if (!row) return;
-          var id = row.getAttribute('data-vo-id');
-          var prefs = load(view);
-          if (btn.hasAttribute('data-vo-pin')) {
-            // Calendar events is barless by design: pinning it only marks
-            // it pinned in the popup — it never joins the bar.
-            prefs.pinned[id] = !prefs.pinned[id];
-            save(view, prefs); renderPop(view); apply(view);
-          } else {
-            var pinnedIds = prefs.order.filter(function (x) { return prefs.pinned[x]; });
-            var i = pinnedIds.indexOf(id); if (i === -1) return;
-            var j = btn.hasAttribute('data-vo-up') ? i - 1 : i + 1;
-            if (j < 0 || j >= pinnedIds.length) return;
-            var tmp = pinnedIds[i]; pinnedIds[i] = pinnedIds[j]; pinnedIds[j] = tmp;
-            var rest = prefs.order.filter(function (x) { return !prefs.pinned[x]; });
-            prefs.order = pinnedIds.concat(rest);
-            save(view, prefs); renderPop(view); apply(view);
+          var t = ev.target;
+          // Clicks inside an open picker are picker business, not a row
+          // toggle — the change handler deals with them.
+          if (t.closest && t.closest('.vo-picker')) return;
+          var btn = t.closest ? t.closest('[data-vo-pin],[data-vo-up],[data-vo-down]') : null;
+          if (btn) {
+            // Pin/up/down re-render the popup rows, which detaches the
+            // clicked button mid-bubble — stop the click here or the
+            // document-level outside-click handler sees a detached target
+            // and closes the popup we just re-rendered.
+            ev.stopPropagation();
+            var row = btn.closest('[data-vo-id]'); if (!row) return;
+            var id = row.getAttribute('data-vo-id');
+            var prefs = load(view);
+            if (btn.hasAttribute('data-vo-pin')) {
+              // Calendar events is barless by design: pinning it only marks
+              // it pinned in the popup — it never joins the bar.
+              prefs.pinned[id] = !prefs.pinned[id];
+              save(view, prefs); renderPop(view); apply(view);
+            } else {
+              var pinnedIds = prefs.order.filter(function (x) { return prefs.pinned[x]; });
+              var i = pinnedIds.indexOf(id); if (i === -1) return;
+              var j = btn.hasAttribute('data-vo-up') ? i - 1 : i + 1;
+              if (j < 0 || j >= pinnedIds.length) return;
+              var tmp = pinnedIds[i]; pinnedIds[i] = pinnedIds[j]; pinnedIds[j] = tmp;
+              var rest = prefs.order.filter(function (x) { return !prefs.pinned[x]; });
+              prefs.order = pinnedIds.concat(rest);
+              save(view, prefs); renderPop(view); apply(view);
+            }
+            return;
           }
+          // Tapping a filter row opens/closes its inline picker. Static
+          // settings rows (Calendar events, Week starts) have no picker.
+          var head = t.closest ? t.closest('.qs-vo-row[data-vo-id]') : null;
+          if (!head) return;
+          var rid = head.getAttribute('data-vo-id');
+          var isPickerRow = ITEMS[view].some(function (it) { return it.id === rid && !it.barless; });
+          if (!isPickerRow) return;
+          // Toggling re-renders the rows (same detach-mid-bubble rule
+          // as pin/up/down) — stop the click here.
+          ev.stopPropagation();
+          expanded[view] = expanded[view] === rid ? null : rid;
+          renderPop(view);
+        }
+        // A pick inside an open picker: apply it at once (the view's
+        // setter saves the value, re-renders its bar and re-renders the
+        // view), auto-pin an unpinned filter so the bar shows what is
+        // filtering, and re-render the popup so the row's value line
+        // follows. The picker stays open — renderPop rebuilds it.
+        function onPopChange(view, ev) {
+          var input = ev.target;
+          if (!input || !input.matches || !input.matches('[data-vo-val]')) return;
+          var picker = input.closest ? input.closest('[data-vo-picker]') : null;
+          if (!picker) return;
+          var id = picker.getAttribute('data-vo-picker');
+          var filters = viewFilters(view) || {};
+          var f = filters[id]; if (!f) return;
+          if (f.multi) {
+            var vals = [];
+            var clickedAll = input.getAttribute('data-vo-val') === '__all' && input.checked;
+            if (!clickedAll) {
+              picker.querySelectorAll('input[data-vo-val]:checked').forEach(function (cb) {
+                var v = cb.getAttribute('data-vo-val');
+                if (v !== '__all') vals.push(v);
+              });
+            }
+            viewSetFilter(view, id, vals);
+          } else {
+            viewSetFilter(view, id, input.getAttribute('data-vo-val'));
+          }
+          var prefs = load(view);
+          if (!prefs.pinned[id]) {
+            prefs.pinned[id] = true;
+            save(view, prefs);
+            apply(view);
+          }
+          renderPop(view);
         }
         function init(view) {
           var btn = btnEl(view), pop = popEl(view);
@@ -10325,6 +10562,7 @@ window.qsNpOfferSend = function (btn) {
           btn.dataset.voInit = '1';
           btn.addEventListener('click', function (e) { e.stopPropagation(); toggle(view); });
           pop.addEventListener('click', function (e) { onPopClick(view, e); });
+          pop.addEventListener('change', function (e) { onPopChange(view, e); });
           apply(view);
         }
         document.addEventListener('click', function (e) {
@@ -24052,6 +24290,10 @@ window.qsNpOfferSend = function (btn) {
           acLoadedDashId = curDash.id;
           acUsers = ((rs[1].ok && rs[1].data.users) || []).filter(function (u) { return u.isActive !== false; });
           acDepts = (rs[2].ok && rs[2].data.departments) || [];
+          // View-options filter picker (Deepika, 2026-11-18): restore
+          // the remembered filter values before the fills below (the
+          // fills prune anything that no longer exists).
+          restoreAcVoFilterValues();
           // Fill the Department filter from the dashboard's departments
           // (or all visible ones), keeping the current selection.
           var dfEl = document.getElementById('db-dept-filter');
@@ -24059,7 +24301,7 @@ window.qsNpOfferSend = function (btn) {
             var fscope = (curDash && curDash.departmentIds && curDash.departmentIds.length)
               ? acDepts.filter(function (d) { return curDash.departmentIds.indexOf(d.id) >= 0; })
               : acDepts;
-            if (acDeptFilter && !fscope.some(function (d) { return d.id === acDeptFilter; })) acDeptFilter = '';
+            if (acDeptFilter && !fscope.some(function (d) { return d.id === acDeptFilter; })) { acDeptFilter = ''; saveAcVoFilterValues(); }
             dfEl.innerHTML = '<option value="">All departments</option>' + fscope.map(function (d) {
               return '<option value="' + d.id + '"' + (d.id === acDeptFilter ? ' selected' : '') + '>' + esc(d.name) + '</option>';
             }).join('');
@@ -24198,6 +24440,7 @@ window.qsNpOfferSend = function (btn) {
             acRoleSel = kept.length ? kept : null;
             window.qsRoleFilter = acRoleSel;
             set = kept;
+            saveAcVoFilterValues();
           }
         }
         var lbl = document.getElementById('db-role-btn-label');
@@ -24228,6 +24471,7 @@ window.qsNpOfferSend = function (btn) {
             }
             acRoleSel = cur.length ? cur : null;
             window.qsRoleFilter = acRoleSel;
+            saveAcVoFilterValues();
             // Sync the All-roles row + button label in place; the
             // menu itself stays open and untouched.
             var allCb = menu.querySelector('input[data-acrole="__all"]');
@@ -24237,6 +24481,67 @@ window.qsNpOfferSend = function (btn) {
             render();
           });
         });
+      }
+      // View-options filter picker (Deepika, 2026-11-18): the popup
+      // reads the live filter options + values through these, and
+      // applies a pick through the same state the bar controls use.
+      window.qsVoCalendarFilters = function () {
+        var fscope = (curDash && curDash.departmentIds && curDash.departmentIds.length)
+          ? acDepts.filter(function (d) { return curDash.departmentIds.indexOf(d.id) >= 0; })
+          : acDepts;
+        return {
+          dept: { multi: false, options: fscope.map(function (d) { return { id: String(d.id), name: d.name }; }), value: acDeptFilter || '' },
+          show: { multi: false, options: [{ id: 'all', name: 'All sessions' }, { id: 'mine', name: '⭐ Mine' }, { id: 'open', name: 'Needs speaker' }], value: acShowFilter || 'all' },
+          kind: { multi: false, options: acKinds.map(function (k) { return { id: k.key, name: k.label }; }), value: acKindFilter || '' },
+          role: { multi: true, options: acRoleOptions().map(function (r) { return { key: r.key, name: r.name }; }), values: acRoleSelSet().map(function (r) { return r.key; }) }
+        };
+      };
+      window.qsVoCalendarSetFilter = function (id, value) {
+        if (id === 'dept') {
+          acDeptFilter = String(value || '');
+          var df = document.getElementById('db-dept-filter'); if (df) df.value = acDeptFilter;
+        } else if (id === 'show') {
+          acShowFilter = String(value || 'all');
+          var sf = document.getElementById('db-show-filter'); if (sf) sf.value = acShowFilter;
+        } else if (id === 'kind') {
+          acKindFilter = String(value || '');
+          fillKindFilter();
+        } else if (id === 'role') {
+          var opts = acRoleOptions();
+          var sel = (value || []).map(function (k) { var o = null; opts.forEach(function (x) { if (x.key === k) o = x; }); return o; }).filter(Boolean);
+          acRoleSel = sel.length ? sel : null;
+          window.qsRoleFilter = acRoleSel;
+          fillRoleFilter();
+        } else return;
+        saveAcVoFilterValues();
+        render();
+      };
+      function saveAcVoFilterValues() {
+        if (!window.qsVoValuesSave) return;
+        window.qsVoValuesSave('calendar', {
+          dept: acDeptFilter || '',
+          show: acShowFilter || 'all',
+          kind: acKindFilter || '',
+          role: acRoleSelSet().map(function (r) { return r.key; })
+        });
+      }
+      // The value store is the single source for the calendar bar
+      // filter: a remembered pick comes back when the dashboard loads
+      // (pruned to what still exists by the fills below). Role is the
+      // shared view choice (window.qsRoleFilter): the schedule tab's
+      // remembered role wins when it has spoken; the calendar's own
+      // remembered role is the fallback.
+      function restoreAcVoFilterValues() {
+        if (!window.qsVoValuesLoad) return;
+        var v = window.qsVoValuesLoad('calendar') || {};
+        if (typeof v.dept === 'string') acDeptFilter = v.dept;
+        if (v.show === 'all' || v.show === 'mine' || v.show === 'open') acShowFilter = v.show;
+        if (typeof v.kind === 'string') acKindFilter = v.kind;
+        if (!window.qsRoleFilter && Array.isArray(v.role) && v.role.length) {
+          var opts = acRoleOptions();
+          var sel = v.role.map(function (k) { var o = null; opts.forEach(function (x) { if (x.key === k) o = x; }); return o; }).filter(Boolean);
+          if (sel.length) { acRoleSel = sel; window.qsRoleFilter = sel; }
+        }
       }
       // Dashboard page filters (Deepika, 2026-10-20 — like the Admin
       // view's Department/Shift filters): narrow by department and by
@@ -26154,11 +26459,11 @@ window.qsNpOfferSend = function (btn) {
         }, true);
       }
       var dbDeptFilterEl = document.getElementById('db-dept-filter');
-      if (dbDeptFilterEl) dbDeptFilterEl.addEventListener('change', function () { acDeptFilter = dbDeptFilterEl.value; render(); });
+      if (dbDeptFilterEl) dbDeptFilterEl.addEventListener('change', function () { acDeptFilter = dbDeptFilterEl.value; saveAcVoFilterValues(); render(); });
       var dbShowFilterEl = document.getElementById('db-show-filter');
-      if (dbShowFilterEl) dbShowFilterEl.addEventListener('change', function () { acShowFilter = dbShowFilterEl.value; render(); });
+      if (dbShowFilterEl) dbShowFilterEl.addEventListener('change', function () { acShowFilter = dbShowFilterEl.value; saveAcVoFilterValues(); render(); });
       var dbKindFilterEl = document.getElementById('db-kind-filter');
-      if (dbKindFilterEl) dbKindFilterEl.addEventListener('change', function () { acKindFilter = dbKindFilterEl.value; render(); });
+      if (dbKindFilterEl) dbKindFilterEl.addEventListener('change', function () { acKindFilter = dbKindFilterEl.value; saveAcVoFilterValues(); render(); });
       var dbRoleFilterEl = document.getElementById('db-role-filter');
       if (dbRoleFilterEl) {
         dbRoleFilterEl.addEventListener('click', function (e) {
@@ -26189,7 +26494,7 @@ window.qsNpOfferSend = function (btn) {
       function fillKindFilter() {
         var kf = document.getElementById('db-kind-filter');
         if (!kf) return;
-        if (acKindFilter && !acKinds.some(function (k) { return k.key === acKindFilter; })) acKindFilter = '';
+        if (acKindFilter && !acKinds.some(function (k) { return k.key === acKindFilter; })) { acKindFilter = ''; saveAcVoFilterValues(); }
         kf.innerHTML = '<option value="">All session types</option>' + acKinds.map(function (k) {
           return '<option value="' + esc(k.key) + '"' + (k.key === acKindFilter ? ' selected' : '') + '>' + esc(k.label) + '</option>';
         }).join('');
