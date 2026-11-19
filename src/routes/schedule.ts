@@ -302,13 +302,19 @@ async function checkShiftEligibility(
   shiftDeptIds: string[]
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const list: string[] = Array.isArray(eligibleIds) ? eligibleIds : [];
-  const { rows: urows } = await query(
-    'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
-    [memberId, companyId]
-  );
-  const memberRoleId: string | null = urows.length ? urows[0].job_role_id : null;
+  // Cross-department pull (Deepika, 2026-11-19): a member holds one job
+  // role PER department (home + pulled-in). The role that decides
+  // eligibility is the one in the shift type's own departments; with an
+  // explicit eligible list, ANY of their roles may qualify.
+  const { roleInDepartments, userRoles } = await import('../util/memberships.js');
+  const inTypeDept = shiftDeptIds.length
+    ? await roleInDepartments(companyId, memberId, shiftDeptIds)
+    : null;
+  const memberRoleId: string | null = inTypeDept ? inTypeDept.roleId : null;
   if (list.length) {
     if (memberRoleId && list.includes(memberRoleId)) return { ok: true };
+    const allRoles = await userRoles(companyId, memberId);
+    if (allRoles.some((r) => list.includes(r.roleId))) return { ok: true };
     const { rows: rrows } = await query(
       'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
       [list, companyId]
@@ -329,12 +335,7 @@ async function checkShiftEligibility(
   if (!memberRoleId) {
     return { ok: false, error: `This shift is only open to people with a job role in: ${deptNames}.` };
   }
-  const { rows: rrows } = await query(
-    'SELECT department_id FROM job_roles WHERE id = $1 AND company_id = $2',
-    [memberRoleId, companyId]
-  );
-  if (rrows.length && shiftDeptIds.includes(rrows[0].department_id)) return { ok: true };
-  return { ok: false, error: `This shift is only open to people in: ${deptNames}.` };
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -8652,9 +8653,13 @@ router.post('/messages/groups', requireRole('owner', 'scheduler', 'employee'), a
       rows.forEach((r: any) => memberSet.add(r.id));
     }
     if (Array.isArray(departmentIds) && departmentIds.length) {
+      // Cross-department pull (Deepika, 2026-11-19): a department's team
+      // is its home members PLUS members pulled in from other departments.
       const { rows } = await query(
-        `SELECT u.id FROM users u JOIN departments d ON d.id = u.department_id
-         WHERE d.id = ANY($1::uuid[]) AND d.company_id = $2 AND u.company_id = $2 AND u.is_active = true`,
+        `SELECT DISTINCT u.id FROM users u
+         LEFT JOIN user_department_memberships m ON m.user_id = u.id
+         WHERE (u.department_id = ANY($1::uuid[]) OR m.department_id = ANY($1::uuid[]))
+           AND u.company_id = $2 AND u.is_active = true`,
         [departmentIds.filter((x: any) => typeof x === 'string'), companyId]);
       rows.forEach((r: any) => memberSet.add(r.id));
     }
@@ -9653,8 +9658,10 @@ router.get('/onboarding/status', requireRole('owner', 'scheduler'), async (req: 
          WHERE st.company_id = $1 AND std.department_id = $2`,
         [companyId, deptId]);
       const { rows: userRows } = await query(
-        `SELECT COUNT(*) AS c FROM users WHERE company_id = $1 AND department_id = $2
-         AND role <> 'owner' AND is_active = true`,
+        `SELECT COUNT(DISTINCT u.id) AS c FROM users u
+         LEFT JOIN user_department_memberships m ON m.user_id = u.id
+         WHERE u.company_id = $1 AND (u.department_id = $2 OR m.department_id = $2)
+         AND u.role <> 'owner' AND u.is_active = true`,
         [companyId, deptId]);
       const { rows: targetRows } = await query(
         `SELECT COUNT(*) AS c FROM staffing_targets t
@@ -9662,8 +9669,9 @@ router.get('/onboarding/status', requireRole('owner', 'scheduler'), async (req: 
          WHERE t.company_id = $1 AND std.department_id = $2`,
         [companyId, deptId]);
       const { rows: inviteRows } = await query(
-        `SELECT COUNT(*) AS c FROM invites i JOIN users u ON u.id = i.user_id
-         WHERE i.company_id = $1 AND u.department_id = $2 AND i.sent_at IS NOT NULL`,
+        `SELECT COUNT(DISTINCT i.id) AS c FROM invites i JOIN users u ON u.id = i.user_id
+         LEFT JOIN user_department_memberships m ON m.user_id = u.id
+         WHERE i.company_id = $1 AND (u.department_id = $2 OR m.department_id = $2) AND i.sent_at IS NOT NULL`,
         [companyId, deptId]);
       res.json({
         steps: {
@@ -10444,17 +10452,33 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
     // deactivated people still resolve; the stored snapshot is the
     // fallback. Shift types and rotations resolve the same way; a
     // deleted rotation or shift type falls back to its stored name.
-    const liveUsers = new Map<string, { name: string; departmentId: string | null }>();
+    const liveUsers = new Map<string, { name: string; departmentId: string | null; departmentIds: string[] }>();
     if (userIds.size) {
       const { rows: urows } = await query(
         `SELECT id, nickname, first_name, last_name, department_id AS "departmentId"
          FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])`,
         [companyId, [...userIds]]
       );
+      // Cross-department pull (Deepika, 2026-11-19): an audit entry about
+      // a pulled-in member is visible to schedulers of ANY of their
+      // departments, not just home.
+      const { rows: mrows } = await query(
+        `SELECT user_id, department_id FROM user_department_memberships
+         WHERE company_id = $1 AND user_id = ANY($2::uuid[])`,
+        [companyId, [...userIds]]
+      );
+      const memberDepts = new Map<string, string[]>();
+      for (const m of mrows) {
+        const list = memberDepts.get(String(m.user_id)) || [];
+        list.push(String(m.department_id));
+        memberDepts.set(String(m.user_id), list);
+      }
       for (const u of urows) {
+        const ids = [u.department_id || null, ...(memberDepts.get(String(u.id)) || [])].filter(Boolean) as string[];
         liveUsers.set(u.id, {
           name: u.nickname || `${u.first_name || ''} ${u.last_name || ''}`.trim() || '',
           departmentId: u.department_id || null,
+          departmentIds: [...new Set(ids)],
         });
       }
     }
@@ -10531,7 +10555,8 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
            LEFT JOIN shift_type_departments std ON std.shift_type_id = ra.shift_type_id
            LEFT JOIN shift_types st ON st.id = ra.shift_type_id
            LEFT JOIN users u ON u.id = ra.user_id
-           CROSS JOIN LATERAL (VALUES (std.department_id), (st.department_id), (u.department_id)) AS d(department_id)
+           LEFT JOIN user_department_memberships m ON m.user_id = ra.user_id
+           CROSS JOIN LATERAL (VALUES (std.department_id), (st.department_id), (u.department_id), (m.department_id)) AS d(department_id)
            WHERE ra.rotation_id = ANY($1::uuid[]) AND d.department_id IS NOT NULL`,
           [[...rotationIds]]
         );
@@ -10545,8 +10570,8 @@ router.get('/audit', requireRole('owner', 'scheduler'), async (req: Request, res
         const d = e.details || {};
         if (e.departmentId) out.add(e.departmentId);
         if (d.departmentId) out.add(d.departmentId);
-        const home = e.affectedUserId && liveUsers.get(e.affectedUserId)?.departmentId;
-        if (home) out.add(home);
+        const home = e.affectedUserId && liveUsers.get(e.affectedUserId);
+        if (home) for (const dep of home.departmentIds) out.add(dep);
         const tids: string[] = [...((d.shiftTypeIds || []) as string[]), ...(d.shiftTypeId ? [d.shiftTypeId] : [])];
         for (const t of tids) for (const dep of typeDepts.get(t) || []) out.add(dep);
         for (const rid of [d.rotationId, d.newRotationId, d.copiedFromRotationId, d.pairedFromRotationId, d.snapshot?.rotationId]) {

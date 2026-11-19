@@ -912,11 +912,13 @@ export async function checkPersonEligible(
   const list: string[] = Array.isArray(trows[0].eligible_job_role_ids) ? trows[0].eligible_job_role_ids : [];
   const deptIds: string[] = Array.isArray(trows[0].departmentIds) ? [...trows[0].departmentIds] : [];
   if (trows[0].departmentId && !deptIds.includes(trows[0].departmentId)) deptIds.push(trows[0].departmentId);
-  const { rows: urows } = await query(
-    'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
-    [userId, companyId]
-  );
-  const roleId: string | null = urows.length ? urows[0].job_role_id : null;
+  // Cross-department pull (Deepika, 2026-11-19): a member holds one job
+  // role PER department (home + pulled-in). The role that decides
+  // eligibility is the one in the shift type's own departments; with an
+  // explicit eligible list, ANY of their roles may qualify.
+  const { roleInDepartments, userRoles } = await import('./memberships.js');
+  const inTypeDept = deptIds.length ? await roleInDepartments(companyId, userId, deptIds) : null;
+  const roleId: string | null = inTypeDept ? inTypeDept.roleId : null;
   let roleName: string | null = null;
   if (roleId) {
     const { rows: prows } = await query(
@@ -927,6 +929,11 @@ export async function checkPersonEligible(
   }
   if (list.length) {
     if (roleId && list.includes(roleId)) return { ok: true };
+    // A role in ANOTHER department may still be on the list (e.g. the
+    // same role name linked in two departments is two different roles —
+    // the list holds role ids, so check every role the member holds).
+    const allRoles = await userRoles(companyId, userId);
+    if (allRoles.some((r) => list.includes(r.roleId))) return { ok: true };
     const { rows: rrows } = await query(
       'SELECT name FROM job_roles WHERE id = ANY($1::uuid[]) AND company_id = $2 ORDER BY lower(name)',
       [list, companyId]
@@ -941,13 +948,7 @@ export async function checkPersonEligible(
     [deptIds, companyId]
   );
   const deptNames = drows.map((r: any) => r.name).join(', ') || 'its departments';
-  if (roleId) {
-    const { rows: rrows } = await query(
-      'SELECT department_id FROM job_roles WHERE id = $1 AND company_id = $2',
-      [roleId, companyId]
-    );
-    if (rrows.length && deptIds.includes(rrows[0].department_id)) return { ok: true };
-  }
+  if (roleId) return { ok: true };
   return { ok: false, roleName, eligibleNames: `any job role in ${deptNames}` };
 }
 

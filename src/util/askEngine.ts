@@ -490,7 +490,9 @@ export async function buildAskDataPack(ctx: AskContext, from: string, to: string
   const { rows: dashRows } = await query(`SELECT d.name FROM dashboards d WHERE ${dashClauses.join(' AND ')} ORDER BY d.name`, dashParams);
   if (dashRows.length) parts.push(`Calendars: ${dashRows.map((r: any) => r.name).join(', ')}`);
   const teamClauses = ['u.company_id = $1', 'u.is_active = true']; const teamParams: any[] = [ctx.companyId];
-  if (ctx.visibleDeptIds !== null) { teamParams.push(ctx.visibleDeptIds); teamClauses.push(`(u.department_id IS NULL OR u.department_id = ANY($${teamParams.length}))`); }
+  // Cross-department pull (Deepika, 2026-11-19): a member belongs to
+  // their home department AND every department they were pulled into.
+  if (ctx.visibleDeptIds !== null) { teamParams.push(ctx.visibleDeptIds); teamClauses.push(`(u.department_id IS NULL OR u.department_id = ANY($${teamParams.length}) OR EXISTS (SELECT 1 FROM user_department_memberships m WHERE m.user_id = u.id AND m.department_id = ANY($${teamParams.length})))`); }
   const { rows: teamRows } = await query(
     `SELECT u.first_name AS "firstName", u.last_name AS "lastName", u.nickname, u.role, d.name AS dept
      FROM users u LEFT JOIN departments d ON d.id = u.department_id

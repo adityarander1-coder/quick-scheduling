@@ -639,7 +639,12 @@
       if (!ids.length) return true;
       return ids.some(window.qsCanEditDept);
     };
-    window.qsMemberViewable = function (u) { return window.qsCanViewDept(u && u.departmentId); };
+    window.qsMemberViewable = function (u) {
+      if (!u) return false;
+      var ds = window.qsUserDepartments(u);
+      if (!ds.length) return window.qsCanViewDept(null); // no department: company-global, visible
+      return ds.some(function (d) { return window.qsCanViewDept(d.id); });
+    };
     // DEPARTMENT LOCK (Deepika's decision): when a specific department is
     // selected at the top, Settings add forms are FORCED to that department
     // and edit forms are FROZEN (department field disabled, value kept).
@@ -677,6 +682,30 @@
       } catch (e) {}
     };
     window.qsMemberEditable = function (u) { return window.qsCanEditDept(u && u.departmentId); };
+    // Cross-department pull (Deepika, 2026-11-19): one account, several
+    // departments. A member's departments are home + pulled-in memberships;
+    // the role that applies in a department is the membership's role there,
+    // else the home role when that department is home.
+    window.qsUserDepartments = function (u) {
+      var out = [];
+      if (u && u.departmentId) out.push({ id: String(u.departmentId), name: u.department || '', jobRoleId: u.jobRoleId || null, jobRole: u.jobRoleName || u.jobRole || '', isHome: true });
+      (u && u.memberships || []).forEach(function (m) {
+        if (!m || !m.departmentId) return;
+        if (out.some(function (d) { return d.id === String(m.departmentId); })) return;
+        out.push({ id: String(m.departmentId), name: m.departmentName || '', jobRoleId: m.jobRoleId || null, jobRole: m.jobRoleName || '', isHome: false });
+      });
+      return out;
+    };
+    window.qsUserInDept = function (u, deptId) {
+      if (!deptId) return true;
+      return window.qsUserDepartments(u).some(function (d) { return d.id === String(deptId); });
+    };
+    window.qsUserRoleInDept = function (u, deptId) {
+      if (!deptId) return null;
+      var found = null;
+      window.qsUserDepartments(u).forEach(function (d) { if (d.id === String(deptId)) found = d; });
+      return found;
+    };
     window.qsDeptName = function (id) {
       var ds = window.qsDepartments || [];
       for (var i = 0; i < ds.length; i++) if (String(ds[i].id) === String(id)) return ds[i].name;
@@ -1104,6 +1133,17 @@
       .audit-card { border: 1px solid var(--border); border-radius: 12px; padding: 0.75rem; margin-bottom: 0.75rem; font-size: 0.9rem; display: flex; flex-direction: column; gap: 0.3rem; }
     }
     .team-row { min-height: 82px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 18px; background: #fff; box-shadow: var(--shadow-soft); }
+    /* Cross-department pull (Deepika, 2026-11-19): "Also in" chip on a
+       member who belongs to more than one department, and the pull
+       candidate rows in the Team members pull card. */
+    .team-row .also-in { display: inline-block; font-size: 11.5px; font-weight: 700; color: #0e7c86; background: #e0f2f1; border-radius: 999px; padding: 2px 8px; margin-top: 4px; }
+    .pull-cand { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+    .pull-cand:first-of-type { border-top: none; padding-top: 2px; }
+    .pull-cand-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .pull-cand-info small { color: var(--muted); font-size: 12.5px; }
+    .pull-conflict { display: inline-block; font-size: 11.5px; font-weight: 700; color: #92400e; background: #fef3c7; border: 1px solid #fde68a; border-radius: 999px; padding: 2px 8px; margin-top: 2px; align-self: flex-start; }
+    .pull-same-acct { font-size: 13px; color: #15803d; background: #dcfce7; border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 10px; margin: 8px 0; line-height: 1.45; }
+    .pull-conflict-note { font-size: 12.5px; color: #92400e; line-height: 1.45; margin-top: 10px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 8px 10px; }
     .team-row.inactive { opacity: .58; }
     .avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 850; font-size: 16px; }
     .color-coral { background: #f06e5b; }
@@ -12628,8 +12668,8 @@ window.qsNpOfferSend = function (btn) {
                 var shown = members.filter(function (m) {
                   // Department scope: hide people in departments with no view access.
                   if (!window.qsMemberViewable(m)) return false;
-                  // Global department filter.
-                  if (!window.qsDeptFilterAllows(m.departmentId)) return false;
+                  // Global department filter: any of their departments (home or pulled-in).
+                  if (window.qsActiveDeptId && !window.qsUserInDept(m, window.qsActiveDeptId)) return false;
                   if (!q) return true;
                   return fullName(m).toLowerCase().indexOf(q) >= 0;
                 });
@@ -14625,6 +14665,7 @@ window.qsNpOfferSend = function (btn) {
             <div style="display:flex;gap:0.8rem;margin-bottom:0.8rem;align-items:center;flex-wrap:wrap">
               <input type="text" id="team-search" placeholder="Search team members…" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:8px" autocomplete="off">
               <button type="button" id="team-add-toggle" class="btn">+ Add team member</button>
+              <button type="button" id="team-pull-toggle" class="btn-secondary">⇪ Pull from another department</button>
               <button type="button" id="team-import-toggle" class="btn-secondary">Import from file</button>
             </div>
             <div class="team-list" id="team-members-list"></div>
@@ -14661,6 +14702,28 @@ window.qsNpOfferSend = function (btn) {
                   <button type="button" id="team-invite-mark-sent" class="btn-secondary">Mark as sent</button>
                 </div>
                 <div id="team-invite-note" class="alert hidden" role="status" style="margin-top:0.6rem"></div>
+              </div>
+            </div>
+
+            <div class="sub-card hidden" id="team-pull-card">
+              <h3>Pull from another department</h3>
+              <p style="color:var(--dim);font-size:14px;margin-top:0">Add an existing team member to <b id="team-pull-dept-name">…</b>. They keep the same account — same name, email and phone. No second account is created.</p>
+              <div id="team-pull-error" class="alert alert-error hidden" role="alert"></div>
+              <div id="team-pull-success" class="alert alert-success hidden" role="status"></div>
+              <div class="form-row hidden" id="team-pull-dept-row"><label>Department to pull into</label><select id="team-pull-dept"></select></div>
+              <input type="text" id="team-pull-search" placeholder="Search other departments…" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin:0.4rem 0" autocomplete="off">
+              <div id="team-pull-list"></div>
+              <p class="pull-conflict-note">⚠ <b>Conflict notice:</b> if someone already has a shift in another department, it is flagged here — but it does not block the pull. You can still pull them; the notice is the warning.</p>
+              <div id="team-pull-role-step" class="hidden" style="margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem">
+                <h4 id="team-pull-role-title" style="margin:0">Pull into …</h4>
+                <p class="pull-same-acct">Same account — name, email and phone stay exactly as they are. No second account is created.</p>
+                <div class="form-row"><label>Job role in <span id="team-pull-role-dept">…</span> <span style="color:#dc2626">*</span></label><select id="team-pull-jobrole"></select></div>
+                <div id="team-pull-newrole-row" class="hidden" style="display:flex;gap:8px;margin-top:8px">
+                  <input type="text" id="team-pull-newrole-name" placeholder="New job role name" style="flex:1;padding:9px 12px;border:1px solid var(--border);border-radius:8px;min-width:0" autocomplete="off">
+                  <button type="button" id="team-pull-newrole-create" class="btn">Create</button>
+                </div>
+                <p style="color:var(--dim);font-size:12.5px;margin-top:6px;line-height:1.45">Their job role does <b>not</b> carry over — you assign a new one in this department, so they are compliant with this department's shift types. Tap “+ New job role…” to create a role in this department on the spot.</p>
+                <div style="margin-top:0.8rem"><button type="button" id="team-pull-submit" class="btn">Add to …</button> <button type="button" id="team-pull-cancel" class="btn-secondary">Cancel</button></div>
               </div>
             </div>
 
@@ -14779,13 +14842,15 @@ window.qsNpOfferSend = function (btn) {
                 var shown = members.filter(function (u) {
                   // Department scope: hide people in departments with no view access.
                   if (!window.qsMemberViewable(u)) return false;
-                  // Global department filter: show only members of the selected department.
-                  // Members with NO department are always shown — a real person must never
+                  // Global department filter: show when ANY of their
+                  // departments passes (home or pulled-in). Members with NO
+                  // department are always shown — a real person must never
                   // be invisible in this list (Rah Kum, 2026-11-19: added by the AI with
                   // no department, hidden while Internal medicine was active at the top).
                   // This is list-only: the schedule grid's own department filtering is
                   // untouched (qsDeptFilterAllows itself is unchanged).
-                  if (u.departmentId && !window.qsDeptFilterAllows(u.departmentId)) return false;
+                  var myDepts = window.qsUserDepartments(u);
+                  if (myDepts.length && !myDepts.some(function (d) { return window.qsDeptFilterAllows(d.id); })) return false;
                   if (!q) return true;
                   var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email || '';
                   return nm.toLowerCase().indexOf(q) >= 0;
@@ -14849,9 +14914,24 @@ window.qsNpOfferSend = function (btn) {
                   nm.textContent = displayName(u);
                   nameBtn.appendChild(nm);
 
+                  // Role/department shown for the department being viewed
+                  // (the pulled-in role when viewing that department), else
+                  // home. Other departments get an "Also in" chip.
+                  var shownDept = window.qsActiveDeptId ? window.qsUserRoleInDept(u, window.qsActiveDeptId) : null;
+                  var shownRole = shownDept ? (shownDept.jobRole || '') : (u.jobRole || '');
+                  var shownDeptName = shownDept ? shownDept.name : (u.department || '');
                   var roleDept = document.createElement('small');
-                  roleDept.textContent = (u.jobRole || u.role || '') + (u.department ? ' · ' + u.department : '');
+                  roleDept.textContent = (shownRole || u.role || '') + (shownDeptName ? ' · ' + shownDeptName : '');
                   nameBtn.appendChild(roleDept);
+                  var otherDepts = window.qsUserDepartments(u).filter(function (d) {
+                    return String(d.id) !== String(shownDept ? shownDept.id : (u.departmentId || ''));
+                  });
+                  if (otherDepts.length) {
+                    var also = document.createElement('small');
+                    also.className = 'also-in';
+                    also.textContent = 'Also in: ' + otherDepts.map(function (d) { return d.name; }).join(', ');
+                    nameBtn.appendChild(also);
+                  }
 
                   var contact = document.createElement('small');
                   contact.textContent = (u.email || '') + (u.phone ? ' · ' + u.phone : '');
@@ -15692,6 +15772,213 @@ window.qsNpOfferSend = function (btn) {
                     $('team-add-submit').disabled = false;
                     showErr(errEl, 'Network error. Please try again.');
                   });
+                });
+              }
+
+              // Cross-department pull (Deepika, 2026-11-19): add an
+              // existing team member to another department on their SAME
+              // account — no duplicate user row, no second login. A NEW
+              // job role in the target department is required (the old
+              // role never carries over); if the department doesn't have
+              // the role, create it on the spot. Conflicts (shifts in
+              // another department) are flagged but never block the pull.
+              function setupPull() {
+                var toggleBtn = $('team-pull-toggle');
+                var card = $('team-pull-card');
+                var errEl = $('team-pull-error');
+                var okEl = $('team-pull-success');
+                var deptRow = $('team-pull-dept-row');
+                var deptSel = $('team-pull-dept');
+                var searchEl = $('team-pull-search');
+                var listEl = $('team-pull-list');
+                var roleStep = $('team-pull-role-step');
+                var roleSel = $('team-pull-jobrole');
+                var newRoleRow = $('team-pull-newrole-row');
+                var newRoleInput = $('team-pull-newrole-name');
+                var submitBtn = $('team-pull-submit');
+                var state = { deptId: null, deptName: '', candidates: [], selected: null, createdRoleId: null };
+
+                function showErr(m) { errEl.textContent = m; errEl.classList.remove('hidden'); }
+                function hideErr() { errEl.classList.add('hidden'); errEl.textContent = ''; }
+                function showOk(m) { okEl.textContent = m; okEl.classList.remove('hidden'); }
+                function hideOk() { okEl.classList.add('hidden'); okEl.textContent = ''; }
+
+                function editDeptIds() {
+                  if (window.isOwner) return (window.qsDepartments || []).map(function (d) { return String(d.id); });
+                  return ((window.qsDeptAccess && window.qsDeptAccess.edit) || []).map(String);
+                }
+                function openPull() {
+                  hideErr(); hideOk();
+                  roleStep.classList.add('hidden');
+                  state.selected = null; state.createdRoleId = null;
+                  var active = window.qsActiveDeptId ? String(window.qsActiveDeptId) : null;
+                  if (active) {
+                    state.deptId = active;
+                    state.deptName = window.qsDeptName(active) || '';
+                    deptRow.classList.add('hidden');
+                  } else {
+                    // Owner on "All departments": pick the department to pull into.
+                    var ids = editDeptIds();
+                    deptSel.textContent = '';
+                    ids.forEach(function (id) {
+                      var o = document.createElement('option');
+                      o.value = id; o.textContent = window.qsDeptName(id) || id;
+                      deptSel.appendChild(o);
+                    });
+                    deptRow.classList.remove('hidden');
+                    state.deptId = deptSel.value || null;
+                    state.deptName = window.qsDeptName(state.deptId) || '';
+                  }
+                  $('team-pull-dept-name').textContent = state.deptName || 'a department';
+                  searchEl.value = '';
+                  loadCandidates();
+                  card.classList.remove('hidden');
+                  card.scrollIntoView({ block: 'nearest' });
+                }
+                function loadCandidates() {
+                  if (!state.deptId) { listEl.innerHTML = '<p style="color:var(--dim)">Pick a department first.</p>'; return; }
+                  listEl.innerHTML = '<p style="color:var(--dim)">Loading…</p>';
+                  api('/api/users/pull-candidates?departmentId=' + encodeURIComponent(state.deptId)).then(function (r) {
+                    if (!r.ok) { listEl.innerHTML = ''; showErr((r.data && r.data.error) || 'Could not load people to pull.'); return; }
+                    state.candidates = r.data.candidates || [];
+                    renderCandidates();
+                  }).catch(function () { listEl.innerHTML = ''; showErr('Network error. Could not load people to pull.'); });
+                }
+                function renderCandidates() {
+                  listEl.textContent = '';
+                  var q = (searchEl.value || '').toLowerCase();
+                  var shown = state.candidates.filter(function (c) {
+                    if (!q) return true;
+                    var nm = ((c.firstName || '') + ' ' + (c.lastName || '')).trim() || c.email || '';
+                    return nm.toLowerCase().indexOf(q) >= 0;
+                  });
+                  if (!shown.length) {
+                    var empty = document.createElement('p');
+                    empty.style.color = 'var(--dim)';
+                    empty.textContent = state.candidates.length ? 'No one matches your search.' : 'Everyone is already on this team.';
+                    listEl.appendChild(empty);
+                    return;
+                  }
+                  shown.forEach(function (c) {
+                    var row = document.createElement('div');
+                    row.className = 'pull-cand';
+                    var av = document.createElement('span');
+                    av.className = 'avatar color-' + avatarColor(c);
+                    av.textContent = initialOf(c);
+                    row.appendChild(av);
+                    var info = document.createElement('div');
+                    info.className = 'pull-cand-info';
+                    var nm = document.createElement('strong');
+                    nm.textContent = displayName(c);
+                    info.appendChild(nm);
+                    var sub = document.createElement('small');
+                    sub.textContent = (c.jobRoleName || c.jobRole || c.role || '') + (c.department ? ' · ' + c.department : ' · No department');
+                    info.appendChild(sub);
+                    var conflicts = c.conflicts || [];
+                    if (conflicts.length) {
+                      var flag = document.createElement('span');
+                      flag.className = 'pull-conflict';
+                      var first = conflicts[0];
+                      flag.textContent = '⚠ Already on ' + first.shiftTypeName + ' in ' + first.departmentName + ', ' + first.date + (conflicts.length > 1 ? ' (+' + (conflicts.length - 1) + ' more)' : '');
+                      info.appendChild(flag);
+                    }
+                    row.appendChild(info);
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'btn';
+                    btn.textContent = conflicts.length ? 'Pull anyway' : 'Pull';
+                    btn.addEventListener('click', function () { selectCandidate(c); });
+                    row.appendChild(btn);
+                    listEl.appendChild(row);
+                  });
+                }
+                function fillPullRoles() {
+                  roleSel.textContent = '';
+                  var pick = document.createElement('option');
+                  pick.value = ''; pick.textContent = '— Pick a job role —';
+                  roleSel.appendChild(pick);
+                  if (!window.qsJobRolesForDept) return;
+                  window.qsJobRolesForDept(state.deptId).then(function (roles) {
+                    (roles || []).forEach(function (r) {
+                      var o = document.createElement('option');
+                      o.value = r.id; o.textContent = r.name;
+                      roleSel.appendChild(o);
+                    });
+                    var nr = document.createElement('option');
+                    nr.value = '__new__'; nr.textContent = '+ New job role…';
+                    roleSel.appendChild(nr);
+                    if (state.createdRoleId) roleSel.value = state.createdRoleId;
+                  });
+                }
+                function selectCandidate(c) {
+                  state.selected = c;
+                  state.createdRoleId = null;
+                  hideErr();
+                  $('team-pull-role-title').textContent = 'Pull ' + displayName(c) + ' into ' + state.deptName;
+                  $('team-pull-role-dept').textContent = state.deptName;
+                  submitBtn.textContent = 'Add to ' + state.deptName;
+                  newRoleRow.classList.add('hidden');
+                  newRoleInput.value = '';
+                  fillPullRoles();
+                  roleStep.classList.remove('hidden');
+                  roleStep.scrollIntoView({ block: 'nearest' });
+                }
+                toggleBtn.addEventListener('click', function () {
+                  if (card.classList.contains('hidden')) openPull();
+                  else card.classList.add('hidden');
+                });
+                searchEl.addEventListener('input', renderCandidates);
+                deptSel.addEventListener('change', function () {
+                  state.deptId = deptSel.value || null;
+                  state.deptName = window.qsDeptName(state.deptId) || '';
+                  $('team-pull-dept-name').textContent = state.deptName || 'a department';
+                  roleStep.classList.add('hidden');
+                  state.selected = null;
+                  loadCandidates();
+                });
+                roleSel.addEventListener('change', function () {
+                  if (roleSel.value === '__new__') { newRoleRow.classList.remove('hidden'); newRoleInput.focus(); }
+                  else newRoleRow.classList.add('hidden');
+                });
+                $('team-pull-newrole-create').addEventListener('click', function () {
+                  hideErr();
+                  var name = newRoleInput.value.trim();
+                  if (!name) { showErr('Type the new job role name first.'); return; }
+                  if (name.length > 100) { showErr('Job role name must be 100 characters or fewer.'); return; }
+                  var btn = $('team-pull-newrole-create');
+                  btn.disabled = true;
+                  api('/api/job-roles', { method: 'POST', headers: { 'X-Active-Department': state.deptId }, body: JSON.stringify({ departmentId: state.deptId, name: name }) }).then(function (r) {
+                    btn.disabled = false;
+                    if (!r.ok) { showErr((r.data && r.data.error) || 'Could not create the job role.'); return; }
+                    state.createdRoleId = r.data.jobRole.id;
+                    newRoleRow.classList.add('hidden');
+                    newRoleInput.value = '';
+                    fillPullRoles();
+                  }).catch(function () { btn.disabled = false; showErr('Network error. Could not create the job role.'); });
+                });
+                $('team-pull-cancel').addEventListener('click', function () {
+                  card.classList.add('hidden');
+                  roleStep.classList.add('hidden');
+                  state.selected = null;
+                });
+                submitBtn.addEventListener('click', function () {
+                  hideErr();
+                  if (!state.selected || !state.deptId) return;
+                  var roleId = roleSel.value;
+                  if (!roleId) { showErr('Choose a job role in ' + state.deptName + ' — the job role does not carry over from their other department.'); return; }
+                  if (roleId === '__new__') { showErr('Create the new job role first, or pick an existing one.'); return; }
+                  submitBtn.disabled = true;
+                  api('/api/users/' + state.selected.id + '/pull', { method: 'POST', headers: { 'X-Active-Department': state.deptId }, body: JSON.stringify({ departmentId: state.deptId, jobRoleId: roleId }) }).then(function (r) {
+                    submitBtn.disabled = false;
+                    if (!r.ok) { showErr((r.data && r.data.error) || 'Could not pull this person in.'); return; }
+                    var name = displayName(state.selected);
+                    var roleName = (r.data.membership && r.data.membership.jobRoleName) || '';
+                    showOk('✓ ' + name + ' is now a team member of ' + state.deptName + ' too — same account, new job role ' + roleName + '. Their other department’s shifts and rotations stay as they are.');
+                    roleStep.classList.add('hidden');
+                    state.selected = null;
+                    loadMembers();
+                    loadCandidates();
+                  }).catch(function () { submitBtn.disabled = false; showErr('Network error. Could not pull this person in.'); });
                 });
               }
 
@@ -16811,11 +17098,12 @@ window.qsNpOfferSend = function (btn) {
                   if (window.qsSetDeptAccess) window.qsSetDeptAccess(myRole === 'owner' ? null : (r.data.departmentAccess || null));
                   // Department scope: no edit access anywhere -> hide the add forms.
                   if (window.qsDeptAccess && !window.qsDeptAccess.edit.length) {
-                    ['team-add-card', 'team-add-toggle', 'team-dept-form'].forEach(function (id) {
+                    ['team-add-card', 'team-add-toggle', 'team-pull-card', 'team-pull-toggle', 'team-dept-form'].forEach(function (id) {
                       var ae = $(id); if (ae) hide(ae);
                     });
                   }
                   setupAdd();
+                  setupPull();
                   setupImport();
                   setupRoleRepair();
                   setupEdit();

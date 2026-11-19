@@ -19,6 +19,9 @@ import { splitName, joinName } from '../util/names';
 import { issueInvite, unusablePasswordHash, inviteStatusFrom, InviteStatus } from '../util/invites';
 import { isMailConfigured, sendMail, escHtml } from '../util/mailer';
 import { companyTodayStr } from '../util/notifyJobs.js';
+import { notify } from '../util/notify.js';
+import { getShiftsForRange } from '../util/shiftRange.js';
+import { membershipsForUsers } from '../util/memberships.js';
 import * as XLSX from 'xlsx';
 
 const router = Router();
@@ -78,6 +81,15 @@ export function publicProfile(u: any) {
     jobRole: u.job_role ?? null,
     jobRoleId: u.job_role_id ?? null,
     jobRoleName: u.job_role_name ?? null,
+    // Cross-department pull (Deepika, 2026-11-19): secondary memberships
+    // — other departments this person is on, each with its own job role.
+    // The home department above is never repeated here.
+    memberships: (u.memberships || []).map((m: any) => ({
+      departmentId: m.departmentId ?? null,
+      departmentName: m.departmentName ?? null,
+      jobRoleId: m.jobRoleId ?? null,
+      jobRoleName: m.jobRoleName ?? null,
+    })),
     role: u.role,
     endDate: toDateStr(u.end_date),
     isActive: !!u.is_active,
@@ -138,15 +150,295 @@ router.get('/', async (req: Request, res: Response) => {
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.company_id = $1 ORDER BY u.created_at`, [
       req.session.companyId,
     ]);
+    // Secondary memberships ride along so the client can render a member
+    // in every department they belong to, with that department's role.
+    const memberMap = await membershipsForUsers(req.session.companyId!, rows.map((r: any) => String(r.id)));
+    for (const r of rows) r.memberships = memberMap.get(String(r.id)) || [];
     let users = rows;
     if (req.session.role === 'scheduler') {
       const access = await getDepartmentAccess(req.session.userId!, req.session.companyId!);
       // Members with no home department are company-global and visible to any scheduler.
-      users = rows.filter((u) => !u.department_id || access.view.includes(u.department_id));
+      // A pulled-in member is visible to schedulers who can view ANY of their departments.
+      users = rows.filter((u) => {
+        if (!u.department_id && !(u.memberships || []).length) return true;
+        if (u.department_id && access.view.includes(u.department_id)) return true;
+        return (u.memberships || []).some((m: any) => access.view.includes(m.departmentId));
+      });
     }
     res.json({ users: users.map(publicProfile) });
   } catch (err) {
     console.error('[users] list failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Cross-department pull (Deepika, 2026-11-19): add an existing team
+// member to another department on their SAME account — same name, email,
+// phone and login, NO duplicate user row. After the pull they are on
+// both teams. A NEW job role in the target department is REQUIRED (the
+// old role never carries over); the old department's shifts and rotations
+// stay exactly as they are. Manual-only: the AI planner/executor has no
+// pull action.
+// ---------------------------------------------------------------------------
+
+export interface PullConflict {
+  date: string;
+  shiftTypeName: string;
+  departmentName: string;
+}
+
+/**
+ * Upcoming shifts (next 14 days, stored + rotation-drawn) in departments
+ * OTHER than `excludeDeptId`, per user — the pull-time conflict flag:
+ * if someone already works shifts in another department it is flagged in
+ * the pull list, but it NEVER blocks the pull (warn-and-override). A
+ * shift type with no departments is company-global, not "another
+ * department", so it never flags. Shifts already in the target
+ * department don't flag either.
+ */
+async function upcomingOtherDeptConflicts(
+  companyId: string,
+  excludeDeptId: string
+): Promise<Map<string, PullConflict[]>> {
+  const out = new Map<string, PullConflict[]>();
+  const today = await companyTodayStr(companyId);
+  const end = new Date(today + 'T00:00:00Z');
+  end.setUTCDate(end.getUTCDate() + 13);
+  const endStr = end.toISOString().slice(0, 10);
+  const shifts = await getShiftsForRange(query as any, companyId, today, endStr);
+  if (!shifts.length) return out;
+  const typeIds = [...new Set(shifts.map((s: any) => String(s.shiftTypeId)).filter(Boolean))];
+  const { rows: typeRows } = await query(
+    `SELECT st.id,
+            COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "departmentIds",
+            st.department_id AS "legacyDepartmentId"
+     FROM shift_types st WHERE st.id = ANY($1::uuid[]) AND st.company_id = $2`,
+    [typeIds, companyId]
+  );
+  const typeDepts = new Map<string, string[]>();
+  for (const t of typeRows) {
+    const ids: string[] = Array.isArray(t.departmentIds) ? [...t.departmentIds] : [];
+    if (t.legacyDepartmentId && !ids.includes(t.legacyDepartmentId)) ids.push(t.legacyDepartmentId);
+    typeDepts.set(String(t.id), ids.map(String));
+  }
+  const deptIds = [...new Set([...typeDepts.values()].flat())];
+  const deptNames = new Map<string, string>();
+  if (deptIds.length) {
+    const { rows: drows } = await query(
+      'SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) AND company_id = $2',
+      [deptIds, companyId]
+    );
+    for (const d of drows) deptNames.set(String(d.id), d.name);
+  }
+  const sorted = [...shifts].sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
+  for (const s of sorted) {
+    const depts = typeDepts.get(String(s.shiftTypeId)) || [];
+    if (!depts.length) continue;
+    if (depts.includes(String(excludeDeptId))) continue;
+    const uid = String(s.userId);
+    const list = out.get(uid) || [];
+    if (list.length >= 3) continue;
+    const first = [...depts].sort()[0];
+    list.push({
+      date: String(s.date),
+      shiftTypeName: s.shiftTypeName,
+      departmentName: deptNames.get(first) || 'another department',
+    });
+    out.set(uid, list);
+  }
+  return out;
+}
+
+// GET /api/users/pull-candidates?departmentId=<uuid> — people who can be
+// pulled INTO this department: active members not already on this
+// department's team (neither home nor pulled in). Each candidate carries
+// their current department + job role and any flagged conflicts.
+router.get('/pull-candidates', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const targetDeptId = String(req.query.departmentId ?? '').trim();
+    if (!targetDeptId) {
+      res.status(400).json({ error: 'A department is required.' });
+      return;
+    }
+    const dept = await resolveDepartment(targetDeptId, companyId);
+    if (!dept.ok || !dept.id) {
+      res.status(404).json({ error: 'Department not found.' });
+      return;
+    }
+    const { rows: drows } = await query(
+      'SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+      [dept.id, companyId]
+    );
+    if (!drows.length) {
+      res.status(404).json({ error: 'Department not found.' });
+      return;
+    }
+    // Schedulers only see candidates from departments they can view, and
+    // can only pull into a department they can view (edit is enforced
+    // again on the pull itself).
+    let view: string[] | null = null;
+    if (req.session.role === 'scheduler') {
+      const access = await getDepartmentAccess(req.session.userId!, companyId);
+      if (!access.view.includes(dept.id)) {
+        res.status(404).json({ error: 'Department not found.' });
+        return;
+      }
+      view = access.view;
+    }
+    const { rows } = await query(
+      PROFILE_SELECT + ` WHERE u.company_id = $1 AND u.is_active = true ORDER BY u.first_name, u.last_name`,
+      [companyId]
+    );
+    const memberMap = await membershipsForUsers(companyId, rows.map((r: any) => String(r.id)));
+    for (const r of rows) r.memberships = memberMap.get(String(r.id)) || [];
+    const conflicts = await upcomingOtherDeptConflicts(companyId, dept.id);
+    const candidates = [];
+    for (const r of rows) {
+      const memberships = r.memberships as any[];
+      const depts = [
+        r.department_id ? String(r.department_id) : null,
+        ...memberships.map((m) => m.departmentId),
+      ].filter(Boolean);
+      if (depts.includes(dept.id)) continue; // already on this team
+      if (view) {
+        const visible =
+          !r.department_id ||
+          view.includes(String(r.department_id)) ||
+          memberships.some((m) => view!.includes(m.departmentId));
+        if (!visible) continue;
+      }
+      candidates.push({
+        ...publicProfile(r),
+        conflicts: conflicts.get(String(r.id)) || [],
+      });
+    }
+    res.json({ departmentId: dept.id, departmentName: drows[0].name, candidates });
+  } catch (err) {
+    console.error('[users] pull-candidates failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/users/:id/pull — pull an existing team member into a
+// department (same account, new job role in that department required).
+router.post('/:id/pull', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const targetId = req.params.id;
+    const { departmentId, jobRoleId } = req.body ?? {};
+    const { rows: trows } = await query(
+      `SELECT u.id, u.first_name, u.last_name, u.name, u.email, u.is_active,
+              u.department_id, u.job_role_id
+       FROM users u WHERE u.id = $1 AND u.company_id = $2`,
+      [targetId, companyId]
+    );
+    if (!trows.length) {
+      res.status(404).json({ error: 'Team member not found.' });
+      return;
+    }
+    const target = trows[0];
+    if (!target.is_active) {
+      res.status(400).json({ error: 'This team member is deactivated.' });
+      return;
+    }
+    const dept = await resolveDepartment(departmentId, companyId);
+    if (!dept.ok) {
+      res.status(400).json({ error: dept.error });
+      return;
+    }
+    if (!dept.id) {
+      res.status(400).json({ error: 'A department is required.' });
+      return;
+    }
+    const { rows: drows } = await query(
+      'SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+      [dept.id, companyId]
+    );
+    const deptName = drows.length ? drows[0].name : 'this department';
+    const displayName = joinName(target.first_name, target.last_name) || target.name || 'Team member';
+    // Place-first scoping (same rule as the edit fix, 2026-11-19): a
+    // scheduler can only pull INTO departments they have Edit access to —
+    // one department means only that one, two means pick one of the two.
+    // Owner bypasses. The caller-provided X-Active-Department wins when
+    // the scheduler has several edit departments.
+    if (!(await requireActiveDepartment(req, res, [dept.id]))) return;
+    if (String(target.department_id || '') === dept.id) {
+      res.status(409).json({ error: `${displayName} is already a team member of ${deptName}.` });
+      return;
+    }
+    const { rows: existing } = await query(
+      `SELECT id FROM user_department_memberships
+       WHERE user_id = $1 AND company_id = $2 AND department_id = $3`,
+      [targetId, companyId, dept.id]
+    );
+    if (existing.length) {
+      res.status(409).json({ error: `${displayName} is already a team member of ${deptName}.` });
+      return;
+    }
+    if (!jobRoleId || !String(jobRoleId).trim()) {
+      res.status(400).json({
+        error: `Choose a job role in ${deptName} — the job role does not carry over from their other department.`,
+      });
+      return;
+    }
+    const jr = await resolveJobRole(jobRoleId, dept.id, companyId);
+    if (!jr.ok) {
+      res.status(400).json({ error: jr.error });
+      return;
+    }
+    // A flagged conflict is a warning, never a block (warn-and-override):
+    // the pull goes ahead and the flag is recorded in the audit entry.
+    const conflicts = await upcomingOtherDeptConflicts(companyId, dept.id);
+    const mine = conflicts.get(targetId) || [];
+    const conflictNote = mine.length
+      ? ` (flagged conflict: already on ${mine[0].shiftTypeName} in ${mine[0].departmentName} on ${mine[0].date})`
+      : '';
+    const membershipId = crypto.randomUUID();
+    try {
+      await query(
+        `INSERT INTO user_department_memberships (id, user_id, company_id, department_id, job_role_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [membershipId, targetId, companyId, dept.id, jr.id]
+      );
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        res.status(409).json({ error: `${displayName} is already a team member of ${deptName}.` });
+        return;
+      }
+      throw err;
+    }
+    await auditLog({
+      companyId, date: todayStr(), action: 'updated', category: 'settings', source: 'manual',
+      changedBy: req.session.userId!, personName: displayName, affectedUserId: targetId,
+      description: `Pulled "${displayName}" into ${deptName} as ${jr.name} (same account — no new login)${conflictNote}`,
+      departmentId: dept.id,
+    });
+    // Bell for the pulled person: someone else pulled them, so they are
+    // told. A self-pull is their own action — never notify (excludeUserId
+    // drops it, per the standing rule).
+    await notify({
+      companyId, userIds: [targetId], category: 'schedule', type: 'team_pulled',
+      title: `You're now on the ${deptName} team too`,
+      body: `You were added to ${deptName} as ${jr.name}. Your shifts and rotations in your other department stay as they are.`,
+      link: 'my-schedule',
+      excludeUserId: req.session.userId!,
+    });
+    const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
+    const memberMap = await membershipsForUsers(companyId, [targetId]);
+    rows[0].memberships = memberMap.get(targetId) || [];
+    res.status(201).json({
+      user: publicProfile(rows[0]),
+      membership: {
+        departmentId: dept.id,
+        departmentName: deptName,
+        jobRoleId: jr.id,
+        jobRoleName: jr.name,
+      },
+    });
+  } catch (err) {
+    console.error('[users] pull failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
@@ -1312,6 +1604,16 @@ router.patch('/:id', async (req: Request, res: Response) => {
     params.push(targetId);
     await query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length}`, params);
 
+    // Cross-department pull (Deepika, 2026-11-19): moving home departments
+    // makes a secondary membership in the new home department redundant —
+    // the home row covers it now. Memberships in OTHER departments stay.
+    if (body.departmentId !== undefined && resolvedDept!.id) {
+      await query(
+        'DELETE FROM user_department_memberships WHERE user_id = $1 AND department_id = $2',
+        [targetId, resolvedDept!.id]
+      );
+    }
+
     // End date drives the account status (Deepika, 2026-11-05): when this
     // save CHANGES the end date (and doesn't itself set isActive), a past
     // date deactivates the account right away, and extending/clearing the
@@ -1335,6 +1637,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     }
 
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
+    const patchMemberMap = await membershipsForUsers(companyId, [targetId]);
+    rows[0].memberships = patchMemberMap.get(targetId) || [];
     const targetName = `${target.first_name || ''} ${target.last_name || ''}`.trim() || 'Team member';
     const fieldNames = sets.map((s: string) => s.split('=')[0].trim());
     const deactivated = (fieldNames.includes('is_active') && body.is_active === false) || endDateFlip === 'deactivated';

@@ -74,7 +74,16 @@ export async function usersDepartmentIds(
      WHERE id = ANY($1::uuid[]) AND company_id = $2 AND department_id IS NOT NULL`,
     [ids, companyId]
   );
-  return rows.map((r) => r.department_id);
+  const out = new Set<string>(rows.map((r) => r.department_id));
+  // Cross-department pull (Deepika, 2026-11-19): a member's secondary
+  // memberships count as departments too — one account, several teams.
+  const { rows: mrows } = await query<{ department_id: string }>(
+    `SELECT DISTINCT department_id FROM user_department_memberships
+     WHERE user_id = ANY($1::uuid[]) AND company_id = $2 AND department_id IS NOT NULL`,
+    [ids, companyId]
+  );
+  for (const r of mrows) out.add(r.department_id);
+  return [...out];
 }
 
 /**
@@ -103,7 +112,8 @@ export async function rotationRelevantDepartments(rotationId: string): Promise<s
      LEFT JOIN shift_type_departments std ON std.shift_type_id = ra.shift_type_id
      LEFT JOIN shift_types st ON st.id = ra.shift_type_id
      LEFT JOIN users u ON u.id = ra.user_id
-     CROSS JOIN LATERAL (VALUES (std.department_id), (st.department_id), (u.department_id)) AS d(department_id)
+     LEFT JOIN user_department_memberships m ON m.user_id = ra.user_id
+     CROSS JOIN LATERAL (VALUES (std.department_id), (st.department_id), (u.department_id), (m.department_id)) AS d(department_id)
      WHERE ra.rotation_id = $1 AND d.department_id IS NOT NULL`,
     [rotationId]
   );
