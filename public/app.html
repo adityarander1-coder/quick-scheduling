@@ -10218,7 +10218,7 @@ window.qsNpOfferSend = function (btn) {
           try { localStorage.setItem(key(view), JSON.stringify(prefs)); } catch (e) {}
         }
         function barEl(view) {
-          return view === 'calendar' ? document.getElementById('db-filters') : document.getElementById('sched-dept-filter');
+          return view === 'calendar' ? document.getElementById('db-pinned-filters') : document.getElementById('sched-dept-filter');
         }
         function popEl(view) {
           return document.getElementById(view === 'calendar' ? 'qs-vo-pop-dash' : 'qs-vo-pop');
@@ -10271,16 +10271,16 @@ window.qsNpOfferSend = function (btn) {
             return slots.filter(function (el) { return el.getAttribute('data-pin') === id; })[0];
           }).filter(Boolean);
           slots.forEach(function (el) { if (ordered.indexOf(el) === -1) ordered.push(el); });
-          var acts = view === 'calendar' ? document.getElementById('db-actions') : null;
           ordered.forEach(function (el) {
             var on = !!prefs.pinned[el.getAttribute('data-pin')];
             el.style.display = on ? '' : 'none';
-            if (acts) bar.insertBefore(el, acts); else bar.appendChild(el);
+            bar.appendChild(el);
           });
-          if (view === 'schedule') {
-            var anyVisible = ordered.some(function (el) { return el.style.display !== 'none'; });
-            bar.style.display = anyVisible ? 'flex' : 'none';
-          }
+          // Calendar bar arrangement (Deepika, 2026-11-18): the pinned
+          // filters row lives below the month line and hides entirely
+          // when nothing is pinned (same rule as the schedule bar).
+          var anyVisible = ordered.some(function (el) { return el.style.display !== 'none'; });
+          bar.style.display = anyVisible ? 'flex' : 'none';
         }
         function closeAll() {
           document.querySelectorAll('.qs-vo-pop').forEach(function (p) { p.classList.add('hidden'); });
@@ -10471,12 +10471,9 @@ window.qsNpOfferSend = function (btn) {
         #tab-dash .ac-tleft { display: flex; gap: 0.4rem; }
         #tab-dash .ac-nav { border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 0.35rem 0.7rem; font-weight: 700; cursor: pointer; color: var(--text); }
         #tab-dash .ac-title { margin: 0 0.5rem; font-size: 1.05rem; color: var(--text); }
-        #tab-dash .ac-views { margin-left: auto; display: flex; gap: 0.3rem; }
+        #tab-dash .ac-views { margin-left: 0; display: flex; gap: 0.3rem; }
         #tab-dash .ac-views button { border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 0.35rem 0.85rem; font-weight: 700; cursor: pointer; color: var(--text); }
         #tab-dash .ac-views button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
-        /* Bottom nav (Deepika, 2026-10-25): the same prev/next arrows at the
-           end of the view, so you can move months without scrolling back up. */
-        #tab-dash .ac-bottomnav { display: flex; align-items: center; justify-content: center; gap: 0.6rem; margin-top: 0.9rem; }
         #tab-dash .ac-month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
         #tab-dash .ac-dow { background: var(--bg); padding: 0.55rem; text-align: center; font-weight: 700; font-size: 0.78rem; color: var(--dim); }
         #tab-dash .ac-day { background: var(--surface); min-height: 84px; padding: 5px; cursor: pointer; }
@@ -10529,13 +10526,22 @@ window.qsNpOfferSend = function (btn) {
            drill-down from Schedule session boxes still works. */
         #tab-dash .db-head { display: none; }
         #tab-dash .db-date { display: none; }
-        #tab-dash #db-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; background: #21414c; border-bottom: 1px solid #1a3540; margin: 0 -1.5rem; padding: 14px 1.5rem 12px; }
-        #tab-dash #db-actions { margin-left: auto; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+        #tab-dash #db-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; background: #21414c; border-bottom: 1px solid #1a3540; margin: 0 -1.5rem; padding: 14px 1.5rem 12px; }
+        /* Calendar bar arrangement (Deepika, 2026-11-18, approved mock):
+           row 1 = View options + tools (in #db-filters), row 2 = Month/Block
+           + month label + Today (in .db-tbar), row 3 = pinned filters in
+           their own band below the toolbar. The -0.9rem top margin pulls
+           the row flush under the toolbar (same dark band); hidden when
+           nothing is pinned, and then the toolbar keeps its own gap. */
+        #tab-dash #db-pinned-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; background: #21414c; border-bottom: 1px solid #1a3540; margin: -0.9rem -1.5rem 0.9rem; padding: 0 1.5rem 12px; }
+        #tab-dash #db-pinned-filters > [data-pin] { flex: 1 1 0; min-width: 0; }
+        #tab-dash #db-actions { margin-left: 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
         #tab-dash #db-today-slot { display: none; }
         #tab-dash .db-tbar { background: #21414c; border: none; border-bottom: 1px solid #1a3540; border-radius: 0; margin: 0 -1.5rem 0.9rem; padding: 0 1.5rem 14px; }
         @media (min-width: 900px) {
           body:has(#tab-dash.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
           #tab-dash #db-filters { margin: 0 -2rem; padding: 14px 2rem 12px; }
+          #tab-dash #db-pinned-filters { margin: -0.9rem -2rem 0.9rem; padding: 0 2rem 12px; }
           #tab-dash .db-tbar { margin: 0 -2rem 0.9rem; padding: 0 2rem 14px; }
         }
         @media (max-width: 700px) {
@@ -10545,6 +10551,9 @@ window.qsNpOfferSend = function (btn) {
           #tab-dash #db-filters label select { width: 100%; }
           #tab-dash #db-filters #db-role-wrap { flex: 1 1 100%; }
           #tab-dash #db-filters #db-role-filter { width: 100%; }
+          #tab-dash #db-pinned-filters > [data-pin] { flex: 1 1 100%; }
+          #tab-dash #db-pinned-filters label select { width: 100%; }
+          #tab-dash #db-pinned-filters #db-role-filter { width: 100%; }
           #tab-dash #db-actions { margin-left: 0; }
           #tab-dash .ac-views { flex: 1 1 100%; order: 1; }
           #tab-dash .ac-tleft { order: 2; }
@@ -10582,13 +10591,18 @@ window.qsNpOfferSend = function (btn) {
         <!-- Filter bar redesign (Deepika, 2026-11-18): same View options +
              pin design as the schedule bar. -->
         <div class="qs-vo-wrap">
-          <button type="button" id="qs-vo-btn-dash" class="btn-secondary" aria-haspopup="true" aria-expanded="false" title="Choose which filters sit on this bar, and in what order" style="padding:0.5rem 0.7rem;border-radius:10px">⚙ View options</button>
+          <button type="button" id="qs-vo-btn-dash" class="btn-secondary" aria-haspopup="true" aria-expanded="false" title="Choose which filters sit on this bar, and in what order" style="padding:0.6rem 1rem;border-radius:10px">⚙ View options</button>
           <div id="qs-vo-pop-dash" class="qs-vo-pop hidden" role="menu" aria-label="View options">
             <div class="qs-vo-group" data-vo-group="pinned"><div class="qs-vo-group-h">Pinned to the bar</div><div class="qs-vo-rows"></div></div>
             <div class="qs-vo-group" data-vo-group="rest"><div class="qs-vo-group-h">In View options only</div><div class="qs-vo-rows"></div></div>
           </div>
         </div>
         <div id="db-today-slot"></div>
+      </div>
+      <div class="db-tbar" id="db-toolbar"></div>
+      <!-- Calendar bar arrangement (Deepika, 2026-11-18, approved mock):
+           pinned filters live in their own row BELOW the month line. -->
+      <div id="db-pinned-filters">
         <label data-pin="dept" style="display:flex;flex-direction:column;gap:4px;font-size:0.8rem;font-weight:700;color:#fff">Department
           <select id="db-dept-filter" style="padding:0.5rem 0.7rem;border:1px solid var(--border);border-radius:10px;font-size:0.95rem;min-width:210px;background:var(--surface);color:var(--text)"></select>
         </label>
@@ -10607,7 +10621,6 @@ window.qsNpOfferSend = function (btn) {
           <div id="db-role-menu" role="menu" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:60;background:#fff;color:var(--text);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px;font-size:0.92rem;font-weight:400"></div>
         </div>
       </div>
-      <div class="db-tbar" id="db-toolbar"></div>
       <div id="db-view"></div>
       <div id="ac-selbar" style="display:none;position:sticky;bottom:12px;z-index:40;background:#312e81;color:#fff;border-radius:14px;padding:0.7rem 0.9rem;margin-top:0.8rem;box-shadow:0 8px 24px rgba(0,0,0,0.35)">
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
@@ -23690,7 +23703,6 @@ window.qsNpOfferSend = function (btn) {
         return (any && any.personLabel) || 'Speaker';
       };
       var acView = 'month';
-      var acTitle = '';
       var acAnchor = new Date();
       var acBlockRange = null; // {startH, H} of the last Block render — slot clicks read it
       var acLoadedDashId = null; // set when a dashboard's data has loaded (convert handoff polls it)
@@ -24278,13 +24290,7 @@ window.qsNpOfferSend = function (btn) {
             conflicts.slice(0, 4).map(function (c) { return '<div>⚠ ' + esc(c) + '</div>'; }).join('') +
             (conflicts.length > 4 ? '<div>…and ' + (conflicts.length - 4) + ' more.</div>' : '') + '</div>';
         }
-        el.innerHTML = banner + body +
-          '<div class="ac-bottomnav"><button type="button" class="ac-nav" data-acnav="-1">‹</button>' +
-          '<span class="ac-title">' + esc(acTitle) + '</span>' +
-          '<button type="button" class="ac-nav" data-acnav="1">›</button></div>';
-        el.querySelectorAll('[data-acnav]').forEach(function (b) {
-          b.addEventListener('click', function () { acStep(b.getAttribute('data-acnav')); });
-        });
+        el.innerHTML = banner + body;
         el.querySelectorAll('[data-acedit]').forEach(function (c) {
           c.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -24346,16 +24352,15 @@ window.qsNpOfferSend = function (btn) {
           if (today.parentNode !== slot) slot.appendChild(today);
           if (title.parentNode !== tleft) tleft.insertBefore(title, next);
         } else {
-          if (title.parentNode !== tbar) tbar.insertBefore(title, views);
+          if (title.parentNode !== tbar) tbar.insertBefore(title, tleft);
           if (today.parentNode !== tleft) tleft.insertBefore(today, next);
         }
       }
       if (window.matchMedia) window.matchMedia('(max-width: 700px)').addEventListener('change', placeDashPhoneNav);
-      // Shared step for the top toolbar and the bottom nav: today jumps to
-      // today, Month steps a month, Block/Week step a week, Day steps a day.
-      // Every step lands back at the top of the calendar (Deepika, 2026-10-25:
-      // after stepping from the bottom nav you should not be left at the
-      // bottom of the new month).
+      // Shared step for the top toolbar: today jumps to today, Month steps
+      // a month, Block/Week step a week, Day steps a day. Every step lands
+      // back at the top of the calendar (Deepika, 2026-10-25: after stepping
+      // you should not be left at the bottom of the new month).
       function acStep(n) {
         if (n === 'today') acAnchor = new Date();
         else if (acView === 'month') acAnchor = new Date(acAnchor.getFullYear(), acAnchor.getMonth() + (n === '1' ? 1 : -1), 1);
@@ -24370,13 +24375,16 @@ window.qsNpOfferSend = function (btn) {
           : ((acView === 'week' || acView === 'block')
             ? 'Week of ' + acAnchor.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
             : acAnchor.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }));
-        acTitle = title;
-        tb.innerHTML = '<div class="ac-tbar"><div class="ac-tleft"><button type="button" class="ac-nav" data-nav="-1">‹</button>' +
-          '<button type="button" class="ac-nav" data-nav="today">Today</button>' +
-          '<button type="button" class="ac-nav" data-nav="1">›</button></div>' +
+        // Calendar bar arrangement (Deepika, 2026-11-18, approved mock):
+        // row 2 is Month | Block, then the month label, then ‹ Today › —
+        // all left-aligned and close together. The label is whatever the
+        // view already shows (month name, "Week of …", or the day).
+        tb.innerHTML = '<div class="ac-tbar"><div class="ac-views"><button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button>' +
+          '<button type="button" data-aview="block"' + (acView === 'block' ? ' class="active"' : '') + '>Block</button></div>' +
           '<h2 class="ac-title">' + esc(title) + '</h2>' +
-          '<div class="ac-views"><button type="button" data-aview="month"' + (acView === 'month' ? ' class="active"' : '') + '>Month</button>' +
-          '<button type="button" data-aview="block"' + (acView === 'block' ? ' class="active"' : '') + '>Block</button></div></div>';
+          '<div class="ac-tleft"><button type="button" class="ac-nav" data-nav="-1">‹</button>' +
+          '<button type="button" class="ac-nav" data-nav="today">Today</button>' +
+          '<button type="button" class="ac-nav" data-nav="1">›</button></div></div>';
         tb.querySelectorAll('[data-aview]').forEach(function (b) {
           b.addEventListener('click', function () { acView = b.getAttribute('data-aview'); load(); });
         });
