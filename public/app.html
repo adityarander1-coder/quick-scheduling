@@ -1477,6 +1477,15 @@
     .shift-grid.qs-selected, .open-slot.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; position: relative; }
     .shift-grid.qs-selected::after, .open-slot.qs-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; z-index: 5; width: 22px; height: 22px; border-radius: 50%; background: #0e7c86; color: #fff; font-size: 13px; font-weight: 800; line-height: 22px; text-align: center; box-shadow: 0 2px 6px rgba(8,63,77,.4); pointer-events: none; }
     .qs-person.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; }
+    /* Double-shift blink (Deepika, 2026-11-19): a person on any two
+       DIFFERENT shifts the same day blinks for 5 seconds when the
+       schedule renders, then stays solid. Opacity only — the teal
+       palette is untouched, no new colour. Re-rendering restarts
+       it; the 30-second poll only re-renders on a real data change,
+       so the blink never loops on its own. */
+    @keyframes qs-double-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+    .qs-double-shift { animation: qs-double-blink 1s ease-in-out 5; }
+    @media (prefers-reduced-motion: reduce) { .qs-double-shift { animation: none; } }
     /* Open-slot chevron (Deepika, 2026-11-17): the down-arrow menu
        button on an open slot, like the one on filled shift boxes.
        A <span>, not a <button> — the manager open slot IS a button,
@@ -3703,6 +3712,42 @@
             '</div>';
         };
 
+        // Double-shift blink (Deepika, 2026-11-19): a person on any
+        // two DIFFERENT shifts the same day blinks for 5 seconds when
+        // the schedule renders, then stays solid. Two entries of the
+        // SAME type never count. Detection runs over sched.shifts —
+        // the shifts this view actually loaded — so drafts count
+        // wherever the view can see them (managers load drafts;
+        // employees never load drafts, so a draft double of theirs
+        // has nothing to blink). The map is built lazily once per
+        // render: renderView() clears it, the first box/chip that
+        // needs it rebuilds it.
+        var qsDblMap = null;
+        function qsDblKey(userId, name, dateStr) {
+          return (userId ? 'u:' + userId : 'n:' + (name || '')) + '|' + dateStr;
+        }
+        function qsDoubleShiftMap() {
+          if (qsDblMap) return qsDblMap;
+          var byKey = {};
+          (sched.shifts || []).forEach(function (s) {
+            if (!s || !s.date || !s.shiftTypeId) return;
+            var k = qsDblKey(s.userId, displayName(s), s.date);
+            (byKey[k] = byKey[k] || {})[s.shiftTypeId] = true;
+          });
+          qsDblMap = byKey;
+          return byKey;
+        }
+        // True when this person has 2+ DIFFERENT shift types on the day.
+        function qsIsDoubleShift(userId, name, dateStr) {
+          var types = qsDoubleShiftMap()[qsDblKey(userId, name, dateStr)];
+          return !!types && Object.keys(types).length >= 2;
+        }
+        // True when the day is a double day AND this type is one of the two.
+        function qsDoubleShiftHasType(userId, name, dateStr, typeId) {
+          var types = qsDoubleShiftMap()[qsDblKey(userId, name, dateStr)];
+          return !!types && Object.keys(types).length >= 2 && !!types[typeId];
+        }
+
         function shiftBoxHtml(s) {
           var st = shiftTypeById(s.shiftTypeId);
           var published = s.published !== false && !isOccShift(s);
@@ -3743,7 +3788,7 @@
           return window.qsShiftBoxPreviewHtml({
             label: label, name: nm, color: color, published: published,
             extra: note + qsCoverBadge(s) + cBtn, shiftId: s.id,
-            hlClass: (sched.highlights[s.userId] != null ? ' is-highlighted' : ''),
+            hlClass: (sched.highlights[s.userId] != null ? ' is-highlighted' : '') + (qsIsDoubleShift(s.userId, displayName(s), s.date) ? ' qs-double-shift' : ''),
             hlStyle: highlightStyleFor(s.userId),
           });
         }
@@ -3970,7 +4015,7 @@
             shiftsFor(ds).forEach(function (s) {
               if (s.shiftTypeId !== st.id) return;
               var key = s.userId || ('nm-' + displayName(s));
-              if (!byPerson[key]) { byPerson[key] = { name: displayName(s), days: [] }; order.push(key); }
+              if (!byPerson[key]) { byPerson[key] = { name: displayName(s), uid: s.userId, days: [] }; order.push(key); }
               if (byPerson[key].days.indexOf(di) === -1) byPerson[key].days.push(di);
               if (s.published === false || isOccShift(s)) anyDraft = true;
             });
@@ -3983,7 +4028,8 @@
           order.forEach(function (key) {
             var p = byPerson[key];
             var note = p.days.length === 7 ? '' : ' <span class="sbw-part">(' + sbDayRuns(p.days, wk.dates) + ')</span>';
-            out += '<div>' + esc(p.name) + note + '</div>';
+            var dbl = p.days.some(function (di) { return qsDoubleShiftHasType(p.uid, p.name, wk.days[di], st.id); });
+            out += '<div' + (dbl ? ' class="qs-double-shift"' : '') + '>' + esc(p.name) + note + '</div>';
           });
           if (openDays.length) {
             if (openDays.length === 7 && openDays.every(function (o) { return o.count === openDays[0].count; })) {
@@ -4023,7 +4069,8 @@
             var g = byType[tid];
             if (g.draft) anyDraft = true;
             var note = g.idxs.length === 7 ? '' : ' <span class="sbw-part">(' + sbDayRuns(g.idxs, wk.dates) + ')</span>';
-            return '<div class="sbw-emp"><span class="sbw-sw" style="background:' + esc((st && st.color) || '#637a8e') + '"></span><span>' + esc(st ? st.name : 'Shift') + note + '</span></div>';
+            var dbl = wk.days.some(function (ds) { return qsDoubleShiftHasType(m.id, '', ds, tid); });
+            return '<div class="sbw-emp' + (dbl ? ' qs-double-shift' : '') + '"><span class="sbw-sw" style="background:' + esc((st && st.color) || '#637a8e') + '"></span><span>' + esc(st ? st.name : 'Shift') + note + '</span></div>';
           }).join('');
 
           return out;
@@ -5398,6 +5445,9 @@
 
         function renderView() {
           var el = $('sched-view');
+          // Double-shift blink: the detection map is rebuilt lazily
+          // on the first box/chip of this render.
+          qsDblMap = null;
           // Phone: Week is not offered — fall back to Month (kept view).
           if (window.matchMedia && window.matchMedia('(max-width: 700px)').matches && (sched.view === 'week' || sched.view === 'day')) {
             sched.view = 'month';
@@ -5527,7 +5577,7 @@
           var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
           var nm = displayName(s);
           var shiftName = st ? st.name : '';
-          return '<div class="month-chip" data-shift-id="' + s.id + '" data-shifttype="' + s.shiftTypeId + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+          return '<div class="month-chip' + (qsIsDoubleShift(s.userId, nm, s.date) ? ' qs-double-shift' : '') + '" data-shift-id="' + s.id + '" data-shifttype="' + s.shiftTypeId + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
             '" title="' + esc(nm + ' \u2014 ' + shiftName) + '">' +
             '<span class="dot" style="background:' + esc(color) + '"></span>' +
             '<span><strong>' + esc(shiftName) + '</strong> \u2014 ' + esc(nm) + '</span></div>';
@@ -5570,7 +5620,7 @@
             var published = items[0].published !== false && !isOccShift(items[0]);
             var color = published ? (st ? st.color : '#637a8e') : '#9ca3af';
             var shiftName = st ? st.name : '';
-            var names = items.map(function (s) { return '<span class="qs-person" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>' + qsCoverBadge(s); }).join('<br>');
+            var names = items.map(function (s) { return '<span class="qs-person' + (qsIsDoubleShift(s.userId, displayName(s), ds) ? ' qs-double-shift' : '') + '" data-shift-id="' + s.id + '">' + esc(displayName(s)) + '</span>' + qsCoverBadge(s); }).join('<br>');
             var title = esc(items.map(function (s) { return displayName(s); }).join(', ') + ' — ' + shiftName);
             html += '<div class="month-chip" data-shifttype="' + st.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
               '" title="' + title + '">' +
@@ -5584,7 +5634,7 @@
             if (renderedIds[s.id]) return;
             var st = shiftTypeById(s.shiftTypeId);
             var color = '#637a8e';
-            html += '<div class="month-chip" data-shift-id="' + s.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
+            html += '<div class="month-chip' + (qsIsDoubleShift(s.userId, displayName(s), ds) ? ' qs-double-shift' : '') + '" data-shift-id="' + s.id + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) +
               '"><span class="dot" style="background:' + esc(color) + '"></span>' +
               '<span><strong>' + esc(st ? st.name : '') + '</strong><br>' + esc(displayName(s)) + '</span></div>';
           });
@@ -22722,6 +22772,35 @@ window.qsNpOfferSend = function (btn) {
         }
 
         // ---------- rendering ----------
+        // Double-shift blink (Deepika, 2026-11-19) — same rule as the
+        // admin Schedule: any two DIFFERENT shifts the same day blink
+        // for 5 seconds on render. Detection runs over this tab's
+        // loaded shifts; the map rebuilds lazily once per render
+        // (renderView() clears it).
+        var msDblMap = null;
+        function msDblKey(userId, name, dateStr) {
+          return (userId ? 'u:' + userId : 'n:' + (name || '')) + '|' + dateStr;
+        }
+        function msDoubleShiftMap() {
+          if (msDblMap) return msDblMap;
+          var byKey = {};
+          (shifts || []).forEach(function (s) {
+            if (!s || !s.date || !s.shiftTypeId) return;
+            var k = msDblKey(s.userId, displayName(s), s.date);
+            (byKey[k] = byKey[k] || {})[s.shiftTypeId] = true;
+          });
+          msDblMap = byKey;
+          return byKey;
+        }
+        function msIsDoubleShift(userId, name, dateStr) {
+          var types = msDoubleShiftMap()[msDblKey(userId, name, dateStr)];
+          return !!types && Object.keys(types).length >= 2;
+        }
+        function msDoubleShiftHasType(userId, name, dateStr, typeId) {
+          var types = msDoubleShiftMap()[msDblKey(userId, name, dateStr)];
+          return !!types && Object.keys(types).length >= 2 && !!types[typeId];
+        }
+
         function shiftBoxHtml(s) {
           var st = stById(s.shiftTypeId);
           var color = (st && st.color) || '#637a8e';
@@ -22735,7 +22814,7 @@ window.qsNpOfferSend = function (btn) {
           // keep the plain name box, unchanged.
           var nmBg = (s.published === false || s.isRotation || String(s.id).indexOf('rot-') === 0) ? '' : 'background:' + tint(color, 82) + ';';
           var note = s.notes ? '<div class="day-note">' + esc(s.notes) + '</div>' : '';
-          var html = '<div class="shift-grid" data-shift-id="' + s.id + '">' +
+          var html = '<div class="shift-grid' + (msIsDoubleShift(s.userId, nm, s.date) ? ' qs-double-shift' : '') + '" data-shift-id="' + s.id + '">' +
             '<div class="shift-cat" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 60) + '"><div>' + esc(label) + '</div></div>' +
             '<div class="shift-nm" style="' + nmBg + 'border-color:' + tint(color, 60) + '">' + esc(nm) + youTag + qsCoverBadge(s) + note + '</div>' +
             '</div>';
@@ -22913,7 +22992,7 @@ window.qsNpOfferSend = function (btn) {
             shiftsFor(ds).forEach(function (s) {
               if (String(s.shiftTypeId) !== String(st.id)) return;
               var key = s.userId || ('nm-' + displayName(s));
-              if (!byPerson[key]) { byPerson[key] = { name: displayName(s), days: [], mine: isMine(s) }; order.push(key); }
+              if (!byPerson[key]) { byPerson[key] = { name: displayName(s), uid: s.userId, days: [], mine: isMine(s) }; order.push(key); }
               if (byPerson[key].days.indexOf(di) === -1) byPerson[key].days.push(di);
             });
             var oc = slotPasses(ds, st.id) ? openCountFor(ds, st.id) : 0;
@@ -22925,9 +23004,10 @@ window.qsNpOfferSend = function (btn) {
           order.forEach(function (key) {
             var p = byPerson[key];
             var note = p.days.length === 7 ? '' : ' <span class="sbw-part">(' + msSbDayRuns(p.days, wk.dates) + ')</span>';
+            var dbl = p.days.some(function (di) { return msDoubleShiftHasType(p.uid, p.name, wk.days[di], st.id); });
             out += p.mine
-              ? '<div><strong>⭐ ' + esc(p.name) + '</strong>' + note + '</div>'
-              : '<div>' + esc(p.name) + note + '</div>';
+              ? '<div' + (dbl ? ' class="qs-double-shift"' : '') + '><strong>⭐ ' + esc(p.name) + '</strong>' + note + '</div>'
+              : '<div' + (dbl ? ' class="qs-double-shift"' : '') + '>' + esc(p.name) + note + '</div>';
           });
           if (openDays.length) {
             if (openDays.length === 7 && openDays.every(function (o) { return o.count === openDays[0].count; })) {
@@ -22964,7 +23044,8 @@ window.qsNpOfferSend = function (btn) {
             var st = stById(tid);
             var g = byType[tid];
             var note = g.idxs.length === 7 ? '' : ' <span class="sbw-part">(' + msSbDayRuns(g.idxs, wk.dates) + ')</span>';
-            return '<div class="sbw-emp"><span class="sbw-sw" style="background:' + esc((st && st.color) || '#637a8e') + '"></span><span' + (mine ? ' style="font-weight:800"' : '') + '>' + (mine ? '⭐ ' : '') + esc(st ? st.name : 'Shift') + note + '</span></div>';
+            var dbl = wk.days.some(function (ds) { return msDoubleShiftHasType(m.id, '', ds, tid); });
+            return '<div class="sbw-emp' + (dbl ? ' qs-double-shift' : '') + '"><span class="sbw-sw" style="background:' + esc((st && st.color) || '#637a8e') + '"></span><span' + (mine ? ' style="font-weight:800"' : '') + '>' + (mine ? '⭐ ' : '') + esc(st ? st.name : 'Shift') + note + '</span></div>';
           }).join('');
         }
 
@@ -23070,6 +23151,9 @@ window.qsNpOfferSend = function (btn) {
         }
 
         function renderView() {
+          // Double-shift blink: the detection map is rebuilt lazily
+          // on the first box/chip of this render.
+          msDblMap = null;
           document.querySelectorAll('#tab-myschedule .view-tabs button').forEach(function (b) {
             b.classList.toggle('active', b.getAttribute('data-msview') === msView);
           });
@@ -23149,7 +23233,7 @@ window.qsNpOfferSend = function (btn) {
               if (!items.length) return;
               var color = st.color || '#637a8e';
               var names = items.map(function (s) {
-                return '<span class="ms-chip-who">' + esc(isMine(s) ? 'YOU · ' + displayName(s) : displayName(s)) + '</span>' + qsCoverBadge(s);
+                return '<span class="ms-chip-who' + (msIsDoubleShift(s.userId, displayName(s), ds) ? ' qs-double-shift' : '') + '">' + esc(isMine(s) ? 'YOU · ' + displayName(s) : displayName(s)) + '</span>' + qsCoverBadge(s);
               }).join('');
               var title = esc(st.name + ' — ' + items.map(function (s) { return displayName(s); }).join(', '));
               html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + title + '">' +
@@ -23164,7 +23248,7 @@ window.qsNpOfferSend = function (btn) {
               var st = stById(s.shiftTypeId);
               var color = (st && st.color) || '#637a8e';
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
-              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc((st ? st.name : 'Shift') + ' — ' + who) + '">' +
+              html += '<div class="ms-month-chip' + (msIsDoubleShift(s.userId, displayName(s), ds) ? ' qs-double-shift' : '') + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc((st ? st.name : 'Shift') + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
                 '<span class="ms-chip-text"><strong>' + esc(st ? st.name : 'Shift') + '</strong><span class="ms-chip-who">' + esc(who) + '</span>' + qsCoverBadge(s) + '</span></div>';
             });
@@ -23270,7 +23354,7 @@ window.qsNpOfferSend = function (btn) {
               var color = (st && st.color) || '#637a8e';
               var shiftName = st ? st.name : 'Shift';
               var who = isMine(s) ? 'YOU · ' + displayName(s) : displayName(s);
-              html += '<div class="ms-month-chip" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
+              html += '<div class="ms-month-chip' + (msIsDoubleShift(s.userId, displayName(s), ds) ? ' qs-double-shift' : '') + '" style="background:' + tint(color, 70) + ';border-color:' + tint(color, 55) + '" title="' + esc(shiftName + ' — ' + who) + '">' +
                 '<span class="dot" style="background:' + esc(color) + '"></span>' +
                 '<span class="ms-chip-text"><strong>' + esc(shiftName) + '</strong><span class="ms-chip-who">' + esc(who) + '</span>' + qsCoverBadge(s) + '</span></div>';
             };
