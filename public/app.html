@@ -7767,6 +7767,11 @@
               '<div style="font-size:0.88rem;color:var(--muted);margin:0.25rem 0 0.6rem">One shift per row. Columns: Date · Person · Shift type · Start · End. Shifts use the times set on each shift type in Settings — the Start and End columns are checked against them. A PDF doesn\'t need the template: the AI reads its layout as-is.</div>' +
               '<button type="button" id="shi-template" class="btn-secondary" style="border-radius:9px;padding:0.45rem 0.8rem">⬇ Download the template (.csv)</button>' +
             '</div>' +
+            '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:0.9rem">' +
+              '<div style="font-weight:700">Or upload a signed contract</div>' +
+              '<div style="font-size:0.88rem;color:var(--muted);margin:0.25rem 0 0.6rem">A contract names one person and the dates they are contracted to work. The app reads the name and the dates — you check them first, then the shifts go in as drafts.</div>' +
+              '<button type="button" id="shi-contract" class="btn-secondary" style="border-radius:9px;padding:0.45rem 0.8rem">📄 Upload a contract</button>' +
+            '</div>' +
             '<div id="shi-drop" style="border:1.5px dashed var(--border);border-radius:12px;padding:1.1rem 1rem;margin-top:0.9rem;text-align:center;cursor:pointer">' +
               '<div style="font-weight:700;margin-bottom:0.5rem;text-align:left">2 · Add your file</div>' + chosen +
               '<div style="margin-top:0.7rem"><span class="btn" style="border-radius:9px;padding:0.45rem 0.9rem;display:inline-block">Choose file</span></div>' +
@@ -7788,6 +7793,8 @@
               setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
             }).catch(function () { var st = document.getElementById('shi-status'); if (st) st.textContent = 'Could not download the template.'; });
           });
+          var shiContractBtn = document.getElementById('shi-contract');
+          if (shiContractBtn) shiContractBtn.addEventListener('click', function () { shiClose(); coOpen(); });
           var drop = document.getElementById('shi-drop');
           var input = document.getElementById('shi-file');
           drop.addEventListener('click', function () { input.click(); });
@@ -8143,6 +8150,318 @@
         }
         var shiBtn = $('sched-upload-btn');
         if (shiBtn) shiBtn.addEventListener('click', shiOpen);
+        // 📄 Upload contract (Deepika, 2026-11-19): a signed work
+        // contract names ONE candidate and the dates they are
+        // contracted to work. The AI reads the PDF (same caps as a
+        // rota PDF: 8 MB, 25 pages), the server matches the candidate
+        // and the shift type exactly, and the preview shows the name,
+        // the dates and the shift type with every date listed. Nothing
+        // is created until the admin confirms — and the confirm step
+        // reuses the rota import with publish:false, so contract
+        // shifts always land as DRAFTS. A candidate who isn't on the
+        // team gets an "Add them first" button (the existing
+        // add-member form); a missing or unknown shift type is one
+        // clarification — a dropdown, never a guess.
+        // ---------------------------------------------------------------
+        var coState = null;
+        function coCard() { return document.getElementById('co-card'); }
+        function coClose() {
+          var m = document.getElementById('co-modal');
+          if (m) m.remove();
+          coState = null;
+        }
+        function coOpen() {
+          coClose();
+          coState = { fileName: '', b64: '', extracted: null, candidate: null, shiftType: null, types: [], people: [], rows: [], personId: '', shiftTypeId: '', excluded: {} };
+          var wrap = document.createElement('div');
+          wrap.id = 'co-modal';
+          wrap.setAttribute('style', 'position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:1500;padding:1rem');
+          wrap.innerHTML = '<div id="co-card" role="dialog" aria-label="Upload a contract" style="background:var(--surface);color:var(--text);border-radius:16px;padding:1.4rem;width:100%;max-width:560px;max-height:92vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)"></div>';
+          document.body.appendChild(wrap);
+          wrap.addEventListener('click', function (ev) { if (ev.target === wrap) coClose(); });
+          coRenderStep1('');
+        }
+        function coRenderStep1(statusMsg) {
+          var card = coCard(); if (!card || !coState) return;
+          card.style.maxWidth = '560px';
+          var chosen = coState.fileName
+            ? '<div style="font-weight:700">' + esc(coState.fileName) + '</div><div style="font-size:0.82rem;color:var(--muted)">Click or drop another file to change it</div>'
+            : '<div style="font-size:1.6rem">📄</div><div style="font-weight:700;margin-top:0.2rem">Drop the signed contract here</div><div style="font-size:0.82rem;color:var(--muted)">PDF only — up to 8 MB and 25 pages</div>';
+          card.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+              '<div><div style="font-size:1.25rem;font-weight:800">📄 Upload a contract</div>' +
+              '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">The app reads the candidate\u2019s name and the dates they are contracted to work. You check them first — nothing is saved until you confirm, and the shifts go in as drafts.</div></div>' +
+              '<button type="button" id="co-x" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+            '</div>' +
+            '<div id="co-drop" style="border:1.5px dashed var(--border);border-radius:12px;padding:1.1rem 1rem;margin-top:1rem;text-align:center;cursor:pointer">' +
+              chosen +
+              '<div style="margin-top:0.7rem"><span class="btn" style="border-radius:9px;padding:0.45rem 0.9rem;display:inline-block">Choose file</span></div>' +
+              '<input type="file" id="co-file" accept=".pdf" style="display:none">' +
+            '</div>' +
+            '<div id="co-status" style="min-height:1.2rem;font-size:0.88rem;margin-top:0.6rem;color:#b91c1c">' + esc(statusMsg || '') + '</div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:0.4rem">' +
+              '<button type="button" id="co-cancel" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">Cancel</button>' +
+              '<button type="button" id="co-next" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (coState.b64 ? '' : 'disabled') + '>Next: read it →</button>' +
+            '</div>';
+          document.getElementById('co-x').addEventListener('click', coClose);
+          document.getElementById('co-cancel').addEventListener('click', coClose);
+          var drop = document.getElementById('co-drop');
+          var input = document.getElementById('co-file');
+          drop.addEventListener('click', function () { input.click(); });
+          input.addEventListener('change', function () { if (input.files && input.files[0]) coReadFile(input.files[0]); });
+          drop.addEventListener('dragover', function (ev) { ev.preventDefault(); drop.style.borderColor = 'var(--teal, #0e7490)'; });
+          drop.addEventListener('dragleave', function () { drop.style.borderColor = 'var(--border)'; });
+          drop.addEventListener('drop', function (ev) {
+            ev.preventDefault(); drop.style.borderColor = 'var(--border)';
+            if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0]) coReadFile(ev.dataTransfer.files[0]);
+          });
+          document.getElementById('co-next').addEventListener('click', function () { coPreview(false); });
+        }
+        function coReadFile(file) {
+          var st = document.getElementById('co-status');
+          if (!/\.pdf$/i.test(file.name)) { if (st) st.textContent = 'Please choose a PDF file — the contract reader takes PDFs only.'; return; }
+          if (file.size > 8 * 1024 * 1024) { if (st) st.textContent = 'That file is over 8 MB — please upload a smaller file.'; return; }
+          var rd = new FileReader();
+          rd.onload = function () {
+            var res = String(rd.result || '');
+            coState.fileName = file.name;
+            coState.b64 = res.indexOf(',') >= 0 ? res.split(',')[1] : res;
+            coState.extracted = null; coState.personId = ''; coState.shiftTypeId = ''; coState.excluded = {};
+            coRenderStep1('');
+          };
+          rd.onerror = function () { if (st) st.textContent = 'Could not read that file.'; };
+          rd.readAsDataURL(file);
+        }
+        // Read the contract (first pass) or re-run the deterministic
+        // matching after the admin answers a question (later passes
+        // send the read back with the answer — the AI read runs once).
+        function coPreview(isRerun) {
+          if (!coState || !coState.b64) return;
+          var st = document.getElementById('co-status');
+          var next = document.getElementById('co-next');
+          if (next) { next.disabled = true; next.textContent = 'Reading the contract…'; }
+          if (st) st.textContent = '';
+          var body = { filename: coState.fileName, dataBase64: coState.b64 };
+          if (isRerun && coState.extracted) {
+            body.extracted = coState.extracted;
+            if (coState.personId) body.personId = coState.personId;
+            if (coState.shiftTypeId) body.shiftTypeId = coState.shiftTypeId;
+          }
+          api('/api/schedule/contract-import/preview', {
+            method: 'POST',
+            body: JSON.stringify(body)
+          }).then(function (r) {
+            if (!r.ok) { coRenderStep1((r.data && r.data.error) || 'That contract could not be read.'); return; }
+            coState.extracted = r.data.extracted || null;
+            coState.candidate = r.data.candidate || null;
+            coState.shiftType = r.data.shiftType || null;
+            coState.types = r.data.types || [];
+            coState.people = r.data.people || [];
+            coState.rows = r.data.rows || [];
+            coRenderPreview();
+          }).catch(function () { coRenderStep1('Could not read that contract — please try again.'); });
+        }
+        function coPersonOptions(selectedId) {
+          return '<option value="">Choose…</option>' + (coState.people || []).map(function (p) {
+            return '<option value="' + esc(p.id) + '"' + (String(p.id) === String(selectedId || '') ? ' selected' : '') + '>' + esc(p.name) + (p.email ? ' (' + esc(p.email) + ')' : '') + '</option>';
+          }).join('');
+        }
+        function coTypeOptions(selectedId) {
+          return '<option value="">Choose…</option>' + (coState.types || []).map(function (tp) {
+            return '<option value="' + esc(tp.id) + '"' + (String(tp.id) === String(selectedId || '') ? ' selected' : '') + '>' + esc(tp.name) + '</option>';
+          }).join('');
+        }
+        function coIncludedCount() {
+          return (coState.rows || []).filter(function (row) { return row.status === 'ready' && !coState.excluded[row.row]; }).length;
+        }
+        // "8:00 AM" / "8 AM" / "08:00" / "20:00" -> "HH:MM", or ''.
+        function coParseTime(raw) {
+          var t = String(raw || '').trim();
+          var m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?$/);
+          if (!m) return '';
+          var h = parseInt(m[1], 10), min = m[2] ? parseInt(m[2], 10) : 0;
+          if (min > 59) return '';
+          if (m[3]) {
+            if (h < 1 || h > 12) return '';
+            if (m[3].toLowerCase() === 'pm' && h !== 12) h += 12;
+            if (m[3].toLowerCase() === 'am' && h === 12) h = 0;
+          } else if (h > 23) return '';
+          return String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+        }
+        function coRenderPreview() {
+          var card = coCard(); if (!card || !coState) return;
+          card.style.maxWidth = '560px';
+          var cand = coState.candidate || {};
+          var typ = coState.shiftType || {};
+          // Candidate block.
+          var candHtml = '';
+          if (cand.status === 'one' && cand.matched) {
+            candHtml = '<div style="font-weight:700">✓ ' + esc(cand.matched.name) + '</div><div style="font-size:0.85rem;color:var(--muted)">On your team — the shifts below are theirs.</div>';
+          } else if (cand.status === 'many') {
+            candHtml = '<div style="font-weight:700">❓ More than one team member matches \u201c' + esc(cand.text || '') + '\u201d. Who did you mean?</div>' +
+              '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-top:0.5rem">' +
+              (cand.candidates || []).map(function (m) {
+                return '<button type="button" class="btn" data-co-person="' + esc(m.id) + '" style="border-radius:9px;padding:0.45rem 0.9rem">' + esc(m.name) + '</button>';
+              }).join('') + '</div>';
+          } else {
+            candHtml = '<div style="font-weight:700">❓ \u201c' + esc(cand.text || '') + '\u201d isn\u2019t on your team.</div>' +
+              '<div style="font-size:0.88rem;color:var(--muted);margin-top:0.2rem">Add them first, then the shifts below become theirs — or pick someone else.</div>' +
+              '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem">' +
+                '<button type="button" id="co-add-first" class="btn" style="border-radius:9px;padding:0.45rem 0.9rem">Add them first</button>' +
+                '<select id="co-person-pick" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px;max-width:260px">' + coPersonOptions('') + '</select>' +
+                '<button type="button" id="co-use-person" class="btn-secondary" style="border-radius:9px;padding:0.45rem 0.9rem">Use this person</button>' +
+              '</div>';
+          }
+          // Shift type block — missing or unknown is one clarification,
+          // never a guess.
+          var typeHtml = '';
+          if (typ.status === 'one' && typ.matched) {
+            typeHtml = '<div style="font-weight:700">✓ ' + esc(typ.matched.name) + '</div>';
+            if (typ.role) typeHtml += '<div style="font-size:0.85rem;color:var(--muted)">Contract role: ' + esc(typ.role) + '</div>';
+            var mt = (coState.types || []).find(function (t) { return t.id === typ.matched.id; });
+            var ex = coState.extracted || {};
+            if (ex.start && ex.end && mt && mt.startTime && mt.endTime) {
+              var exS = shiFmtTime(coParseTime(ex.start)), exE = shiFmtTime(coParseTime(ex.end));
+              var stS = shiFmtTime(mt.startTime), stE = shiFmtTime(mt.endTime);
+              if (exS && exE && (exS !== stS || exE !== stE)) {
+                typeHtml += '<div style="font-size:0.85rem;color:var(--muted)">The contract says ' + esc(exS) + ' – ' + esc(exE) + '; ' + esc(typ.matched.name) + '\u2019s set times are ' + esc(stS) + ' – ' + esc(stE) + ', so the shift will use the set times.</div>';
+              }
+            }
+          } else {
+            var prompt = typ.status === 'unknown'
+              ? '\u201c' + esc(typ.text || '') + '\u201d isn\u2019t one of your shift types. Which shift is it?'
+              : 'The contract doesn\u2019t name a shift. Which shift is it?';
+            typeHtml = '<div style="font-weight:700">❓ ' + prompt + '</div>' +
+              '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem">' +
+                '<select id="co-type-pick" style="padding:0.45rem;border:1px solid var(--border);border-radius:8px;max-width:260px">' + coTypeOptions('') + '</select>' +
+                '<button type="button" id="co-use-type" class="btn" style="border-radius:9px;padding:0.45rem 0.9rem">Use this shift</button>' +
+              '</div>';
+          }
+          // Dates — every date in the contract period, each with an
+          // include checkbox. Duplicates and clashes are left out.
+          var rowsHtml = (coState.rows || []).map(function (row) {
+            var note = '';
+            if (row.status === 'duplicate') note = '<span style="color:#b91c1c;font-size:0.85rem"> — ' + esc(row.dupPrompt || 'already on the schedule') + '</span>';
+            else if (row.status === 'conflict') note = '<span style="color:#b91c1c;font-size:0.85rem"> — ' + esc(row.conflict || 'clashes with another shift') + '</span>';
+            else if (row.status === 'needs_info') note = '<span style="color:var(--muted);font-size:0.85rem"> — waiting on the questions above</span>';
+            var dis = row.status === 'ready' ? '' : ' disabled';
+            var chk = (row.status === 'ready' && !coState.excluded[row.row]) ? ' checked' : '';
+            return '<label style="display:flex;gap:0.5rem;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border)">' +
+              '<input type="checkbox" data-co-row="' + row.row + '"' + chk + dis + '> ' +
+              '<span>' + esc(shiFmtDate(row.date)) + ' ' + esc(row.date) + note + '</span></label>';
+          }).join('');
+          var ready = coIncludedCount();
+          card.innerHTML =
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">' +
+              '<div><div style="font-size:1.25rem;font-weight:800">Check the contract</div>' +
+              '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.15rem">From ' + esc(coState.fileName) + ' — nothing is saved until you confirm, and the shifts go in as drafts.</div></div>' +
+              '<button type="button" id="co-x2" class="btn-secondary" style="border-radius:9px;padding:0.25rem 0.6rem">✕</button>' +
+            '</div>' +
+            '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:1rem"><div style="font-weight:700;margin-bottom:0.3rem">Candidate</div>' + candHtml + '</div>' +
+            '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:0.9rem"><div style="font-weight:700;margin-bottom:0.3rem">Shift</div>' + typeHtml + '</div>' +
+            '<div style="border:1px solid var(--border);border-radius:12px;padding:0.9rem 1rem;margin-top:0.9rem"><div style="font-weight:700;margin-bottom:0.3rem">Confirmed dates (' + (coState.rows || []).length + ')</div>' + rowsHtml + '</div>' +
+            '<div id="co-err" style="min-height:1.2rem;font-size:0.88rem;margin-top:0.6rem;color:#b91c1c"></div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.6rem;margin-top:0.4rem">' +
+              '<button type="button" id="co-back" class="btn-secondary" style="border-radius:10px;padding:0.55rem 1rem">← Change file</button>' +
+              '<button type="button" id="co-import" class="btn" style="border-radius:10px;padding:0.55rem 1rem" ' + (ready ? '' : 'disabled') + '>Add ' + ready + ' shift' + (ready === 1 ? '' : 's') + ' as drafts</button>' +
+            '</div>';
+          document.getElementById('co-x2').addEventListener('click', coClose);
+          document.getElementById('co-back').addEventListener('click', function () { coRenderStep1(''); });
+          card.querySelectorAll('[data-co-person]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              coState.personId = btn.getAttribute('data-co-person');
+              coPreview(true);
+            });
+          });
+          var addFirst = document.getElementById('co-add-first');
+          if (addFirst) addFirst.addEventListener('click', coAddFirst);
+          var usePerson = document.getElementById('co-use-person');
+          if (usePerson) usePerson.addEventListener('click', function () {
+            var sel = document.getElementById('co-person-pick');
+            if (sel && sel.value) { coState.personId = sel.value; coPreview(true); }
+          });
+          var useType = document.getElementById('co-use-type');
+          if (useType) useType.addEventListener('click', function () {
+            var sel = document.getElementById('co-type-pick');
+            if (sel && sel.value) { coState.shiftTypeId = sel.value; coPreview(true); }
+          });
+          card.querySelectorAll('[data-co-row]').forEach(function (cb) {
+            cb.addEventListener('change', function () {
+              var n = Number(cb.getAttribute('data-co-row'));
+              if (cb.checked) delete coState.excluded[n]; else coState.excluded[n] = true;
+              var btn2 = document.getElementById('co-import');
+              var count = coIncludedCount();
+              if (btn2) { btn2.disabled = !count; btn2.textContent = 'Add ' + count + ' shift' + (count === 1 ? '' : 's') + ' as drafts'; }
+            });
+          });
+          document.getElementById('co-import').addEventListener('click', coImport);
+        }
+        // Not on the team: open the existing add-member form prefilled
+        // with the contract name. When the popup closes, re-run the
+        // preview — the roster may now include them.
+        function coAddFirst() {
+          var name = (coState.candidate && coState.candidate.text) || '';
+          var parts = name.split(/\s+/).filter(Boolean);
+          if (!window.qsOpenAddMemberPopup) return;
+          window.qsOpenAddMemberPopup({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' });
+          var tries = 0;
+          var iv = setInterval(function () {
+            tries++;
+            var m = document.getElementById('qs-add-member-modal');
+            // The add-member modal sits at z-index 100; the contract
+            // modal is 1500, so lift it above while it is open from
+            // here — otherwise the form would open behind this modal.
+            if (m && !m.classList.contains('hidden')) { m.style.zIndex = '1600'; return; }
+            if (m || tries > 20) {
+              clearInterval(iv);
+              if (m) coPreview(true);
+            }
+          }, 500);
+        }
+        function coImport() {
+          if (!coState || !coState.candidate || !coState.candidate.matched || !coState.shiftType || !coState.shiftType.matched) return;
+          var errEl = document.getElementById('co-err');
+          var payload = (coState.rows || []).filter(function (row) { return row.status === 'ready' && !coState.excluded[row.row]; }).map(function (row) {
+            return { row: row.row, userId: coState.candidate.matched.id, shiftTypeId: coState.shiftType.matched.id, date: row.date };
+          });
+          if (!payload.length) { if (errEl) errEl.textContent = 'No dates are ready to add yet — answer the questions above first.'; return; }
+          var btn = document.getElementById('co-import');
+          if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+          // Reuses the rota import with publish:false — contract
+          // shifts always land as drafts, re-validated row by row.
+          api('/api/schedule/shift-import', {
+            method: 'POST',
+            body: JSON.stringify({ publish: false, rows: payload })
+          }).then(function (r) {
+            if (!r.ok) {
+              if (errEl) errEl.textContent = (r.data && r.data.error) || 'The import failed.';
+              if (btn) { btn.disabled = false; btn.textContent = 'Add ' + payload.length + ' shift' + (payload.length === 1 ? '' : 's') + ' as drafts'; }
+              return;
+            }
+            coRenderResult(r.data);
+          }).catch(function () {
+            if (errEl) errEl.textContent = 'The import failed — please try again.';
+            if (btn) { btn.disabled = false; }
+          });
+        }
+        function coRenderResult(data) {
+          var card = coCard(); if (!card || !coState) return;
+          card.style.maxWidth = '560px';
+          var skipped = (coState.rows || []).length - coIncludedCount();
+          var failed = data.failed || [];
+          var failHtml = failed.length
+            ? '<div style="margin-top:0.8rem"><div style="font-weight:700;color:#b91c1c">Didn\u2019t add:</div><ul style="margin:0.3rem 0 0 1.1rem;padding:0">' +
+              failed.map(function (f) { return '<li>Row ' + esc(String(f.row)) + ' — ' + esc(f.reason || '') + '</li>'; }).join('') + '</ul></div>'
+            : '';
+          card.innerHTML =
+            '<div style="font-size:1.25rem;font-weight:800">Contract added</div>' +
+            '<div style="margin-top:0.5rem;font-size:1rem">Added <b>' + data.imported + '</b> shifts (saved as drafts) · ' + skipped + ' skipped · <b>' + failed.length + '</b> failed</div>' +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule as drafts — publish them from Bulk Actions when you\u2019re ready.</div>' + failHtml +
+            '<div style="display:flex;justify-content:flex-end;margin-top:1.1rem"><button type="button" id="co-done" class="btn" style="border-radius:10px;padding:0.55rem 1.1rem">Close</button></div>';
+          document.getElementById('co-done').addEventListener('click', function () { coClose(); loadAll(); });
+        }
+        // Entry point: "Or upload a signed contract" inside the Upload schedule dialog (#shi-contract) — the top line stays exactly as Deepika approved it.
+        window.qsOpenContractImport = coOpen;
         if ($('sbp-rshift')) $('sbp-rshift').addEventListener('change', syncBlockPanel);
         if ($('sbp-ruser')) $('sbp-ruser').addEventListener('change', syncBlockPanel);
         var evtTgl = $('sched-events-toggle');

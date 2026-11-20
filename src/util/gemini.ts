@@ -1197,3 +1197,102 @@ Rules:
   }
   return out;
 }
+
+export interface ContractRead {
+  candidate: string; dates: string[]; shiftType: string;
+  start: string; end: string; role: string;
+}
+
+/**
+ * Read an employment / work contract (the Schedule page's
+ * "📄 Upload contract" door, Deepika 2026-11-19) and pull out the
+ * hired person's name plus the confirmed work dates. The contract
+ * names ONE person and the dates they are contracted to work; the
+ * shift type / role and the times come along when the contract
+ * states them. It transcribes ONLY what the document states: a
+ * field the document doesn't show comes back blank, never invented
+ * — a missing shift type is a question in the preview, never a
+ * guess. The rows feed the SAME import path as a rota upload
+ * (exact name/type matching, duplicate and clash flags, drafts
+ * only until the admin confirms), so a shaky read surfaces there —
+ * never as a wrong shift. Mirrors parseShiftSchedulePdf's call
+ * pattern (model discovery, 503 backoff, usage logging, outage
+ * hooks). Runs on Aditya's Gemini account, ~0.5–1¢ per contract.
+ */
+export async function parseContractDocument(input: {
+  pdfBase64: string;
+  filename: string;
+  today: string;
+  shiftTypeNames: string[];
+  members: string[];
+}): Promise<ContractRead> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('AI is not configured (GEMINI_API_KEY missing).');
+  const prompt = `You read an employment / work contract (a PDF) and pull out who was hired and the dates they are contracted to work. Today is ${input.today}. File: ${input.filename}
+
+Return ONLY a JSON object: {"candidate": "...", "dates": ["YYYY-MM-DD", ...], "shiftType": "...", "start": "...", "end": "...", "role": "..."}
+
+The fields are: candidate (the person hired — the employee, NOT the employer or the company), dates (every date the person is contracted to work), shiftType (the shift, as printed), start, end (the work times, when stated), role (the job title, as printed).
+
+Rules:
+- Extract what the document STATES, exactly as printed — never invent a name, a date, a shift, or a time the document does not show. When the document doesn't show a field, return "" for it (dates: []).
+- Candidate: the hired person's full name as printed. If the contract names the person in more than one place, use the fullest spelling.
+- Dates: if the contract lists specific dates, use them. If it gives a date range (e.g. "Dec 1 – Dec 10, 2026" or "from December 1 to December 10"), list EVERY date in the range — the person checking the preview can uncheck days they don't work. If it gives a contract start and end date, list every date between them.
+- Dates: return YYYY-MM-DD. Use the year the document prints; if it prints only a month and day, use the year that makes the date closest to today.
+- Times: transcribe as printed (e.g. "8:00 AM" or "08:00"). If the document prints a range like "8 AM – 8 PM" for the work, split it into start "8:00 AM" and end "8:00 PM".
+- Shift type: prefer one of this company's shift types when the document's wording matches one: ${input.shiftTypeNames.join(', ') || '(none)'}. Otherwise transcribe the shift or role wording exactly as printed (e.g. "Day Hospitalist"). If the contract states no shift and no role at all, return "".
+- Role: the job title as printed (e.g. "Physician", "Nurse Practitioner"). If none is printed, return "".
+- This team's members are: ${input.members.join(', ') || '(none)'} — when the printed name clearly refers to one of them, use that member's exact spelling.
+- Skip signatures, letterheads, payment terms, and boilerplate — only the hired person, the work dates, the shift/role, and the times.
+- If the document is not a work contract, or it names no hired person at all, return {"candidate": "", "dates": [], "shiftType": "", "start": "", "end": "", "role": ""}.`;
+  const parts: any[] = [
+    { text: prompt },
+    { inlineData: { mimeType: 'application/pdf', data: input.pdfBase64 } },
+  ];
+  const model = await discoverModel(apiKey);
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = await fetch(
+      `${GEMINI_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8000 },
+        }),
+      }
+    );
+    if (res.ok) break;
+    if (res.status === 503 && attempt < 3) {
+      await new Promise(r => setTimeout(r, attempt * 8000));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) {
+    const errBody = res ? await res.text().catch(() => '') : '';
+    const errText = `Gemini API error: ${res?.status || 'no response'} - ${errBody.substring(0, 300)}`;
+    geminiCallFailed(errText);
+    throw new Error(errText);
+  }
+  const data: any = await res.json();
+  logGeminiUsage(model, data);
+  geminiCallSucceeded();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('The AI did not return readable contract details.');
+  const parsed = JSON.parse(jsonMatch[0]) as any;
+  const str = (v: any, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const dates = (Array.isArray(parsed.dates) ? parsed.dates : [])
+    .map((d: any) => str(d, 40))
+    .filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  return {
+    candidate: str(parsed?.candidate, 300),
+    dates,
+    shiftType: str(parsed?.shiftType, 200),
+    start: str(parsed?.start, 40),
+    end: str(parsed?.end, 40),
+    role: str(parsed?.role, 200),
+  };
+}

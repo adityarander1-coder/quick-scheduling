@@ -22,7 +22,7 @@ import { recordHistorySnapshot, snapshotPlanExecution, listHistorySnapshots, get
 import { loadUndoHistory, saveUndoHistory } from '../util/undoHistory.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
-import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, isGeminiConfigured } from '../util/gemini';
+import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, parseContractDocument, isGeminiConfigured } from '../util/gemini';
 import { notify, fmtDateLong, eligibleMemberIds, deptApproverIds, planApproverIds, deptMemberIds } from '../util/notify.js';
 import { companyTodayStr } from '../util/notifyJobs.js';
 import { checkShiftConflict, checkSwapConflicts, getShiftTypeTimes, makeTimedShift, findShiftConflict, loadTimedShifts } from '../util/shiftConflicts.js';
@@ -19880,6 +19880,186 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
   } catch (err) {
     console.error('[schedule] shift import failed:', err);
     res.status(500).json({ error: 'Something went wrong importing those shifts. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Contract import — "📄 Upload contract" (Deepika, 2026-11-19).
+// A work contract PDF names ONE candidate and the dates they are
+// contracted to work. The AI reads it (same caps as the rota PDF:
+// 8 MB, 25 pages), the server matches the candidate and the shift
+// type EXACTLY against the roster (a bare last name is never an
+// exact pick — the plan-gate rule), and the preview shows the name,
+// the dates and the shift type with every date listed. Nothing is
+// created here: the preview returns rows in the shift-import shape,
+// and the confirm step calls POST /shift-import with publish:false,
+// so contract shifts always land as DRAFTS — the same draft-first
+// habit as the schedule upload, re-validated row by row on import.
+// A candidate who isn't on the team comes back as a question, and
+// the preview offers to add them first (the existing add-member
+// form); a missing or unknown shift type comes back as one
+// clarification — a dropdown, never a guess.
+// ---------------------------------------------------------------------------
+
+// POST /api/schedule/contract-import/preview — read the contract,
+// match candidate + shift type, flag duplicates/clashes per date.
+// Saves NOTHING. Body: { filename, dataBase64 } plus, when the
+// admin answers a question in the preview, the read itself
+// ({ extracted }) and the answer ({ personId } / { shiftTypeId }) —
+// the AI read runs once; answers re-run deterministic matching.
+router.post('/contract-import/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const b = req.body ?? {};
+    const filename = String(b.filename || 'contract.pdf');
+    const refs = await shImpRefs(companyId);
+    let extracted: { candidate: string; dates: string[]; shiftType: string; start: string; end: string; role: string } | null = null;
+    if (b.extracted && typeof b.extracted === 'object') {
+      const e = b.extracted;
+      extracted = {
+        candidate: String(e.candidate || '').trim().slice(0, 300),
+        dates: (Array.isArray(e.dates) ? e.dates : []).map((d: any) => String(d || '').trim()).filter((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+        shiftType: String(e.shiftType || '').trim().slice(0, 200),
+        start: String(e.start || '').trim().slice(0, 40),
+        end: String(e.end || '').trim().slice(0, 40),
+        role: String(e.role || '').trim().slice(0, 200),
+      };
+    } else {
+      const dataBase64 = String(b.dataBase64 || '');
+      if (!dataBase64) { res.status(400).json({ error: 'No file was uploaded.' }); return; }
+      const buf = Buffer.from(dataBase64, 'base64');
+      if (!buf.length) { res.status(400).json({ error: 'That file is empty.' }); return; }
+      if (buf.length > SHIFT_IMPORT_MAX_BYTES) { res.status(413).json({ error: 'That file is over 8 MB — please upload a smaller file.' }); return; }
+      if (buf.subarray(0, 4).toString('latin1') !== '%PDF') {
+        res.status(400).json({ error: "That doesn't look like a contract PDF — please upload a PDF file." }); return;
+      }
+      const pages = sessImpPdfPages(buf);
+      if (pages > SHIFT_IMPORT_MAX_PDF_PAGES) {
+        res.status(400).json({ error: `That PDF has ${pages} pages — the limit is ${SHIFT_IMPORT_MAX_PDF_PAGES} pages per upload. Please split it into smaller files.` }); return;
+      }
+      try {
+        extracted = await parseContractDocument({
+          pdfBase64: buf.toString('base64'),
+          filename,
+          today: todayStr(),
+          shiftTypeNames: refs.types.map((t) => t.name),
+          members: refs.members.map((m) => m.name),
+        });
+      } catch (err) {
+        console.error('[schedule] contract import PDF read failed:', err);
+        res.status(400).json({ error: "We couldn't read that contract reliably — nothing was imported. Try again, or add the shifts by hand." });
+        return;
+      }
+    }
+    if (!extracted.candidate) {
+      res.status(400).json({ error: "We couldn't find a hired person's name in that contract — nothing was imported. Check the file is the signed contract." });
+      return;
+    }
+    // De-duplicate + sort the dates; the row cap still bounds the outcome.
+    const dates = [...new Set(extracted.dates.filter((d) => isValidDate(d)))].sort();
+    if (!dates.length) {
+      res.status(400).json({ error: `We couldn't find any work dates in that contract for ${extracted.candidate} — nothing was imported. Check the contract lists the dates they work.` });
+      return;
+    }
+    if (dates.length > SHIFT_IMPORT_MAX_ROWS) {
+      res.status(400).json({ error: `That contract lists ${dates.length} dates — the limit is ${SHIFT_IMPORT_MAX_ROWS} per upload. Please split it into smaller files.` });
+      return;
+    }
+    // Candidate — exact only (the plan-gate rule): the full name, the
+    // stored first name, or the email. A bare last name never matches.
+    // An explicit personId from the preview answers overrides.
+    let person: ShImpMember | null = null;
+    let personStatus: 'one' | 'many' | 'none' = 'none';
+    let personCandidates: ShImpMember[] = [];
+    const personId = String(b.personId || '');
+    if (personId) {
+      const hit = refs.members.find((m) => m.id === personId);
+      if (hit) { person = hit; personStatus = 'one'; }
+    }
+    if (!person) {
+      const hit = shImpMatchPerson(extracted.candidate, refs);
+      if ('one' in hit) { person = hit.one; personStatus = 'one'; }
+      else if ('many' in hit) { personStatus = 'many'; personCandidates = hit.many; }
+    }
+    // Shift type — exact name only; an explicit shiftTypeId from the
+    // preview answers overrides. Missing or unknown is a question,
+    // never a guess.
+    let shiftType: ShImpType | null = null;
+    let typeStatus: 'one' | 'missing' | 'unknown' = 'missing';
+    const shiftTypeId = String(b.shiftTypeId || '');
+    if (shiftTypeId) {
+      const hit = refs.types.find((t) => t.id === shiftTypeId);
+      if (hit) { shiftType = hit; typeStatus = 'one'; }
+    }
+    if (!shiftType) {
+      if (!extracted.shiftType) typeStatus = 'missing';
+      else {
+        const hit = refs.typeByName.get(extracted.shiftType.toLowerCase());
+        if (hit) { shiftType = hit; typeStatus = 'one'; }
+        else typeStatus = 'unknown';
+      }
+    }
+    // Duplicate + clash per date — only decidable once person and
+    // type are both resolved (same helpers as the rota preview).
+    const typeTimes = await getShiftTypeTimes(query, companyId);
+    const minDate = dates[0];
+    const maxDate = dates[dates.length - 1];
+    const existingKeys = new Set<string>();
+    const { rows: exRows } = await query(
+      `SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date FROM shifts
+       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, minDate, maxDate]);
+    for (const r of exRows as any[]) existingKeys.add(`${r.userId}|${r.date}|${r.shiftTypeId}`);
+    const timedExisting = await loadTimedShifts(query, companyId, shImpAddDays(minDate, -2), shImpAddDays(maxDate, 2));
+    const acceptedByUser: any[] = [];
+    const rows = dates.map((date, idx) => {
+      let status: 'ready' | 'needs_info' | 'duplicate' | 'conflict' = 'ready';
+      let conflict: string | null = null;
+      let dupPrompt: string | null = null;
+      if (!person || !shiftType) {
+        status = 'needs_info';
+      } else {
+        const key = `${person.id}|${date}|${shiftType.id}`;
+        if (existingKeys.has(key)) {
+          status = 'duplicate';
+          dupPrompt = `${person.name} already has ${shiftType.name} on this date.`;
+        } else {
+          const proposed = makeTimedShift(typeTimes, person.id, { date, shiftTypeId: shiftType.id, shiftTypeName: shiftType.name });
+          conflict = findShiftConflict(person.name, [
+            ...timedExisting.filter((s: any) => s.userId === person.id),
+            ...acceptedByUser,
+          ], proposed);
+          if (conflict) status = 'conflict';
+          else acceptedByUser.push(proposed);
+        }
+      }
+      return { row: idx + 1, date, status, conflict, dupPrompt };
+    });
+    const ready = rows.filter((r) => r.status === 'ready').length;
+    res.json({
+      ok: true,
+      extracted,
+      candidate: {
+        text: extracted.candidate,
+        status: personStatus,
+        matched: person ? { id: person.id, name: person.name, email: person.email } : null,
+        candidates: personCandidates.map((m) => ({ id: m.id, name: m.name, email: m.email })),
+      },
+      shiftType: {
+        text: extracted.shiftType,
+        role: extracted.role,
+        status: typeStatus,
+        matched: shiftType ? { id: shiftType.id, name: shiftType.name } : null,
+      },
+      times: { start: extracted.start, end: extracted.end },
+      types: refs.types.map((t) => ({ id: t.id, name: t.name, startTime: t.startTime, endTime: t.endTime })),
+      people: refs.members.map((m) => ({ id: m.id, name: m.name, email: m.email })),
+      rows,
+      ready,
+    });
+  } catch (err) {
+    console.error('[schedule] contract import preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong reading that contract. Please try again.' });
   }
 });
 
