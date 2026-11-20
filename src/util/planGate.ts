@@ -1045,11 +1045,26 @@ export async function gatePlanChanges(
         if (!first || !validDate(first) || (c.toDate && !validDate(c.toDate)) || (first && last && String(first) > String(last))) {
           return { ok: false, question: `Which date${c.fromDate || c.toDate ? 's' : ''} should I add open ${type.name} slots for?` };
         }
-        if (!(Number.isInteger(c.addCount) && c.addCount >= 1)) {
+        // Exactly one amount mode (Deepika, 2026-11-20 — top-up):
+        // addCount (add N per date) or targetTotal (top up so the
+        // total — filled + open — reaches N per date). The close
+        // gate's exactly-one-of shape, mirrored.
+        const addModes = [
+          typeof c.addCount === 'number' ? 'count' : null,
+          typeof c.targetTotal === 'number' ? 'total' : null,
+        ].filter(Boolean) as string[];
+        if (addModes.length !== 1) {
+          return { ok: false, question: `How many open ${type.name} slots should I add per date ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''}? Give a whole number of 1 or more — or say the total to reach, like "make it total 14".` };
+        }
+        const addMode = addModes[0];
+        if (addMode === 'count' && !(Number.isInteger(c.addCount) && c.addCount >= 1)) {
           return { ok: false, question: `How many open ${type.name} slots should I add per date ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''}? Give a whole number of 1 or more.` };
         }
-        if (c.addCount > 20) {
+        if (addMode === 'count' && c.addCount > 20) {
           return { ok: false, question: `I can add at most 20 open ${type.name} slots per date — how many should I add?` };
+        }
+        if (addMode === 'total' && !(Number.isInteger(c.targetTotal) && c.targetTotal >= 1)) {
+          return { ok: false, question: `What total should ${type.name} reach per date ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''}? Give a whole number of 1 or more.` };
         }
         // Department — same resolution as the close gate: named
         // must belong to the type; single-department types default;
@@ -1105,14 +1120,79 @@ export async function gatePlanChanges(
             ? `${type.name} is already closed for ${String(first)} – ${String(last)} — adding open slots there would do nothing. Pick dates that aren't closed.`
             : `${type.name} is already closed on ${String(first)} — adding open slots there would do nothing. Pick a date that isn't closed.` };
         }
+        // Top-up deltas (Deepika, 2026-11-20 — "make it total 14"):
+        // per date, total = filled + open, and the add is only the
+        // difference to the target. Filled is drawn-aware (the
+        // close gate's read — stored shifts PLUS rotation-drawn
+        // holders, exactly what the grid shows), never the shifts
+        // table alone. A closed date can never receive an add, so
+        // it counts as delta 0 here; a plan whose EVERY touched
+        // date is already at or above the target is refused with
+        // one plain clarification (the all-closed rule's mirror),
+        // never an empty plan. A delta over 20 on any date asks,
+        // never clamps (the addCount > 20 rule, mirrored).
+        let deltaOn: ((d: string) => number) | null = null;
+        let totalOn: ((d: string) => { filled: number; opens: number; total: number }) | null = null;
+        if (addMode === 'total') {
+          let filledByDate: Map<string, number>;
+          try {
+            const { getShiftsForRange } = await import('./shiftRange.js');
+            const drawn = await getShiftsForRange(query, companyId, touched[0], touched[touched.length - 1]);
+            filledByDate = new Map<string, number>();
+            for (const e of drawn) {
+              if (e.shiftTypeId !== type.id) continue;
+              filledByDate.set(e.date, (filledByDate.get(e.date) || 0) + 1);
+            }
+          } catch (drawErr: any) {
+            console.error('[plan-gate] drawn-holders read failed, using stored shifts only:', drawErr?.message);
+            const { rows: frows } = await query(
+              `SELECT date::text AS date, COUNT(*)::int AS n FROM shifts
+               WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4 GROUP BY date`,
+              [companyId, type.id, touched[0], touched[touched.length - 1]]
+            );
+            filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
+          }
+          totalOn = (d: string) => {
+            const capacity = openSlotCapacity(inputs, type.id, d);
+            const filled = filledByDate.get(d) || 0;
+            const opens = Math.max(0, capacity - filled);
+            return { filled, opens, total: filled + opens };
+          };
+          deltaOn = (d: string) => {
+            if (inputs.closed.has(`${d}|${type.id}`)) return 0;
+            return Math.max(0, (c.targetTotal as number) - (totalOn as any)(d).total);
+          };
+          if (touched.every((d) => (deltaOn as any)(d) <= 0)) {
+            return { ok: false, question: touched.length > 1
+              ? `${type.name} already has ${c.targetTotal} or more slots on every date ${String(first)} – ${String(last)} — there is nothing to add. Pick a higher total or different dates.`
+              : `${type.name} already has ${c.targetTotal} or more slots on ${String(first)} — there is nothing to add. Pick a higher total or a different date.` };
+          }
+          const over = touched.find((d) => (deltaOn as any)(d) > 20);
+          if (over) {
+            return { ok: false, question: `Adding open ${type.name} slots to reach ${c.targetTotal} per date would need ${(deltaOn as any)(over)} on ${over} — I can add at most 20 open slots per date. What total should I aim for?` };
+          }
+        }
         // Plan numbers (issue E parity with closes): one plain
         // line per change — how many per date, over how many days,
         // and the empty-only guarantee.
         {
-          const total = touched.length * c.addCount;
           const label = touched.length === 1
             ? `${type.name} on ${touched[0]}`
             : `${type.name} ${touched[0]} – ${touched[touched.length - 1]}`;
+          if (addMode === 'total') {
+            const deltas = touched.map((d) => (deltaOn as any)(d));
+            const total = deltas.reduce((s: number, n: number) => s + n, 0);
+            const body = touched.length <= 7
+              ? touched.map((d, i) => {
+                  const t = (totalOn as any)(d);
+                  return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will add ${deltas[i]}`;
+                }).join('; ')
+              : `will add ${total} slots over ${touched.length} days to reach ${c.targetTotal} per date`;
+            c.addDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are added; nobody is assigned to a shift.`;
+            gateDetails.push(c.addDetail);
+            continue;
+          }
+          const total = touched.length * c.addCount;
           const body = touched.length <= 7
             ? touched.map((d) => `${d}: add ${c.addCount}`).join('; ')
             : `add ${c.addCount} per date over ${touched.length} days`;

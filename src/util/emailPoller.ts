@@ -197,7 +197,11 @@ export function changeProblems(change: any): string[] {
     case 'add_open_slots': {
       if (missing(change.shiftType)) problems.push('no shift type given');
       if (missing(change.date) && (missing(change.fromDate) || missing(change.toDate))) problems.push('no date given');
-      if (change.addCount === undefined || change.addCount === null) problems.push('no add amount given (a number of slots per date)');
+      const modes = [
+        typeof change.addCount === 'number' ? 'count' : null,
+        typeof change.targetTotal === 'number' ? 'total' : null,
+      ].filter(Boolean);
+      if (modes.length !== 1) problems.push('no add amount given (a number of slots per date, or a total to reach)');
       break;
     }
     case 'add_session':
@@ -1336,7 +1340,9 @@ export function renderChangeList(plan: any): string {
       : c.action === 'add_rotation' ? `Create rotation for ${c.person} — ${c.shiftType}, ${rotPattern(c)} from ${c.startDate || 'no start date'}`
       : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
       : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
-      : c.action === 'add_open_slots' ? `Add ${c.addCount} open ${c.shiftType} slot${c.addCount === 1 ? '' : 's'} per date${c.date ? ` on ${c.date}` : c.fromDate ? ` ${c.fromDate} – ${c.toDate}` : ''}${c.department ? ` (${c.department})` : ''}`
+      : c.action === 'add_open_slots' ? (typeof c.targetTotal === 'number'
+          ? `Add open ${c.shiftType} slots to reach ${c.targetTotal} total per date${c.date ? ` on ${c.date}` : c.fromDate ? ` ${c.fromDate} – ${c.toDate}` : ''}${c.department ? ` (${c.department})` : ''}`
+          : `Add ${c.addCount} open ${c.shiftType} slot${c.addCount === 1 ? '' : 's'} per date${c.date ? ` on ${c.date}` : c.fromDate ? ` ${c.fromDate} – ${c.toDate}` : ''}${c.department ? ` (${c.department})` : ''}`)
       : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
       : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`

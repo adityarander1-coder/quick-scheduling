@@ -50,6 +50,8 @@ interface PlanChange {
   closeAll?: boolean; // close the whole type for the date(s)
   // Add-open-slots field (add_open_slots, Deepika 2026-11-19):
   addCount?: number; // add this many open slots per date
+  // Open-slot top-up field (add_open_slots, Deepika 2026-11-20):
+  targetTotal?: number; // top up so the TOTAL (filled + open) reaches this per date
   // Per-person rotation fields (add_rotation, Deepika 2026-11-17)
   weekdays?: number[]; // 0=Sun..6=Sat, weekly pattern
   cycleWeeks?: number; // 1 = every week, 2 = every other week (default 1)
@@ -1174,12 +1176,12 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
  * computed opens, never a stored shift row, so it can never remove
  * a person. Used by close_open_slots (gate re-checks at execution).
  */
-async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean }> {
+async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean; filled: number }> {
   const { rows: crows } = await query(
     'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
-  if (crows.length) return { total: 0, closed: true };
+  if (crows.length) return { total: 0, closed: true, filled: 0 };
   const { rows: trows } = await query(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -1220,7 +1222,7 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  return { total: Math.max(0, target + extra - filled), closed: false };
+  return { total: Math.max(0, target + extra - filled), closed: false, filled };
 }
 
 /**
@@ -1981,8 +1983,23 @@ export async function executePlan(
         if (!(await canEditDepartment(companyId, createdBy, addDept.id))) {
           throw new Error(`You don't have edit access to ${addDept.name} — a scheduler can only add slots in departments they administer.`);
         }
-        if (!(Number.isInteger(change.addCount) && (change.addCount as number) >= 1 && (change.addCount as number) <= 20)) {
+        // Exactly one amount mode (Deepika, 2026-11-20 — top-up):
+        // addCount (add N per date) or targetTotal (top up so the
+        // total — filled + open — reaches N per date). The gate
+        // checks first; this is the approval-time backstop.
+        const addModes = [
+          typeof change.addCount === 'number' ? 'count' : null,
+          typeof change.targetTotal === 'number' ? 'total' : null,
+        ].filter(Boolean) as string[];
+        if (addModes.length !== 1) {
+          throw new Error(`Say how many open ${st.name} slots to add per date — a number, or a total to reach.`);
+        }
+        const addMode = addModes[0];
+        if (addMode === 'count' && !(Number.isInteger(change.addCount) && (change.addCount as number) >= 1 && (change.addCount as number) <= 20)) {
           throw new Error(`Add how many open ${st.name} slots per date? Give a whole number from 1 to 20.`);
+        }
+        if (addMode === 'total' && !(Number.isInteger(change.targetTotal) && (change.targetTotal as number) >= 1)) {
+          throw new Error(`What total should ${st.name} reach per date? Give a whole number of 1 or more.`);
         }
         const first = String(change.date || change.fromDate);
         const last = String(change.toDate || change.date || change.fromDate);
@@ -2010,16 +2027,36 @@ export async function executePlan(
         const skipped: string[] = [];
         for (const d of dates) {
           if (closedSet.has(d)) { skipped.push(`${d} (closed for ${st.name})`); continue; }
-          await adjustExtraOpenSlots(companyId, d, st.id, change.addCount as number, createdBy);
-          slotsAdded += change.addCount as number;
+          if (addMode === 'total') {
+            // Top-up (Deepika, 2026-11-20 — "make it total 14"):
+            // the delta is re-computed at approval time from the
+            // live schedule (filled + open), never taken from the
+            // plan — a date already at the target is skipped, and
+            // a delta over 20 fails honestly instead of clamping.
+            const t = await openTotals(companyId, d, st.id);
+            const delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+            if (delta === 0) { skipped.push(`${d} (already at ${change.targetTotal} total)`); continue; }
+            if (delta > 20) {
+              throw new Error(`Adding open ${st.name} slots to reach ${change.targetTotal} per date would need ${delta} on ${d} — I can add at most 20 open slots per date.`);
+            }
+            await adjustExtraOpenSlots(companyId, d, st.id, delta, createdBy);
+            slotsAdded += delta;
+          } else {
+            await adjustExtraOpenSlots(companyId, d, st.id, change.addCount as number, createdBy);
+            slotsAdded += change.addCount as number;
+          }
         }
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
         if (slotsAdded === 0) {
-          results.push({ action: change.action, success: false, message: `${st.name} is already closed in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
+          results.push({ action: change.action, success: false, message: addMode === 'total'
+            ? `${st.name} is already at ${change.targetTotal} total in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.`
+            : `${st.name} is already closed in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
         } else {
           results.push({
             action: change.action, success: true,
-            message: `Added ${slotsAdded} open ${st.name} slot${slotsAdded === 1 ? '' : 's'} in ${addDept.name} (${change.addCount} per date${range})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
+            message: addMode === 'total'
+              ? `Added ${slotsAdded} open ${st.name} slot${slotsAdded === 1 ? '' : 's'} in ${addDept.name} (topped up to ${change.targetTotal} total per date${range})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`
+              : `Added ${slotsAdded} open ${st.name} slot${slotsAdded === 1 ? '' : 's'} in ${addDept.name} (${change.addCount} per date${range})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
           });
         }
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {

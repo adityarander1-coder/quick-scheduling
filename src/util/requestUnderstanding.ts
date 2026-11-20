@@ -464,6 +464,13 @@ export function isAddScopeCorrection(message: string, history: Array<{ q: string
  * - Type: a plural ("day hospitalists") is the live type.
  * - Amount, from the request's words — the model's guess never
  *   overrides them: "add 3" is addCount 3.
+ * - TOP-UP (Deepika, 2026-11-20 — "make it total 14"): a total
+ *   word ("total 14", "make it total 14", "total slots upto 14",
+ *   "make it 14") is targetTotal 14, never addCount — and the
+ *   "add 2" inside "add 2 open slots to make it 14" is the
+ *   DIFFERENCE the system works out, so it must never override
+ *   the total. A plain "add 14 open slots" (no total word) stays
+ *   addCount 14.
  * - Month scope: an add change sitting inside the named month
  *   without covering it is widened to the whole month ("nov month"
  *   → Nov 1–30, never today).
@@ -479,13 +486,23 @@ export function normalizeAddPlan(
   const text = requestText || '';
   const scope = parseMonthScope(text, today);
   const addM = text.match(/\badd\s+(\d{1,3})\b/i);
+  // Top-up total, from the request's words: "total slots upto 14",
+  // "total 14 slots", "make it total 14", "make it 14", "up to 14
+  // total slots". Checked BEFORE the add-count rule below — the
+  // "add 2" in "add 2 open slots to make it 14" is not an amount.
+  const totalM = text.match(/\btotal\s+(?:slots?\s+)?(?:up\s*to|upto|of)?\s*(\d{1,3})\b/i)
+    || text.match(/\bmake\s+it\s+(?:total\s+)?(\d{1,3})\b/i)
+    || text.match(/\bup\s*to\s+(\d{1,3})\s+(?:total\s+)?slots?\b/i);
   for (const c of plan?.changes || []) {
     if (c?.action !== 'add_open_slots') continue;
     if (c.shiftType) {
       const hit = shiftNames.find((n) => new RegExp(`^${NAME_ESC(n)}s?$`, 'i').test(String(c.shiftType).trim()));
       if (hit) c.shiftType = hit;
     }
-    if (addM) {
+    if (totalM) {
+      const n = parseInt(totalM[1], 10);
+      if (c.targetTotal !== n) { delete c.addCount; c.targetTotal = n; }
+    } else if (addM) {
       const n = parseInt(addM[1], 10);
       if (c.addCount !== n) c.addCount = n;
     }
