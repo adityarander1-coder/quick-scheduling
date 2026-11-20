@@ -1477,15 +1477,41 @@
     .shift-grid.qs-selected, .open-slot.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; position: relative; }
     .shift-grid.qs-selected::after, .open-slot.qs-selected::after { content: '✓'; position: absolute; top: -9px; right: -9px; z-index: 5; width: 22px; height: 22px; border-radius: 50%; background: #0e7c86; color: #fff; font-size: 13px; font-weight: 800; line-height: 22px; text-align: center; box-shadow: 0 2px 6px rgba(8,63,77,.4); pointer-events: none; }
     .qs-person.qs-selected { outline: 3px solid #0e7c86 !important; outline-offset: 1px; background: #dff0f1 !important; }
-    /* Double-shift blink (Deepika, 2026-11-19): a person on any two
-       DIFFERENT shifts the same day blinks for 5 seconds when the
-       schedule renders, then stays solid. Opacity only — the teal
-       palette is untouched, no new colour. Re-rendering restarts
-       it; the 30-second poll only re-renders on a real data change,
-       so the blink never loops on its own. */
-    @keyframes qs-double-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
-    .qs-double-shift { animation: qs-double-blink 1s ease-in-out 5; }
-    @media (prefers-reduced-motion: reduce) { .qs-double-shift { animation: none; } }
+    /* Double-shift blink (Deepika, 2026-11-19; bright highlight
+       colours, 2026-11-20): a person on any two DIFFERENT shifts
+       the same day flashes in the highlight palette's bright colours
+       for 5 seconds when the schedule renders, then stays solid.
+       The hues are the 10 HIGHLIGHT_COLORS (Red 0, Orange 30,
+       Yellow 50, Lime 85, Green 140, Teal 175, Blue 210, Indigo 250,
+       Purple 280, Pink 330) at 92% saturation / 50% lightness — the
+       palette's own bright values, no new colour invented. (Note:
+       !important inside @keyframes is ignored by Chromium — the
+       animation runs but applies nothing — so the keyframes carry
+       none; the one overlap is a box that is BOTH Highlighted and
+       double-shifted, whose highlight !important background wins
+       for the 5 seconds. That person is already bright.) The step timing
+       holds each pure palette hue for a beat instead of blending
+       between them. The animation also runs on the box's two
+       children (.shift-cat / .shift-nm) — they cover the parent's
+       background, so the parent alone would be invisible on
+       week/day boxes. Re-rendering restarts it; the 30-second poll
+       only re-renders on a real data change, so the blink never
+       loops on its own. */
+    @keyframes qs-double-blink {
+      0% { background-color: hsl(0 92% 50%); }
+      10% { background-color: hsl(30 92% 50%); }
+      20% { background-color: hsl(50 92% 50%); }
+      30% { background-color: hsl(85 92% 50%); }
+      40% { background-color: hsl(140 92% 50%); }
+      50% { background-color: hsl(175 92% 50%); }
+      60% { background-color: hsl(210 92% 50%); }
+      70% { background-color: hsl(250 92% 50%); }
+      80% { background-color: hsl(280 92% 50%); }
+      90% { background-color: hsl(330 92% 50%); }
+      100% { background-color: hsl(0 92% 50%); }
+    }
+    .qs-double-shift, .qs-double-shift .shift-cat, .qs-double-shift .shift-nm { animation: qs-double-blink 1s steps(1, end) 5; }
+    @media (prefers-reduced-motion: reduce) { .qs-double-shift, .qs-double-shift .shift-cat, .qs-double-shift .shift-nm { animation: none; } }
     /* Open-slot chevron (Deepika, 2026-11-17): the down-arrow menu
        button on an open slot, like the one on filled shift boxes.
        A <span>, not a <button> — the manager open slot IS a button,
