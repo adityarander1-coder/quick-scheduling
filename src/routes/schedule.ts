@@ -10865,6 +10865,114 @@ function parseTaskHistory(body: any): Array<{ q: string; a: string }> {
   })).filter((h: any) => h.q) : [];
 }
 
+// Server-side Ask/Task thread (Deepika, 2026-11-19 — N3
+// extension: "I want chat in ask task not to forget anything from
+// past"). The current conversation is stored per user per company,
+// so it survives reloads and tab switches; the CURRENT pending
+// task is marked as current (pending_plan_id / pending_token), so
+// the fixers only ever narrow or re-scope the plan this
+// conversation is about. The server thread is canonical: the
+// client sends history for older clients only — when the stored
+// thread is empty it seeds from the client's history, otherwise
+// the stored turns win.
+async function loadThreadState(companyId: string, userId: string | null | undefined, clientHistory: Array<{ q: string; a: string }>) {
+  const { loadCurrentTaskThread } = await import('../util/taskThreads.js');
+  const stored = userId ? await loadCurrentTaskThread(query, companyId, userId) : null;
+  const history = stored && stored.thread.length ? stored.thread : clientHistory;
+  return { stored, history };
+}
+
+// Is this message a continuation of the current conversation — a
+// reply to the open clarification, one of the deterministic fixer
+// shapes, or an answer to the last turn's question — rather than a
+// fresh task? A fresh task archives the current thread and starts a
+// new one (one conversation = one task plan), so the planner never
+// sees the old plan's dates or types. Shape-only checks here (no
+// name resolution): a narrowing-shaped reply that names no known
+// type still belongs to this round — the fixer returns null and the
+// planner handles it with the thread context.
+async function isThreadContinuation(message: string, history: Array<{ q: string; a: string }>, stored: any) {
+  if (stored?.pending_token) return true;
+  const layer = await import('../util/requestUnderstanding.js');
+  const { isCandidateRequest, isTaskLike, isQuestionForm } = await import('../util/askRouting.js');
+  if (layer.parseAmountAnswer(message)) return true;
+  if (layer.parseYesNoAnswer(message)) return true;
+  if (layer.isFormRequest(message, history)) return true;
+  if (layer.isTaskCorrection(message, history)) return true;
+  if (isCandidateRequest(message)) return true;
+  // A pure question never starts a new task thread (Deepika,
+  // 2026-11-19 — N3: "Are we short next week?" asked mid-round is
+  // a sidestep in the SAME conversation, not a new task — segmenting
+  // it orphaned the task the next correction ("I asked you about
+  // the whole nov month") needed to rebuild. The deflection answer
+  // stays in the thread, so the correction after it still finds its
+  // task turn. A question asked after a round closed is harmless
+  // here: the next task-shaped message still segments.
+  if (isQuestionForm(message) && !isTaskLike(message)) return true;
+  const m = (message || '').trim();
+  if (/^(no[,.]?\s+)?(only|just|for)\s+/i.test(m)
+    && !/\b(close|assign|add|move|swap|delete|remove|publish|set|change|give|make|create|schedule)\b/i.test(m)
+    && !/\b(20\d{2}-\d{2}-\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(m)) return true;
+  const last = history[history.length - 1];
+  if (last && last.a && last.a.trim().endsWith('?') && !isTaskLike(message)) return true;
+  return false;
+}
+
+// Record one turn in the stored thread and answer. `markers`
+// updates the CURRENT pending task: a plan sets pending_plan_id, a
+// clarification sets pending_token, an omitted marker keeps the
+// stored value, an explicit null clears it (round closed). The
+// stored thread rides the response as `thread` — the client
+// replaces its local thread with it, so the two never drift.
+async function taskThreadReply(
+  res: Response, companyId: string, userId: string | null | undefined, stored: any,
+  message: string, answerText: string, payload: any,
+  markers?: { pendingPlanId?: string | null; pendingToken?: string | null },
+) {
+  const { saveCurrentTaskThread } = await import('../util/taskThreads.js');
+  const turns = [...(stored?.thread || []), { q: message, a: answerText }];
+  try {
+    const saved = await saveCurrentTaskThread(query, companyId, userId || '', turns, {
+      title: stored ? undefined : message.slice(0, 120),
+      pendingPlanId: markers?.pendingPlanId === undefined ? (stored?.pending_plan_id ?? null) : markers.pendingPlanId,
+      pendingToken: markers?.pendingToken === undefined ? (stored?.pending_token ?? null) : markers.pendingToken,
+    });
+    res.json({ ...payload, thread: saved.thread });
+  } catch {
+    res.json(payload);
+  }
+}
+
+// Map a Task-door result (fixer / planner / Yes-No / clarification
+// answer) onto its chat payload AND its thread markers in one
+// place, so every path records the turn and marks the current
+// pending task the same way: a plan sets pending_plan_id, a
+// clarification sets pending_token, `closeRound` clears both.
+async function replyTaskResult(
+  res: Response, companyId: string, userId: string | null | undefined, stored: any,
+  message: string, result: any, opts?: { closeRound?: boolean },
+) {
+  if (result.kind === 'plan') {
+    await taskThreadReply(res, companyId, userId, stored, message, result.summary,
+      { kind: 'plan', planId: result.planId, summary: result.summary, changes: result.changes, status: result.status, partnerName: result.partnerName },
+      { pendingPlanId: result.planId, pendingToken: null });
+  } else if (result.kind === 'clarification') {
+    await taskThreadReply(res, companyId, userId, stored, message, result.question,
+      { kind: 'clarification', question: result.question, options: result.options, items: result.items || null, clarificationToken: result.clarificationToken || null, originalTask: result.originalTask },
+      { pendingPlanId: null, pendingToken: result.clarificationToken || null });
+  } else if (result.kind === 'open-add-member-form') {
+    await taskThreadReply(res, companyId, userId, stored, message, 'Fill in the details in the form.',
+      { kind: 'open-add-member-form', prefill: result.prefill, originalTask: result.originalTask });
+  } else if (result.kind === 'answer') {
+    await taskThreadReply(res, companyId, userId, stored, message, result.answer,
+      { kind: 'answer', answer: result.answer },
+      opts?.closeRound ? { pendingPlanId: null, pendingToken: null } : undefined);
+  } else if (result.kind === 'error') {
+    await taskThreadReply(res, companyId, userId, stored, message, result.error,
+      { kind: 'error', error: result.error });
+  }
+}
+
 // Build a plan from a plain-language task: roster context + Gemini, with one
 // retry when Gemini's answer is unparseable (a fresh attempt usually parses).
 async function runTaskPlan(companyId: string, task: string, history: Array<{ q: string; a: string }>) {
@@ -10923,12 +11031,161 @@ async function runTaskPlan(companyId: string, task: string, history: Array<{ q: 
   return { plan, memberNames: uRows.map((r: any) => r.name), shiftNames: stRows.map((r: any) => r.name) };
 }
 
+// Deterministic fixers, shared by BOTH doors (Deepika, 2026-11-19
+// — issue N2, same-brain break: these cores live in
+// util/taskFixers.ts so the email door runs them too; the wrappers
+// below only finalize through finalizeTaskPlan). The fixers run
+// BEFORE the planner and BEFORE the question signpost (issue N1),
+// so a correction phrased as a question ("What about the whole
+// month?", "Only Day Hospitalist?") rebuilds the plan instead of
+// deflecting to Ask. `opts.sourceSubject` is the pending-plan
+// lookup key ('In-app agent task' here, the original email's
+// subject on the email door); `opts.currentPlanId` narrows the
+// lookup to the CURRENT thread's pending plan (N3) when set.
+async function finalizeToTaskReply(
+  companyId: string, plan: any, message: string, history: Array<{ q: string; a: string }>,
+  senderEmail: string | null, requesterUserId: string | null | undefined,
+) {
+  const { rows: stRows } = await query(
+    'SELECT name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]);
+  const { rows: uRows } = await query(
+    `SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+     FROM users WHERE company_id = $1 AND is_active = true`, [companyId]);
+  const fin = await finalizeTaskPlan(companyId, plan, message,
+    uRows.map((r: any) => r.name), stRows.map((r: any) => r.name),
+    senderEmail, requesterUserId,
+    [message, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
+  if (fin.type === 'clarification') {
+    return { kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message };
+  }
+  return { kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName };
+}
+
+async function tryResolveCloseAmount(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined) {
+  const { buildCloseAmountPlan } = await import('../util/taskFixers.js');
+  const built = await buildCloseAmountPlan(query, companyId, message, history);
+  if (!built) return null;
+  return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
+}
+
+async function tryNarrowPendingClosePlan(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined, opts?: { sourceSubject?: string; currentPlanId?: string | null }) {
+  const { narrowPendingPlan } = await import('../util/taskFixers.js');
+  const res = await narrowPendingPlan(query, companyId, message, history,
+    senderEmail, opts?.sourceSubject || 'In-app agent task', requesterUserId, opts?.currentPlanId);
+  if (!res) return null;
+  if (res.kind === 'clarification') {
+    return { kind: 'clarification', question: res.question, options: [], items: null, clarificationToken: null, originalTask: message };
+  }
+  return finalizeToTaskReply(companyId, res.plan, message, history, senderEmail, requesterUserId);
+}
+
+async function tryFixCloseScope(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined, opts?: { sourceSubject?: string; currentPlanId?: string | null }) {
+  const { fixCloseScopePlan } = await import('../util/taskFixers.js');
+  const built = await fixCloseScopePlan(query, companyId, message, history,
+    senderEmail, opts?.sourceSubject || 'In-app agent task', requesterUserId, opts?.currentPlanId);
+  if (!built) return null;
+  return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
+}
+
+// Bare Yes/No (Deepika, 2026-11-19 — issue N5): Gemini still asks
+// yes/no questions ("Would you like me to do that?"), so a bare
+// reply is read HERE, never by the model. Yes proceeds with the last
+// task (the one the question was about — never the bare "Yes", which
+// the planner fails on alone); with no yes/no question open, Yes
+// re-presents the pending plan when there is one, else asks what to
+// do. No closes the round plainly, never a fresh plan.
+type YesNoResult =
+  | { kind: 'answer'; answer: string; closeRound?: boolean }
+  | { kind: 'plan'; planId: string; summary: string; changes: any[]; status?: string }
+  | { kind: 'proceed'; task: string };
+
+async function tryAnswerYesNo(
+  companyId: string, message: string, history: Array<{ q: string; a: string }>,
+  stored: any, senderEmail: string | null,
+): Promise<YesNoResult | null> {
+  const { parseYesNoAnswer, isYesNoQuestion } = await import('../util/requestUnderstanding.js');
+  const yn = parseYesNoAnswer(message);
+  if (!yn) return null;
+  const last = history[history.length - 1];
+  if (yn === 'no') {
+    let noAnswer = 'Okay — nothing changed.';
+    if (stored?.pending_token) {
+      try {
+        const { loadClarificationByToken, clearPendingClarification } = await import('../util/pendingClarifications.js');
+        const prow = await loadClarificationByToken(query, stored.pending_token);
+        if (prow?.options?.items?.length) noAnswer = 'Okay — nothing changed. If none of those names is right, tap ‘none of these’ on the question to pick from the full team.';
+        await clearPendingClarification(query, companyId, senderEmail || '');
+      } catch { /* best-effort */ }
+    }
+    return { kind: 'answer', answer: noAnswer, closeRound: true };
+  }
+  if (last && isYesNoQuestion(last.a)) return { kind: 'proceed', task: last.q };
+  if (stored?.pending_plan_id) {
+    const { rows: prow } = await query(
+      `SELECT id, plan_summary, plan, status FROM schedule_plans WHERE id = $1 AND company_id = $2 AND status = 'pending'`,
+      [stored.pending_plan_id, companyId]);
+    if (prow[0]) {
+      return { kind: 'plan', planId: prow[0].id, summary: prow[0].plan_summary, changes: prow[0].plan?.changes || [], status: prow[0].status };
+    }
+  }
+  return { kind: 'answer', answer: 'What would you like me to do?' };
+}
+
+// Typed reply to an open clarification (Deepika, 2026-11-19 — issue
+// N4): ask-task never called matchPendingClarification, so a typed
+// answer ("Fay Close") to a name question only worked as a tap.
+// With the thread's pending token known, a typed reply is resolved
+// against the row's items with the SAME resolution lines as the tap
+// path (completeTaskFromPicks), then completed the same way. A
+// typed reply matching nothing falls through to the planner with
+// the reply stitched to the original request, as the email door
+// does — never an error.
+async function tryAnswerOpenClarification(
+  companyId: string, message: string, senderEmail: string | null,
+  pendingToken: string | null, requesterUserId: string | null | undefined,
+) {
+  if (!pendingToken || !senderEmail) return null;
+  const { loadClarificationByToken, recordClarificationAnswers } = await import('../util/pendingClarifications.js');
+  const row = await loadClarificationByToken(query, pendingToken);
+  if (!row || row.company_id !== companyId || row.sender_address !== senderEmail) return null;
+  const { resolveTypedClarificationAnswer } = await import('../util/taskFixers.js');
+  const resolved = resolveTypedClarificationAnswer(row, message);
+  if (!resolved) return null;
+  const items: any[] = row.options?.items || [];
+  const allAnswered = items.every((_: any, i: number) => !!resolved.answers[String(i)]);
+  if (!allAnswered) {
+    await recordClarificationAnswers(query, row.id, resolved.answers);
+    const left = items.filter((_: any, i: number) => !resolved.answers[String(i)]).length;
+    return { kind: 'answer', answer: `Got it — ${resolved.lines.join(' ')} ${left} question${left === 1 ? '' : 's'} left. Answer the next one or tap it.` };
+  }
+  const { resolutionLine } = await import('../util/clarifyOptions.js');
+  const lines = items.map((item: any, i: number) => resolutionLine(item, resolved.answers[String(i)]) || resolved.lines[i] || '');
+  const stitched =
+    `${row.original_body}\n\n--- Sender's reply to the clarification question ---\n${lines.join('\n')}`;
+  const done = await finishTaskCompletion(row, resolved.answers, stitched) as any;
+  if (!done.ok) return { kind: 'error', error: done.error };
+  if (done.kind === 'plan') return { kind: 'plan', planId: done.planId, summary: done.summary, changes: done.changes, status: done.status, partnerName: done.partnerName };
+  if (done.kind === 'open-add-member-form') return { kind: 'open-add-member-form', prefill: done.prefill, originalTask: done.originalTask };
+  return { kind: 'clarification', question: done.question, options: done.options, items: done.items || null, clarificationToken: done.token || null, originalTask: done.originalTask };
+}
+
 // Validate a parsed plan (names, then completeness) and insert it as pending,
 // or return the clarification that unblocks it. Every blocking problem is
 // gathered first: one problem keeps today's targeted question + tappable
 // options, several become ONE question listing everything needed, so the
 // user answers once instead of one question per detail.
-async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[], senderEmail?: string | null, requesterUserId?: string | null) {
+async function finalizeTaskPlan(companyId: string, plan: any, task: string, memberNames: string[], shiftNames: string[], senderEmail?: string | null, requesterUserId?: string | null, requestText?: string | null) {
+  // Intent seam (Deepika, 2026-11-19 — shared understanding layer):
+  // Gemini returns the INTENT; the layer resolves exact dates, types
+  // and amounts from the request's own words (message + history, so
+  // a bare-number answer still sees the dates it answers) against
+  // the live lists, before the gate ever sees the plan — the same
+  // pass the email door runs in processScheduleEmail.
+  {
+    const { normalizeClosePlan } = await import('../util/requestUnderstanding.js');
+    const todayISO = new Date().toISOString().slice(0, 10);
+    normalizeClosePlan(plan, requestText || task, shiftNames, todayISO);
+  }
   const { collectNameProblems, decideClarification } = await import('../util/askRouting.js');
   const nameProblems = collectNameProblems(plan, memberNames, shiftNames);
   const { changeProblems } = await import('../util/emailPoller.js');
@@ -10959,13 +11216,19 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   if (plan.changes?.length && !problems.length) {
     try {
       const { gatePlanChanges } = await import('../util/planGate.js');
-      const gate = await gatePlanChanges(query, companyId, plan.changes);
+      const gate = await gatePlanChanges(query, companyId, plan.changes, requestText || undefined);
       if (!gate.ok) {
         gateQuestion = gate.question;
         gateItems = gate.items || null;
         gateHolderMismatch = !!gate.holderMismatch;
         gateBlockedByConflict = gate.blockedBy === 'conflict';
         problems.push({ text: gate.question, options: [] });
+      } else if (gate.details?.length) {
+        // Plan numbers (Deepika, 2026-11-19 — the close plan showed
+        // no numbers): the gate's per-change lines ride on the
+        // summary, so both doors show opens per date, how many
+        // will close, and the empty-only guarantee.
+        plan.summary = `${plan.summary || ''}\n${gate.details.join('\n')}`;
       }
     } catch (gateErr: any) {
       console.error('[schedule] plan gate failed to run:', gateErr?.message);
@@ -10987,6 +11250,32 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   // Anything the merge cannot buttonize falls through to the
   // prose behavior below, byte-identical to before.
   if (!plan.changes?.length || problems.length) {
+    // In-app form fallback (Deepika, 2026-11-19 — issue I): the EMAIL
+    // door answers an incomplete add-member request with the form
+    // link (emailPoller); the Task door must open the SAME form as a
+    // popup instead of asking one question at a time. This runs
+    // BEFORE the clarification merge below: the merge reads name-like
+    // words out of the request's own phrasing ("new" in "Add a new
+    // team member" matched a roster last name, Ivy New) and diverts
+    // to a "did you mean …?" question — a word of the request is not
+    // a person to disambiguate, and the form is the answer for an
+    // incomplete add either way. Same trigger condition as the email
+    // door. The client opens the popup from this signal (queue-safe,
+    // so it works even when the Team module hasn't loaded yet).
+    {
+      const addAskRe = /^(?:please\s+|can you\s+|could you\s+)?add\s+(?:(?:a|an|new)\s+)*team\s+members?\b/i;
+      const hasChanges = (plan.changes || []).length > 0;
+      const onlyAddMember = hasChanges && (plan.changes || []).every((c: any) => c.action === 'add_team_member');
+      // N10: "Give me the form" is itself the request for the form —
+      // it matches neither the add trigger nor an add-only plan, so
+      // without this it fell to the planner and errored.
+      const { isFormRequest } = await import('../util/requestUnderstanding.js');
+      const isAddMemberRequest = onlyAddMember || (!hasChanges && addAskRe.test(task.trim())) || isFormRequest(task, []);
+      if (isAddMemberRequest) {
+        const first = (plan.changes || []).find((c: any) => c.action === 'add_team_member') || {};
+        return { type: 'open-add-member-form' as const, prefill: { firstName: first.firstName || '', lastName: first.lastName || '', deptName: first.department || '' } };
+      }
+    }
     const today = new Date().toISOString().split('T')[0];
     const seedDetail = problems.length
       ? decideClarification(problems).question
@@ -11130,7 +11419,11 @@ router.post('/agent-plan', requireRole('owner', 'scheduler'), async (req: Reques
       res.json({ ok: false, error: classifyPlanError(planErr?.message || '') });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
+    const fin = await finalizeTaskPlan(companyId, plan, task, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId, task);
+    if (fin.type === 'open-add-member-form') {
+      res.json({ ok: true, openAddMemberForm: true, prefill: (fin as any).prefill, originalTask: task });
+      return;
+    }
     if (fin.type === 'clarification') {
       res.json({ ok: false, needsClarification: fin.question, clarificationOptions: fin.options, clarificationItems: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: task });
       return;
@@ -11159,6 +11452,7 @@ type TaskPickResult =
   | { ok: true; allAnswered: false; answers: Record<string, string> }
   | { ok: true; allAnswered: true; kind: 'plan'; planId: string; summary: string; changes: any[]; status?: string; partnerName?: string | null }
   | { ok: true; allAnswered: true; kind: 'clarification'; question: string; options: string[]; items?: any[] | null; token?: string | null; originalTask: string }
+  | { ok: true; allAnswered: true; kind: 'open-add-member-form'; prefill: any; originalTask: string }
   | { ok: false; error: string };
 
 /**
@@ -11179,6 +11473,9 @@ async function finishTaskCompletion(
   try {
     const { plan, memberNames, shiftNames } = await runTaskPlan(row.company_id, stitched, []);
     const fin = await finalizeTaskPlan(row.company_id, plan, stitched, memberNames, shiftNames, row.sender_address);
+    if (fin.type === 'open-add-member-form') {
+      return { ok: true, allAnswered: true, kind: 'open-add-member-form', prefill: (fin as any).prefill, originalTask: stitched };
+    }
     if (fin.type === 'plan') {
       return { ok: true, allAnswered: true, kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName };
     }
@@ -11325,7 +11622,10 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
     const companyId = req.session.companyId!;
     const message = String(req.body?.message || req.body?.task || req.body?.question || '').slice(0, 1000);
     if (!message.trim()) { res.status(400).json({ kind: 'error', error: 'Say something.' }); return; }
-    const history = parseTaskHistory(req.body);
+    const clientHistory = parseTaskHistory(req.body);
+    const threadState = await loadThreadState(companyId, req.session.userId, clientHistory);
+    let stored: any = threadState.stored;
+    let history: Array<{ q: string; a: string }> = threadState.history;
     // Ask | Task toggle (Deepika, 2026-11-08): when the bar sends an
     // explicit mode, the two sides are FULLY separate — no routing. Ask
     // runs the question engine ONLY (it never creates a plan); Task runs
@@ -11340,24 +11640,78 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
         // Employees keep the standing guard: task-like text gets the
         // Requests pointer before any answering happens.
         if (routeAskTask(message, [], 'employee') === 'employee-pointer') {
-          res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+          const empPointer = 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.';
+          await taskThreadReply(res, companyId, req.session.userId, stored, message, empPointer, { kind: 'answer', answer: empPointer });
           return;
         }
       } else if (looksLikeBareInstruction(message)) {
-        res.json({ kind: 'answer', answer: ASK_MODE_SIGNPOST });
+        await taskThreadReply(res, companyId, req.session.userId, stored, message, ASK_MODE_SIGNPOST, { kind: 'answer', answer: ASK_MODE_SIGNPOST });
         return;
       }
       const ctx = await buildAskContext(req);
       const { answerQuestionDetailed } = await import('../util/askEngine.js');
       const { answer } = await answerQuestionDetailed(message, ctx);
-      res.json({ kind: 'answer', answer });
+      await taskThreadReply(res, companyId, req.session.userId, stored, message, answer, { kind: 'answer', answer });
       return;
     }
     if (mode === 'task') {
+      const empPointer = 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.';
       if (req.session.role === 'employee') {
-        res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+        await taskThreadReply(res, companyId, req.session.userId, stored, message, empPointer, { kind: 'answer', answer: empPointer });
         return;
       }
+      const layer = await import('../util/requestUnderstanding.js');
+      const taskSenderEmail = await sessionUserEmail(req);
+      // New task → new thread (Deepika, 2026-11-19 — N3: one
+      // conversation = one task plan). A fresh instruction archives
+      // the current conversation and starts a new one, so the
+      // planner never sees the old plan's dates or types; a
+      // continuation (reply to the open clarification, a fixer
+      // shape, an answer to the last question) stays in the thread.
+      if (stored && stored.thread.length > 0 && !(await isThreadContinuation(message, history, stored))) {
+        const { startNewTaskThread } = await import('../util/taskThreads.js');
+        stored = await startNewTaskThread(query, companyId, req.session.userId!, message.slice(0, 120));
+        history = [];
+      }
+      const fixerOpts = { currentPlanId: stored?.pending_plan_id || null };
+      // Deterministic replies run BEFORE the planner AND before the
+      // question signpost (issues A + D + L, N1): a bare number, a
+      // narrowing, or a scope correction phrased as a question
+      // ("What about the whole month?", "Only Day Hospitalist?")
+      // rebuilds the plan instead of deflecting to Ask.
+      const narrowed = await tryNarrowPendingClosePlan(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts);
+      if (narrowed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, narrowed); return; }
+      const amountResolved = await tryResolveCloseAmount(companyId, message, history, taskSenderEmail, req.session.userId);
+      if (amountResolved) { await replyTaskResult(res, companyId, req.session.userId, stored, message, amountResolved); return; }
+      const scopeFixed = await tryFixCloseScope(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts);
+      if (scopeFixed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, scopeFixed); return; }
+      // Bare Yes/No (Deepika, 2026-11-19 — issue N5): read HERE,
+      // never by the model — Yes proceeds with the last task, No
+      // closes the round plainly, never a fresh plan.
+      const ynResult = await tryAnswerYesNo(companyId, message, history, stored, taskSenderEmail);
+      const effectiveMessage = ynResult?.kind === 'proceed' ? ynResult.task : message;
+      if (ynResult && ynResult.kind !== 'proceed') {
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, ynResult,
+          ynResult.kind === 'answer' && (ynResult as any).closeRound ? { closeRound: true } : undefined);
+        return;
+      }
+      // "Give me the form" (Deepika, 2026-11-19 — issue N10): route
+      // to the form, never the planner — the client interception
+      // covers the browser, this covers every other caller. Prefill
+      // carries a bare name already given in the round.
+      if (layer.isFormRequest(message, history)) {
+        let prefill = { firstName: '', lastName: '', deptName: '' };
+        for (let i = history.length - 1; i >= 0; i--) {
+          const bn = layer.parseBareName(history[i].q);
+          if (bn) { prefill = { firstName: bn.firstName, lastName: bn.lastName, deptName: '' }; break; }
+        }
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'open-add-member-form', prefill, originalTask: message });
+        return;
+      }
+      // Typed reply to an open clarification (issue N4): resolved
+      // against the row's items with the tap path's resolution lines.
+      const clarAnswered = await tryAnswerOpenClarification(companyId, message, taskSenderEmail, stored?.pending_token || null, req.session.userId);
+      if (clarAnswered) { await replyTaskResult(res, companyId, req.session.userId, stored, message, clarAnswered); return; }
       // Candidate listing (Deepika, 2026-11-17): when the planner
       // asked who to assign and the requester answers "Give me
       // names", offer the names right here as tappable buttons —
@@ -11370,7 +11724,10 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
       const { isCandidateRequest } = await import('../util/askRouting.js');
       if (isCandidateRequest(message) && history.length > 0) {
         const joinedHistory = history.map((h: any) => `${h.q}\n${h.a}`).join('\n');
-        if (/\bassign\b/i.test(joinedHistory)) {
+        // N8: any who-question round counts, not only one that
+        // happens to contain the word "assign" ("Can you give me
+        // names?" after "Who can cover Friday?").
+        if (/\bassign\b|\bwho\s+(can|should|could)\b/i.test(joinedHistory)) {
           const candSenderEmail = await sessionUserEmail(req);
           if (candSenderEmail) {
             const { buildCandidateClarification } = await import('../util/candidateNames.js');
@@ -11380,34 +11737,62 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
               originalTask: history[0].q,
             });
             if (cand) {
-              res.json({ kind: 'clarification', question: cand.detail, options: [], items: cand.items, clarificationToken: cand.token, originalTask: cand.originalTask });
+              await replyTaskResult(res, companyId, req.session.userId, stored, message,
+                { kind: 'clarification', question: cand.detail, options: [], items: cand.items, clarificationToken: cand.token, originalTask: cand.originalTask });
               return;
             }
           }
         }
       }
+      // Question deflection (Deepika, 2026-11-19 — issue H): Task
+      // mode runs the planner directly, so a question-form message
+      // ("Are we short next week?") was hijacked by the thread's
+      // history and deflected into a close question. A message that
+      // reads as a question and not as a task gets the flip-to-Ask
+      // signpost here, before the planner ever sees it. (A real
+      // short-staffed check is a separate decision — the signpost
+      // lands the question where the Ask engine can answer it.)
+      // N1: a task correction is exempt — it is a refinement, not a
+      // question, even when phrased as one.
+      const { isQuestionForm, isTaskLike, TASK_MODE_SIGNPOST } = await import('../util/askRouting.js');
+      if (isQuestionForm(effectiveMessage) && !isTaskLike(effectiveMessage) && !layer.isTaskCorrection(effectiveMessage, history)) {
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'answer', answer: TASK_MODE_SIGNPOST });
+        return;
+      }
       let plan: any, memberNames: string[], shiftNames: string[];
       try {
-        ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, message, history));
+        ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, effectiveMessage, history));
       } catch (planErr: any) {
         const { classifyPlanError } = await import('../util/planHelpers.js');
-        console.error('[schedule] ask-task (task mode) plan failed:', planErr?.message, 'task:', message.slice(0, 200));
-        res.json({ kind: 'error', error: classifyPlanError(planErr?.message || '') });
+        console.error('[schedule] ask-task (task mode) plan failed:', planErr?.message, 'task:', effectiveMessage.slice(0, 200));
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'error', error: classifyPlanError(planErr?.message || '') });
         return;
       }
       if ((plan as any).emailType === 'schedule_question') {
         // The planner's "not an instruction" outcome: on the Task side a
-        // pure question gets the flip-to-Ask signpost, not an answer.
-        const { TASK_MODE_SIGNPOST } = await import('../util/askRouting.js');
-        res.json({ kind: 'answer', answer: TASK_MODE_SIGNPOST });
+        // pure question gets the flip-to-Ask signpost, not an answer —
+        // EXCEPT a task correction ("I asked you about the whole nov
+        // month"), which is a refinement the deterministic fixer
+        // above should have caught; if it could not rebuild it, the
+        // honest clarification below is still better than deflecting
+        // a correction to Ask (Deepika, 2026-11-19 — issue L, shared
+        // understanding layer: any task correction, not just a close).
+        if (!layer.isTaskCorrection(effectiveMessage, history)) {
+          await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'answer', answer: TASK_MODE_SIGNPOST });
+          return;
+        }
+      }
+      const fin = await finalizeTaskPlan(companyId, plan, effectiveMessage, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId,
+        [effectiveMessage, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
+      if (fin.type === 'open-add-member-form') {
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'open-add-member-form', prefill: (fin as any).prefill, originalTask: effectiveMessage });
         return;
       }
-      const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
       if (fin.type === 'clarification') {
-        res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: effectiveMessage });
         return;
       }
-      res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
       return;
     }
     // Routing is decided from state + wording (see util/askRouting): a
@@ -11418,42 +11803,97 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
     // can't answer falls through to the plan path below.
     const { routeAskTask } = await import('../util/askRouting.js');
     const route = routeAskTask(message, history, req.session.role!);
+    const empPointer = 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.';
     if (route === 'employee-pointer') {
-      res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+      await taskThreadReply(res, companyId, req.session.userId, stored, message, empPointer, { kind: 'answer', answer: empPointer });
       return;
     }
+    const noModeSenderEmail = await sessionUserEmail(req);
+    const noModeLayer = await import('../util/requestUnderstanding.js');
+    // New task → new thread (N3), same as Task mode — but only for
+    // task-shaped messages; questions stay in the current thread.
+    if (route !== 'question' && stored && stored.thread.length > 0 && !(await isThreadContinuation(message, history, stored))) {
+      const { startNewTaskThread } = await import('../util/taskThreads.js');
+      stored = await startNewTaskThread(query, companyId, req.session.userId!, message.slice(0, 120));
+      history = [];
+    }
+    // Deterministic replies first (issues A + D + L, N1) — same as
+    // Task mode, so a correction or a bare number never reaches the
+    // question branch.
+    const noModeFixerOpts = { currentPlanId: stored?.pending_plan_id || null };
+    const noModeNarrowed = await tryNarrowPendingClosePlan(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts);
+    if (noModeNarrowed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeNarrowed); return; }
+    const noModeAmount = await tryResolveCloseAmount(companyId, message, history, noModeSenderEmail, req.session.userId);
+    if (noModeAmount) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeAmount); return; }
+    const noModeScope = await tryFixCloseScope(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts);
+    if (noModeScope) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeScope); return; }
+    // Bare Yes/No (N5) — same as Task mode.
+    const noModeYn = await tryAnswerYesNo(companyId, message, history, stored, noModeSenderEmail);
+    const noModeEffective = noModeYn?.kind === 'proceed' ? noModeYn.task : message;
+    if (noModeYn && noModeYn.kind !== 'proceed') {
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeYn,
+        noModeYn.kind === 'answer' && (noModeYn as any).closeRound ? { closeRound: true } : undefined);
+      return;
+    }
+    // "Give me the form" (N10) — same as Task mode.
+    if (noModeLayer.isFormRequest(message, history)) {
+      let prefill = { firstName: '', lastName: '', deptName: '' };
+      for (let i = history.length - 1; i >= 0; i--) {
+        const bn = noModeLayer.parseBareName(history[i].q);
+        if (bn) { prefill = { firstName: bn.firstName, lastName: bn.lastName, deptName: '' }; break; }
+      }
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'open-add-member-form', prefill, originalTask: message });
+      return;
+    }
+    // Typed reply to an open clarification (N4) — same as Task mode.
+    const noModeClar = await tryAnswerOpenClarification(companyId, message, noModeSenderEmail, stored?.pending_token || null, req.session.userId);
+    if (noModeClar) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeClar); return; }
     let fallbackAnswer = '';
-    if (route === 'question') {
+    if (route === 'question' && noModeEffective === message) {
       const ctx = await buildAskContext(req);
       const { answerQuestionDetailed } = await import('../util/askEngine.js');
       const { answer, fallback } = await answerQuestionDetailed(message, ctx);
-      if (!fallback) { res.json({ kind: 'answer', answer }); return; }
+      if (!fallback) { await taskThreadReply(res, companyId, req.session.userId, stored, message, answer, { kind: 'answer', answer }); return; }
       fallbackAnswer = answer;
+      // Question deflection guard (Deepika, 2026-11-19 — issue H):
+      // the route was a question and the engine could only fall
+      // back — a message that reads as a question gets its fallback
+      // answer here, never a plan built from the thread's history
+      // (which is how "Are we short next week?" deflected into a
+      // close question). Task-shaped text ("Can we close …?") is
+      // not question-form, so it still falls through to the planner.
+      const { isQuestionForm: isQF } = await import('../util/askRouting.js');
+      if (isQF(message)) { await taskThreadReply(res, companyId, req.session.userId, stored, message, fallbackAnswer, { kind: 'answer', answer: fallbackAnswer }); return; }
     }
     // Not answerable as a question — treat it as a task (admins only).
     if (req.session.role === 'employee') {
-      res.json({ kind: 'answer', answer: 'Only owners and schedulers can change the schedule. For a change, send a request from the Requests tab and an admin will approve it.' });
+      await taskThreadReply(res, companyId, req.session.userId, stored, message, empPointer, { kind: 'answer', answer: empPointer });
       return;
     }
     let plan: any, memberNames: string[], shiftNames: string[];
     try {
-      ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, message, history));
+      ({ plan, memberNames, shiftNames } = await runTaskPlan(companyId, noModeEffective, history));
     } catch (planErr: any) {
       const { classifyPlanError } = await import('../util/planHelpers.js');
-      console.error('[schedule] ask-task plan failed:', planErr?.message, 'task:', message.slice(0, 200));
-      res.json({ kind: 'error', error: classifyPlanError(planErr?.message || '') });
+      console.error('[schedule] ask-task plan failed:', planErr?.message, 'task:', noModeEffective.slice(0, 200));
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'error', error: classifyPlanError(planErr?.message || '') });
       return;
     }
     if ((plan as any).emailType === 'schedule_question') {
-      res.json({ kind: 'answer', answer: fallbackAnswer || (plan as any).summary || 'I could not answer that question.' });
+      await taskThreadReply(res, companyId, req.session.userId, stored, message, fallbackAnswer || (plan as any).summary || 'I could not answer that question.', { kind: 'answer', answer: fallbackAnswer || (plan as any).summary || 'I could not answer that question.' });
       return;
     }
-    const fin = await finalizeTaskPlan(companyId, plan, message, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId);
+    const fin = await finalizeTaskPlan(companyId, plan, noModeEffective, memberNames, shiftNames, await sessionUserEmail(req), req.session.userId,
+      [noModeEffective, ...history.map((h) => `${h.q}\n${h.a}`)].join('\n'));
+    if (fin.type === 'open-add-member-form') {
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'open-add-member-form', prefill: (fin as any).prefill, originalTask: noModeEffective });
+      return;
+    }
     if (fin.type === 'clarification') {
-      res.json({ kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: message });
+      await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'clarification', question: fin.question, options: fin.options, items: (fin as any).items || null, clarificationToken: (fin as any).token || null, originalTask: noModeEffective });
       return;
     }
-    res.json({ kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
+    await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'plan', planId: fin.planId, summary: fin.summary, changes: fin.changes, status: fin.status, partnerName: fin.partnerName });
   } catch (err) {
     console.error('[schedule] ask-task failed:', err);
     res.status(500).json({ kind: 'error', error: 'Something went wrong. Please try again.' });
@@ -11528,6 +11968,14 @@ router.post('/plans/:id/approve', requireRole('owner', 'scheduler'), async (req:
       // History snapshot (Deepika, 2026-11-17) — an approved plan
       // changes published shifts, so it gets a copy.
       await snapshotPlanExecution(companyId, req.session.userId!, plan, results);
+      // A decided plan stops waiting everywhere (Deepika, 2026-11-19
+      // — issue K): the bell + daily digest must not keep offering
+      // it for approval.
+      try { const { resolvePlanWaiting } = await import('../util/notify.js'); await resolvePlanWaiting(companyId); } catch { /* non-fatal */ }
+      // And it stops being the thread's current pending task (N3
+      // extension): the next fresh instruction starts a new thread
+      // instead of inheriting this plan's dates and types.
+      try { const { clearTaskThreadPendingByPlan } = await import('../util/taskThreads.js'); await clearTaskThreadPendingByPlan(query, companyId, plan.id); } catch { /* non-fatal */ }
       res.json({ ok: true, results, undoable: !!undo });
     } catch (execErr: any) {
       await query(
@@ -11551,6 +11999,10 @@ router.post('/plans/:id/reject', requireRole('owner', 'scheduler'), async (req: 
        WHERE id = $1 AND company_id = $2 AND status = 'pending'`,
       [req.params.id, companyId, req.session.userId!]
     );
+    // A decided plan stops waiting everywhere (issue K — same as approve).
+    try { const { resolvePlanWaiting } = await import('../util/notify.js'); await resolvePlanWaiting(companyId); } catch { /* non-fatal */ }
+    // And it stops being any thread's current pending task (N3 extension).
+    try { const { clearTaskThreadPendingByPlan } = await import('../util/taskThreads.js'); await clearTaskThreadPendingByPlan(query, companyId, req.params.id); } catch { /* non-fatal */ }
     res.json({ ok: true });
   } catch (err) {
     console.error('[schedule] reject plan failed:', err);
@@ -11661,6 +12113,122 @@ router.post('/plans/undo-latest', requireRole('owner', 'scheduler'), async (req:
   }
 });
 
+// GET /api/schedule/undo-state — what the pinned top-bar Undo/Redo pair
+// would undo / redo next (Deepika, 2026-11-19): the newest undoable plan
+// and the newest redoable plan, with their times, so the client can
+// compare them against its grid stack and undo whichever action was
+// LAST (a grid change or a Task plan), not whichever stack is non-empty.
+// Same scoping as undo-latest / redo-latest (owner: anyone's;
+// scheduler: only their own). Read-only — it never applies anything.
+router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const isOwner = req.session.role === 'owner';
+    const userId = req.session.userId!;
+    const { rows: undoRows } = await query(
+      `SELECT id, plan_summary, COALESCE(executed_at, decided_at, created_at) AS at
+       FROM schedule_plans
+       WHERE company_id = $1 AND undo_payload IS NOT NULL AND undone_at IS NULL
+         AND status IN ('executed', 'approved', 'partial')
+         AND ($2 OR decided_by = $3)
+       ORDER BY COALESCE(executed_at, decided_at, created_at) DESC LIMIT 1`,
+      [companyId, isOwner, userId]
+    );
+    const { rows: redoRows } = await query(
+      `SELECT id, plan_summary, undone_at AS at
+       FROM schedule_plans
+       WHERE company_id = $1 AND status = 'undone' AND undone_at IS NOT NULL
+         AND ($2 OR undone_by = $3)
+       ORDER BY undone_at DESC LIMIT 1`,
+      [companyId, isOwner, userId]
+    );
+    // A newer task approved after the undo clears the redo, exactly as
+    // redo-latest refuses it.
+    let planRedo = redoRows.length
+      ? { id: redoRows[0].id, summary: redoRows[0].plan_summary, at: redoRows[0].at ? new Date(redoRows[0].at).toISOString() : null }
+      : null;
+    if (planRedo) {
+      const { rows: newer } = await query(
+        `SELECT 1 FROM schedule_plans
+         WHERE company_id = $1 AND status IN ('executed', 'approved', 'partial')
+           AND executed_at IS NOT NULL AND executed_at > $2 LIMIT 1`,
+        [companyId, redoRows[0].at]
+      );
+      if (newer.length) planRedo = null;
+    }
+    res.json({
+      planUndo: undoRows.length
+        ? { id: undoRows[0].id, summary: undoRows[0].plan_summary, at: undoRows[0].at ? new Date(undoRows[0].at).toISOString() : null }
+        : null,
+      planRedo,
+    });
+  } catch (err) {
+    console.error('[schedule] undo-state failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/task-thread — the stored Ask/Task conversation
+// (Deepika, 2026-11-19 — N3 extension: the chat must not forget
+// anything from the past). Returns the current thread's turns plus
+// the open clarification (question + tappable items + token) when
+// one is open, so the client can re-render the buttons after a
+// reload instead of leaving a dead question. Threads older than 15
+// days are already expired by the loader (her retention rule,
+// Nov 19 ~8:37 PM — she corrected 30 days to 15).
+router.get('/task-thread', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = req.session.userId!;
+    const { loadCurrentTaskThread } = await import('../util/taskThreads.js');
+    const row = await loadCurrentTaskThread(query, companyId, userId);
+    if (!row) {
+      res.json({ thread: [], title: '', pendingPlanId: null, pendingToken: null, openClarification: null });
+      return;
+    }
+    let openClarification: any = null;
+    if (row.pending_token) {
+      try {
+        const { loadClarificationByToken } = await import('../util/pendingClarifications.js');
+        const prow = await loadClarificationByToken(query, row.pending_token);
+        if (prow && prow.company_id === companyId) {
+          openClarification = {
+            question: prow.missing,
+            items: prow.options?.items || null,
+            clarificationToken: prow.answer_token,
+            originalTask: prow.original_body,
+          };
+        }
+      } catch { /* no open clarification to re-render */ }
+    }
+    res.json({
+      thread: row.thread, title: row.title,
+      pendingPlanId: row.pending_plan_id, pendingToken: row.pending_token,
+      openClarification,
+    });
+  } catch (err) {
+    console.error('[schedule] task-thread failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/task-threads — list of stored conversations for
+// the later history build (New task button + reopen, after
+// add_open_slots): id, title, turn count, current flag, timestamps.
+// The full thread JSON is NOT returned here — a reopen fetches one
+// row. No UI reads this yet; the storage is listable by design.
+router.get('/task-threads', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = req.session.userId!;
+    const { listTaskThreads } = await import('../util/taskThreads.js');
+    res.json({ threads: await listTaskThreads(query, companyId, userId, 50) });
+  } catch (err) {
+    console.error('[schedule] task-threads failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/plans/:id/undo — undo one specific executed task.
 router.post('/plans/:id/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -11702,8 +12270,15 @@ async function performPlanRedo(req: Request, res: Response, plan: any): Promise<
     res.status(409).json({ error: e?.message || 'This task can’t be redone cleanly. Nothing was changed.' });
     return false;
   }
+  // A redo RE-EXECUTES the plan, so it stamps executed_at = now():
+  // the pinned Undo/Redo pair compares the plan's time against the
+  // grid stack's times, and a grid redo stamps its entry with the
+  // redo time (qsRedoLast → qsStampUndo). Without this, a redone
+  // plan still carried its ORIGINAL approval time and always looked
+  // older than a redone grid change — the next Undo took the grid
+  // first even though the plan was re-applied last (J-ordering).
   await query(
-    `UPDATE schedule_plans SET status = $2, undone_at = NULL, undone_by = NULL WHERE id = $1`,
+    `UPDATE schedule_plans SET status = $2, undone_at = NULL, undone_by = NULL, executed_at = now() WHERE id = $1`,
     [plan.id, plan.undo_payload.undoneFromStatus || 'executed']
   );
   try {
@@ -11936,6 +12511,20 @@ async function handlePlanApprove(req: Request, res: Response) {
     // History snapshot (Deepika, 2026-11-17) — same as in-app: an
     // email-approved plan changes published shifts, so it gets a copy.
     await snapshotPlanExecution(plan.company_id, decidedBy, plan, results);
+    // A decided plan stops waiting everywhere (issue K — same as the
+    // in-app approve door).
+    try { const { resolvePlanWaiting } = await import('../util/notify.js'); await resolvePlanWaiting(plan.company_id); } catch { /* non-fatal */ }
+    // And it stops being any thread's current pending task (N3 extension).
+    try { const { clearTaskThreadPendingByPlan } = await import('../util/taskThreads.js'); await clearTaskThreadPendingByPlan(query, plan.company_id, plan.id); } catch { /* non-fatal */ }
+    // Undo pointer (Deepika, 2026-11-19 — issue J, same-brain): an
+    // email approver gets the same in-app Undo as the Task chat —
+    // never a keyboard hint, never a pointer at the Schedule tab.
+    const undoLineHtml = undo
+      ? `<p>Changed your mind? Open Quick Scheduling and tap Undo in the top bar to undo this task.</p>`
+      : '';
+    const undoLineText = undo
+      ? `\n\nChanged your mind? Open Quick Scheduling and tap Undo in the top bar to undo this task.`
+      : '';
     const itemHtml = results.map((r: any, i: number) => {
       const badge = r.success
         ? '<span style="display:inline-block;font-size:0.75rem;font-weight:700;color:#166534;background:#dcfce7;border-radius:6px;padding:2px 8px;margin-right:6px">Applied</span>'
@@ -11948,7 +12537,7 @@ async function handlePlanApprove(req: Request, res: Response) {
         `<p>Please contact your scheduler — they can fix the failed change(s) in the app and apply them manually.</p>`;
     res.send(
       `<!doctype html><html><body style="font-family:sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem">` +
-      head + `<ul style="list-style:none;padding:0">${itemHtml}</ul></body></html>`
+      head + `<ul style="list-style:none;padding:0">${itemHtml}</ul>` + undoLineHtml + `</body></html>`
     );
     // Notify the requester of the outcome.
     try {
@@ -11967,8 +12556,8 @@ async function handlePlanApprove(req: Request, res: Response) {
           to: reqEmail,
           cc: ccList.length ? ccList : undefined,
           subject: `Request ${allOk ? 'approved' : 'partially applied'}: ${(plan.plan_summary || '').substring(0, 60)}`,
-          text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\nDetails:\n${detailText}\n\n— Quick Scheduling`,
-          html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><ul>${detailHtml}</ul><p>— Quick Scheduling</p>`,
+          text: `Hi,\n\nYour request was ${outcome}.\n\nSummary: ${plan.plan_summary}\n\n${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}\n\nDetails:\n${detailText}${undoLineText}\n\n— Quick Scheduling`,
+          html: `<p>Hi,</p><p>Your request was <strong>${outcome}</strong>.</p><p><strong>Summary:</strong> ${plan.plan_summary}</p><p>${succeeded} of ${results.length} change(s) applied.${failed ? ` ${failed} failed.` : ''}</p><ul>${detailHtml}</ul>${undoLineHtml}<p>— Quick Scheduling</p>`,
         });
       }
     } catch { /* non-fatal */ }
@@ -12092,6 +12681,18 @@ router.get('/plans/reject/:token', async (req: Request, res: Response) => {
     } else {
       await query(`UPDATE schedule_plans SET status = 'rejected', decided_at = now() WHERE id = $1`, [plan.id]);
     }
+    // A decided plan stops waiting everywhere (issue K — same as approve).
+    try {
+      const { resolvePlanWaiting } = await import('../util/notify.js');
+      const cid = plan.company_id || (await query('SELECT company_id FROM schedule_plans WHERE id = $1', [plan.id])).rows[0]?.company_id;
+      if (cid) await resolvePlanWaiting(cid);
+    } catch { /* non-fatal */ }
+    // And it stops being any thread's current pending task (N3 extension).
+    try {
+      const { clearTaskThreadPendingByPlan } = await import('../util/taskThreads.js');
+      const cid2 = plan.company_id || (await query('SELECT company_id FROM schedule_plans WHERE id = $1', [plan.id])).rows[0]?.company_id;
+      if (cid2) await clearTaskThreadPendingByPlan(query, cid2, plan.id);
+    } catch { /* non-fatal */ }
     // Notify the requester.
     try {
       const { sendMail } = await import('../util/mailer.js');

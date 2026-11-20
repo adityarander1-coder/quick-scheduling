@@ -155,6 +155,19 @@ function cleanOpenSlotRedo(r: any): any | null {
   return { kind: 'openslot', calls: r.calls };
 }
 
+/** Keep an entry's action time (`at`, stamped by the client when the
+ * action happened — or when it was undone, for redo entries) through
+ * the sanitizer, so the pinned Undo/Redo pair can tell which action
+ * was last — a grid change or a Task plan — even after a reload. The
+ * time is advisory only: it never decides whether an entry applies
+ * (the server guards still do that). */
+function isValidAt(s: any): s is string {
+  return typeof s === 'string' && s.length <= 40 && !Number.isNaN(Date.parse(s));
+}
+function withAt<T extends Record<string, any>>(cleaned: T, src: any): T {
+  return isValidAt(src && src.at) ? { ...cleaned, at: src.at } : cleaned;
+}
+
 /** Clean one undo-stack entry; null when it cannot be trusted. */
 export function cleanUndoEntry(e: any): any | null {
   if (!isPlainObject(e) || typeof e.kind !== 'string') return null;
@@ -164,33 +177,33 @@ export function cleanUndoEntry(e: any): any | null {
     if (ops.some((o: any) => !o)) return null;
     const redo = cleanMoveRedo(e.redo) || cleanSwapRedo(e.redo);
     if (!redo) return null;
-    return { kind: 'server', undo: { ops }, redo };
+    return withAt({ kind: 'server', undo: { ops }, redo }, e);
   }
   if (e.kind === 'move') {
     if (!isNonEmptyString(e.shiftId) || !isValidDate(e.fromDate) || !isNonEmptyString(e.fromType)) return null;
     const redo = cleanMoveRedo(e.redo);
     if (!redo) return null;
-    return { kind: 'move', shiftId: e.shiftId, fromDate: e.fromDate, fromType: e.fromType, redo };
+    return withAt({ kind: 'move', shiftId: e.shiftId, fromDate: e.fromDate, fromType: e.fromType, redo }, e);
   }
   if (e.kind === 'swap') {
     if (!isNonEmptyString(e.aId) || !isNonEmptyString(e.bId)) return null;
     const redo = cleanSwapRedo(e.redo);
     if (!redo) return null;
-    return { kind: 'swap', aId: e.aId, bId: e.bId, redo };
+    return withAt({ kind: 'swap', aId: e.aId, bId: e.bId, redo }, e);
   }
   if (e.kind === 'delete') {
     const undo = cleanDeleteUndo(e.undo);
     if (!undo) return null;
     const redo = cleanDeleteRedo(e.redo);
     if (!redo) return null;
-    return { kind: 'delete', undo, redo };
+    return withAt({ kind: 'delete', undo, redo }, e);
   }
   if (e.kind === 'openslot') {
     const undo = cleanOpenSlotUndo(e.undo);
     if (!undo) return null;
     const redo = cleanOpenSlotRedo(e.redo);
     if (!redo) return null;
-    return { kind: 'openslot', undo, redo };
+    return withAt({ kind: 'openslot', undo, redo }, e);
   }
   return null;
 }
@@ -198,10 +211,10 @@ export function cleanUndoEntry(e: any): any | null {
 /** Clean one redo-stack entry; null when it cannot be trusted. Redo entries are the `redo` half of undo entries. */
 export function cleanRedoEntry(e: any): any | null {
   if (!isPlainObject(e) || typeof e.kind !== 'string') return null;
-  if (e.kind === 'move') return cleanMoveRedo(e);
-  if (e.kind === 'swap') return cleanSwapRedo(e);
-  if (e.kind === 'delete') return cleanDeleteRedo(e);
-  if (e.kind === 'openslot') return cleanOpenSlotRedo(e);
+  if (e.kind === 'move') { const r = cleanMoveRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'swap') { const r = cleanSwapRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'delete') { const r = cleanDeleteRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'openslot') { const r = cleanOpenSlotRedo(e); return r ? withAt(r, e) : null; }
   return null;
 }
 

@@ -89,7 +89,7 @@ export interface ShiftChoiceItem {
 export type ClarificationItem = NameAmbiguityItem | ShiftChoiceItem;
 
 export type GateResult =
-  | { ok: true }
+  | { ok: true; details?: string[] }
   | { ok: false; question: string; items?: ClarificationItem[]; holderMismatch?: boolean; blockedBy?: 'conflict' };
 
 interface RosterUser {
@@ -624,10 +624,19 @@ function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string):
 export async function gatePlanChanges(
   query: QueryFn,
   companyId: string,
-  changes: any[]
+  changes: any[],
+  requestText?: string
 ): Promise<GateResult> {
   const list = Array.isArray(changes) ? changes : [];
   if (!list.length) return { ok: true };
+  // Plan numbers (Deepika, 2026-11-19 — the close plan showed no
+  // numbers): §1c collects one plain line per close change — opens
+  // per date, how many will close, and the empty-only guarantee.
+  // The caller appends these to the plan summary; each change also
+  // carries its own line (c.closeDetail) for the Task popup.
+  const gateDetails: string[] = [];
+  const okWithDetails = (): GateResult =>
+    gateDetails.length ? { ok: true, details: gateDetails } : { ok: true };
 
   // The AI can NEVER delete a job role (Deepika, 2026-11-17 — "it
   // can add but cannot delete"): refuse plainly, in both doors,
@@ -729,8 +738,37 @@ export async function gatePlanChanges(
         [companyId]
       );
       const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      // Expansion guard (Deepika, 2026-11-19 — "Close all open
+      // slots for nov month" expanded to EVERY shift type instead
+      // of asking): a plan that closes several types the request
+      // never named is a guess, not a plan. Refuse BEFORE the
+      // per-change checks, asking which type(s). The guard only
+      // fires when every type resolves (an unknown type is refused
+      // by the loop below with its own question) and the request
+      // text names none of them and carries no explicit-all phrase
+      // ("all shift types", "every shift type", "all of them").
+      {
+        const distinct = [...new Set(closeChanges.map((c) => norm(c.shiftType || '')))].filter(Boolean);
+        if (distinct.length >= 2) {
+          const resolvedTypes = distinct.map((n) => typeByName.get(n) || null);
+          if (resolvedTypes.every(Boolean)) {
+            const req = String(requestText || '').toLowerCase();
+            // N7: EVERY type in the plan must be named (or an
+            // explicit-all phrase given) — the old "some type named"
+            // check let one unasked type ride beside the asked one.
+            const namesAll = (resolvedTypes as any[]).every((t) => req.includes(norm(t.name).toLowerCase()));
+            const explicitAll = /\b(all|every|each|any)\s+(of\s+)?(the\s+)?shift\s+types?\b|\ball of them\b|\bclose everything\b/.test(req);
+            if (!namesAll && !explicitAll) {
+              const names = (resolvedTypes as any[]).map((t) => t.name).join(', ');
+              return { ok: false, question: `Which shift type(s) should I close the open slots for? The shift types are ${names} — I won't close every type unless you say "all shift types".` };
+            }
+          }
+        }
+      }
       const validDate = (d: any) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
         && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
+      let firstEmptyWhy: string | null = null;
+      let droppedClose = 0;
       for (const c of closeChanges) {
         const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
         if (!type) {
@@ -738,43 +776,14 @@ export async function gatePlanChanges(
             ? `I couldn't find a shift type called "${c.shiftType}". Which shift type should I close open slots for?`
             : `Which shift type should I close open slots for?` };
         }
-        // Department (Deepika, 2026-11-19 — "It needs to know which
-        // department and which shift"): every close carries the
-        // department it is for. Opens themselves have NO department
-        // dimension — staffing_targets is one row per type, and
-        // extra_open_slots / closed_shifts are keyed (company, date,
-        // type) — so the pool is shared across every department the
-        // type belongs to, exactly like the manual close (whose
-        // routes only check the requester's active department is one
-        // of the type's). The department here scopes WHO may close
-        // (the executor's access check) and labels the close in the
-        // plan, result and Change report; for a type in exactly one
-        // department it IS that department's close.
-        const deptIds = await shiftTypesDepartmentIds([type.id], companyId);
-        const { rows: allDeptRows } = await query(
-          'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
-        );
-        const allDepts = allDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
-        const typeDepts = allDepts.filter((d) => deptIds.includes(d.id));
-        if (c.department && String(c.department).trim()) {
-          const named = allDepts.find((d) => norm(d.name) === norm(c.department));
-          if (!named) {
-            return { ok: false, question: `I couldn't find a department called "${c.department}". Which department should I close the open ${type.name} slots in?` };
-          }
-          if (!typeDepts.some((d) => d.id === named.id)) {
-            const where = typeDepts.length
-              ? `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}`
-              : `${type.name} isn't assigned to any department yet`;
-            return { ok: false, question: `${type.name} isn't part of ${named.name} — ${where}. Which department should I close the open slots in?` };
-          }
-          c.department = named.name; // canonical
-        } else if (typeDepts.length === 1) {
-          c.department = typeDepts[0].name; // the type's only department — no question needed
-        } else if (typeDepts.length === 0) {
-          return { ok: false, question: `${type.name} isn't assigned to any department yet. Which department should I close the open slots in?` };
-        } else {
-          return { ok: false, question: `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}. Which department should I close the open slots in?` };
-        }
+        // Date + mode are validated BEFORE the department check, and
+        // the emptiness check runs before it too: a type with nothing
+        // open to close is dropped (multi-type plan) or refused
+        // (single-type request) on the emptiness alone, so it never
+        // blocks a multi-type plan with a department question about
+        // a type that has nothing to close (Deepika, 2026-11-19 —
+        // "all shift types" for November must not stall on EM Nurse
+        // Only, which has no department AND no November target).
         const first = c.date || c.fromDate;
         const last = c.toDate || c.date || c.fromDate;
         if (!first || !validDate(first) || (c.toDate && !validDate(c.toDate)) || (first && last && String(first) > String(last))) {
@@ -797,7 +806,8 @@ export async function gatePlanChanges(
         }
         // Existence check: is there anything open to close on every
         // touched date? Capacity = target + extra (0 when closed);
-        // filled = stored shifts that date/type.
+        // filled = stored shifts + rotation-drawn holders that
+        // date/type (the grid's count, not the shifts table alone).
         const touched: string[] = [];
         {
           let cur = String(first);
@@ -809,19 +819,66 @@ export async function gatePlanChanges(
           }
         }
         const inputs = await loadOpenSlotInputs(query, companyId, touched[0], touched[touched.length - 1]);
-        const { rows: frows } = await query(
-          `SELECT date::text AS date, COUNT(*)::int AS n FROM shifts
-           WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4 GROUP BY date`,
-          [companyId, type.id, touched[0], touched[touched.length - 1]]
-        );
-        const filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
+        // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
+        // 2026-11-19 — audit B sharpening: the old count read the
+        // shifts table only, while the grid shows stored + drawn
+        // holders — a date whose 12 holders are drawn, not stored,
+        // looked empty to the gate, so a close formed over slots
+        // that were never open). getShiftsForRange is the shared
+        // read the grid itself uses (manual rows take precedence
+        // over a drawn occurrence for the same person/date/type, so
+        // the count is exactly what the grid shows). A failure
+        // falls back to the stored-only count, never to a refusal.
+        let filledByDate: Map<string, number>;
+        try {
+          const { getShiftsForRange } = await import('./shiftRange.js');
+          const drawn = await getShiftsForRange(query, companyId, touched[0], touched[touched.length - 1]);
+          filledByDate = new Map<string, number>();
+          for (const e of drawn) {
+            if (e.shiftTypeId !== type.id) continue;
+            filledByDate.set(e.date, (filledByDate.get(e.date) || 0) + 1);
+          }
+        } catch (drawErr: any) {
+          console.error('[plan-gate] drawn-holders read failed, using stored shifts only:', drawErr?.message);
+          const { rows: frows } = await query(
+            `SELECT date::text AS date, COUNT(*)::int AS n FROM shifts
+             WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4 GROUP BY date`,
+            [companyId, type.id, touched[0], touched[touched.length - 1]]
+          );
+          filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
+        }
         const opensOn = (d: string) => {
           const capacity = openSlotCapacity(inputs, type.id, d);
           return { opens: Math.max(0, capacity - (filledByDate.get(d) || 0)), closed: inputs.closed.has(`${d}|${type.id}`), capacity };
         };
+        let emptyWhy: string | null = null;
+        let emptyShort = '';
         if (mode === 'all') {
           if (touched.every((d) => inputs.closed.has(`${d}|${type.id}`))) {
-            return { ok: false, question: `${type.name} is already closed${touched.length > 1 ? ` for ${String(first)} – ${String(last)}` : ` on ${String(first)}`}.` };
+            emptyWhy = `${type.name} is already closed${touched.length > 1 ? ` for ${String(first)} – ${String(last)}` : ` on ${String(first)}`}.`;
+            emptyShort = `already closed${touched.length > 1 ? ` ${String(first)} – ${String(last)}` : ` on ${String(first)}`}`;
+          } else {
+            // A close-all that would close NOTHING is a refusal, the
+            // same as closeCount on an empty day (Deepika, 2026-11-19
+            // — Dec 2 formed a plan despite no open Day Hospitalist
+            // slots shown, while Nov 20 correctly refused). It fires
+            // only when EVERY touched date is empty: a range close
+            // that still closes some days is a real close, and the
+            // executor skips its empty dates at approval time.
+            const emptyDays = touched.filter((d) => opensOn(d).opens <= 0);
+            if (emptyDays.length === touched.length) {
+              const bad = emptyDays[0];
+              const { closed, capacity } = opensOn(bad);
+              const why = closed
+                ? `that day is closed for ${type.name}`
+                : capacity > 0
+                  ? `all ${capacity} are already filled`
+                  : `no staffing target is set for ${type.name} that day`;
+              emptyWhy = touched.length > 1
+                ? `There are no open ${type.name} slots for ${String(first)} – ${String(last)} — ${why}.`
+                : `There are no open ${type.name} slots on ${bad} — ${why}.`;
+              emptyShort = `no open slots${touched.length > 1 ? ` ${String(first)} – ${String(last)}` : ` on ${bad}`} (${why})`;
+            }
           }
         } else {
           const bad = touched.find((d) => {
@@ -836,11 +893,96 @@ export async function gatePlanChanges(
                 : capacity > 0
                   ? `all ${capacity} are already filled`
                   : `no staffing target is set for ${type.name} that day`;
-              return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}.` };
+              emptyWhy = `There are no open ${type.name} slots on ${bad} — ${why}.`;
+              emptyShort = `no open slots on ${bad} (${why})`;
+            } else {
+              emptyWhy = `There are only ${opens} open ${type.name} slot${opens === 1 ? '' : 's'} on ${bad} — already at or below ${c.keepCount} to keep, so there is nothing over ${c.keepCount} to close.`;
+              emptyShort = `only ${opens} open on ${bad} — already at or below ${c.keepCount} to keep`;
             }
-            return { ok: false, question: `There are only ${opens} open ${type.name} slot${opens === 1 ? '' : 's'} on ${bad} — already at or below ${c.keepCount} to keep, so there is nothing over ${c.keepCount} to close.` };
           }
         }
+        // A change that would close nothing: a SINGLE-type request
+        // refuses outright (the Dec 2 rule above); in a MULTI-type
+        // plan ("all shift types") the empty type is DROPPED with a
+        // note instead — refusing the whole plan because one type
+        // has no November target would block the types that DO have
+        // opens. The drop mutates the plan's own changes array (the
+        // gate already canonises c.department the same way), and the
+        // note rides the summary via gateDetails.
+        if (emptyWhy) {
+          if (closeChanges.length === 1) return { ok: false, question: emptyWhy };
+          const idx = list.indexOf(c);
+          if (idx >= 0) list.splice(idx, 1);
+          gateDetails.push(`${type.name} has ${emptyShort} — nothing to close there, so it was left out of this plan.`);
+          if (!firstEmptyWhy) firstEmptyWhy = emptyWhy;
+          droppedClose++;
+          continue;
+        }
+        // Department (Deepika, 2026-11-19 — "It needs to know which
+        // department and which shift"): every close carries the
+        // department it is for. Opens themselves have NO department
+        // dimension — staffing_targets is one row per type, and
+        // extra_open_slots / closed_shifts are keyed (company, date,
+        // type) — so the pool is shared across every department the
+        // type belongs to, exactly like the manual close (whose
+        // routes only check the requester's active department is one
+        // of the type's). The department here scopes WHO may close
+        // (the executor's access check) and labels the close in the
+        // plan, result and Change report; for a type in exactly one
+        // department it IS that department's close. It runs AFTER
+        // the emptiness check above, so a type with nothing to close
+        // never blocks the plan with a department question.
+        {
+          const deptIds = await shiftTypesDepartmentIds([type.id], companyId);
+          const { rows: allDeptRows } = await query(
+            'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
+          );
+          const allDepts = allDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
+          const typeDepts = allDepts.filter((d) => deptIds.includes(d.id));
+          if (c.department && String(c.department).trim()) {
+            const named = allDepts.find((d) => norm(d.name) === norm(c.department));
+            if (!named) {
+              return { ok: false, question: `I couldn't find a department called "${c.department}". Which department should I close the open ${type.name} slots in?` };
+            }
+            if (!typeDepts.some((d) => d.id === named.id)) {
+              const where = typeDepts.length
+                ? `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}`
+                : `${type.name} isn't assigned to any department yet`;
+              return { ok: false, question: `${type.name} isn't part of ${named.name} — ${where}. Which department should I close the open slots in?` };
+            }
+            c.department = named.name; // canonical
+          } else if (typeDepts.length === 1) {
+            c.department = typeDepts[0].name; // the type's only department — no question needed
+          } else if (typeDepts.length === 0) {
+            return { ok: false, question: `${type.name} isn't assigned to any department yet. Which department should I close the open slots in?` };
+          } else {
+            return { ok: false, question: `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}. Which department should I close the open slots in?` };
+          }
+        }
+        // Plan numbers (Deepika, 2026-11-19 — the close plan showed
+        // no numbers): one plain line per change — opens per date,
+        // how many will close, and the empty-only guarantee. Short
+        // ranges list every date; long ranges give the totals.
+        {
+          const willClose = (d: string) => {
+            const { opens } = opensOn(d);
+            return mode === 'all' ? opens : mode === 'count' ? Math.min(c.closeCount, opens) : Math.max(0, opens - c.keepCount);
+          };
+          const total = touched.reduce((s, d) => s + willClose(d), 0);
+          const label = touched.length === 1
+            ? `${type.name} on ${touched[0]}`
+            : `${type.name} ${touched[0]} – ${touched[touched.length - 1]}`;
+          const body = touched.length <= 7
+            ? touched.map((d) => `${d}: ${opensOn(d).opens} open, will close ${willClose(d)}`).join('; ')
+            : `${touched.reduce((s, d) => s + opensOn(d).opens, 0)} open across ${touched.length} days, will close ${total}`;
+          c.closeDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are closed; nobody is taken off a shift.`;
+          gateDetails.push(c.closeDetail);
+        }
+      }
+      // Every close change was empty and dropped: refuse with the
+      // first one's reason instead of saving an empty plan.
+      if (droppedClose > 0 && list.length === 0) {
+        return { ok: false, question: firstEmptyWhy || 'There are no open slots to close.' };
       }
     }
   }
@@ -904,7 +1046,7 @@ export async function gatePlanChanges(
   // ---- 2. workability ---------------------------------------------------
   const SHIFT_ACTIONS = ['assign', 'assign_recurring', 'move', 'swap'];
   const dated = list.filter((c) => SHIFT_ACTIONS.includes(c.action) && (c.date || c.fromDate || c.startDate));
-  if (!dated.length) return { ok: true };
+  if (!dated.length) return okWithDetails();
 
   const { rows: strows } = await query(
     'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
@@ -1151,5 +1293,5 @@ export async function gatePlanChanges(
       if (reason) return { ok: false, question: reason, blockedBy: 'conflict' };
     }
   }
-  return { ok: true };
+  return okWithDetails();
 }

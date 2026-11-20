@@ -58,7 +58,7 @@ export async function mergeClarificationItems(
   try {
     const { deriveNameAmbiguityItems, deriveShiftChoiceItems, deriveHolderMismatch, resolveNameValues, deriveNameItemsFromRequest } = await import('./planGate.js');
     const { buildDetailFromItems } = await import('./clarifyOptions.js');
-    const { extractRequestDates } = await import('./emailPoller.js');
+    const { extractRequestDates } = await import('./requestUnderstanding.js');
     const plan = opts.plan;
     const requestText = opts.requestText;
     const gateShiftItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind === 'shift'));

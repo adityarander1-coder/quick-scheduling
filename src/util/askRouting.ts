@@ -145,11 +145,16 @@ const CANDIDATE_LIST_OF =
   /^\s*(please\s+)?(give|show|list|send)\s+me\s+(a\s+)?list\s+of\s+(names?|candidates?|people|team|members)\b/i;
 const CANDIDATE_WHO_ASSIGN =
   /^\s*who\s+(can|should|could)\s+(i|we)\s+assign\b/i;
+// N8: "Can you give me names?" / "Could you list candidates?" —
+// the can/could-you opener never matched, so the request fell to
+// the planner as a question instead of listing the names.
+const CANDIDATE_CAN_YOU =
+  /^\s*(can|could)\s+you\s+(give|show|list|send|suggest)\s+(me\s+)?(a\s+)?(the\s+)?(names?|candidates?|people|team|members)\b/i;
 
 export function isCandidateRequest(message: string): boolean {
   const m = (message || '').trim();
   if (!m) return false;
-  return CANDIDATE_REQUEST.test(m) || CANDIDATE_LIST_OF.test(m) || CANDIDATE_WHO_ASSIGN.test(m);
+  return CANDIDATE_REQUEST.test(m) || CANDIDATE_LIST_OF.test(m) || CANDIDATE_WHO_ASSIGN.test(m) || CANDIDATE_CAN_YOU.test(m);
 }
 
 // Route one Ask/Task message. history is the open clarification thread
@@ -240,3 +245,10 @@ export function decideClarification(
     options: [],
   };
 }
+
+
+// The shared understanding layer (dates/ranges, amounts, narrowing,
+// corrections, close normalization) lives in
+// ./requestUnderstanding.ts — this module keeps only the Ask/Task
+// routing + name-clarification helpers. Call sites import the layer
+// directly; nothing here re-exports it, so there is one owner.

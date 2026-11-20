@@ -1270,8 +1270,8 @@
     <div class="brand-row">
       <div class="brand"><div class="product-name"><span class="brand-mark">◈</span>Quick Scheduling</div><div class="company-line"><span id="company-name">Quick Scheduling</span> <span>· employee schedule</span></div></div>
       <div id="hdr-controls" style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
-        <button type="button" id="qs-undo-top" class="qs-ur-btn" title="Undo (Ctrl+Z)" hidden>↩ Undo</button>
-        <button type="button" id="qs-redo-top" class="qs-ur-btn" title="Redo (Ctrl+Shift+Z)" hidden>↪ Redo</button>
+        <button type="button" id="qs-undo-pinned" class="qs-ur-btn" title="Undo (Ctrl+Z)" hidden>↩ Undo</button>
+        <button type="button" id="qs-redo-pinned" class="qs-ur-btn" title="Redo (Ctrl+Shift+Z)" hidden>↪ Redo</button>
         <button type="button" id="notif-bell" class="btn-secondary" style="position:relative;padding:0.4rem 0.6rem;font-size:1rem;line-height:1" title="Notifications" aria-label="Notifications">🔔<span id="notif-badge" hidden style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border-radius:999px;font-size:0.65rem;font-weight:700;padding:1px 5px;min-width:16px;text-align:center"></span></button>
         <span class="avatar-wrap"><span id="user-avatar" class="user-avatar" hidden role="button" tabindex="0" title="Account" style="cursor:pointer"></span><span id="avatar-menu" class="avatar-menu" hidden>
           <span class="avatar-menu-head"><strong id="avatar-menu-name"></strong><span id="avatar-menu-sub"></span></span>
@@ -1512,12 +1512,10 @@
     #qs-sel-move input { padding: 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 15px; font-family: inherit; }
     #ms-select-toggle { border: 1px solid #0e7c86; background: #fff; color: #0a6270; border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
     #ms-select-toggle.qs-sel-on { background: #0e7c86; color: #fff; }
-    #qs-undo-btn { position: fixed; right: 16px; bottom: 86px; z-index: 950; background: #21414c; color: #fff; border: none; border-radius: 999px; padding: 10px 16px; font-weight: 700; box-shadow: 0 6px 18px rgba(15,40,50,.35); cursor: pointer; }
     .qs-ur-btn { background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 999px; padding: 0.4rem 0.75rem; font-weight: 700; font-size: 0.85rem; cursor: pointer; line-height: 1; }
     .qs-ur-btn:hover { background: rgba(255,255,255,.28); }
-    @media (max-width: 1023px) { #qs-undo-top, #qs-redo-top { display: none !important; } }
-    .qs-ur-band { display: none; }
-    @media (max-width: 1023px) { .qs-ur-band.qs-on { display: inline-flex; align-items: center; } }
+    .qs-ur-btn:disabled { opacity: .45; cursor: default; }
+    .qs-ur-btn:disabled:hover { background: rgba(255,255,255,.16); }
     .cover-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
     button.cover-badge.pickup { background: #0e7c86; color: #fff; border: none; cursor: pointer; }
     button.cover-badge.pickup:hover { background: #0a6270; }
@@ -2703,8 +2701,6 @@
           #tab-schedule .sched-control-box .sched-h1-row { flex-wrap: wrap; gap: 6px; }
           #tab-schedule .sched-control-box .sched-h1-row .qs-vo-wrap { flex: 1 1 100px; min-width: 0; margin-right: 0; }
           #tab-schedule .sched-control-box .sched-h1-row #qs-vo-btn { width: 100%; padding: 8px 8px; font-size: 13px; white-space: nowrap; overflow: hidden; text-align: center; }
-          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
-          #tab-schedule .sched-control-box .sched-h1-row .qs-ur-lab { display: none; }
         }
       </style>
 
@@ -2760,8 +2756,6 @@
             <button type="button" data-view="block" role="tab">Block view</button>
           </div>
           <div class="date-nav">
-            <button type="button" id="qs-undo-band" class="qs-ur-btn qs-ur-band" title="Undo (Ctrl+Z)">↩ <span class="qs-ur-lab">Undo</span></button>
-            <button type="button" id="qs-redo-band" class="qs-ur-btn qs-ur-band" title="Redo (Ctrl+Shift+Z)">↪ <span class="qs-ur-lab">Redo</span></button>
             <button type="button" id="sched-prev" class="btn-secondary" aria-label="Previous">&larr;</button>
             <button type="button" id="sched-today" class="btn-secondary">Today</button>
             <button type="button" id="sched-next" class="btn-secondary" aria-label="Next">&rarr;</button>
@@ -4187,11 +4181,11 @@
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); refreshShifts(); return; }
               var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
               entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
-              qsUndoStack.push(entry);
+              qsUndoStack.push(qsStampUndo(entry));
               qsRedoStack.length = 0;
               qsUndoCap();
               qsUndoBtnSync();
-              pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Ctrl+Z undoes it.');
+              pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Tap Undo in the top bar to undo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not swap those shifts.'); });
           } else {
@@ -4201,11 +4195,11 @@
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); refreshShifts(); return; }
               var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
               entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
-              qsUndoStack.push(entry);
+              qsUndoStack.push(qsStampUndo(entry));
               qsRedoStack.length = 0;
               qsUndoCap();
               qsUndoBtnSync();
-              pageSuccess('Moved. Ctrl+Z undoes it.');
+              pageSuccess('Moved. Tap Undo in the top bar to undo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not move that shift.'); });
           }
@@ -4234,16 +4228,41 @@
           if (b) b.remove();
         }
 
+        // Pinned Undo/Redo state (Deepika, 2026-11-19): ONE pair in the
+        // top bar, on every tab. Undo is enabled when the grid stack has
+        // an entry or the server has an undoable plan (qsPlanUndoState,
+        // refreshed at login, on tab switch and after every decision);
+        // Redo shows only when something is redoable (grid redo stack
+        // or an undone plan on the server). The pair itself is shown
+        // only to owner/scheduler by the init block; this only toggles
+        // enabled/hidden within the pair.
+        var qsPlanUndoState = null; // { planUndo: {id,summary,at}|null, planRedo: {...}|null }
+        function qsRefreshUndoState() {
+          return api('/api/schedule/undo-state').then(function (r) {
+            if (r.ok && r.data) { qsPlanUndoState = r.data; qsUndoBtnSync(); }
+          }).catch(function () {});
+        }
+        window.qsRefreshUndoState = qsRefreshUndoState;
         function qsUndoBtnSync() {
-          var btn = document.getElementById('qs-undo-btn');
-          var tab = document.getElementById('tab-schedule');
-          var onTab = tab && tab.classList.contains('active');
-          if (btn) btn.style.display = (qsUndoStack.length && onTab) ? '' : 'none';
+          var ub = document.getElementById('qs-undo-pinned');
+          var rb = document.getElementById('qs-redo-pinned');
+          var canUndo = qsUndoStack.length > 0 || !!(qsPlanUndoState && qsPlanUndoState.planUndo);
+          var canRedo = qsRedoStack.length > 0 || !!(qsPlanUndoState && qsPlanUndoState.planRedo);
+          if (ub) ub.disabled = !canUndo;
+          if (rb) { rb.disabled = !canRedo; rb.style.display = canRedo ? '' : 'none'; }
           // Persist the stacks whenever they change (this runs at
           // every push/pop site). No-op before the login-time load
           // starts, and skipped when nothing changed.
           if (typeof qsPersistUndoHistory === 'function') qsPersistUndoHistory();
         }
+
+        // Pinned Undo/Redo (Deepika, 2026-11-19): every grid entry
+        // carries the time its action happened (`at`), so the pair can
+        // undo whichever action was LAST — a grid change or a Task plan
+        // (compared against the plan times from /undo-state). The time
+        // survives reloads (the server sanitizer keeps it) and never
+        // decides whether an entry applies.
+        function qsStampUndo(e) { if (e && !e.at) e.at = new Date().toISOString(); return e; }
 
         // Delete undo (Deepika, 2026-11-17): every delete endpoint
         // returns the undo payload for what IT removed; this pushes
@@ -4260,7 +4279,7 @@
             || (undoPayload.grants && undoPayload.grants.length)
             || (undoPayload.pauses && undoPayload.pauses.length);
           if (!has) return false;
-          qsUndoStack.push({ kind: 'delete', undo: undoPayload, redo: { kind: 'delete', calls: redoCalls || [], pauses: undoPayload.pauses || [] } });
+          qsUndoStack.push(qsStampUndo({ kind: 'delete', undo: undoPayload, redo: { kind: 'delete', calls: redoCalls || [], pauses: undoPayload.pauses || [] } }));
           qsRedoStack.length = 0;
           qsUndoCap();
           qsUndoBtnSync();
@@ -4280,7 +4299,7 @@
         // -1 shares the endpoint but never pushes an entry.
         window.qsPushOpenSlotUndo = function (undoPayload, redoCalls) {
           if (!undoPayload || !Array.isArray(undoPayload.slots) || !undoPayload.slots.length) return false;
-          qsUndoStack.push({ kind: 'openslot', undo: undoPayload, redo: { kind: 'openslot', calls: redoCalls || [] } });
+          qsUndoStack.push(qsStampUndo({ kind: 'openslot', undo: undoPayload, redo: { kind: 'openslot', calls: redoCalls || [] } }));
           qsRedoStack.length = 0;
           qsUndoCap();
           qsUndoBtnSync();
@@ -4297,9 +4316,10 @@
               if (r.status !== 404) refreshShifts();
               return;
             }
-            pageSuccess('Task undone — Ctrl+Shift+Z redoes it.');
+            pageSuccess('Task undone — tap Redo in the top bar to redo it.');
             qsRedoStack.length = 0;
             qsPersistUndoHistory();
+            qsRefreshUndoState();
             refreshShifts();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not undo that task.'); });
         }
@@ -4315,13 +4335,49 @@
               return;
             }
             pageSuccess('Task redone.');
+            qsRefreshUndoState();
             refreshShifts();
           }).catch(function () { qsTaskUndoBusy = false; pageError('Could not redo that task.'); });
         }
-      // Top-bar buttons (Deepika 2026-11-01): same priority as the keys —
-      // a waiting drag first, otherwise the newest task.
-      window.qsUndoClick = function () { if (qsUndoStack.length) qsUndoLast(); else qsTaskUndo(); };
-      window.qsRedoClick = function () { if (qsRedoStack.length) qsRedoLast(); else qsTaskRedo(); };
+      // Pinned top-bar Undo/Redo (Deepika, 2026-11-19): ONE pair for the
+      // whole app. It undoes whichever action was LAST — a grid change
+      // or a Task plan — by comparing the grid stack top's time with
+      // the newest undoable plan's time from /undo-state (refreshed
+      // fresh on every tap). A grid entry with no time (saved before
+      // this build) counts as older than any plan. When neither side
+      // has anything, the plan endpoint answers 404 ("Nothing to
+      // undo."). Ctrl+Z / Ctrl+Shift+Z keep their own keys handler
+      // (stack-first, as before) and are untouched.
+      var qsUndoTapBusy = false;
+      window.qsUndoClick = function () {
+        if (qsUndoTapBusy) return;
+        qsUndoTapBusy = true;
+        qsRefreshUndoState().then(function () {
+          qsUndoTapBusy = false;
+          var gridTop = qsUndoStack[qsUndoStack.length - 1];
+          var gridAt = gridTop && gridTop.at ? gridTop.at : null;
+          var planAt = qsPlanUndoState && qsPlanUndoState.planUndo ? qsPlanUndoState.planUndo.at : null;
+          if (gridAt && (!planAt || gridAt >= planAt)) { qsUndoLast(); return; }
+          if (planAt) { qsTaskUndo(); return; }
+          if (gridTop) { qsUndoLast(); return; }
+          qsTaskUndo();
+        }).catch(function () { qsUndoTapBusy = false; });
+      };
+      var qsRedoTapBusy = false;
+      window.qsRedoClick = function () {
+        if (qsRedoTapBusy) return;
+        qsRedoTapBusy = true;
+        qsRefreshUndoState().then(function () {
+          qsRedoTapBusy = false;
+          var gridTop = qsRedoStack[qsRedoStack.length - 1];
+          var gridAt = gridTop && gridTop.at ? gridTop.at : null;
+          var planAt = qsPlanUndoState && qsPlanUndoState.planRedo ? qsPlanUndoState.planRedo.at : null;
+          if (gridAt && (!planAt || gridAt >= planAt)) { qsRedoLast(); return; }
+          if (planAt) { qsTaskRedo(); return; }
+          if (gridTop) { qsRedoLast(); return; }
+          qsTaskRedo();
+        }).catch(function () { qsRedoTapBusy = false; });
+      };
 
         function qsRedoLast() {
           var r = qsRedoStack.pop();
@@ -4331,7 +4387,7 @@
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
-              qsUndoStack.push(e);
+              qsUndoStack.push(qsStampUndo(e));
               qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Redone.');
@@ -4353,7 +4409,7 @@
                 var nextPause = function () {
                   if (pi >= pauses.length) {
                     if (fresh.units.length || fresh.sweepExclusions.length || fresh.grants.length || fresh.pauses.length) {
-                      qsUndoStack.push({ kind: 'delete', undo: fresh, redo: r });
+                      qsUndoStack.push(qsStampUndo({ kind: 'delete', undo: fresh, redo: r }));
                       qsUndoCap();
                       qsUndoBtnSync();
                     }
@@ -4397,7 +4453,7 @@
             var nextCall = function () {
               if (ci >= calls.length) {
                 if (fresh.slots.length) {
-                  qsUndoStack.push({ kind: 'openslot', undo: fresh, redo: r });
+                  qsUndoStack.push(qsStampUndo({ kind: 'openslot', undo: fresh, redo: r }));
                   qsUndoCap();
                   qsUndoBtnSync();
                 }
@@ -4422,7 +4478,7 @@
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
-              qsUndoStack.push(e);
+              qsUndoStack.push(qsStampUndo(e));
               qsUndoCap();
               qsUndoBtnSync();
               pageSuccess('Redone.');
@@ -4433,13 +4489,16 @@
 
         function qsUndoLast() {
           var u = qsUndoStack.pop();
+          // The redo entry's time is the UNDO time, so a later Redo
+          // tap compares it against the plan's undone_at.
+          if (u && u.redo && !u.redo.at) u.redo.at = new Date().toISOString();
           qsUndoBtnSync();
           if (!u) return;
           if (u.kind === 'server') {
             api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
-              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
+              pageSuccess('Undone — tap Redo in the top bar to redo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that.'); });
           } else if (u.kind === 'delete') {
@@ -4451,7 +4510,7 @@
               if (skipped.length) {
                 pageError('Delete undone — ' + restored + ' shift(s) back. ' + skipped.length + ' could not be restored: ' + skipped.map(function (s) { return s.message || 'could not be restored'; }).join('; ') + '.');
               } else {
-                pageSuccess('Delete undone — ' + restored + ' shift(s) back. Ctrl+Shift+Z redoes it.');
+                pageSuccess('Delete undone — ' + restored + ' shift(s) back. Tap Redo in the top bar to redo it.');
               }
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
@@ -4465,7 +4524,7 @@
               if (skipped.length) {
                 pageError('Close undone — ' + restored + ' open slot(s) back. ' + skipped.length + ' could not be re-opened: ' + skipped.map(function (s) { return (s.date ? s.date + ': ' : '') + (s.message || 'could not be re-opened'); }).join('; ') + '.');
               } else {
-                pageSuccess('Close undone — ' + restored + ' open slot(s) back. Ctrl+Shift+Z redoes it.');
+                pageSuccess('Close undone — ' + restored + ' open slot(s) back. Tap Redo in the top bar to redo it.');
               }
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
@@ -4474,14 +4533,14 @@
             api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
-              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
+              pageSuccess('Undone — tap Redo in the top bar to redo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that swap.'); });
           } else {
             api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
-              pageSuccess('Undone — Ctrl+Shift+Z redoes it.');
+              pageSuccess('Undone — tap Redo in the top bar to redo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that move.'); });
           }
@@ -4990,7 +5049,7 @@
                 var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: it.id, fromDate: it.date, fromType: it.shiftTypeId };
                 entry.redo = { kind: 'move', shiftId: it.id, date: targetDate, typeId: it.shiftTypeId };
                 if (typeof qsUndoStack !== 'undefined') {
-                  qsUndoStack.push(entry);
+                  qsUndoStack.push(qsStampUndo(entry));
                   if (typeof qsRedoStack !== 'undefined') qsRedoStack.length = 0;
                   qsUndoCap();
                   if (typeof qsUndoBtnSync === 'function') qsUndoBtnSync();
@@ -5094,14 +5153,6 @@
         (function initQsDrag() {
           var tab = document.getElementById('tab-schedule');
           if (!tab) return;
-          var undoBtn = document.createElement('button');
-          undoBtn.id = 'qs-undo-btn';
-          undoBtn.type = 'button';
-          undoBtn.textContent = '↩ Undo';
-          undoBtn.style.display = 'none';
-          undoBtn.addEventListener('click', function () { qsUndoLast(); });
-          document.body.appendChild(undoBtn);
-          new MutationObserver(qsUndoBtnSync).observe(tab, { attributes: true, attributeFilter: ['class'] });
 
           tab.addEventListener('pointerdown', function (e) {
             if (qsPlace) return; // place-mode taps are clicks, handled below
@@ -6263,7 +6314,7 @@
                 api('/api/schedule/extra-slots', { method: 'DELETE', body: JSON.stringify({ dates: [ds], shiftTypeId: stId }) }).then(function (r) {
                   if (r.ok) {
                     if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'DELETE', body: { dates: [ds], shiftTypeId: stId } }]);
-                    loadShifts(); pageSuccess('Slots restored. Ctrl+Z undoes it.');
+                    loadShifts(); pageSuccess('Slots restored. Tap Undo in the top bar to undo it.');
                   }
                 });
               });
@@ -6645,7 +6696,7 @@
             api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: -1 }) }).then(function (r) {
               if (r.ok) {
                 if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [date], shiftTypeId: typeId, count: -1 } }]);
-                refreshSlotView(); pageSuccess('Open slot removed. Ctrl+Z undoes it.');
+                refreshSlotView(); pageSuccess('Open slot removed. Tap Undo in the top bar to undo it.');
               }
               else pageError((r.data && r.data.error) || 'Could not close that slot.');
             }).catch(function () { pageError('Could not close that slot.'); });
@@ -6763,7 +6814,7 @@
           api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [d], shiftTypeId: stId, count: -1 }) }).then(function (r) {
             if (r.ok) {
               if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [d], shiftTypeId: stId, count: -1 } }]);
-              loadShifts(); pageSuccess('Open slot removed. Ctrl+Z undoes it.');
+              loadShifts(); pageSuccess('Open slot removed. Tap Undo in the top bar to undo it.');
             }
           });
         });
@@ -8240,9 +8291,6 @@
               // phone->desktop resize, Deepika 2026-11-18 phone fix;
               // Upload joined the row 2026-11-19 and needs the same).
               var pv = $('sched-prev');
-              var ub2 = $('qs-undo-band'), rb2 = $('qs-redo-band');
-              if (ub2 && ub2.parentNode === schedH1Row) { if (pv) nav.insertBefore(ub2, pv); else nav.appendChild(ub2); }
-              if (rb2 && rb2.parentNode === schedH1Row) { if (pv) nav.insertBefore(rb2, pv); else nav.appendChild(rb2); }
               var vw = schedH1Row.querySelector('.qs-vo-wrap');
               var dr = $('sched-date-row');
               if (vw && dr) dr.parentNode.insertBefore(vw, dr);
@@ -8258,33 +8306,12 @@
           }
         }
         placeSchedToday();
-        // Phone (<=700px): the band Undo/Redo pair stays in the heading
-        // row with View options + Upload (Deepika, 2026-11-19, approved
-        // mock) — appended after them. Today moved down beside Apply, so
-        // it no longer anchors the pair. Wider screens keep the pair in
-        // the date-nav, before the arrows.
-        function placeBandBtns() {
-          var ub = $('qs-undo-band'), rb = $('qs-redo-band'), today = $('sched-today');
-          var nav = document.querySelector('#tab-schedule .date-nav');
-          if (!ub || !rb || !nav) return;
-          var phone = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
-          if (phone && schedH1Row && schedH1Row.parentNode) {
-            var row = schedH1Row;
-            if (ub.parentNode !== row) row.appendChild(ub);
-            if (rb.parentNode !== row) row.appendChild(rb);
-          } else {
-            var pv = $('sched-prev');
-            if (ub.parentNode !== nav) { if (pv) nav.insertBefore(ub, pv); else nav.appendChild(ub); }
-            if (rb.parentNode !== nav) { if (pv) nav.insertBefore(rb, pv); else nav.appendChild(rb); }
-          }
-        }
-        placeBandBtns();
-        // Phone (<=700px): View options joins the top row with Upload +
-        // Undo/Redo (Deepika, 2026-11-19 — top line, approved mock; Today
+        // Phone (<=700px): View options joins the top row with Upload
+        // (Deepika, 2026-11-19 — top line, approved mock; Today
         // moved down beside Apply). The wrap itself is moved, so its click
         // handler and popup move with it. Wider screens put it back in
         // front of the date row. Runs after placeSchedToday (which creates
-        // the heading row) and placeBandBtns.
+        // the heading row).
         function placeVoBtn() {
           var wrap = document.querySelector('#tab-schedule .qs-vo-wrap');
           var today = $('sched-today');
@@ -8303,7 +8330,7 @@
         // (Deepika, 2026-11-19, approved mock) — similar size, sharing
         // the row in proportion. Wider screens put it back in the toolbar.
         // Runs after placeVoBtn (which puts View options first) so Upload
-        // lands directly after it, before Undo/Redo.
+        // lands directly after it.
         function placeUploadBtn() {
           var up = $('sched-upload-btn');
           var tb = document.querySelector('#tab-schedule .sched-toolbar');
@@ -8324,8 +8351,6 @@
           var schedMql = window.matchMedia('(max-width: 700px)');
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeSchedToday);
           else if (schedMql.addListener) schedMql.addListener(placeSchedToday);
-          if (schedMql.addEventListener) schedMql.addEventListener('change', placeBandBtns);
-          else if (schedMql.addListener) schedMql.addListener(placeBandBtns);
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeVoBtn);
           else if (schedMql.addListener) schedMql.addListener(placeVoBtn);
           if (schedMql.addEventListener) schedMql.addEventListener('change', placeUploadBtn);
@@ -11263,6 +11288,10 @@ window.qsNpOfferSend = function (btn) {
             case 'unassign': return 'Remove ' + c.person + ' from ' + c.date;
             case 'move': return 'Move ' + c.fromPerson + ' → ' + c.toPerson + ' on ' + (c.date || c.fromDate);
             case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
+            case 'change_member_role_in_department': return 'Change ' + c.person + '’s job role in ' + c.department + ' to ' + c.jobRoleName;
+            case 'close_open_slots': return c.closeDetail
+              ? 'Close open slots — ' + c.closeDetail
+              : 'Close open ' + c.shiftType + ' slots' + (c.date ? ' on ' + c.date : (c.fromDate ? ' ' + c.fromDate + ' – ' + c.toDate : '')) + (c.closeAll ? ' (all of them)' : (typeof c.closeCount === 'number' ? ' (' + c.closeCount + ')' : (typeof c.keepCount === 'number' ? ' (keep ' + c.keepCount + ')' : ''))) + ' — only empty slots are closed';
             case 'add_job_role': return 'Add job role "' + c.jobRoleName + '"' + (c.department ? ' to ' + c.department : '');
             case 'rename_job_role': return 'Rename role "' + c.jobRoleName + '" → "' + c.newJobRoleName + '"';
             case 'delete_job_role': return 'Delete job role "' + c.jobRoleName + '"' + (c.department ? ' from ' + c.department : '');
@@ -11316,6 +11345,13 @@ window.qsNpOfferSend = function (btn) {
             if (d.allAnswered) {
               if (d.kind === 'plan') { if (cbs.onPlan) cbs.onPlan(d); return; }
               if (d.kind === 'clarification') { if (cbs.onClarification) cbs.onClarification(d); return; }
+              if (d.kind === 'open-add-member-form') {
+                // Server-side form fallback (issue I): open the form
+                // popup and note it in the chat like a clarification.
+                if (window.qsOpenAddMemberPopup) window.qsOpenAddMemberPopup(d.prefill || {});
+                if (cbs.onClarification) cbs.onClarification({ question: 'Fill in the details in the form.', options: [] });
+                return;
+              }
               if (cbs.onError) cbs.onError('Sorry, something went wrong.');
               return;
             }
@@ -11420,9 +11456,13 @@ window.qsNpOfferSend = function (btn) {
           wrap.appendChild(escEl);
           return wrap;
         };
-        // Unified thread: kept only while a clarification round is open, so a
-        // typed follow-up still carries the original task. Reset on answers
-        // and plans — the next message is a new message.
+        // Unified thread: the Ask/Task conversation — never wiped on
+        // an answer, an error, a plan, or a decision (Deepika,
+        // 2026-11-19 — N3 extension: the chat must not forget
+        // anything from the past). The server segments it when the
+        // next fresh instruction arrives, and the stored copy
+        // survives reloads and tab switches. Only a mode flip
+        // clears it — flipping sides starts fresh on purpose.
         var thread = [];
         // Ask | Task toggle (Deepika, 2026-11-08): the bar's two sides are
         // fully separate — Ask answers, Task plans, and the server splits
@@ -11448,9 +11488,13 @@ window.qsNpOfferSend = function (btn) {
           if (m !== qsMode) {
             qsMode = m;
             // A clarification thread belongs to the side that opened it;
-            // flipping sides starts a fresh message on both surfaces.
+            // flipping sides starts a fresh message on both surfaces —
+            // and the stored thread must not resurrect it on the next
+            // tab open (N3 extension: the flip is a deliberate fresh
+            // start, so the restore is marked done).
             thread = [];
             if (window.qsResetTbThread) window.qsResetTbThread();
+            if (window.qsThreadRestoreDone) window.qsThreadRestoreDone();
           }
           try { localStorage.setItem('qs-mode', qsMode); } catch (e) {}
           qsPaintMode();
@@ -11466,10 +11510,72 @@ window.qsNpOfferSend = function (btn) {
         // the AI asking one question at a time. Returns a prefill
         // { firstName, lastName, deptName } or null when the message
         // is not an add-member request.
-        window.qsAddMemberPrefill = function (text) {
+        // Add-member popup queue (Deepika, 2026-11-19 — issue I, the
+        // ROOT CAUSE): the popup opener lives in the Team module,
+        // which loads LATER in the page than this chat (Ask IIFE
+        // ~line 11239, Team IIFE ~line 14850) — on a slow connection
+        // the chat is usable ~2s before the opener exists, and "Add
+        // a new team member" silently fell through to the planner,
+        // which asked for the name one question at a time. The stub
+        // queues the request; the Team module drains the queue when
+        // it loads, so the popup opens whenever the message was sent.
+        window.qsAddMemberPopupQueue = window.qsAddMemberPopupQueue || [];
+        if (!window.qsOpenAddMemberPopup) {
+          window.qsOpenAddMemberPopup = function (prefill) {
+            window.qsAddMemberPopupQueue.push(prefill);
+            return true;
+          };
+        }
+        // Is the open thread an add-member round — the AI asked for
+        // the new member's name, or the round opened on an add-member
+        // request? (Deepika, 2026-11-19 — issue I: "Give me the
+        // form" / a bare name only mean anything inside that round.)
+        function qsInAddMemberRound(th) {
+          var last = (th || [])[(th || []).length - 1];
+          if (!last) return false;
+          var a = String(last.a || '');
+          var q = String(last.q || '');
+          if (/first and last name/i.test(a) && /team member/i.test(a)) return true;
+          if (/add\s+(?:(?:a|an|new)\s+)*team\s+members?\b/i.test(q)) return true;
+          if (/add\s+(?:a\s+)?members?\b/i.test(q)) return true;
+          return false;
+        }
+        // A bare name: 1–3 name-shaped words, no task verb, no digits.
+        function qsBareName(t) {
+          var words = String(t || '').trim().split(/\s+/).filter(Boolean);
+          if (!words.length || words.length > 3) return null;
+          if (!words.every(function (w) { return /^[A-Za-z][A-Za-z'\u2019-]*$/.test(w); })) return null;
+          if (/^(add|close|assign|move|swap|delete|remove|give|show|open|please|can|could|yes|no|the|form)$/i.test(words[0])) return null;
+          return { firstName: words[0], lastName: words.slice(1).join(' ') };
+        }
+        window.qsAddMemberPrefill = function (text, thread) {
           var t = String(text || '').replace(/\s+/g, ' ').trim();
           var m = t.match(/^(?:please\s+|can you\s+|could you\s+)?add\s+(?:(?:a|an|new)\s+)*team\s+members?\b\s*(.*)$/i);
-          if (!m) return null;
+          if (!m) {
+            // "Give me the form" / a bare name inside an open
+            // add-member round (Deepika, 2026-11-19 — issue I): the
+            // AI had just asked for the new member's name, and she
+            // answered with the form request or the name itself.
+            // Both open the popup (prefilled with what is known),
+            // never fall through to the planner — the planner
+            // errored on "Give me the form" and built a direct add
+            // plan for the bare name, with no form either way.
+            var inRound = qsInAddMemberRound(thread);
+            if (/^(?:please\s+)?(?:give|show|open)\s+me\s+the\s+form\b/i.test(t)) {
+              if (inRound || /\badd\b.*\bteam\s+members?\b/i.test(t)) {
+                return { firstName: '', lastName: '', deptName: '' };
+              }
+              return null;
+            }
+            if (/\badd(\s+member)?\s+form\b/i.test(t)) {
+              return { firstName: '', lastName: '', deptName: '' };
+            }
+            if (inRound) {
+              var bare = qsBareName(t);
+              if (bare) return { firstName: bare.firstName, lastName: bare.lastName, deptName: '' };
+            }
+            return null;
+          }
           // A member + rotation request needs the planner (it can create
           // the member AND the rotation) — the popup only adds the person.
           if (/rotation/i.test(t)) return null;
@@ -11498,115 +11604,199 @@ window.qsNpOfferSend = function (btn) {
             var c = $('ask-chat'); if (c) c.scrollTop = c.scrollHeight;
           } catch (e) {}
         };
-        function send(q) {
-            function showClarification(cd) {
-              thread.push({ q: q, a: cd.question });
-              thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(cd.question);
-              if (cd.items && cd.items.length && cd.clarificationToken && window.qsClarificationRows) {
-                thinking.appendChild(window.qsClarificationRows(cd.items, cd.clarificationToken, {
-                  onPlan: function (pd) { showPlan(pd, q); },
-                  onClarification: function (nd) { showClarification(nd); },
-                  onError: function (msg) { thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(msg); }
-                }));
-                chat.scrollTop = chat.scrollHeight;
-                return;
-              }
-              var opts = cd.options || [];
-              if (opts.length) {
-                var optWrap = document.createElement('div');
-                optWrap.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
-                opts.forEach(function (o) {
-                  var c = document.createElement('button');
-                  c.type = 'button';
-                  c.className = 'btn-secondary btn-sm';
-                  c.textContent = o;
-                  c.addEventListener('click', function () { send(o); });
-                  optWrap.appendChild(c);
-                });
-                thinking.appendChild(optWrap);
-                chat.scrollTop = chat.scrollHeight;
-              }
-            }
-            function showPlan(pd, qq) {
-              thread = [];
-              var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
-                '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
-                pd.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') +
-                '</ol>' +
-                (pd.status === 'awaiting_partner'
-                  ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
-                  : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
-                    '<button type="button" class="btn btn-sm" data-approve="' + pd.planId + '">Approve</button>' +
-                    '<button type="button" class="btn-secondary btn-sm" data-reject="' + pd.planId + '">Reject</button></div>');
-              thinking.innerHTML = html;
-              if (pd.status !== 'awaiting_partner') {
-              thinking.querySelector('[data-approve]').addEventListener('click', function () {
-                var b = this; b.disabled = true; b.textContent = 'Applying…';
-                api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' })
-                  .then(function (res2) {
-                    if (res2.ok) {
-                      // Count successes, not attempts: a failed change used
-                      // to be reported as "Done — applied 1 change" (Rah
-                      // Kum, 2026-11-19) because this counted results.
-                      var resList = ((res2.data && res2.data.results) || []);
-                      var nOk = resList.filter(function (r) { return r && r.success; }).length;
-                      var nFail = resList.length - nOk;
-                      var failMsgs = resList.filter(function (r) { return r && !r.success && r.message; }).map(function (r) { return r.message; });
-                      var doneText = nFail
-                        ? 'Applied ' + nOk + ' of ' + resList.length + ' change' + (resList.length === 1 ? '' : 's') + ' — ' + nFail + ' failed' + (failMsgs.length ? ': ' + esc(failMsgs.join('; ')) : '') + '.'
-                        : 'Done — applied ' + nOk + ' change' + (nOk === 1 ? '' : 's') + '.';
-                      thinking.innerHTML = '<b>Q-Scheduler:</b> ' + doneText + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '');
-                      var firstAction = (pd.changes && pd.changes[0] && pd.changes[0].action) || '';
-                      api('/api/schedule/agent-suggest', {
-                        method: 'POST',
-                        body: JSON.stringify({ task: qq, planSummary: pd.summary || '', action: firstAction }),
-                      }).then(function (res3) {
-                        var suggs = (res3.data && res3.data.suggestions) || [];
-                        if (!suggs.length) {
-                          addMsg('Give me another task any time.', 'ai');
-                          return;
-                        }
-                        var wrap = addHtml('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
-                        var chips = document.createElement('div');
-                        chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
-                        var ctxSummary = pd.summary || '';
-                        suggs.forEach(function (sg) {
-                          var c = document.createElement('button');
-                          c.type = 'button';
-                          c.className = 'btn-secondary btn-sm';
-                          c.textContent = sg;
-                          c.addEventListener('click', function () {
-                            send(ctxSummary ? (sg + ' (context: ' + ctxSummary + ')') : sg);
-                          });
-                          chips.appendChild(c);
-                        });
-                        wrap.appendChild(chips);
-                        chat.scrollTop = chat.scrollHeight;
-                      }).catch(function () {
-                        addMsg('Give me another task any time.', 'ai');
-                      });
-                    } else {
-                      thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
+        // The server returns the canonical thread with every
+        // reply (Deepika, 2026-11-19 — N3 extension): adopt it
+        // instead of pushing locally, so the client thread and
+        // the stored thread never drift. Without it, push the
+        // turn the old way.
+        function adoptThread(d, fallback) {
+          if (d && Array.isArray(d.thread)) { thread = d.thread; }
+          else if (fallback) { thread.push(fallback); }
+        }
+        function showClarification(cd, qq, thinking) {
+          adoptThread(cd, { q: qq, a: cd.question });
+          thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(cd.question);
+          if (cd.items && cd.items.length && cd.clarificationToken && window.qsClarificationRows) {
+            thinking.appendChild(window.qsClarificationRows(cd.items, cd.clarificationToken, {
+              onPlan: function (pd) { showPlan(pd, qq, thinking); },
+              onClarification: function (nd) { showClarification(nd, qq, thinking); },
+              onError: function (msg) { thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc(msg); }
+            }));
+            chat.scrollTop = chat.scrollHeight;
+            return;
+          }
+          var opts = cd.options || [];
+          if (opts.length) {
+            var optWrap = document.createElement('div');
+            optWrap.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+            opts.forEach(function (o) {
+              var c = document.createElement('button');
+              c.type = 'button';
+              c.className = 'btn-secondary btn-sm';
+              c.textContent = o;
+              c.addEventListener('click', function () { send(o); });
+              optWrap.appendChild(c);
+            });
+            thinking.appendChild(optWrap);
+            chat.scrollTop = chat.scrollHeight;
+          }
+        }
+        // Pinned Undo/Redo (Deepika, 2026-11-19): the Done bubble
+        // names the ONE pinned pair in the top bar — no in-chat Undo
+        // button here (the earlier in-chat slot is removed; one
+        // pair, one behaviour, on every tab).
+        function showPlan(pd, qq, thinking) {
+          // The plan stays in the thread (Deepika, 2026-11-19 —
+          // issue D): a narrowing reply ("No only fot day
+          // hospitalist") answers THIS plan, so clearing the
+          // thread here lost the dates and the scope. The thread
+          // is never wiped on an answer, an error, or a decision
+          // (N3 extension): the server segments it when the next
+          // fresh instruction arrives, and the stored thread
+          // survives reloads and tab switches.
+          adoptThread(pd, { q: qq, a: pd.summary || 'Here is my plan:' });
+          var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
+            '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
+            pd.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') +
+            '</ol>' +
+            (pd.status === 'awaiting_partner'
+              ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
+              : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                '<button type="button" class="btn btn-sm" data-approve="' + pd.planId + '">Approve</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-reject="' + pd.planId + '">Reject</button></div>');
+          thinking.innerHTML = html;
+          // The plan summary carries the numbers on separate lines
+          // (issue E) — keep the newlines instead of collapsing
+          // them into one blob.
+          thinking.style.whiteSpace = 'pre-wrap';
+          if (pd.status !== 'awaiting_partner') {
+          thinking.querySelector('[data-approve]').addEventListener('click', function () {
+            var b = this; b.disabled = true; b.textContent = 'Applying…';
+            api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' })
+              .then(function (res2) {
+                if (res2.ok) {
+                  // Count successes, not attempts: a failed change used
+                  // to be reported as "Done — applied 1 change" (Rah
+                  // Kum, 2026-11-19) because this counted results.
+                  var resList = ((res2.data && res2.data.results) || []);
+                  var nOk = resList.filter(function (r) { return r && r.success; }).length;
+                  var nFail = resList.length - nOk;
+                  var failMsgs = resList.filter(function (r) { return r && !r.success && r.message; }).map(function (r) { return r.message; });
+                  var doneText = nFail
+                    ? 'Applied ' + nOk + ' of ' + resList.length + ' change' + (resList.length === 1 ? '' : 's') + ' — ' + nFail + ' failed' + (failMsgs.length ? ': ' + esc(failMsgs.join('; ')) : '') + '.'
+                    : 'Done — applied ' + nOk + ' change' + (nOk === 1 ? '' : 's') + '.';
+                  thinking.innerHTML = '<b>Q-Scheduler:</b> ' + doneText + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Tap Undo in the top bar to undo this task.</span>' : '');
+                  if (window.qsRefreshUndoState) window.qsRefreshUndoState();
+                  if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'approved');
+                  var firstAction = (pd.changes && pd.changes[0] && pd.changes[0].action) || '';
+                  api('/api/schedule/agent-suggest', {
+                    method: 'POST',
+                    body: JSON.stringify({ task: qq, planSummary: pd.summary || '', action: firstAction }),
+                  }).then(function (res3) {
+                    var suggs = (res3.data && res3.data.suggestions) || [];
+                    if (!suggs.length) {
+                      addMsg('Give me another task any time.', 'ai');
+                      return;
                     }
-                  }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
-              });
-              thinking.querySelector('[data-reject]').addEventListener('click', function () {
-                var b = this; b.disabled = true;
-                api('/api/schedule/plans/' + pd.planId + '/reject', { method: 'POST' }).then(function () {
-                  thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
-                }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
-              });
-              }
+                    var wrap = addHtml('<b>Q-Scheduler:</b> Want me to also handle any of these?', 'ai');
+                    var chips = document.createElement('div');
+                    chips.style.cssText = 'display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem';
+                    var ctxSummary = pd.summary || '';
+                    suggs.forEach(function (sg) {
+                      var c = document.createElement('button');
+                      c.type = 'button';
+                      c.className = 'btn-secondary btn-sm';
+                      c.textContent = sg;
+                      c.addEventListener('click', function () {
+                        send(ctxSummary ? (sg + ' (context: ' + ctxSummary + ')') : sg);
+                      });
+                      chips.appendChild(c);
+                    });
+                    wrap.appendChild(chips);
+                    chat.scrollTop = chat.scrollHeight;
+                  }).catch(function () {
+                    addMsg('Give me another task any time.', 'ai');
+                  });
+                } else {
+                  thinking.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
+                }
+              }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+          });
+          thinking.querySelector('[data-reject]').addEventListener('click', function () {
+            var b = this; b.disabled = true;
+            api('/api/schedule/plans/' + pd.planId + '/reject', { method: 'POST' }).then(function () {
+              thinking.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.';
+              if (window.qsRefreshUndoState) window.qsRefreshUndoState();
+              if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'rejected');
+            }).catch(function () { thinking.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+          });
+          }
+        }
+        // A plan decided on ONE surface must not leave a live Approve /
+        // Reject button on ANOTHER surface showing the same plan (issue K:
+        // no Approve button for a decided plan anywhere). Each decision
+        // handler replaces its OWN card; this kills the plan's buttons on
+        // every other surface (chat card, mirror card, header-bar card;
+        // the plans panel re-renders itself via loadPlans). Called after
+        // every approve/reject success, from any surface.
+        window.qsMarkPlanDecided = function (planId, outcome) {
+          if (!planId) return;
+          var sel = '[data-approve="' + planId + '"], [data-reject="' + planId + '"], ' +
+            '[data-mirror-approve="' + planId + '"], [data-mirror-reject="' + planId + '"], ' +
+            '[data-tb-approve="' + planId + '"], [data-tb-reject="' + planId + '"]';
+          document.querySelectorAll(sel).forEach(function (b) {
+            var isApprove = b.hasAttribute('data-approve') || b.hasAttribute('data-mirror-approve') || b.hasAttribute('data-tb-approve');
+            b.disabled = true;
+            if (outcome === 'approved' && isApprove) b.textContent = 'Approved \u2713';
+            else if (outcome === 'rejected' && !isApprove) b.textContent = 'Rejected';
+          });
+        };
+        // Restore the stored Ask/Task thread when the tab opens
+        // (Deepika, 2026-11-19 — N3 extension): after a reload the
+        // chat shows the conversation again, and an open
+        // clarification comes back with working buttons — nothing
+        // is forgotten. Runs once per page load; a mode flip starts
+        // fresh on purpose, so it marks the restore done too. The
+        // stored thread is the server's canonical copy, so a message
+        // typed before the restore lands wins and the restore skips.
+        var qsThreadRestored = false;
+        window.qsRestoreTaskThread = function () {
+          if (qsThreadRestored) return;
+          qsThreadRestored = true;
+          if (thread.length) return;
+          api('/api/schedule/task-thread').then(function (res) {
+            var d = res.data || {};
+            if (!res.ok || !d.thread || !d.thread.length) return;
+            if (thread.length) return;
+            thread = d.thread.slice();
+            var oc = d.openClarification;
+            d.thread.forEach(function (t, idx) {
+              addMsg(t.q, 'you');
+              // The open clarification's question is re-rendered
+              // below with its buttons — don't print it twice.
+              if (t.a && !(oc && oc.question && idx === d.thread.length - 1)) addMsg(t.a, 'ai');
+            });
+            if (oc && oc.question) {
+              var th = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
+              showClarification({ question: oc.question, items: oc.items || null, clarificationToken: oc.clarificationToken, originalTask: oc.originalTask, thread: d.thread }, oc.originalTask || '', th);
             }
+            var c = $('ask-chat'); if (c) c.scrollTop = c.scrollHeight;
+          }).catch(function () { /* restore is best-effort */ });
+        };
+        window.qsThreadRestoreDone = function () { qsThreadRestored = true; };
+
+        function send(q) {
           q = (q || '').trim();
           if (!q) return;
           addMsg(q, 'you');
           $('ask-input').value = '';
           // Add-team-member popup (Deepika, 2026-11-19): Task mode only.
           // The popup IS the Team members form — no planner round-trip,
-          // no one-question-at-a-time flow.
+          // no one-question-at-a-time flow. The thread rides along so
+          // a form request or a bare name inside an open add-member
+          // round opens the popup too (issue I).
           if (qsMode === 'task' && window.qsAddMemberPrefill && window.qsOpenAddMemberPopup) {
-            var amp = window.qsAddMemberPrefill(q);
+            var amp = window.qsAddMemberPrefill(q, thread);
             if (amp) { window.qsOpenAddMemberPopup(amp); return; }
           }
           var thinking = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
@@ -11617,17 +11807,32 @@ window.qsNpOfferSend = function (btn) {
             var d = r.data || {};
             if (!r.ok) { thinking.innerHTML = esc((d && d.error) || 'Sorry, something went wrong.'); return; }
             if (d.kind === 'answer') {
-              thread = [];
+              // N3 extension: the thread is NEVER wiped on an
+              // answer — a correction after a deflection needs the
+              // history. Adopt the server's canonical thread.
+              adoptThread(d, { q: q, a: d.answer });
               thinking.innerHTML = esc(d.answer);
               thinking.style.whiteSpace = 'pre-wrap';
               return;
             }
-            if (d.kind === 'error') { thread = []; thinking.innerHTML = esc(d.error); return; }
-            if (d.kind === 'clarification') {
-              showClarification(d);
+            if (d.kind === 'error') { adoptThread(d, null); thinking.innerHTML = esc(d.error); return; }
+            if (d.kind === 'open-add-member-form') {
+              // Server-side form fallback (Deepika, 2026-11-19 —
+              // issue I): the planner read an incomplete add-member
+              // request the client regex missed — open the SAME form
+              // as a popup instead of one question at a time. The
+              // queue stub makes this safe even while the Team module
+              // is still loading.
+              adoptThread(d, { q: q, a: 'Fill in the details in the form.' });
+              thinking.innerHTML = '<b>Q-Scheduler:</b> Fill in the details in the form.';
+              if (window.qsOpenAddMemberPopup) window.qsOpenAddMemberPopup(d.prefill || {});
               return;
             }
-            showPlan(d, q);
+            if (d.kind === 'clarification') {
+              showClarification(d, q, thinking);
+              return;
+            }
+            showPlan(d, q, thinking);
           }).catch(function () { thinking.innerHTML = 'Sorry, something went wrong.'; });
         }
         // Voice input for the unified bar.
@@ -11676,7 +11881,7 @@ window.qsNpOfferSend = function (btn) {
           function bindFoot() {
             var again = panel.querySelector('[data-tb-foot="again"]');
             var open = panel.querySelector('[data-tb-foot="open"]');
-            if (again) again.addEventListener('click', function () { tbThread = []; input.value = ''; closePanel(); input.focus(); });
+            if (again) again.addEventListener('click', function () { input.value = ''; closePanel(); input.focus(); });
             if (open) open.addEventListener('click', function () { closePanel(); var t = document.querySelector('[data-tab="ask"]'); if (t) t.click(); });
           }
           function mirrorAsk(q, a) {
@@ -11688,14 +11893,79 @@ window.qsNpOfferSend = function (btn) {
             }
             bubble(q, true); bubble(a, false); chat.scrollTop = chat.scrollHeight;
           }
-          // Header Task thread: same rule as the Ask tab — kept across
-          // clarification rounds, reset once a plan is shown.
+          // Mirror a plan into the Ask tab (Deepika, 2026-11-19 —
+          // issue F): the "Open full conversation" link takes her
+          // there, so the plan must be there too — with working
+          // Approve/Reject, or the pending plan would be visible but
+          // un-approvable once the header panel closes.
+          function mirrorPlan(q, pd) {
+            var chat = document.getElementById('ask-chat'); if (!chat) return;
+            function bubble(text, you) {
+              var d = document.createElement('div');
+              d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;color:#17242e;' + (you ? 'background:#e0f2f1;margin-left:2rem;' : 'background:#fff;border:1px solid var(--border);margin-right:2rem;');
+              d.textContent = text; chat.appendChild(d);
+            }
+            bubble(q, true);
+            var d = document.createElement('div');
+            d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;color:#17242e;background:#fff;border:1px solid var(--border);margin-right:2rem;';
+            var desc = window.qsDescribeChange || function (c) { return c.action; };
+            var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
+              '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>';
+            if (pd.status === 'awaiting_partner') {
+              html += '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>';
+            } else {
+              html += '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +
+                '<button type="button" class="btn btn-sm" data-mirror-approve="' + pd.planId + '">Approve</button>' +
+                '<button type="button" class="btn-secondary btn-sm" data-mirror-reject="' + pd.planId + '">Reject</button></div>';
+            }
+            d.innerHTML = html;
+            chat.appendChild(d);
+            chat.scrollTop = chat.scrollHeight;
+            var ap = d.querySelector('[data-mirror-approve]');
+            var rj = d.querySelector('[data-mirror-reject]');
+            if (ap) ap.addEventListener('click', function () { var b = this; b.disabled = true; b.textContent = 'Applying…';
+              api('/api/schedule/plans/' + pd.planId + '/approve', { method: 'POST' }).then(function (res2) {
+                if (res2.ok) {
+                  var resList = ((res2.data && res2.data.results) || []);
+                  var nOk = resList.filter(function (r) { return r && r.success; }).length;
+                  var nFail = resList.length - nOk;
+                  var failMsgs = resList.filter(function (r) { return r && !r.success && r.message; }).map(function (r) { return r.message; });
+                  var doneText = nFail
+                    ? 'Applied ' + nOk + ' of ' + resList.length + ' change' + (resList.length === 1 ? '' : 's') + ' — ' + nFail + ' failed' + (failMsgs.length ? ': ' + esc(failMsgs.join('; ')) : '') + '.'
+                    : 'Done — applied ' + nOk + ' change' + (nOk === 1 ? '' : 's') + '.';
+                  d.innerHTML = '<b>Q-Scheduler:</b> ' + doneText + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Tap Undo in the top bar to undo this task.</span>' : '');
+                  if (window.qsRefreshUndoState) window.qsRefreshUndoState();
+                  if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'approved');
+                } else {
+                  d.innerHTML = '<b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.');
+                }
+              }).catch(function () { d.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+            });
+            if (rj) rj.addEventListener('click', function () { var b = this; b.disabled = true;
+              api('/api/schedule/plans/' + pd.planId + '/reject', { method: 'POST' }).then(function () { d.innerHTML = '<b>Q-Scheduler:</b> Plan rejected — nothing was changed.'; if (window.qsRefreshUndoState) window.qsRefreshUndoState(); if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'rejected'); })
+              .catch(function () { d.innerHTML = '<b>Q-Scheduler:</b> Network error.'; });
+            });
+          }
+          // Header Task thread: same rule as the Ask tab — kept
+          // across clarification rounds, plans, answers, errors and
+          // decisions (Deepika, 2026-11-19 — N3 extension: nothing
+          // wiped; the server segments it when the next fresh
+          // instruction arrives, and the stored thread survives
+          // reloads and tab switches).
           var tbThread = [];
           window.qsResetTbThread = function () { tbThread = []; };
+          // Adopt the server's canonical thread when a reply carries
+          // it, so the header thread and the stored thread never
+          // drift; otherwise push the turn the old way.
+          function adoptTbThread(d, fallback) {
+            if (d && Array.isArray(d.thread)) { tbThread = d.thread; }
+            else if (fallback) { tbThread.push(fallback); }
+          }
           function showTbPlan(pd, qq) {
-                tbThread = [];
+                adoptTbThread(pd, { q: qq, a: pd.summary || 'Here is my plan:' });
+                mirrorPlan(qq, pd);
                 var desc = window.qsDescribeChange || function (c) { return c.action; };
-                var html2 = '<div class="tb-q">' + esc(qq) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
+                var html2 = '<div class="tb-q">' + esc(qq) + '</div><div class="tb-a" style="white-space:pre-wrap"><b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
                   '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>' +
                   (pd.status === 'awaiting_partner'
                     ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
@@ -11718,19 +11988,22 @@ window.qsNpOfferSend = function (btn) {
                       var doneText2 = nFail2
                         ? 'Applied ' + nOk2 + ' of ' + resList2.length + ' change' + (resList2.length === 1 ? '' : 's') + ' — ' + nFail2 + ' failed' + (failMsgs2.length ? ': ' + esc(failMsgs2.join('; ')) : '') + '.'
                         : 'Done — applied ' + nOk2 + ' change' + (nOk2 === 1 ? '' : 's') + '.';
-                      openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + doneText2 + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Press Ctrl+Z to undo this task.</span>' : '') + '</div>' + foot()); bindFoot();
+                      openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + doneText2 + ((res2.data && res2.data.undoable) ? '<br><span style="color:#5b7a80">Changed your mind? Tap Undo in the top bar to undo this task.</span>' : '') + '</div>' + foot()); bindFoot();
+                      if (window.qsRefreshUndoState) window.qsRefreshUndoState();
+                      if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'approved');
                     } else {
                       openPanel('<div class="tb-a"><b>Q-Scheduler:</b> ' + esc((res2.data && res2.data.error) || 'Could not apply the plan.') + '</div>' + foot()); bindFoot();
                     }
                   }).catch(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Network error.</div>' + foot()); bindFoot(); });
                 });
                 if (rj) rj.addEventListener('click', function () { var b = this; b.disabled = true;
-                  api('/api/schedule/plans/' + pd.planId + '/reject', { method: 'POST' }).then(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Plan rejected — nothing was changed.</div>' + foot()); bindFoot(); })
+                  api('/api/schedule/plans/' + pd.planId + '/reject', { method: 'POST' }).then(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Plan rejected — nothing was changed.</div>' + foot()); bindFoot(); if (window.qsRefreshUndoState) window.qsRefreshUndoState(); if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(pd.planId, 'rejected'); })
                   .catch(function () { openPanel('<div class="tb-a"><b>Q-Scheduler:</b> Network error.</div>' + foot()); bindFoot(); });
                 });
           }
           function showTbClarification(cd, qq) {
-            tbThread.push({ q: qq, a: cd.question });
+            adoptTbThread(cd, { q: qq, a: cd.question });
+            mirrorAsk(qq, cd.question);
             if (cd.items && cd.items.length && cd.clarificationToken && window.qsClarificationRows) {
               openPanel('<div class="tb-q">' + esc(qq) + '</div><div class="tb-a"><b>Q-Scheduler:</b> ' + esc(cd.question) + '</div>' + foot());
               bindFoot();
@@ -11755,7 +12028,7 @@ window.qsNpOfferSend = function (btn) {
             // Add-team-member popup (Deepika, 2026-11-19): Task mode
             // only — same interception as the Ask tab's send().
             if (qsMode === 'task' && window.qsAddMemberPrefill && window.qsOpenAddMemberPopup) {
-              var amp2 = window.qsAddMemberPrefill(q);
+              var amp2 = window.qsAddMemberPrefill(q, tbThread);
               if (amp2) {
                 openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> Fill in the details in the form.</div>' + foot());
                 bindFoot();
@@ -11767,15 +12040,24 @@ window.qsNpOfferSend = function (btn) {
               var d = res.data || {};
               if (!res.ok) { openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc((d && d.error) || 'Sorry, something went wrong.') + '</div>' + foot()); bindFoot(); return; }
               if (d.kind === 'answer') {
-                tbThread = [];
+                adoptTbThread(d, { q: q, a: d.answer });
                 openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.answer) + '</div>' + foot());
                 bindFoot();
                 mirrorAsk(q, d.answer);
                 return;
               }
               if (d.kind === 'error') {
-                tbThread = [];
+                adoptTbThread(d, null);
                 openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a">' + esc(d.error) + '</div>' + foot()); bindFoot(); return;
+              }
+              if (d.kind === 'open-add-member-form') {
+                // Server-side form fallback (Deepika, 2026-11-19 —
+                // issue I): same as the Ask tab — open the form popup
+                // instead of one question at a time.
+                adoptTbThread(d, { q: q, a: 'Fill in the details in the form.' });
+                openPanel('<div class="tb-q">' + esc(q) + '</div><div class="tb-a"><b>Q-Scheduler:</b> Fill in the details in the form.</div>' + foot()); bindFoot();
+                if (window.qsOpenAddMemberPopup) window.qsOpenAddMemberPopup(d.prefill || {});
+                return;
               }
               if (d.kind === 'clarification') {
                 showTbClarification(d, q);
@@ -11886,23 +12168,43 @@ window.qsNpOfferSend = function (btn) {
             });
           };
         }
+        // A newer loadPlans call supersedes an older one still in
+        // flight: without this, a slow earlier fetch could resolve
+        // after the post-approve reload and overwrite the panel with
+        // the pre-approve list (issue K: the plan looked unapproved
+        // even though it had applied).
+        var loadPlansSeq = 0;
         function loadPlans() {
+          var mySeq = ++loadPlansSeq;
           // Pending plans the approver can decide, PLUS swap plans
           // staged at the partner (shown for visibility, no buttons —
-          // the partner answers first; Deepika 2026-11-01).
+          // the partner answers first; Deepika 2026-11-01). Decided
+          // plans (last 7 days) show UNDER them with their outcome
+          // and time, so an approval is unmistakable (Deepika,
+          // 2026-11-19 — issue K: "I dint know if it applied").
           Promise.all([
             api('/api/schedule/plans?status=pending').catch(function () { return { ok: false }; }),
             api('/api/schedule/plans?status=awaiting_partner').catch(function () { return { ok: false }; }),
+            api('/api/schedule/plans?status=all').catch(function () { return { ok: false }; }),
           ]).then(function (rs) {
+            if (mySeq !== loadPlansSeq) return;
             var box = $('plans-list');
             if (!box) return;
             var plans = [];
-            rs.forEach(function (r) { if (r && r.ok && r.data && r.data.plans) plans = plans.concat(r.data.plans); });
+            rs.slice(0, 2).forEach(function (r) { if (r && r.ok && r.data && r.data.plans) plans = plans.concat(r.data.plans); });
             plans.sort(function (a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
+            var decided = [];
+            var allR = rs[2];
+            if (allR && allR.ok && allR.data && allR.data.plans) {
+              var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+              decided = allR.data.plans.filter(function (p) {
+                return ['executed', 'partial', 'rejected', 'undone'].indexOf(p.status) >= 0
+                  && p.decidedAt && new Date(p.decidedAt).getTime() >= cutoff;
+              }).sort(function (a, b) { return new Date(b.decidedAt) - new Date(a.decidedAt); });
+            }
             box.innerHTML = '';
             if (!plans.length) {
               box.innerHTML = '<p style="color:var(--dim);font-size:0.9rem">No pending plans.</p>';
-              return;
             }
             plans.forEach(function (p) {
               var div = document.createElement('div');
@@ -11923,23 +12225,47 @@ window.qsNpOfferSend = function (btn) {
                 div.querySelector('[data-act="approve"]').addEventListener('click', function () {
                   if (!confirm('Apply this plan to the schedule?')) return;
                   api('/api/schedule/plans/' + p.id + '/approve', { method: 'POST' }).then(function (ar) {
-                    if (ar.ok) { pageSuccess('Plan applied.'); loadPlans(); }
+                    if (ar.ok) { pageSuccess('Plan applied.'); loadPlans(); if (window.qsRefreshUndoState) window.qsRefreshUndoState(); if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(p.id, 'approved'); }
                     else pageError((ar.data && ar.data.error) || 'Could not apply.');
                   });
                 });
                 div.querySelector('[data-act="reject"]').addEventListener('click', function () {
                   if (!confirm('Reject this plan?')) return;
                   api('/api/schedule/plans/' + p.id + '/reject', { method: 'POST' }).then(function (rr) {
-                    if (rr.ok) { pageSuccess('Plan rejected.'); loadPlans(); }
+                    if (rr.ok) { pageSuccess('Plan rejected.'); loadPlans(); if (window.qsRefreshUndoState) window.qsRefreshUndoState(); if (window.qsMarkPlanDecided) window.qsMarkPlanDecided(p.id, 'rejected'); }
                     else pageError('Could not reject.');
                   });
                 });
               }
               box.appendChild(div);
             });
+            if (decided.length) {
+              var dhead = document.createElement('div');
+              dhead.style.cssText = 'font-weight:700;margin:0.75rem 0 0.5rem';
+              dhead.textContent = 'Recently decided';
+              box.appendChild(dhead);
+              decided.forEach(function (p) {
+                var dd = document.createElement('div');
+                dd.style.cssText = 'background:var(--bg);border-radius:10px;padding:0.75rem;margin-bottom:0.5rem';
+                var outcome = p.status === 'executed' ? '\u2713 Applied'
+                  : p.status === 'partial' ? '\u25d0 Partially applied'
+                  : p.status === 'rejected' ? '\u2715 Rejected' : '\u21a9 Undone';
+                var dwen = p.decidedAt ? new Date(p.decidedAt).toLocaleString() : '';
+                dd.innerHTML = '<strong>' + esc(p.subject || 'Email plan') + '</strong><br>' +
+                  '<span style="font-size:0.9rem">' + esc(p.summary) + '</span><br>' +
+                  '<span style="color:var(--dim);font-size:0.8rem">' + outcome + (dwen ? ' \u00b7 ' + dwen : '') + '</span>';
+                box.appendChild(dd);
+              });
+            }
           }).catch(function () {});
         }
         loadPlans();
+        // Pending-plans list (Deepika, 2026-11-19 — issue K): the
+        // list loads once at page load, so a plan approved in the
+        // Task chat still showed "Approve & apply" here until a
+        // reload. The Task chat calls this after every decision,
+        // and activateTab calls it whenever the Ask tab opens.
+        window.qsReloadPlans = loadPlans;
         refreshLastChecked();
       })();
       </script>
@@ -15762,6 +16088,14 @@ window.qsNpOfferSend = function (btn) {
               }
               window.qsOpenAddMemberPopup = openAddMemberPopup;
               window.qsCloseAddMemberPopup = closeAddMemberPopup;
+              // Drain popup requests queued before this module loaded
+              // (Deepika, 2026-11-19 — issue I): a message sent while
+              // the chat was usable but this module wasn't yet parsed
+              // still opens its popup now.
+              if (window.qsAddMemberPopupQueue && window.qsAddMemberPopupQueue.length) {
+                var queuedAddMember = window.qsAddMemberPopupQueue.splice(0);
+                queuedAddMember.forEach(function (p) { openAddMemberPopup(p); });
+              }
               function markInviteSent(userId) {
                 api('/api/users/' + userId + '/invite-sent', { method: 'POST' }).then(function (result) {
                   if (result.ok) { loadMembers(); showInviteNote('Marked as sent.', false); }
@@ -20438,7 +20772,7 @@ window.qsNpOfferSend = function (btn) {
                   if (u.row) redoCalls.push({ ep: '/api/schedule/shifts/' + u.row.id, method: 'DELETE', body: null });
                   else if (u.primaryExclusion) redoCalls.push({ ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: u.primaryExclusion.rotationId, userId: u.primaryExclusion.userId, date: u.primaryExclusion.date, shiftTypeId: u.primaryExclusion.shiftTypeId } });
                 });
-                if (window.qsPushDeleteUndo(r.data.undo, redoCalls)) extra += ' Undo is available on the Schedule tab (Ctrl+Z).';
+                if (window.qsPushDeleteUndo(r.data.undo, redoCalls)) extra += ' Undo is available in the top bar.';
               }
               showResult('Done — ' + n + ' item(s) updated.' + extra, false);
             } else {
@@ -27666,6 +28000,17 @@ window.qsNpOfferSend = function (btn) {
         panel.classList.toggle('active', panel.id === 'tab-' + tabId);
       });
       var titles = { schedule: 'Schedule', shortcover: 'Short cover', requests: 'Shift requests', messages: 'Messages', ask: 'Ask Q-Scheduler', academic: 'Academic', dash: 'Dashboard', settings: 'Settings', bulk: 'Bulk Actions', link: 'Sharable Links', billing: 'Billing', help: 'Help & How-to' };
+      // Ask tab (Deepika, 2026-11-19 — issues K + N3): these run on
+      // EVERY Ask-tab open, so they must NOT live inside the
+      // `if (subtabId)` block below — the Ask tab has no subtab, so
+      // activateTab('ask') never passes one and both calls were dead
+      // code there (the stored thread never restored after a reload,
+      // and the plans panel never reloaded on tab open). Same for the
+      // pinned Undo/Redo refresh: the pair lives on every tab, so its
+      // state refreshes on every tab switch, not just Settings subtabs.
+      if (tabId === 'ask' && window.qsReloadPlans) window.qsReloadPlans();
+      if (tabId === 'ask' && window.qsRestoreTaskThread) window.qsRestoreTaskThread();
+      if (typeof window.qsRefreshUndoState === 'function') window.qsRefreshUndoState();
       if (subtabId) {
         document.querySelectorAll('.subtab-btn').forEach(function (btn) {
           btn.classList.toggle('active', btn.getAttribute('data-subtab') === subtabId);
@@ -28266,29 +28611,26 @@ window.qsNpOfferSend = function (btn) {
       window.qsCurrentUserName = r.data.user.name;
       window.qsCurrentUserRole = role;
       (function () {
-        var ub = $('qs-undo-top'), rb = $('qs-redo-top');
+        // Pinned Undo/Redo (Deepika, 2026-11-19): ONE pair in the top
+        // bar, on every tab (Schedule, Calendar, Task/Ask, Settings),
+        // on phones and computers alike. The pair routes behind the
+        // scenes to the grid undo stack or the plan undo by which
+        // action was last.
+        var ub = $('qs-undo-pinned'), rb = $('qs-redo-pinned');
         if (ub) ub.addEventListener('click', function () { if (window.qsUndoClick) window.qsUndoClick(); });
         if (rb) rb.addEventListener('click', function () { if (window.qsRedoClick) window.qsRedoClick(); });
         if (role === 'owner' || role === 'scheduler') {
           if (ub) ub.hidden = false;
           if (rb) rb.hidden = false;
         }
-        // Phone placement (Deepika 2026-11-01): the webpage header keeps its
-        // buttons; on phones the header stays as it was and the pair lives in
-        // the Schedule control band instead (CSS shows them only < 1024px).
-        var bb1 = $('qs-undo-band'), bb2 = $('qs-redo-band');
-        if (bb1) bb1.addEventListener('click', function () { if (window.qsUndoClick) window.qsUndoClick(); });
-        if (bb2) bb2.addEventListener('click', function () { if (window.qsRedoClick) window.qsRedoClick(); });
-        if (role === 'owner' || role === 'scheduler') {
-          if (bb1) bb1.classList.add('qs-on');
-          if (bb2) bb2.classList.add('qs-on');
-        }
         // Persistent 3-step Undo/Redo (Deepika, 2026-11-17): load the
         // saved stacks so Undo/Redo work right after a reload, on any
-        // device. The top/band buttons above already call qsUndoClick /
-        // qsRedoClick, which use the stacks once loaded.
+        // device. The pinned pair above already calls qsUndoClick /
+        // qsRedoClick, which use the stacks once loaded. The plan side
+        // (newest undoable / redoable plan) loads alongside it.
         if (role === 'owner' || role === 'scheduler') {
           if (typeof window.qsLoadUndoHistory === 'function') window.qsLoadUndoHistory();
+          if (typeof window.qsRefreshUndoState === 'function') window.qsRefreshUndoState();
         }
       })();
       window.qsCurrentUserEmail = r.data.user.email;

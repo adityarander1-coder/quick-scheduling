@@ -125,6 +125,54 @@ export async function notify(input: NotifyInput): Promise<void> {
   }
 }
 
+// Resolve the "plan waiting" bell + digest rows when a plan is
+// decided (Deepika, 2026-11-19 — issue K: "when i approve
+// something it still shows me to approve in daily email check").
+// The plan_waiting notification is bundled (one row can carry
+// several plans' summaries), so the resolve recomputes from the
+// plans still waiting: none left → mark every unread plan_waiting
+// row read AND skip its email copy (read alone does not stop the
+// daily digest — the digest reads email_state, not read_at, and the
+// instant dispatcher selects on email_state too); some left →
+// rebuild the bundle's title/body/count from the plans still
+// waiting, so the decided plan stops being named. Best-effort:
+// never throws, never breaks the decision that triggered it.
+export async function resolvePlanWaiting(companyId: string): Promise<void> {
+  try {
+    const { rows: pending } = await query(
+      `SELECT plan_summary FROM schedule_plans
+       WHERE company_id = $1 AND status IN ('pending', 'awaiting_partner')
+       ORDER BY created_at DESC`,
+      [companyId]
+    );
+    const { rows: waiting } = await query(
+      `SELECT id FROM notifications
+       WHERE company_id = $1 AND type = 'plan_waiting' AND read_at IS NULL`,
+      [companyId]
+    );
+    if (!waiting.length) return;
+    if (!pending.length) {
+      await query(
+        `UPDATE notifications SET read_at = now(),
+           email_state = CASE WHEN email_state = 'pending' THEN 'skipped' ELSE email_state END
+         WHERE company_id = $1 AND type = 'plan_waiting' AND read_at IS NULL`,
+        [companyId]
+      );
+      return;
+    }
+    const count = pending.length;
+    const title = count > 1 ? `${count} schedule plans are waiting for approval` : 'A schedule plan is waiting for approval';
+    const body = pending.map((p: any) => p.plan_summary || 'Plan').join('\n').slice(0, 2000);
+    await query(
+      `UPDATE notifications SET title = $1, body = $2, payload = $3, updated_at = now()
+       WHERE company_id = $4 AND type = 'plan_waiting' AND read_at IS NULL`,
+      [title, body, JSON.stringify({ count }), companyId]
+    );
+  } catch (e: any) {
+    console.log(`[notify] resolvePlanWaiting failed: ${e?.message || e}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Recipient helpers
 // ---------------------------------------------------------------------------

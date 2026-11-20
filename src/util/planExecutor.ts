@@ -1198,11 +1198,25 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     [companyId, date, shiftTypeId]
   );
   const extra = erows[0]?.n || 0;
-  const { rows: frows } = await query(
-    'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-    [companyId, date, shiftTypeId]
-  );
-  const filled = frows[0]?.n || 0;
+  // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
+  // 2026-11-19 — audit B sharpening, same as the gate: the grid
+  // shows stored + drawn holders, so the approval-time re-check
+  // must count both, or a closeCount larger than the real opens
+  // would over-close into the extra pool). Falls back to the
+  // stored-only count when the drawn read fails.
+  let filled: number;
+  try {
+    const { getShiftsForRange } = await import('./shiftRange.js');
+    const drawn = await getShiftsForRange(query, companyId, date, date);
+    filled = drawn.filter((e: any) => e.shiftTypeId === shiftTypeId).length;
+  } catch (drawErr: any) {
+    console.error('[plan-executor] drawn-holders read failed, using stored shifts only:', drawErr?.message);
+    const { rows: frows } = await query(
+      'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+      [companyId, date, shiftTypeId]
+    );
+    filled = frows[0]?.n || 0;
+  }
   return { total: Math.max(0, target + extra - filled), closed: false };
 }
 
@@ -1878,12 +1892,19 @@ export async function executePlan(
           const t = await openTotals(companyId, d, st.id);
           if (mode === 'all') {
             if (t.closed) { skipped.push(`${d} (already closed)`); continue; }
+            // A close-all that would close nothing is a no-op the
+            // gate refuses at plan time (Deepika, 2026-11-19 — Dec 2
+            // formed a plan despite no open slots shown): at
+            // approval time the same rule applies — skip the empty
+            // day instead of writing a closed_shifts row for it,
+            // and fail honestly when nothing closed anywhere.
+            if (t.total <= 0) { skipped.push(`${d} (no open slots)`); continue; }
             const ins = await query(
               `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
                VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
               [companyId, d, st.id, createdBy]
             );
-            if ((ins.rowCount || 0) > 0) daysClosed++;
+            if ((ins.rowCount || 0) > 0) { daysClosed++; slotsClosed += t.total; }
             else skipped.push(`${d} (already closed)`);
           } else {
             const want = mode === 'count'
@@ -1902,9 +1923,11 @@ export async function executePlan(
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
         if (mode === 'all') {
           if (daysClosed === 0) {
-            results.push({ action: change.action, success: false, message: `${st.name} is already closed in ${closeDept.name}${range.replace(/^, /, ' for ')}.` });
+            results.push({ action: change.action, success: false, message: skipped.length
+              ? `No open ${st.name} slots to close in ${closeDept.name}${range.replace(/^, /, ' for ')} — ${skipped.join('; ')}.`
+              : `${st.name} is already closed in ${closeDept.name}${range.replace(/^, /, ' for ')}.` });
           } else {
-            results.push({ action: change.action, success: true, message: `Closed ${st.name} in ${closeDept.name}${range} (no open slots that day${dates.length > 1 ? 's' : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
+            results.push({ action: change.action, success: true, message: `Closed ${st.name} in ${closeDept.name}${range} (${slotsClosed} open slot${slotsClosed === 1 ? '' : 's'} closed; only empty slots are closed)${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
           }
         } else if (slotsClosed === 0) {
           results.push({ action: change.action, success: false, message: `No open ${st.name} slots to close in ${closeDept.name}${range.replace(/^, /, ' for ')}${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });

@@ -5,6 +5,7 @@
 import { query } from '../db.js';
 import { isGeminiConfigured, answerAskWithData } from './gemini.js';
 import { loadSpeakers } from './sessionPeople.js';
+import { extractRequestRange, matchShiftType, matchMemberName } from './requestUnderstanding.js';
 
 interface ShiftType { id: string; name: string; }
 interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; email?: string | null; phone?: string | null; departmentId?: string | null; }
@@ -98,13 +99,19 @@ export interface AskContext {
   visibleDeptIds: string[] | null;
 }
 
-/** Find shift types matching words in the question. */
+/** Find shift types matching words in the question. The shared layer
+ * matches first (full name, glued typos, distinctive words — issue M:
+ * "daybhospitalists" is Day Hospitalist); the keyword heuristics below
+ * only cover bare shift words ("night shifts") the layer cannot name. */
 function matchShiftTypes(q: string, shiftTypes: ShiftType[]): ShiftType[] {
+  const direct = matchShiftType(q, shiftTypes.map((s) => s.name));
+  if (direct) {
+    const hit = shiftTypes.find((s) => s.name === direct);
+    if (hit) return [hit];
+  }
   const lower = q.toLowerCase();
   const matched: ShiftType[] = [];
-  // Direct name match.
   for (const st of shiftTypes) {
-    if (lower.includes(st.name.toLowerCase())) { matched.push(st); continue; }
     // Keyword heuristics.
     const n = st.name.toLowerCase();
     if (/\bnight\b/.test(lower) && n.includes('night')) matched.push(st);
@@ -115,22 +122,11 @@ function matchShiftTypes(q: string, shiftTypes: ShiftType[]): ShiftType[] {
   return [...new Map(matched.map(s => [s.id, s])).values()];
 }
 
-/** Find a team member by name in the question (fuzzy). */
+/** Find a team member by name in the question — the shared layer's
+ * whole-word matcher (issue M: "Man" inside "many" and "Che" inside
+ * "schedule" are not people). */
 function matchMember(q: string, members: Member[]): Member | null {
-  const lower = q.toLowerCase();
-  // Try full name, nickname, first name, last name.
-  for (const m of members) {
-    const names = [
-      m.nickname?.toLowerCase(),
-      `${m.firstName} ${m.lastName}`.toLowerCase().trim(),
-      m.firstName.toLowerCase(),
-      m.lastName.toLowerCase(),
-    ].filter(Boolean) as string[];
-    for (const n of names) {
-      if (n.length >= 3 && lower.includes(n)) return m;
-    }
-  }
-  return null;
+  return matchMemberName(q, members);
 }
 
 function memberDisplay(m: { firstName: string; lastName: string; nickname: string | null }): string {
@@ -538,11 +534,21 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   const shiftTypes = matchShiftTypes(q, ctx.shiftTypes);
   const date = parseDate(q, today);
   const week = parseWeek(q, today);
+  // The request's TARGET RANGE, read ONCE here (Deepika, 2026-11-19
+  // — issue N6: only the open-slots branch used it, so a month
+  // question collapsed to today..today+7 in every other branch).
+  // Every branch below consults it first, then its own default —
+  // a bare month ("nov month") is the whole month everywhere, a
+  // week is the week, a single day is that day; with no scope the
+  // old per-branch defaults stand.
+  const reqRange = extractRequestRange(q, fmtDate(today));
+  const rangeFrom = (dflt: string) => reqRange?.[0] || dflt;
+  const rangeTo = (dflt: string) => reqRange?.[1] || dflt;
 
   // --- "Are we short / where are we short" ---
   if (isShort) {
-    const from = date || week?.from || fmtDate(today);
-    const to = date || week?.to || fmtDate(today);
+    const from = rangeFrom(date || week?.from || fmtDate(today));
+    const to = rangeTo(date || week?.to || fmtDate(today));
     // Get staffing targets.
     const { rows: targets } = await query(
       `SELECT st.name, t.target_count FROM staffing_targets t
@@ -556,10 +562,19 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
     const { rows: shifts } = await query(
       `SELECT s.date::text AS date, st.name AS "shiftTypeName", COUNT(*) AS count
        FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true
        GROUP BY s.date, st.name`,
       [ctx.companyId, from, to]
     );
+    // Drafts don't count as staffed (Deepika, 2026-11-19 — issue
+    // N9): a draft shift is not a person on the floor. They are
+    // reported separately below, never counted in the gaps.
+    const { rows: draftRows } = await query(
+      `SELECT COUNT(*)::int AS n FROM shifts s
+       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = false`,
+      [ctx.companyId, from, to]
+    );
+    const draftCount = draftRows[0]?.n || 0;
     const byDateShift = new Map<string, number>();
     for (const s of shifts) byDateShift.set(s.date + '|' + s.shiftTypeName, Number(s.count));
     const gaps: string[] = [];
@@ -575,17 +590,22 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
       }
       d.setDate(d.getDate() + 1);
     }
-    if (!gaps.length) return `You're fully staffed ${date ? 'on ' + prettyDate(date) : 'for that period'}.`;
-    return `Short spots:\n${gaps.join('\n')}`;
+    if (!gaps.length) return `You're fully staffed ${date ? 'on ' + prettyDate(date) : 'for that period'}.${draftCount ? ` (${draftCount} draft shift${draftCount === 1 ? '' : 's'} not counted.)` : ''}`;
+    return `Short spots:\n${gaps.join('\n')}${draftCount ? `\n(${draftCount} draft shift${draftCount === 1 ? '' : 's'} in that period not counted — drafts don't count as staffed.)` : ''}`;
   }
 
   // --- Open shifts: staffing target + extra open slots − assigned shifts,
   // skipping closed dates — the same definition as the app's open-slots
   // message. "How many shifts are open Sunday?" / "What shifts are open
-  // this week?" / "What night shifts are open tomorrow?"
-  if (/\bopen\b/.test(lower) && /\bshifts?\b/.test(lower)) {
-    const from = date || week?.from || fmtDate(today);
-    const to = date || week?.to || from;
+  // this week?" / "What night shifts are open tomorrow?" / "How many open
+  // slots are there for nov month for day hospitalists?" (issue M).
+  // "open slots" counts, not only "open shifts" — and the window is the
+  // request's target range from the shared layer, so a bare month
+  // ("nov month") is the whole month, never today; the old single-date /
+  // week / today fallbacks sit behind it.
+  if (/\bopen\b/.test(lower) && /\b(slots?|shifts?)\b/.test(lower)) {
+    const from = rangeFrom(date || week?.from || fmtDate(today));
+    const to = rangeTo(date || week?.to || from);
     const typeClauses = ['company_id = $1', 'is_active = true'];
     const typeParams: any[] = [ctx.companyId];
     if (ctx.visibleDeptIds !== null) {
@@ -600,7 +620,7 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
       ? types.filter((t: any) => wanted.some(w => w.id === t.id))
       : types;
     const { byDate, total } = await loadOpenSlots(ctx, from, to, useTypes);
-    const when = date ? prettyDate(date) : `from ${prettyDate(from)} to ${prettyDate(to)}`;
+    const when = from === to ? 'on ' + prettyDate(from) : `from ${prettyDate(from)} to ${prettyDate(to)}`;
     if (!total) {
       const { rows: tgRows } = await query('SELECT 1 FROM staffing_targets WHERE company_id = $1 LIMIT 1', [ctx.companyId]);
       const { rows: adjRows } = await query('SELECT 1 FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3 LIMIT 1', [ctx.companyId, from, to]);
@@ -703,8 +723,8 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   const needsPresenter = /\bneeds? (a )?(presenter|speaker)\b|\bno (presenter|speaker)\b|\bunassigned\b/.test(lower);
   const mySessions = /\bmy\b/.test(lower) && (calWords || presentingWords);
   if (calWords || presentingWords || needsPresenter || mySessions) {
-    const from = date || week?.from || fmtDate(today);
-    let to = date || week?.to || '';
+    const from = rangeFrom(date || week?.from || fmtDate(today));
+    let to = rangeTo(date || week?.to || '');
     if (!to) { const d = new Date(today); d.setDate(d.getDate() + (needsPresenter ? 30 : 7)); to = fmtDate(d); }
     let sessions = await loadCalendarSessions(ctx, from, to);
     if (needsPresenter) sessions = sessions.filter(s => !s.hasSpeakers);
@@ -747,8 +767,8 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
 
   // --- Person-specific: "what's John's schedule" / "how many shifts does Jane have" ---
   if (member) {
-    const from = date || week?.from || fmtDate(today);
-    const to = date || week?.to || (() => { const d = new Date(today); d.setDate(d.getDate() + 7); return fmtDate(d); })();
+    const from = rangeFrom(date || week?.from || fmtDate(today));
+    const to = rangeTo(date || week?.to || (() => { const d = new Date(today); d.setDate(d.getDate() + 7); return fmtDate(d); })());
     const { rows: shifts } = await query(
       `SELECT s.date::text AS date, st.name AS "shiftTypeName", s.published
        FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
@@ -768,9 +788,14 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   }
 
   // --- "Who's on / who's working" ---
-  if (/\bwho('s| is)\b/.test(lower) || /\bon\b/.test(lower) || /\bworking\b/.test(lower) || /\bschedule\b/.test(lower) || /\bhappening\b/.test(lower)) {
-    const from = date || week?.from || fmtDate(today);
-    const to = date || week?.to || from;
+  // A capability question ("Do you access to schedule?") is about the
+  // app, not a date — it skips this branch for the AI fallback, which
+  // answers from the data pack (issue M: the old path matched "Che"
+  // inside "schedule" and answered with a stranger's shifts).
+  const isCapabilityQ = /\b(do you|can you|could you)\b[^?]*\b(access|see|view|look at)\b/i.test(lower);
+  if (!isCapabilityQ && (/\bwho('s| is)\b/.test(lower) || /\bon\b/.test(lower) || /\bworking\b/.test(lower) || /\bschedule\b/.test(lower) || /\bhappening\b/.test(lower))) {
+    const from = rangeFrom(date || week?.from || fmtDate(today));
+    const to = rangeTo(date || week?.to || from);
     let shiftFilter = '';
     const params: any[] = [ctx.companyId, from, to];
     if (shiftTypes.length) {
@@ -820,8 +845,8 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   // numbers; the AI only answers from the data pack, never from memory.
   if (isGeminiConfigured()) {
     try {
-      const from = date || week?.from || fmtDate(today);
-      let to = date || week?.to || '';
+      const from = rangeFrom(date || week?.from || fmtDate(today));
+      let to = rangeTo(date || week?.to || '');
       if (!to) { const d = new Date(today); d.setDate(d.getDate() + 7); to = fmtDate(d); }
       const pack = await buildAskDataPack(ctx, from, to);
       const aiAnswer = await answerAskWithData(question, pack, ctx.role);

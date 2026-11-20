@@ -6,6 +6,7 @@
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
 import type { ImapCreds, ImapMessage } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
+import { extractRequestRange, normalizeClosePlan } from './requestUnderstanding.js';
 import type { ImapAttachment } from './gmailImap.js';
 import { extractAttachmentContent } from './emailAttachments.js';
 import { notify, planApproverIds, companyOwnerIds } from './notify.js';
@@ -286,88 +287,6 @@ export async function buildSessionContext(
   return out;
 }
 
-const REQUEST_MONTHS: Record<string, number> = {
-  jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3,
-  may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7,
-  sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10,
-  dec: 11, december: 11,
-};
-const REQUEST_WEEKDAYS: Record<string, number> = {
-  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
-};
-
-/**
- * Deterministic (no-AI) extraction of the dates a schedule request
- * is about, resolved against `today` (YYYY-MM-DD). Recognises ISO
- * dates, US numeric dates (12/2, 12/02/2026), month-name dates
- * ("dec 2", "December 2nd", "2 Dec"), today/tomorrow, "in N
- * days/weeks", and weekday names (bare/"this" = the coming one,
- * "next" = the following week's — the ±14-day slice around the
- * extracted dates makes the exact weekday convention forgiving).
- * A yearless month/day resolves to its coming occurrence: this
- * year, unless that date is more than 14 days in the past, in
- * which case next year's. Returns sorted unique YYYY-MM-DD dates;
- * an empty array means "no date could be extracted with
- * confidence" and callers fall back to the near window.
- */
-export function extractRequestDates(text: string, today: string): string[] {
-  const found = new Set<string>();
-  const t = ` ${String(text || '').toLowerCase()} `;
-  const base = new Date(today + 'T00:00:00Z');
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const mk = (y: number, mo: number, da: number): Date | null => {
-    if (mo < 0 || mo > 11 || da < 1 || da > 31) return null;
-    const d = new Date(Date.UTC(y, mo, da));
-    return d.getUTCFullYear() === y && d.getUTCMonth() === mo && d.getUTCDate() === da ? d : null;
-  };
-  const yearless = (mo: number, da: number) => {
-    let d = mk(base.getUTCFullYear(), mo, da);
-    if (!d) return;
-    if ((base.getTime() - d.getTime()) / 86400000 > 14) {
-      d = mk(base.getUTCFullYear() + 1, mo, da);
-      if (!d) return;
-    }
-    found.add(iso(d));
-  };
-  for (const m of t.matchAll(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g)) {
-    const d = mk(+m[1], +m[2] - 1, +m[3]);
-    if (d) found.add(iso(d));
-  }
-  for (const m of t.matchAll(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/g)) {
-    if (m[3]) {
-      const y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
-      const d = mk(y, +m[1] - 1, +m[2]);
-      if (d) found.add(iso(d));
-    } else yearless(+m[1] - 1, +m[2]);
-  }
-  const MON = Object.keys(REQUEST_MONTHS).join('|');
-  for (const m of t.matchAll(new RegExp(`\\b(${MON})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s*,?\\s*(20\\d{2}))?\\b`, 'g'))) {
-    if (m[3]) {
-      const d = mk(+m[3], REQUEST_MONTHS[m[1]], +m[2]);
-      if (d) found.add(iso(d));
-    } else yearless(REQUEST_MONTHS[m[1]], +m[2]);
-  }
-  for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MON})\\b`, 'g'))) {
-    yearless(REQUEST_MONTHS[m[2]], +m[1]);
-  }
-  if (/\btoday\b/.test(t)) found.add(today);
-  if (/\btomorrow\b/.test(t)) {
-    const d = new Date(base); d.setUTCDate(d.getUTCDate() + 1); found.add(iso(d));
-  }
-  for (const m of t.matchAll(/\bin\s+(\d{1,3})\s+(day|week)s?\b/g)) {
-    const n = +m[1] * (m[2] === 'week' ? 7 : 1);
-    if (n > 0 && n <= 366) {
-      const d = new Date(base); d.setUTCDate(d.getUTCDate() + n); found.add(iso(d));
-    }
-  }
-  const WD = Object.keys(REQUEST_WEEKDAYS).join('|');
-  for (const m of t.matchAll(new RegExp(`\\b(next|this)?\\s*(${WD})\\b`, 'g'))) {
-    let delta = (REQUEST_WEEKDAYS[m[2]] - base.getUTCDay() + 7) % 7;
-    if (m[1] === 'next') delta += 7;
-    const d = new Date(base); d.setUTCDate(d.getUTCDate() + delta); found.add(iso(d));
-  }
-  return [...found].sort();
-}
 
 /**
  * Schedule context for the planner (Deepika, 2026-11-10): who actually
@@ -383,18 +302,21 @@ export function extractRequestDates(text: string, today: string): string[] {
  * blind — the Nov 10 incident, where it invented a "move" from a man
  * who was not on that day's schedule at all.
  *
- * Bounds (Deepika, 2026-11-10 evening): the data layer may reach any
- * date within 8 months of today ("lets give access to 8 months of
- * schedule"), but 8 months is the REACH, not the payload — "it
+ * Bounds (Deepika, 2026-11-10 evening, refined 2026-11-19 — "the
+ * access should change as per request"): the data layer may reach
+ * any date within 8 months of today ("lets give access to 8 months
+ * of schedule"), but 8 months is the REACH, not the payload — "it
  * should only read the part for those dates requested … to save
- * cost." Dates are extracted from the request text deterministically
- * (extractRequestDates, no AI); when dates are found, the day-by-day
- * view is a slice [earliest − 14 days, latest + 14 days] at full
- * detail, plus a small always-present anchor [today−1, today+21]
- * (which also feeds the pivot whole), clamped to the 8-month reach.
- * When NO date can be extracted, it falls back to the pre-8-month
- * behaviour — the near window [today−1, today+60] — so no request
- * ever sees less than it did before. If a block spans more than 62
+ * cost." The request's TARGET RANGE is read first, deterministically
+ * (extractRequestRange, no AI — a bare month is the whole month, a
+ * week is the week, a date range is the range, one date is that
+ * day); the day-by-day view is that range ± 14 days at full detail
+ * — a November request reads Oct 18 – Dec 14, 2026 — plus a small
+ * always-present anchor [today−1, today+21] (which also feeds the
+ * pivot whole), clamped to the 8-month reach. When NO scope can be
+ * read, it falls back to the pre-8-month behaviour — the near window
+ * [today−1, today+60] — so no request ever sees less than it did
+ * before. If a block spans more than 62
  * days (a request naming far-apart dates), its tail renders compact
  * — same facts (date, per-type holders, full names) with short type
  * codes spelled out in one legend line and no open-slot markers.
@@ -430,11 +352,16 @@ export async function buildScheduleContext(
     const REACH_FROM = shiftDay(today, -31);
 
     // Blocks of dates to render: [start, end] pairs, sorted, merged.
-    const requested = requestText ? extractRequestDates(requestText, today) : [];
+    // The window is anchored on the request's TARGET RANGE (Deepika,
+    // 2026-11-19 — "the access should change as per request"): a
+    // month request gets the month, a week gets the week, a date
+    // range gets the range — then ±14 days around THAT range, never
+    // around today. A November request reads Oct 18 – Dec 14, 2026.
+    const range = requestText ? extractRequestRange(requestText, today) : null;
     let blocks: Array<[string, string]>;
-    if (requested.length) {
-      const sliceFrom = shiftDay(requested[0], -14) < REACH_FROM ? REACH_FROM : shiftDay(requested[0], -14);
-      const sliceTo = shiftDay(requested[requested.length - 1], 14) > REACH_TO ? REACH_TO : shiftDay(requested[requested.length - 1], 14);
+    if (range) {
+      const sliceFrom = shiftDay(range[0], -14) < REACH_FROM ? REACH_FROM : shiftDay(range[0], -14);
+      const sliceTo = shiftDay(range[1], 14) > REACH_TO ? REACH_TO : shiftDay(range[1], 14);
       const raw: Array<[string, string]> = [[shiftDay(today, -1), shiftDay(today, 21)]];
       if (sliceFrom <= sliceTo) raw.push([sliceFrom, sliceTo]);
       raw.sort((a, b) => (a[0] < b[0] ? -1 : 1));
@@ -797,6 +724,7 @@ export async function processScheduleEmail(
     // A re-clarification keeps the original request text (see below).
     let effectiveBody = email.body;
     let pendingOriginal: { subject: string; body: string } | null = null;
+    let pendingMissing: string | null = null;
     try {
       const pending = await matchPendingClarification(query, companyId, sender.address, {
         inReplyTo: email.inReplyTo, references: email.references, subject: email.subject,
@@ -804,6 +732,7 @@ export async function processScheduleEmail(
       if (pending) {
         effectiveBody = `${pending.original_body}\n\n--- Sender's reply to the clarification question ---\n${email.body}`;
         pendingOriginal = { subject: pending.subject, body: pending.original_body };
+        pendingMissing = pending.missing;
         await clearPendingClarification(query, companyId, sender.address);
         console.log(`[email-poll] Message ${sourceId}: matched a pending clarification from ${sender.address} — planning the original request with the reply appended.`);
       }
@@ -923,12 +852,60 @@ export async function processScheduleEmail(
     // The company's learned examples ride along (Deepika 2026-11-01):
     // past unclear wording that was later resolved, so the same
     // wording is understood the first time.
+    //
+    // Deterministic fixers FIRST (Deepika, 2026-11-19 — issue N2,
+    // same-brain break): when this email replies to a clarification
+    // we asked, the reply is read by the SAME shared fixers the
+    // Task door runs — a bare amount ("1"), a narrowing ("No only
+    // fot day hospitalist"), a scope correction ("I asked you about
+    // the whole nov month") — before Gemini ever sees it, so the
+    // reply can never be misread as a fresh request. A fixer hit
+    // builds the synthetic plan and skips the planner entirely; the
+    // normal flow below (normalizeClosePlan → gate → create) still
+    // runs, so the plan is gated exactly like a planned one.
+    let fixerPlan: { summary: string; changes: any[] } | null = null;
+    let fixerQuestion: string | null = null;
+    if (pendingOriginal) {
+      try {
+        const { buildCloseAmountPlan, narrowPendingPlan, fixCloseScopePlan } = await import('./taskFixers.js');
+        const fixerHistory = [{ q: pendingOriginal.body, a: pendingMissing || '' }];
+        const replyText = String(email.body || '').trim();
+        let requesterId: string | null = null;
+        try {
+          const { findUserByAnyEmail } = await import('./formLinks.js');
+          const asker = await findUserByAnyEmail(query, companyId, sender.address);
+          requesterId = asker ? asker.id : null;
+        } catch { /* requester stays unknown */ }
+        const amountBuilt = await buildCloseAmountPlan(query, companyId, replyText, fixerHistory as any);
+        if (amountBuilt) {
+          fixerPlan = amountBuilt;
+        } else {
+          const narrowed = await narrowPendingPlan(query, companyId, replyText, fixerHistory as any,
+            sender.address, pendingOriginal.subject, requesterId, null);
+          if (narrowed?.kind === 'plan') fixerPlan = narrowed.plan;
+          else if (narrowed?.kind === 'clarification') fixerQuestion = narrowed.question;
+          else {
+            const rescoped = await fixCloseScopePlan(query, companyId, replyText, fixerHistory as any,
+              sender.address, pendingOriginal.subject, requesterId, null);
+            if (rescoped) fixerPlan = rescoped;
+          }
+        }
+        if (fixerPlan) console.log(`[email-poll] Message ${sourceId}: deterministic fixer built the plan from the clarification reply — skipping the planner.`);
+        else if (fixerQuestion) console.log(`[email-poll] Message ${sourceId}: deterministic fixer asks: ${fixerQuestion}`);
+      } catch (fixErr: any) {
+        console.log(`[email-poll] Message ${sourceId}: deterministic fixer failed: ${fixErr.message} — falling through to the planner.`);
+      }
+    }
     const sessionCtx = await buildSessionContext(query, companyId, today);
     const scheduleCtx = await buildScheduleContext(query, companyId, today, `${email.subject}\n${effectiveBody}`);
     const { getShiftTypeRules } = await import('./planExecutor.js');
     const { getRelevantExamples } = await import('./emailLearning.js');
     const examples = await getRelevantExamples(query, companyId, `${email.subject}\n${effectiveBody}`);
-    const plan = await planFromEmail(effectiveBody, email.subject, {
+    const plan = fixerPlan
+      ? { emailType: 'change_request', summary: fixerPlan.summary, changes: fixerPlan.changes, confidence: 'high' as const, question: null, needsClarification: undefined }
+      : fixerQuestion
+        ? { emailType: 'change_request', summary: '', changes: [], confidence: 'high' as const, question: null, needsClarification: fixerQuestion }
+        : await planFromEmail(effectiveBody, email.subject, {
       shiftTypes,
       shiftTypeRules: await getShiftTypeRules(companyId),
       members,
@@ -947,6 +924,13 @@ export async function processScheduleEmail(
     // and then discarded without a trace. This line makes any future
     // silent case diagnosable from the logs alone.
     console.log(`[email-poll] Message ${sourceId}: parse — emailType=${plan.emailType} changes=${Array.isArray(plan.changes) ? plan.changes.length : 0} confidence=${plan.confidence} needsClarification=${!!plan.needsClarification}`);
+
+    // Intent seam (Deepika, 2026-11-19 — shared understanding layer):
+    // Gemini returns the INTENT in plain terms; the layer resolves
+    // exact dates, types and amounts from the request's own words
+    // against the live lists, before the gate ever sees the plan —
+    // the same pass the Task door runs in finalizeTaskPlan.
+    normalizeClosePlan(plan, `${email.subject || ''}\n${effectiveBody || ''}`, shiftTypes, today);
 
     // Mixed mail (batch 2, 2026-10-30): handling keys on the parse
     // OUTPUT, not the single emailType — one email can carry a schedule
@@ -1054,12 +1038,17 @@ export async function processScheduleEmail(
     if (hasChanges) {
       try {
         const { gatePlanChanges } = await import('./planGate.js');
-        const gate = await gatePlanChanges(query, companyId, plan.changes);
+        const gate = await gatePlanChanges(query, companyId, plan.changes, `${email.subject || ''}\n${effectiveBody || ''}`);
         if (!gate.ok) {
           gateQuestion = gate.question;
           gateItems = gate.items || null;
           gateHolderMismatch = !!gate.holderMismatch;
           gateBlockedByConflict = gate.blockedBy === 'conflict';
+        } else if (gate.details?.length) {
+          // Plan numbers (Deepika, 2026-11-19 — issue E): the gate's
+          // per-change lines ride on the summary, so the approver
+          // email shows opens per date and how many will close.
+          plan.summary = `${plan.summary || ''}\n${gate.details.join('\n')}`;
         }
       } catch (gateErr: any) {
         // Fail closed: an unverifiable plan must not become approvable.
