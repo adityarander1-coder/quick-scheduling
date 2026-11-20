@@ -11220,6 +11220,11 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" class="btn-secondary btn-sm ask-ex">Who's working tomorrow?</button>
           <button type="button" class="btn-secondary btn-sm ask-ex">Are we short next week?</button>
         </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0 0 0.75rem">
+          <button type="button" id="qs-new-task" class="btn-secondary btn-sm">＋ New task</button>
+          <button type="button" id="qs-history-toggle" class="btn-secondary btn-sm" aria-expanded="false">History</button>
+        </div>
+        <div id="qs-history-list" class="hidden" style="margin:0 0 0.75rem;border:1px solid var(--border);border-radius:10px;overflow:hidden"></div>
         <div id="ask-chat" style="background:var(--bg);border-radius:12px;padding:1rem;min-height:200px;max-height:50vh;overflow-y:auto;margin-bottom:1rem"></div>
         <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;flex-wrap:wrap">
           <div class="view-switcher qs-mode-toggle-light" id="qs-mode-toggle-tab" role="tablist" aria-label="Q-Scheduler mode">
@@ -11751,6 +11756,34 @@ window.qsNpOfferSend = function (btn) {
             else if (outcome === 'rejected' && !isApprove) b.textContent = 'Rejected';
           });
         };
+        // Render a stored thread into the Ask-tab chat (Deepika,
+        // 2026-11-19 — chat history + New task): ONE render serves
+        // the reload restore AND a reopened history thread. Turns
+        // print as text; the last turn re-renders as a live plan
+        // card when the thread still has a pending plan, or as a
+        // clarification with its buttons when one is open — never
+        // printed twice, exactly as it was.
+        function qsRenderStoredThread(d) {
+          if (!d || !Array.isArray(d.thread)) return;
+          thread = d.thread.slice();
+          var oc = d.openClarification;
+          var pp = d.pendingPlan;
+          chat.innerHTML = '';
+          d.thread.forEach(function (t, idx) {
+            addMsg(t.q, 'you');
+            var isLast = idx === d.thread.length - 1;
+            if (t.a && !(isLast && ((oc && oc.question) || pp))) addMsg(t.a, 'ai');
+          });
+          if (oc && oc.question) {
+            var th = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
+            showClarification({ question: oc.question, items: oc.items || null, clarificationToken: oc.clarificationToken, originalTask: oc.originalTask, thread: d.thread }, oc.originalTask || '', th);
+          } else if (pp) {
+            var lastQ = d.thread.length ? d.thread[d.thread.length - 1].q : '';
+            var th2 = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
+            showPlan({ planId: pp.planId, summary: pp.summary, changes: pp.changes || [], status: pp.status, partnerName: pp.partnerName, thread: d.thread }, lastQ, th2);
+          }
+          var c = $('ask-chat'); if (c) c.scrollTop = c.scrollHeight;
+        }
         // Restore the stored Ask/Task thread when the tab opens
         // (Deepika, 2026-11-19 — N3 extension): after a reload the
         // chat shows the conversation again, and an open
@@ -11768,22 +11801,80 @@ window.qsNpOfferSend = function (btn) {
             var d = res.data || {};
             if (!res.ok || !d.thread || !d.thread.length) return;
             if (thread.length) return;
-            thread = d.thread.slice();
-            var oc = d.openClarification;
-            d.thread.forEach(function (t, idx) {
-              addMsg(t.q, 'you');
-              // The open clarification's question is re-rendered
-              // below with its buttons — don't print it twice.
-              if (t.a && !(oc && oc.question && idx === d.thread.length - 1)) addMsg(t.a, 'ai');
-            });
-            if (oc && oc.question) {
-              var th = addHtml('<i style="color:#5b6b76">Thinking…</i>', 'ai');
-              showClarification({ question: oc.question, items: oc.items || null, clarificationToken: oc.clarificationToken, originalTask: oc.originalTask, thread: d.thread }, oc.originalTask || '', th);
-            }
-            var c = $('ask-chat'); if (c) c.scrollTop = c.scrollHeight;
+            qsRenderStoredThread(d);
           }).catch(function () { /* restore is best-effort */ });
         };
         window.qsThreadRestoreDone = function () { qsThreadRestored = true; };
+
+        // Chat history + New task (Deepika, 2026-11-19): one
+        // conversation = one task plan. New task archives the
+        // current thread on the server and starts a fresh one —
+        // pressable any time, not only when a task is done.
+        // History lists the past threads (15 days, her retention
+        // rule); tapping one reopens it — messages and pending
+        // plan, exactly as it was.
+        var qsNewTaskBusy = false;
+        window.qsNewTask = function () {
+          if (qsNewTaskBusy) return;
+          qsNewTaskBusy = true;
+          api('/api/schedule/task-threads/new', { method: 'POST' }).then(function (res) {
+            qsNewTaskBusy = false;
+            if (!res.ok) return;
+            thread = [];
+            if (window.qsResetTbThread) window.qsResetTbThread();
+            chat.innerHTML = '';
+            qsHideHistory();
+            var ai = $('ask-input'); if (ai) ai.focus();
+          }).catch(function () { qsNewTaskBusy = false; });
+        };
+        function qsHideHistory() {
+          var list = document.getElementById('qs-history-list');
+          var tog = document.getElementById('qs-history-toggle');
+          if (list) list.classList.add('hidden');
+          if (tog) tog.setAttribute('aria-expanded', 'false');
+        }
+        function qsFmtHistoryDate(s) {
+          try { return new Date(s).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
+        }
+        window.qsLoadHistory = function () {
+          var list = document.getElementById('qs-history-list');
+          if (!list) return;
+          list.classList.remove('hidden');
+          var tog = document.getElementById('qs-history-toggle');
+          if (tog) tog.setAttribute('aria-expanded', 'true');
+          list.innerHTML = '<div style="padding:0.7rem 0.9rem;color:var(--dim)">Loading…</div>';
+          api('/api/schedule/task-threads').then(function (res) {
+            var d = res.data || {};
+            var rows = d.threads || [];
+            if (!rows.length) { list.innerHTML = '<div style="padding:0.7rem 0.9rem;color:var(--dim)">No past tasks yet.</div>'; return; }
+            list.innerHTML = '';
+            rows.forEach(function (row) {
+              var b = document.createElement('button');
+              b.type = 'button';
+              b.setAttribute('data-thread-id', row.id);
+              b.style.cssText = 'display:block;width:100%;text-align:left;padding:0.7rem 0.9rem;border:none;border-bottom:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:0.9rem;color:var(--text)';
+              var t1 = document.createElement('div');
+              t1.style.fontWeight = '600';
+              t1.textContent = (row.title || 'Untitled task') + (row.is_current ? '  •  Current' : '');
+              var t2 = document.createElement('div');
+              t2.style.cssText = 'color:var(--dim);font-size:0.8rem;margin-top:0.15rem';
+              t2.textContent = (row.turns || 0) + ' message' + ((row.turns || 0) === 1 ? '' : 's') + '  •  ' + qsFmtHistoryDate(row.updated_at);
+              b.appendChild(t1); b.appendChild(t2);
+              b.addEventListener('click', function () { qsReopenThread(row.id); });
+              list.appendChild(b);
+            });
+          }).catch(function () { list.innerHTML = '<div style="padding:0.7rem 0.9rem;color:var(--dim)">Could not load history.</div>'; });
+        };
+        function qsReopenThread(id) {
+          if (!id) return;
+          api('/api/schedule/task-threads/' + encodeURIComponent(id)).then(function (res) {
+            var d = res.data || {};
+            if (!res.ok || !Array.isArray(d.thread)) return;
+            qsRenderStoredThread(d);
+            if (window.qsSetTbThread) window.qsSetTbThread(d.thread);
+            qsHideHistory();
+          }).catch(function () { /* reopen is best-effort */ });
+        }
 
         function send(q) {
           q = (q || '').trim();
@@ -11860,6 +11951,16 @@ window.qsNpOfferSend = function (btn) {
         })();
         $('ask-send').addEventListener('click', function () { send($('ask-input').value); });
         $('ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(this.value); });
+        // New task + History buttons (Deepika, 2026-11-19 — chat
+        // history + New task): always pressable, not only when a
+        // task is done.
+        var qsNtBtn = document.getElementById('qs-new-task');
+        if (qsNtBtn) qsNtBtn.addEventListener('click', function () { window.qsNewTask(); });
+        var qsHistBtn = document.getElementById('qs-history-toggle');
+        if (qsHistBtn) qsHistBtn.addEventListener('click', function () {
+          var list = document.getElementById('qs-history-list');
+          if (list && !list.classList.contains('hidden')) qsHideHistory(); else window.qsLoadHistory();
+        });
         // Header Ask bar (Deepika, 2026-10-25): the bar inside the desktop
         // top bar's middle space. Answers/plans drop down under the bar —
         // no tab switch. Since 2026-11-08 it carries the Ask | Task
@@ -11954,6 +12055,11 @@ window.qsNpOfferSend = function (btn) {
           // reloads and tab switches).
           var tbThread = [];
           window.qsResetTbThread = function () { tbThread = []; };
+          // A reopened history thread becomes the header bar's
+          // history too, so its next message continues that round
+          // instead of the archived one (Deepika, 2026-11-19 —
+          // chat history + New task).
+          window.qsSetTbThread = function (th) { tbThread = Array.isArray(th) ? th.slice() : []; };
           // Adopt the server's canonical thread when a reply carries
           // it, so the header thread and the stored thread never
           // drift; otherwise push the turn the old way.

@@ -10943,7 +10943,12 @@ async function taskThreadReply(
   const turns = [...(stored?.thread || []), { q: message, a: answerText }];
   try {
     const saved = await saveCurrentTaskThread(query, companyId, userId || '', turns, {
-      title: stored ? undefined : message.slice(0, 120),
+      // A thread started empty by the New task button has no title
+      // yet — title it from its first message (an auto-segmented
+      // thread already carries one; a thread with turns keeps
+      // its own). Without this, /new threads stayed untitled in
+      // history forever (Deepika, 2026-11-19 — chat history).
+      title: stored && stored.thread.length ? undefined : message.slice(0, 120),
       pendingPlanId: markers?.pendingPlanId === undefined ? (stored?.pending_plan_id ?? null) : markers.pendingPlanId,
       pendingToken: markers?.pendingToken === undefined ? (stored?.pending_token ?? null) : markers.pendingToken,
     });
@@ -12204,6 +12209,45 @@ router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request
   }
 });
 
+// Chat history helpers (Deepika, 2026-11-19 — chat history +
+// New task): the open clarification and the still-pending plan a
+// stored thread points at, so a reload restore AND a reopened
+// history thread re-render the same live buttons — never a dead
+// question, never a dead Approve. A decided plan is NOT returned:
+// its marker is cleared on decision, and a stale card would offer
+// an Approve the server refuses.
+async function loadThreadOpenClarification(companyId: string, token: string | null) {
+  if (!token) return null;
+  try {
+    const { loadClarificationByToken } = await import('../util/pendingClarifications.js');
+    const prow = await loadClarificationByToken(query, token);
+    if (prow && prow.company_id === companyId) {
+      return {
+        question: prow.missing,
+        items: prow.options?.items || null,
+        clarificationToken: prow.answer_token,
+        originalTask: prow.original_body,
+      };
+    }
+  } catch { /* no open clarification to re-render */ }
+  return null;
+}
+async function loadThreadPendingPlan(companyId: string, pendingPlanId: string | null) {
+  if (!pendingPlanId) return null;
+  const { rows } = await query(
+    `SELECT id, plan_summary AS "summary", plan, status, partner_name AS "partnerName"
+     FROM schedule_plans
+     WHERE id = $1 AND company_id = $2 AND status IN ('pending', 'awaiting_partner')`,
+    [pendingPlanId, companyId]
+  );
+  if (!rows[0]) return null;
+  return {
+    planId: rows[0].id, summary: rows[0].summary,
+    changes: rows[0].plan?.changes || [], status: rows[0].status,
+    partnerName: rows[0].partnerName,
+  };
+}
+
 // GET /api/schedule/task-thread — the stored Ask/Task conversation
 // (Deepika, 2026-11-19 — N3 extension: the chat must not forget
 // anything from the past). Returns the current thread's turns plus
@@ -12211,7 +12255,9 @@ router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request
 // one is open, so the client can re-render the buttons after a
 // reload instead of leaving a dead question. Threads older than 15
 // days are already expired by the loader (her retention rule,
-// Nov 19 ~8:37 PM — she corrected 30 days to 15).
+// Nov 19 ~8:37 PM — she corrected 30 days to 15). The pending
+// plan rides along too, so the reload restore re-renders its live
+// Approve/Reject card instead of plain summary text.
 router.get('/task-thread', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -12219,28 +12265,14 @@ router.get('/task-thread', requireRole('owner', 'scheduler', 'employee'), async 
     const { loadCurrentTaskThread } = await import('../util/taskThreads.js');
     const row = await loadCurrentTaskThread(query, companyId, userId);
     if (!row) {
-      res.json({ thread: [], title: '', pendingPlanId: null, pendingToken: null, openClarification: null });
+      res.json({ thread: [], title: '', pendingPlanId: null, pendingToken: null, openClarification: null, pendingPlan: null });
       return;
-    }
-    let openClarification: any = null;
-    if (row.pending_token) {
-      try {
-        const { loadClarificationByToken } = await import('../util/pendingClarifications.js');
-        const prow = await loadClarificationByToken(query, row.pending_token);
-        if (prow && prow.company_id === companyId) {
-          openClarification = {
-            question: prow.missing,
-            items: prow.options?.items || null,
-            clarificationToken: prow.answer_token,
-            originalTask: prow.original_body,
-          };
-        }
-      } catch { /* no open clarification to re-render */ }
     }
     res.json({
       thread: row.thread, title: row.title,
       pendingPlanId: row.pending_plan_id, pendingToken: row.pending_token,
-      openClarification,
+      openClarification: await loadThreadOpenClarification(companyId, row.pending_token),
+      pendingPlan: await loadThreadPendingPlan(companyId, row.pending_plan_id),
     });
   } catch (err) {
     console.error('[schedule] task-thread failed:', err);
@@ -12248,11 +12280,12 @@ router.get('/task-thread', requireRole('owner', 'scheduler', 'employee'), async 
   }
 });
 
-// GET /api/schedule/task-threads — list of stored conversations for
-// the later history build (New task button + reopen, after
-// add_open_slots): id, title, turn count, current flag, timestamps.
+// GET /api/schedule/task-threads — list of stored conversations
+// for the history build (Deepika, 2026-11-19 — chat history +
+// New task): id, title, turn count, current flag, timestamps.
 // The full thread JSON is NOT returned here — a reopen fetches one
-// row. No UI reads this yet; the storage is listable by design.
+// row. Threads older than 15 days are already expired by the
+// lister (her retention rule, Nov 19 ~8:37 PM).
 router.get('/task-threads', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -12261,6 +12294,61 @@ router.get('/task-threads', requireRole('owner', 'scheduler', 'employee'), async
     res.json({ threads: await listTaskThreads(query, companyId, userId, 50) });
   } catch (err) {
     console.error('[schedule] task-threads failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/task-threads/new — the New task button
+// (Deepika, 2026-11-19 — chat history + New task): archive the
+// current thread (it stays in history) and start a fresh current
+// one. Pressable any time, not only when a task is done. The
+// fresh thread's title comes from its first message (see
+// taskThreadReply). The next message starts clean — the planner
+// never sees the old thread's dates or types.
+router.post('/task-threads/new', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = req.session.userId!;
+    const { loadCurrentTaskThread, startNewTaskThread } = await import('../util/taskThreads.js');
+    // Already fresh: the current thread has no turns, so starting
+    // another empty one would only leave an untitled empty row in
+    // history — return the current thread unchanged.
+    const current = await loadCurrentTaskThread(query, companyId, userId);
+    if (current && current.thread.length === 0) {
+      res.json({ thread: current.thread, title: current.title, pendingPlanId: current.pending_plan_id, pendingToken: current.pending_token, openClarification: null, pendingPlan: null });
+      return;
+    }
+    const row = await startNewTaskThread(query, companyId, userId, '');
+    res.json({ thread: row.thread, title: row.title, pendingPlanId: null, pendingToken: null, openClarification: null, pendingPlan: null });
+  } catch (err) {
+    console.error('[schedule] task-threads/new failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// GET /api/schedule/task-threads/:id — reopen one past
+// conversation (Deepika, 2026-11-19 — chat history + New task):
+// the thread becomes current again, so follow-ups continue it,
+// and the response carries its turns plus the open clarification
+// and the still-pending plan, so the client restores it exactly
+// as it was — messages, working clarification buttons, live
+// Approve/Reject card. Scoped to this user's own threads; a
+// thread from another user (or an expired one) is a 404.
+router.get('/task-threads/:id', requireRole('owner', 'scheduler', 'employee'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const userId = req.session.userId!;
+    const { setCurrentTaskThread } = await import('../util/taskThreads.js');
+    const row = await setCurrentTaskThread(query, companyId, userId, String(req.params.id || ''));
+    if (!row) { res.status(404).json({ error: 'Task not found.' }); return; }
+    res.json({
+      thread: row.thread, title: row.title,
+      pendingPlanId: row.pending_plan_id, pendingToken: row.pending_token,
+      openClarification: await loadThreadOpenClarification(companyId, row.pending_token),
+      pendingPlan: await loadThreadPendingPlan(companyId, row.pending_plan_id),
+    });
+  } catch (err) {
+    console.error('[schedule] task-threads/:id failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

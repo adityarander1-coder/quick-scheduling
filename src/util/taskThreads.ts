@@ -139,6 +139,45 @@ export async function saveCurrentTaskThread(
   }
 }
 
+/** Load one thread by id, scoped to this user+company (history
+ * reopen). Threads older than 15 days are expired on lookup and
+ * never returned. */
+export async function loadTaskThreadById(
+  query: QueryFn, companyId: string, userId: string, threadId: string,
+): Promise<TaskThreadRow | null> {
+  await expireOldThreads(query, companyId, userId);
+  const { rows } = await query(
+    `SELECT ${COLUMNS} FROM task_threads
+     WHERE company_id = $1 AND user_id = $2 AND id = $3`,
+    [companyId, userId, threadId]
+  );
+  return rows[0] ? parseThread(rows[0]) : null;
+}
+
+/** Make one of this user's threads the current one (history
+ * reopen): every other thread is archived in the same statement,
+ * so at most one row is ever current. Returns the row, or null
+ * when the id is not this user's thread. */
+export async function setCurrentTaskThread(
+  query: QueryFn, companyId: string, userId: string, threadId: string,
+): Promise<TaskThreadRow | null> {
+  const existing = await loadTaskThreadById(query, companyId, userId, threadId);
+  if (!existing) return null;
+  await query(
+    `UPDATE task_threads
+     SET is_current = (id = $3),
+         updated_at = CASE WHEN id = $3 THEN now() ELSE updated_at END
+     WHERE company_id = $1 AND user_id = $2`,
+    [companyId, userId, threadId]
+  );
+  const { rows } = await query(
+    `SELECT ${COLUMNS} FROM task_threads
+     WHERE company_id = $1 AND user_id = $2 AND id = $3`,
+    [companyId, userId, threadId]
+  );
+  return rows[0] ? parseThread(rows[0]) : null;
+}
+
 /** Start a fresh thread for a new task: the current thread is
  * archived (kept for the history list) and a new current row is
  * created with the given title. The caller appends the first turn
