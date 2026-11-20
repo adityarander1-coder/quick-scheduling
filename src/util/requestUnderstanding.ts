@@ -417,12 +417,88 @@ export function parseAmountAnswer(message: string): AmountAnswer | null {
 
 /** Is this question text a close "how many?" question — the only
  * question a bare amount answer may answer? Matches the gate's
- * modes question ("How many open … slots should I close …?") and
- * the missing-amount question ("no close amount given"). */
+ * modes question ("How many open … slots should I close …?"), the
+ * short missing-amount question ("How many open slots should I
+ * close?") and the missing-amount problem text ("no close amount
+ * given"). NOTE: the "open" pattern is `open .*slots` (no space
+ * after `.*`) — `open .* slots` never matches "open slots",
+ * because the space before `.*` eats the only space. */
 export function isCloseHowManyQuestion(questionText: string): boolean {
   const q = (questionText || '').toLowerCase();
-  return /how many open .* slots should i (close|keep)/.test(q)
+  return /how many open .*slots should i (close|keep)/.test(q)
     || /no close amount given/.test(q);
+}
+
+/** Is this question text an add "how many?" question — the only
+ * question a bare amount answer may answer for an add? Matches
+ * the gate's add question ("How many open … slots should I add
+ * …?") and the missing-amount question ("no add amount given").
+ * Mirror of isCloseHowManyQuestion (Deepika, 2026-11-19 — add
+ * open slots: a bare "3" after the gate asks how many to add
+ * must rebuild the add, never fall to the planner). */
+export function isAddHowManyQuestion(questionText: string): boolean {
+  const q = (questionText || '').toLowerCase();
+  return /how many open .*slots should i add/.test(q)
+    || /no add amount given/.test(q);
+}
+
+/** The add-shaped scope correction (Deepika, 2026-11-19 — add
+ * open slots): the correction above, where the turn being
+ * corrected is an add-open-slots request. Mirror of
+ * isScopeCorrection. */
+export function isAddScopeCorrection(message: string, history: Array<{ q: string; a: string }>): boolean {
+  if (!isTaskCorrection(message, history)) return false;
+  const lastTurn = lastTaskTurn(history);
+  if (!lastTurn) return false;
+  const lastQ = lastTurn.q || '';
+  return /\badd\b/i.test(lastQ) && /\bslots?\b/i.test(lastQ);
+}
+
+/**
+ * The intent seam for adds (Deepika, 2026-11-19 — add open slots):
+ * the mirror of normalizeClosePlan. Gemini returns the INTENT in
+ * plain terms; this pass resolves exact dates, types and amounts
+ * from the REQUEST's own words against the live lists, before the
+ * gate ever sees the plan.
+ *
+ * - Type: a plural ("day hospitalists") is the live type.
+ * - Amount, from the request's words — the model's guess never
+ *   overrides them: "add 3" is addCount 3.
+ * - Month scope: an add change sitting inside the named month
+ *   without covering it is widened to the whole month ("nov month"
+ *   → Nov 1–30, never today).
+ * Mutates the plan's changes in place; leaves non-add changes
+ * and fully-specified adds untouched.
+ */
+export function normalizeAddPlan(
+  plan: any,
+  requestText: string,
+  shiftNames: string[],
+  today: string,
+): void {
+  const text = requestText || '';
+  const scope = parseMonthScope(text, today);
+  const addM = text.match(/\badd\s+(\d{1,3})\b/i);
+  for (const c of plan?.changes || []) {
+    if (c?.action !== 'add_open_slots') continue;
+    if (c.shiftType) {
+      const hit = shiftNames.find((n) => new RegExp(`^${NAME_ESC(n)}s?$`, 'i').test(String(c.shiftType).trim()));
+      if (hit) c.shiftType = hit;
+    }
+    if (addM) {
+      const n = parseInt(addM[1], 10);
+      if (c.addCount !== n) c.addCount = n;
+    }
+    if (scope) {
+      if (c.fromDate === scope.fromDate && c.toDate === scope.toDate) continue;
+      const first = c.date || c.fromDate;
+      const last = c.toDate || c.date || c.fromDate;
+      if (!first || !last || first < scope.fromDate || last > scope.toDate) continue;
+      delete c.date;
+      c.fromDate = scope.fromDate;
+      c.toDate = scope.toDate;
+    }
+  }
 }
 
 export interface CloseContext {

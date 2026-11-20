@@ -6,7 +6,7 @@
 import { listUnreadUids, getImapMessage, markImapAsRead } from './gmailImap.js';
 import type { ImapCreds, ImapMessage } from './gmailImap.js';
 import { planFromEmail } from './gemini.js';
-import { extractRequestRange, normalizeClosePlan } from './requestUnderstanding.js';
+import { extractRequestRange, normalizeClosePlan, normalizeAddPlan } from './requestUnderstanding.js';
 import type { ImapAttachment } from './gmailImap.js';
 import { extractAttachmentContent } from './emailAttachments.js';
 import { notify, planApproverIds, companyOwnerIds } from './notify.js';
@@ -192,6 +192,12 @@ export function changeProblems(change: any): string[] {
         typeof change.closeCount === 'number' ? 'count' : null,
       ].filter(Boolean);
       if (modes.length !== 1) problems.push('no close amount given (a number, "keep N", or the whole type)');
+      break;
+    }
+    case 'add_open_slots': {
+      if (missing(change.shiftType)) problems.push('no shift type given');
+      if (missing(change.date) && (missing(change.fromDate) || missing(change.toDate))) problems.push('no date given');
+      if (change.addCount === undefined || change.addCount === null) problems.push('no add amount given (a number of slots per date)');
       break;
     }
     case 'add_session':
@@ -867,7 +873,7 @@ export async function processScheduleEmail(
     let fixerQuestion: string | null = null;
     if (pendingOriginal) {
       try {
-        const { buildCloseAmountPlan, narrowPendingPlan, fixCloseScopePlan } = await import('./taskFixers.js');
+        const { buildCloseAmountPlan, buildAddAmountPlan, narrowPendingPlan, fixCloseScopePlan, fixAddScopePlan } = await import('./taskFixers.js');
         const fixerHistory = [{ q: pendingOriginal.body, a: pendingMissing || '' }];
         const replyText = String(email.body || '').trim();
         let requesterId: string | null = null;
@@ -876,7 +882,8 @@ export async function processScheduleEmail(
           const asker = await findUserByAnyEmail(query, companyId, sender.address);
           requesterId = asker ? asker.id : null;
         } catch { /* requester stays unknown */ }
-        const amountBuilt = await buildCloseAmountPlan(query, companyId, replyText, fixerHistory as any);
+        const amountBuilt = await buildCloseAmountPlan(query, companyId, replyText, fixerHistory as any)
+          || await buildAddAmountPlan(query, companyId, replyText, fixerHistory as any);
         if (amountBuilt) {
           fixerPlan = amountBuilt;
         } else {
@@ -886,7 +893,9 @@ export async function processScheduleEmail(
           else if (narrowed?.kind === 'clarification') fixerQuestion = narrowed.question;
           else {
             const rescoped = await fixCloseScopePlan(query, companyId, replyText, fixerHistory as any,
-              sender.address, pendingOriginal.subject, requesterId, null);
+              sender.address, pendingOriginal.subject, requesterId, null)
+              || await fixAddScopePlan(query, companyId, replyText, fixerHistory as any,
+                sender.address, pendingOriginal.subject, requesterId, null);
             if (rescoped) fixerPlan = rescoped;
           }
         }
@@ -931,6 +940,7 @@ export async function processScheduleEmail(
     // against the live lists, before the gate ever sees the plan —
     // the same pass the Task door runs in finalizeTaskPlan.
     normalizeClosePlan(plan, `${email.subject || ''}\n${effectiveBody || ''}`, shiftTypes, today);
+    normalizeAddPlan(plan, `${email.subject || ''}\n${effectiveBody || ''}`, shiftTypes, today);
 
     // Mixed mail (batch 2, 2026-10-30): handling keys on the parse
     // OUTPUT, not the single emailType — one email can carry a schedule
@@ -1326,6 +1336,7 @@ export function renderChangeList(plan: any): string {
       : c.action === 'add_rotation' ? `Create rotation for ${c.person} — ${c.shiftType}, ${rotPattern(c)} from ${c.startDate || 'no start date'}`
       : c.action === 'add_shift_type' ? `Add shift "${c.shiftType}" to ${c.department}`
       : c.action === 'set_staffing_target' ? `Set ${c.shiftType} staffing to ${c.targetCount}`
+      : c.action === 'add_open_slots' ? `Add ${c.addCount} open ${c.shiftType} slot${c.addCount === 1 ? '' : 's'} per date${c.date ? ` on ${c.date}` : c.fromDate ? ` ${c.fromDate} – ${c.toDate}` : ''}${c.department ? ` (${c.department})` : ''}`
       : c.action === 'add_session' ? `Add session "${c.title}" on ${c.dashboard} (${c.date})`
       : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`

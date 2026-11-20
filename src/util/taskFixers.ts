@@ -21,7 +21,8 @@
 // falls back to the latest pending plan, as before).
 
 import {
-  parseAmountAnswer, isCloseHowManyQuestion, resolveCloseContext,
+  parseAmountAnswer, isCloseHowManyQuestion, isAddHowManyQuestion, isAddScopeCorrection,
+  resolveCloseContext,
   parseNarrowingReply, isScopeCorrection, parseMonthScope, matchMemberName,
   lastTaskTurn, extractRequestDates, monthScopeOfDate,
 } from './requestUnderstanding.js';
@@ -80,6 +81,37 @@ async function rejectPlan(
      WHERE id = $1 AND company_id = $3 AND status = 'pending'`,
     [planId, decidedBy || null, companyId]
   );
+}
+
+/** Deterministic add-amount answer (Deepika, 2026-11-19 — add
+ * open slots): a bare number reply to an add "how many?" question
+ * rebuilds the add directly. Only fires when the last history
+ * entry is an add how-many question, and only for a plain count —
+ * "keep N" and "all of them" mean nothing for an add, so they fall
+ * through to the planner. The context shape is the shared
+ * open-slots context (resolveCloseContext), never a local copy. */
+export async function buildAddAmountPlan(
+  query: QueryFn, companyId: string, message: string, history: History,
+): Promise<FixerPlan | null> {
+  const amount = parseAmountAnswer(message);
+  if (!amount || amount.mode !== 'count') return null;
+  const last = history[history.length - 1];
+  if (!last || !isAddHowManyQuestion(last.a)) return null;
+  const { shiftNames, deptNames } = await loadLists(query, companyId);
+  const today = new Date().toISOString().slice(0, 10);
+  const ctx = resolveCloseContext(last.a, last.q, shiftNames, deptNames, today);
+  if (!ctx) return null;
+  const change: any = {
+    action: 'add_open_slots',
+    shiftType: ctx.shiftType,
+    ...(ctx.date ? { date: ctx.date } : { fromDate: ctx.fromDate, toDate: ctx.toDate }),
+    ...(ctx.department ? { department: ctx.department } : {}),
+    addCount: amount.closeCount,
+  };
+  return {
+    summary: `Add ${amount.closeCount} open ${ctx.shiftType} slot${amount.closeCount === 1 ? '' : 's'} per date${ctx.date ? ` on ${ctx.date}` : ` ${ctx.fromDate} – ${ctx.toDate}`}.`,
+    changes: [change],
+  };
 }
 
 /** Deterministic close-amount answer (issue A): a bare number /
@@ -156,6 +188,25 @@ export async function narrowPendingPlan(
     const type = scope.shiftType || ctx.shiftType;
     if (!type) return null;
     const lastQ = taskTurn.q;
+    // Add round (Deepika, 2026-11-19 — add open slots): the task
+    // turn is an add request, so the rebuild is an add, not a
+    // close — same type + dates, amount from the request's words.
+    // With no number in the request there is nothing to add, so
+    // the narrowing falls through to the planner, which asks how
+    // many — an add amount is never guessed.
+    if (/\badd\b/i.test(lastQ) && /\bslots?\b/i.test(lastQ)) {
+      const addM = lastQ.match(/\badd\s+(\d{1,3})\b/i);
+      if (!addM) return null;
+      const change: any = {
+        action: 'add_open_slots',
+        shiftType: type,
+        ...(ctx.date ? { date: ctx.date } : { fromDate: ctx.fromDate, toDate: ctx.toDate }),
+        ...(scope.department || ctx.department ? { department: scope.department || ctx.department } : {}),
+        addCount: parseInt(addM[1], 10),
+      };
+      const range = ctx.date ? `on ${ctx.date}` : `(${ctx.fromDate} – ${ctx.toDate})`;
+      return { kind: 'plan', plan: { summary: `Add ${addM[1]} open ${type} slots per date ${range}.`, changes: [change] } };
+    }
     const change: any = {
       action: 'close_open_slots',
       shiftType: type,
@@ -193,12 +244,15 @@ export async function narrowPendingPlan(
   }
   await rejectPlan(query, companyId, row.id, requesterUserId);
   const allClose = kept.every((c: any) => c.action === 'close_open_slots');
+  const allAdd = kept.every((c: any) => c.action === 'add_open_slots');
   const keptTypes = [...new Set(kept.map((c: any) => c.shiftType).filter(Boolean))].join(', ');
   const summary = allClose
     ? `Close open slots for ${keptTypes} (narrowed from the earlier plan).`
-    : keptTypes
-      ? `Narrowed from the earlier plan (${keptTypes}).`
-      : `Narrowed from the earlier plan.`;
+    : allAdd
+      ? `Add open slots for ${keptTypes} (narrowed from the earlier plan).`
+      : keptTypes
+        ? `Narrowed from the earlier plan (${keptTypes}).`
+        : `Narrowed from the earlier plan.`;
   return { kind: 'plan', plan: { summary, changes: kept } };
 }
 
@@ -282,6 +336,76 @@ export async function fixCloseScopePlan(
   }
   return {
     summary: `Close open slots for ${ctx.shiftType} for the whole month (${scope.fromDate} – ${scope.toDate}).`,
+    changes: [change],
+  };
+}
+
+/** Deterministic scope correction for adds (Deepika, 2026-11-19
+ * — add open slots): "I asked you about the whole nov month"
+ * after an add request rebuilds that add with the whole-month
+ * scope, never deflecting to Ask. Mirror of fixCloseScopePlan.
+ * Two paths: a pending add plan exists → re-scope its changes
+ * to the month (keeping type + amount — the correction is about
+ * the DATES, not the amount); none exists (the first request was
+ * refused) → rebuild from the last history turn's add request
+ * (type + amount from its wording, dates = the month). */
+export async function fixAddScopePlan(
+  query: QueryFn, companyId: string, message: string, history: History,
+  senderEmail: string | null, sourceSubject: string,
+  requesterUserId: string | null | undefined,
+  currentPlanId?: string | null,
+): Promise<FixerPlan | null> {
+  if (!isAddScopeCorrection(message, history)) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  const taskTurn = lastTaskTurn(history);
+  let scope = parseMonthScope(message, today) || (taskTurn ? parseMonthScope(taskTurn.q, today) : null);
+  if (!scope && taskTurn) {
+    const dates = extractRequestDates(taskTurn.q, today);
+    if (dates.length) scope = monthScopeOfDate(dates[0]);
+  }
+  if (!scope) scope = monthScopeOfDate(today);
+  if (!scope) return null;
+  const { shiftNames, deptNames } = await loadLists(query, companyId);
+  // Path 1: a pending add plan to re-scope.
+  const row = await latestPendingPlan(query, companyId, sourceSubject, senderEmail || '', currentPlanId);
+  if (row) {
+    const changes = (row.plan?.changes || []);
+    if (changes.length && changes.every((c: any) => c.action === 'add_open_slots')) {
+      await rejectPlan(query, companyId, row.id, requesterUserId);
+      const rescoped = changes.map((c: any) => {
+        const n: any = { ...c };
+        delete n.date;
+        n.fromDate = scope.fromDate;
+        n.toDate = scope.toDate;
+        return n;
+      });
+      const types = [...new Set(rescoped.map((c: any) => c.shiftType))].join(', ');
+      return {
+        summary: `Add open slots for ${types} for the whole month (${scope.fromDate} – ${scope.toDate}).`,
+        changes: rescoped,
+      };
+    }
+  }
+  // Path 2: no pending plan — rebuild from the last TASK turn's
+  // request (a deflection in between doesn't change which request
+  // is being corrected).
+  const lastTurn = lastTaskTurn(history);
+  if (!lastTurn) return null;
+  const lastQ = lastTurn.q;
+  const ctx = resolveCloseContext('', lastQ, shiftNames, deptNames, today);
+  if (!ctx) return null;
+  const addM = lastQ.match(/\badd\s+(\d{1,3})\b/i);
+  if (!addM) return null;
+  const change: any = {
+    action: 'add_open_slots',
+    shiftType: ctx.shiftType,
+    fromDate: scope.fromDate,
+    toDate: scope.toDate,
+    ...(ctx.department ? { department: ctx.department } : {}),
+    addCount: parseInt(addM[1], 10),
+  };
+  return {
+    summary: `Add ${addM[1]} open ${ctx.shiftType} slots per date for the whole month (${scope.fromDate} – ${scope.toDate}).`,
     changes: [change],
   };
 }

@@ -17,6 +17,7 @@ interface PlanChange {
           'set_staffing_target' |
           'bulk_publish' | 'bulk_unpublish' |
           'close_open_slots' |
+          'add_open_slots' |
           'add_session' | 'update_session' | 'cancel_session';
   person?: string;
   fromPerson?: string;
@@ -47,6 +48,8 @@ interface PlanChange {
   closeCount?: number; // close this many open slots per date
   keepCount?: number; // keep this many open per date, close the rest
   closeAll?: boolean; // close the whole type for the date(s)
+  // Add-open-slots field (add_open_slots, Deepika 2026-11-19):
+  addCount?: number; // add this many open slots per date
   // Per-person rotation fields (add_rotation, Deepika 2026-11-17)
   weekdays?: number[]; // 0=Sun..6=Sat, weekly pattern
   cycleWeeks?: number; // 1 = every week, 2 = every other week (default 1)
@@ -1935,6 +1938,88 @@ export async function executePlan(
           results.push({
             action: change.action, success: true,
             message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'} in ${closeDept.name}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
+          });
+        }
+      } else if (change.action === 'add_open_slots' && change.shiftType && (change.date || (change.fromDate && change.toDate))) {
+        // Add open slots (Deepika, 2026-11-19 — "Can you add 3 open
+        // slots for day hospitalists for nov month"): the mirror of
+        // the close above, and the opposite write — a POSITIVE
+        // adjustment to extra_open_slots, so the computed opens grow
+        // by addCount per date. Only ever adds EMPTY slots: no
+        // stored shift row is ever created or touched, so no person
+        // is ever assigned. Department resolution + access check are
+        // the close's, verbatim: the department scopes WHO may add
+        // and labels the add; the pool itself (extra_open_slots,
+        // keyed company+date+type) is shared. A date already CLOSED
+        // for the type is skipped — the add would be invisible
+        // there — and a plan whose every date is closed fails
+        // honestly instead of silently adding nothing.
+        const st = await findShiftType(companyId, change.shiftType);
+        if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const addDeptIds = await shiftTypesDepartmentIds([st.id], companyId);
+        const { rows: addDeptRows } = await query(
+          'SELECT id, name FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[]) ORDER BY name',
+          [companyId, addDeptIds]
+        );
+        const addTypeDepts = addDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
+        let addDept: { id: string; name: string } | null = null;
+        if (change.department && String(change.department).trim()) {
+          addDept = await findDepartment(companyId, change.department);
+          if (!addDept) throw new Error(`Department not found: ${change.department}`);
+          if (!addTypeDepts.some((d) => d.id === addDept!.id)) {
+            const where = addTypeDepts.length
+              ? `${st.name} belongs to ${addTypeDepts.map((d) => d.name).join(' and ')}`
+              : `${st.name} isn't assigned to any department yet`;
+            throw new Error(`${st.name} isn't part of ${addDept.name} — ${where}.`);
+          }
+        } else if (addTypeDepts.length === 1) {
+          addDept = addTypeDepts[0];
+        }
+        if (!addDept) {
+          throw new Error(`Which department should I add the open ${st.name} slots in? It belongs to ${addTypeDepts.map((d) => d.name).join(' and ')} — name one.`);
+        }
+        if (!(await canEditDepartment(companyId, createdBy, addDept.id))) {
+          throw new Error(`You don't have edit access to ${addDept.name} — a scheduler can only add slots in departments they administer.`);
+        }
+        if (!(Number.isInteger(change.addCount) && (change.addCount as number) >= 1 && (change.addCount as number) <= 20)) {
+          throw new Error(`Add how many open ${st.name} slots per date? Give a whole number from 1 to 20.`);
+        }
+        const first = String(change.date || change.fromDate);
+        const last = String(change.toDate || change.date || change.fromDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(first) || !/^\d{4}-\d{2}-\d{2}$/.test(last) || first > last) {
+          throw new Error(`Give a valid date or date range to add ${st.name} slots for.`);
+        }
+        const dates: string[] = [];
+        {
+          let cur = first;
+          while (cur <= last && dates.length < 400) {
+            dates.push(cur);
+            const dd = new Date(cur + 'T00:00:00Z');
+            dd.setUTCDate(dd.getUTCDate() + 1);
+            cur = dd.toISOString().slice(0, 10);
+          }
+          if (cur <= last) throw new Error('That date range is too long — pick a range under a year.');
+        }
+        const { rows: closedRows } = await query(
+          `SELECT date::text AS date FROM closed_shifts
+           WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4`,
+          [companyId, st.id, first, last]
+        );
+        const closedSet = new Set(closedRows.map((r: any) => r.date));
+        let slotsAdded = 0;
+        const skipped: string[] = [];
+        for (const d of dates) {
+          if (closedSet.has(d)) { skipped.push(`${d} (closed for ${st.name})`); continue; }
+          await adjustExtraOpenSlots(companyId, d, st.id, change.addCount as number, createdBy);
+          slotsAdded += change.addCount as number;
+        }
+        const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
+        if (slotsAdded === 0) {
+          results.push({ action: change.action, success: false, message: `${st.name} is already closed in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
+        } else {
+          results.push({
+            action: change.action, success: true,
+            message: `Added ${slotsAdded} open ${st.name} slot${slotsAdded === 1 ? '' : 's'} in ${addDept.name} (${change.addCount} per date${range})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
           });
         }
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {

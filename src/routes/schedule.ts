@@ -10839,6 +10839,16 @@ async function buildClarification(
   } else if (p.includes('end date')) {
     question = 'Until when should this repeat?';
     options = ['6 months', '1 year'];
+  } else if (p.includes('amount given') && p.includes('add')) {
+    // ADD only (Deepika, 2026-11-19 — add open slots): the add
+    // problem names its amount "per date", so without this branch
+    // the date branch below would ask "Which date?" for a missing
+    // amount, and the bare-number fixer would never fire. CLOSE
+    // keeps the dig's shipped generic question verbatim ("I need a
+    // bit more detail: no close amount given …") — the close-flow
+    // UI suite asserts that exact text, and the close bare-number
+    // flow is proven on it.
+    question = 'How many open slots should I add per date? (just type a number)';
   } else if (p.includes('date')) {
     question = 'Which date? (e.g. "Oct 25" or "next Monday")';
   } else if (p.includes('target count') || p.includes('count')) {
@@ -11068,6 +11078,16 @@ async function tryResolveCloseAmount(companyId: string, message: string, history
   return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
 }
 
+// Add-open-slots mirror of tryResolveCloseAmount (Deepika, 2026-11-19
+// — add open slots): a bare number after the gate's add "how many?"
+// question rebuilds the add through the shared fixer.
+async function tryResolveAddAmount(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined) {
+  const { buildAddAmountPlan } = await import('../util/taskFixers.js');
+  const built = await buildAddAmountPlan(query, companyId, message, history);
+  if (!built) return null;
+  return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
+}
+
 async function tryNarrowPendingClosePlan(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined, opts?: { sourceSubject?: string; currentPlanId?: string | null }) {
   const { narrowPendingPlan } = await import('../util/taskFixers.js');
   const res = await narrowPendingPlan(query, companyId, message, history,
@@ -11082,6 +11102,17 @@ async function tryNarrowPendingClosePlan(companyId: string, message: string, his
 async function tryFixCloseScope(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined, opts?: { sourceSubject?: string; currentPlanId?: string | null }) {
   const { fixCloseScopePlan } = await import('../util/taskFixers.js');
   const built = await fixCloseScopePlan(query, companyId, message, history,
+    senderEmail, opts?.sourceSubject || 'In-app agent task', requesterUserId, opts?.currentPlanId);
+  if (!built) return null;
+  return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
+}
+
+// Add-open-slots mirror of tryFixCloseScope (Deepika, 2026-11-19 —
+// add open slots): "I asked you about the whole nov month" after an
+// add request re-scopes the add to the whole month.
+async function tryFixAddScope(companyId: string, message: string, history: Array<{ q: string; a: string }>, senderEmail: string | null, requesterUserId: string | null | undefined, opts?: { sourceSubject?: string; currentPlanId?: string | null }) {
+  const { fixAddScopePlan } = await import('../util/taskFixers.js');
+  const built = await fixAddScopePlan(query, companyId, message, history,
     senderEmail, opts?.sourceSubject || 'In-app agent task', requesterUserId, opts?.currentPlanId);
   if (!built) return null;
   return finalizeToTaskReply(companyId, built, message, history, senderEmail, requesterUserId);
@@ -11182,9 +11213,10 @@ async function finalizeTaskPlan(companyId: string, plan: any, task: string, memb
   // the live lists, before the gate ever sees the plan — the same
   // pass the email door runs in processScheduleEmail.
   {
-    const { normalizeClosePlan } = await import('../util/requestUnderstanding.js');
+    const { normalizeClosePlan, normalizeAddPlan } = await import('../util/requestUnderstanding.js');
     const todayISO = new Date().toISOString().slice(0, 10);
     normalizeClosePlan(plan, requestText || task, shiftNames, todayISO);
+    normalizeAddPlan(plan, requestText || task, shiftNames, todayISO);
   }
   const { collectNameProblems, decideClarification } = await import('../util/askRouting.js');
   const nameProblems = collectNameProblems(plan, memberNames, shiftNames);
@@ -11681,9 +11713,11 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
       // rebuilds the plan instead of deflecting to Ask.
       const narrowed = await tryNarrowPendingClosePlan(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts);
       if (narrowed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, narrowed); return; }
-      const amountResolved = await tryResolveCloseAmount(companyId, message, history, taskSenderEmail, req.session.userId);
+      const amountResolved = await tryResolveCloseAmount(companyId, message, history, taskSenderEmail, req.session.userId)
+        || await tryResolveAddAmount(companyId, message, history, taskSenderEmail, req.session.userId);
       if (amountResolved) { await replyTaskResult(res, companyId, req.session.userId, stored, message, amountResolved); return; }
-      const scopeFixed = await tryFixCloseScope(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts);
+      const scopeFixed = await tryFixCloseScope(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts)
+        || await tryFixAddScope(companyId, message, history, taskSenderEmail, req.session.userId, fixerOpts);
       if (scopeFixed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, scopeFixed); return; }
       // Bare Yes/No (Deepika, 2026-11-19 — issue N5): read HERE,
       // never by the model — Yes proceeds with the last task, No
@@ -11823,9 +11857,11 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
     const noModeFixerOpts = { currentPlanId: stored?.pending_plan_id || null };
     const noModeNarrowed = await tryNarrowPendingClosePlan(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts);
     if (noModeNarrowed) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeNarrowed); return; }
-    const noModeAmount = await tryResolveCloseAmount(companyId, message, history, noModeSenderEmail, req.session.userId);
+    const noModeAmount = await tryResolveCloseAmount(companyId, message, history, noModeSenderEmail, req.session.userId)
+      || await tryResolveAddAmount(companyId, message, history, noModeSenderEmail, req.session.userId);
     if (noModeAmount) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeAmount); return; }
-    const noModeScope = await tryFixCloseScope(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts);
+    const noModeScope = await tryFixCloseScope(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts)
+      || await tryFixAddScope(companyId, message, history, noModeSenderEmail, req.session.userId, noModeFixerOpts);
     if (noModeScope) { await replyTaskResult(res, companyId, req.session.userId, stored, message, noModeScope); return; }
     // Bare Yes/No (N5) — same as Task mode.
     const noModeYn = await tryAnswerYesNo(companyId, message, history, stored, noModeSenderEmail);

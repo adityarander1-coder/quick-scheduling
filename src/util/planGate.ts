@@ -987,6 +987,142 @@ export async function gatePlanChanges(
     }
   }
 
+  // ---- 1c-add. add open slots ---------------------------------------
+  // add_open_slots (Deepika, 2026-11-19 — "Can you add 3 open slots
+  // for day hospitalists for nov month" must build a plan, never a
+  // refusal + staffing-target offer): the mirror of the close gate
+  // above. The shift type must exist (exact name, never a guess),
+  // the add must name the department it is for (defaulted when the
+  // type belongs to exactly one department; one clarification when
+  // it belongs to several, to none, or to a different department
+  // than named), the date or range must be valid, and addCount —
+  // the number of EMPTY slots to add PER date — must be a whole
+  // number from 1 to 20 (the manual route clamps to ±20 per date;
+  // the AI asks instead of silently adding fewer than asked).
+  // Adding never needs opens to exist, so there is no emptiness
+  // check — but a date already CLOSED for the type would swallow
+  // the add invisibly, so a plan whose EVERY touched date is
+  // closed is refused with one plain clarification (the executor
+  // skips closed dates in a mixed range). The executor re-checks
+  // at approval time.
+  {
+    const addChanges = list.filter((c) => c.action === 'add_open_slots');
+    if (addChanges.length) {
+      const { rows: strows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      // Expansion guard — same shape as the close guard: a plan
+      // that adds to several types the request never named is a
+      // guess, not a plan. Refuse BEFORE the per-change checks.
+      {
+        const distinct = [...new Set(addChanges.map((c) => norm(c.shiftType || '')))].filter(Boolean);
+        if (distinct.length >= 2) {
+          const resolvedTypes = distinct.map((n) => typeByName.get(n) || null);
+          if (resolvedTypes.every(Boolean)) {
+            const req = String(requestText || '').toLowerCase();
+            const namesAll = (resolvedTypes as any[]).every((t) => req.includes(norm(t.name).toLowerCase()));
+            const explicitAll = /\b(all|every|each|any)\s+(of\s+)?(the\s+)?shift\s+types?\b|\ball of them\b/.test(req);
+            if (!namesAll && !explicitAll) {
+              const names = (resolvedTypes as any[]).map((t) => t.name).join(', ');
+              return { ok: false, question: `Which shift type(s) should I add open slots for? The shift types are ${names} — I won't add to every type unless you say "all shift types".` };
+            }
+          }
+        }
+      }
+      const validDate = (d: any) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+        && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
+      for (const c of addChanges) {
+        const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
+        if (!type) {
+          return { ok: false, question: c.shiftType
+            ? `I couldn't find a shift type called "${c.shiftType}". Which shift type should I add open slots for?`
+            : `Which shift type should I add open slots for?` };
+        }
+        const first = c.date || c.fromDate;
+        const last = c.toDate || c.date || c.fromDate;
+        if (!first || !validDate(first) || (c.toDate && !validDate(c.toDate)) || (first && last && String(first) > String(last))) {
+          return { ok: false, question: `Which date${c.fromDate || c.toDate ? 's' : ''} should I add open ${type.name} slots for?` };
+        }
+        if (!(Number.isInteger(c.addCount) && c.addCount >= 1)) {
+          return { ok: false, question: `How many open ${type.name} slots should I add per date ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''}? Give a whole number of 1 or more.` };
+        }
+        if (c.addCount > 20) {
+          return { ok: false, question: `I can add at most 20 open ${type.name} slots per date — how many should I add?` };
+        }
+        // Department — same resolution as the close gate: named
+        // must belong to the type; single-department types default;
+        // zero or several → one clarification. Opens have NO
+        // department dimension, so the department scopes WHO may
+        // add (the executor's access check) and labels the add.
+        {
+          const deptIds = await shiftTypesDepartmentIds([type.id], companyId);
+          const { rows: allDeptRows } = await query(
+            'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
+          );
+          const allDepts = allDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
+          const typeDepts = allDepts.filter((d) => deptIds.includes(d.id));
+          if (c.department && String(c.department).trim()) {
+            const named = allDepts.find((d) => norm(d.name) === norm(c.department));
+            if (!named) {
+              return { ok: false, question: `I couldn't find a department called "${c.department}". Which department should I add the open ${type.name} slots in?` };
+            }
+            if (!typeDepts.some((d) => d.id === named.id)) {
+              const where = typeDepts.length
+                ? `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}`
+                : `${type.name} isn't assigned to any department yet`;
+              return { ok: false, question: `${type.name} isn't part of ${named.name} — ${where}. Which department should I add the open slots in?` };
+            }
+            c.department = named.name; // canonical
+          } else if (typeDepts.length === 1) {
+            c.department = typeDepts[0].name; // the type's only department — no question needed
+          } else if (typeDepts.length === 0) {
+            return { ok: false, question: `${type.name} isn't assigned to any department yet. Which department should I add the open slots in?` };
+          } else {
+            return { ok: false, question: `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}. Which department should I add the open slots in?` };
+          }
+        }
+        // Closed dates: an add on a day closed for the type is
+        // invisible (the computed opens stay 0), so a plan whose
+        // every touched date is closed is refused outright; a
+        // mixed range passes and the executor skips its closed
+        // dates.
+        const touched: string[] = [];
+        {
+          let cur = String(first);
+          while (cur <= String(last) && touched.length < 400) {
+            touched.push(cur);
+            const dd = new Date(cur + 'T00:00:00Z');
+            dd.setUTCDate(dd.getUTCDate() + 1);
+            cur = dd.toISOString().slice(0, 10);
+          }
+        }
+        const inputs = await loadOpenSlotInputs(query, companyId, touched[0], touched[touched.length - 1]);
+        const closedDays = touched.filter((d) => inputs.closed.has(`${d}|${type.id}`));
+        if (closedDays.length === touched.length) {
+          return { ok: false, question: touched.length > 1
+            ? `${type.name} is already closed for ${String(first)} – ${String(last)} — adding open slots there would do nothing. Pick dates that aren't closed.`
+            : `${type.name} is already closed on ${String(first)} — adding open slots there would do nothing. Pick a date that isn't closed.` };
+        }
+        // Plan numbers (issue E parity with closes): one plain
+        // line per change — how many per date, over how many days,
+        // and the empty-only guarantee.
+        {
+          const total = touched.length * c.addCount;
+          const label = touched.length === 1
+            ? `${type.name} on ${touched[0]}`
+            : `${type.name} ${touched[0]} – ${touched[touched.length - 1]}`;
+          const body = touched.length <= 7
+            ? touched.map((d) => `${d}: add ${c.addCount}`).join('; ')
+            : `add ${c.addCount} per date over ${touched.length} days`;
+          c.addDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are added; nobody is assigned to a shift.`;
+          gateDetails.push(c.addDetail);
+        }
+      }
+    }
+  }
+
   // ---- 1d. per-department role change --------------------------------
   // change_member_role_in_department (Deepika, 2026-11-19 — "Can i
   // change role later?" + "add this to the list of things AI can

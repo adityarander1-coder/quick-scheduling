@@ -256,7 +256,7 @@ function planChangeDates(c: any, r: any): string[] {
   if (c.action === 'assign_recurring' && Array.isArray(r?.dates) && r.dates.length) {
     return r.dates;
   }
-  if ((c.action === 'bulk_publish' || c.action === 'bulk_unpublish' || c.action === 'close_open_slots') && c.fromDate && c.toDate && c.fromDate <= c.toDate) {
+  if ((c.action === 'bulk_publish' || c.action === 'bulk_unpublish' || c.action === 'close_open_slots' || c.action === 'add_open_slots') && c.fromDate && c.toDate && c.fromDate <= c.toDate) {
     const out: string[] = [];
     const [y, m, d] = String(c.fromDate).split('-').map(Number);
     const [y2, m2, d2] = String(c.toDate).split('-').map(Number);
