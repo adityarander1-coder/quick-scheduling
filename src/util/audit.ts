@@ -376,6 +376,7 @@ export async function auditPlanChanges(companyId: string, plan: any, results: an
             details: {
               planId: plan.id, action: c.action, summary: plan.plan_summary,
               ...(shiftTypeId ? { shiftTypeId } : {}),
+              ...(c.department ? { department: c.department } : {}),
               ...(side.swapTo ? { swap: true, swapTo: side.swapTo, ...(swapToWho?.id ? { swapToUserId: swapToWho.id } : {}) } : {}),
             },
           });

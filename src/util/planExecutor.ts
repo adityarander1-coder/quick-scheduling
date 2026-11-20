@@ -2,7 +2,7 @@
 
 import crypto from 'node:crypto';
 import { query } from '../db.js';
-import { getDepartmentAccess } from './departmentAccess.js';
+import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -40,7 +40,10 @@ interface PlanChange {
   newShiftType?: string;
   targetCount?: number;
   // Close-open-slots fields (close_open_slots, Deepika 2026-11-19):
-  // exactly one of these three says HOW MUCH to close.
+  // exactly one of these three says HOW MUCH to close. The
+  // `department` field (above) says WHICH department the close is
+  // for — named in the instruction, or defaulted by the gate to the
+  // type's only department (Deepika, 2026-11-19).
   closeCount?: number; // close this many open slots per date
   keepCount?: number; // keep this many open per date, close the rest
   closeAll?: boolean; // close the whole type for the date(s)
@@ -646,17 +649,17 @@ async function canEditSessionTarget(
 }
 
 /**
- * Permission mirror of the manual membership-roles route, for plan
- * execution (Deepika, 2026-11-19 — the AI must follow the same
- * department scoping as the manual edit; the update_team_member
- * bypass — a direct UPDATE with no department-access check — is
- * flagged and deliberately NOT repeated here). Owner passes; a
- * scheduler needs the department in their Edit list; the email
- * approve link passes null createdBy because the email door already
- * ran the department-access pre-check (getPlanDepartmentIds picks
- * the change's department up).
+ * May this user edit in this department? Owner: yes. Scheduler:
+ * only departments they have EDIT access to. Anyone else: no.
+ * createdBy is the approver's id, or null for an email approve
+ * link — there the token is the auth, and the approve page already
+ * ran its own department-access pre-check (getPlanDepartmentIds in
+ * schedule.ts). Gates any department-scoped AI write (per-department
+ * role changes, close_open_slots) — unlike update_team_member,
+ * whose direct UPDATE has no department-access check (flagged
+ * 2026-11-19, not repeated).
  */
-async function canEditDepartmentRole(
+async function canEditDepartment(
   companyId: string, createdBy: string | null, departmentId: string
 ): Promise<boolean> {
   if (!createdBy) return true; // email approve link: the token is the auth
@@ -1635,14 +1638,14 @@ export async function executePlan(
         // a pulled-in department → the membership row. The person must
         // be a member of that department (home or pulled-in), and the
         // role must belong to that department — the old role never
-        // carries over. Scoping is enforced here (canEditDepartmentRole),
+        // carries over. Scoping is enforced here (canEditDepartment),
         // unlike update_team_member above, whose direct UPDATE has no
         // department-access check (flagged 2026-11-19, not repeated).
         const member = await findMember(companyId, change.person);
         if (!member) throw new Error(noExactMatch(change.person));
         const dept = await findDepartment(companyId, change.department);
         if (!dept) throw new Error(`Department not found: ${change.department}`);
-        if (!(await canEditDepartmentRole(companyId, createdBy, dept.id))) {
+        if (!(await canEditDepartment(companyId, createdBy, dept.id))) {
           throw new Error(`You don't have edit access to ${dept.name} — a scheduler can only change roles in departments they administer.`);
         }
         const { rows: roleRows } = await query(
@@ -1798,6 +1801,45 @@ export async function executePlan(
         // (close the whole type for the date — a closed_shifts row).
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        // Department (Deepika, 2026-11-19 — "It needs to know which
+        // department and which shift"): the close is for ONE
+        // department. Re-resolved at approval time — a plan written
+        // before this build carries no department, so default from
+        // the type's departments when there is exactly one; refuse
+        // when the type spans several or none. Access is enforced
+        // here (canEditDepartment): a scheduler may only close slots
+        // in departments they administer. The gate cannot check
+        // this — it never sees the requester. The write itself still
+        // hits the shared type+date pool (staffing_targets /
+        // extra_open_slots / closed_shifts have no department
+        // column), exactly like the manual close — the department
+        // scopes who may close and labels the close, it does not
+        // split the pool.
+        const closeDeptIds = await shiftTypesDepartmentIds([st.id], companyId);
+        const { rows: closeDeptRows } = await query(
+          'SELECT id, name FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[]) ORDER BY name',
+          [companyId, closeDeptIds]
+        );
+        const closeTypeDepts = closeDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
+        let closeDept: { id: string; name: string } | null = null;
+        if (change.department && String(change.department).trim()) {
+          closeDept = await findDepartment(companyId, change.department);
+          if (!closeDept) throw new Error(`Department not found: ${change.department}`);
+          if (!closeTypeDepts.some((d) => d.id === closeDept!.id)) {
+            const where = closeTypeDepts.length
+              ? `${st.name} belongs to ${closeTypeDepts.map((d) => d.name).join(' and ')}`
+              : `${st.name} isn't assigned to any department yet`;
+            throw new Error(`${st.name} isn't part of ${closeDept.name} — ${where}.`);
+          }
+        } else if (closeTypeDepts.length === 1) {
+          closeDept = closeTypeDepts[0];
+        }
+        if (!closeDept) {
+          throw new Error(`Which department should I close the open ${st.name} slots in? It belongs to ${closeTypeDepts.map((d) => d.name).join(' and ')} — name one.`);
+        }
+        if (!(await canEditDepartment(companyId, createdBy, closeDept.id))) {
+          throw new Error(`You don't have edit access to ${closeDept.name} — a scheduler can only close slots in departments they administer.`);
+        }
         const modes = [
           change.closeAll === true ? 'all' : null,
           typeof change.keepCount === 'number' ? 'keep' : null,
@@ -1860,16 +1902,16 @@ export async function executePlan(
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
         if (mode === 'all') {
           if (daysClosed === 0) {
-            results.push({ action: change.action, success: false, message: `${st.name} is already closed${range.replace(/^, /, ' for ')}.` });
+            results.push({ action: change.action, success: false, message: `${st.name} is already closed in ${closeDept.name}${range.replace(/^, /, ' for ')}.` });
           } else {
-            results.push({ action: change.action, success: true, message: `Closed ${st.name}${range} (no open slots that day${dates.length > 1 ? 's' : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
+            results.push({ action: change.action, success: true, message: `Closed ${st.name} in ${closeDept.name}${range} (no open slots that day${dates.length > 1 ? 's' : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
           }
         } else if (slotsClosed === 0) {
-          results.push({ action: change.action, success: false, message: `No open ${st.name} slots to close${range.replace(/^, /, ' for ')}${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
+          results.push({ action: change.action, success: false, message: `No open ${st.name} slots to close in ${closeDept.name}${range.replace(/^, /, ' for ')}${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
         } else {
           results.push({
             action: change.action, success: true,
-            message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
+            message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'} in ${closeDept.name}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
           });
         }
       } else if (change.action === 'add_session' && change.dashboard && change.title && change.date) {

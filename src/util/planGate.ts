@@ -38,6 +38,7 @@ import { resolveRotationPattern } from './planExecutor.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
 import { getGeneratedTypeIds, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
+import { shiftTypesDepartmentIds } from './departmentAccess.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
 
@@ -708,10 +709,13 @@ export async function gatePlanChanges(
 
   // ---- 1c. close open slots -----------------------------------------
   // close_open_slots (Deepika, 2026-11-19 — walkthrough item 1): the
-  // shift type must exist (exact name, never a guess), the date or
-  // range must be valid, and exactly one close mode must be given
-  // (closeCount / keepCount / closeAll). The gate also refuses a
-  // plan that would close nothing — no opens on a date, already at
+  // shift type must exist (exact name, never a guess), the close must
+  // name the department it is for (defaulted when the type belongs
+  // to exactly one department; one clarification when it belongs to
+  // several, to none, or to a different department than named), the
+  // date or range must be valid, and exactly one close mode must be
+  // given (closeCount / keepCount / closeAll). The gate also refuses
+  // a plan that would close nothing — no opens on a date, already at
   // or below the keep count, or already closed — with one plain
   // clarification, the same as the N1 refusals above. The executor
   // re-checks at approval time, so a plan that was fine when written
@@ -733,6 +737,43 @@ export async function gatePlanChanges(
           return { ok: false, question: c.shiftType
             ? `I couldn't find a shift type called "${c.shiftType}". Which shift type should I close open slots for?`
             : `Which shift type should I close open slots for?` };
+        }
+        // Department (Deepika, 2026-11-19 — "It needs to know which
+        // department and which shift"): every close carries the
+        // department it is for. Opens themselves have NO department
+        // dimension — staffing_targets is one row per type, and
+        // extra_open_slots / closed_shifts are keyed (company, date,
+        // type) — so the pool is shared across every department the
+        // type belongs to, exactly like the manual close (whose
+        // routes only check the requester's active department is one
+        // of the type's). The department here scopes WHO may close
+        // (the executor's access check) and labels the close in the
+        // plan, result and Change report; for a type in exactly one
+        // department it IS that department's close.
+        const deptIds = await shiftTypesDepartmentIds([type.id], companyId);
+        const { rows: allDeptRows } = await query(
+          'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
+        );
+        const allDepts = allDeptRows.map((r: any) => ({ id: r.id, name: r.name }));
+        const typeDepts = allDepts.filter((d) => deptIds.includes(d.id));
+        if (c.department && String(c.department).trim()) {
+          const named = allDepts.find((d) => norm(d.name) === norm(c.department));
+          if (!named) {
+            return { ok: false, question: `I couldn't find a department called "${c.department}". Which department should I close the open ${type.name} slots in?` };
+          }
+          if (!typeDepts.some((d) => d.id === named.id)) {
+            const where = typeDepts.length
+              ? `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}`
+              : `${type.name} isn't assigned to any department yet`;
+            return { ok: false, question: `${type.name} isn't part of ${named.name} — ${where}. Which department should I close the open slots in?` };
+          }
+          c.department = named.name; // canonical
+        } else if (typeDepts.length === 1) {
+          c.department = typeDepts[0].name; // the type's only department — no question needed
+        } else if (typeDepts.length === 0) {
+          return { ok: false, question: `${type.name} isn't assigned to any department yet. Which department should I close the open slots in?` };
+        } else {
+          return { ok: false, question: `${type.name} belongs to ${typeDepts.map((d) => d.name).join(' and ')}. Which department should I close the open slots in?` };
         }
         const first = c.date || c.fromDate;
         const last = c.toDate || c.date || c.fromDate;
