@@ -1203,6 +1203,50 @@ export async function gatePlanChanges(
     }
   }
 
+  // ---- 1c-unassign. delete opens a slot ------------------------------
+  // unassign (Deepika, 2026-11-20): removing a person from a shift
+  // leaves it as an empty open slot, so the plan summary names the
+  // slot the approval will leave — one plain line per change, the
+  // same numbers the grid shows. Only when the person actually
+  // holds a shift of that type that date (otherwise the executor
+  // reports "No shift found" and no line is written); a closed day
+  // leaves no slot, so it carries no line either. The executor
+  // re-checks at approval time, so a plan that was fine when written
+  // but whose schedule has since changed still fails honestly.
+  {
+    const unassignChanges = list.filter((c) => c.action === 'unassign' && c.date);
+    if (unassignChanges.length) {
+      const { rows: strows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true', [companyId]
+      );
+      const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      const dates = unassignChanges.map((c) => String(c.date)).sort();
+      const inputs = await loadOpenSlotInputs(query, companyId, dates[0], dates[dates.length - 1]);
+      let drawn: any[] = [];
+      try {
+        drawn = await getShiftsForRange(query, companyId, dates[0], dates[dates.length - 1]);
+      } catch (drawErr: any) {
+        console.error('[plan-gate] drawn-holders read failed for unassign details:', drawErr?.message);
+        drawn = [];
+      }
+      for (const c of unassignChanges) {
+        const user = resolved.get(c)?.get('person');
+        const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
+        if (!user || !type || !drawn.length) continue;
+        const date = String(c.date);
+        if (inputs.closed.has(`${date}|${type.id}`)) continue;
+        const entries = drawn.filter((e: any) => e.date === date && e.shiftTypeId === type.id);
+        const personHolds = entries.filter((e: any) => e.userId === user.id).length;
+        if (!personHolds) continue;
+        const capacity = openSlotCapacity(inputs, type.id, date);
+        const sPost = capacity - (entries.length - personHolds);
+        const visibleAfter = Math.max(1, sPost);
+        c.unassignDetail = `leaves ${visibleAfter} open ${type.name} slot${visibleAfter === 1 ? '' : 's'} on ${date}`;
+        gateDetails.push(`Remove ${user.fullName} from ${type.name} on ${date} — ${c.unassignDetail}`);
+      }
+    }
+  }
+
   // ---- 1d. per-department role change --------------------------------
   // change_member_role_in_department (Deepika, 2026-11-19 — "Can i
   // change role later?" + "add this to the list of things AI can

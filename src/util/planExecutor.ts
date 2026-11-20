@@ -1176,12 +1176,12 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
  * computed opens, never a stored shift row, so it can never remove
  * a person. Used by close_open_slots (gate re-checks at execution).
  */
-async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean; filled: number }> {
+async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean; filled: number; raw: number }> {
   const { rows: crows } = await query(
     'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
-  if (crows.length) return { total: 0, closed: true, filled: 0 };
+  if (crows.length) return { total: 0, closed: true, filled: 0, raw: 0 };
   const { rows: trows } = await query(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -1222,7 +1222,7 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  return { total: Math.max(0, target + extra - filled), closed: false, filled };
+  return { total: Math.max(0, target + extra - filled), closed: false, filled, raw: target + extra - filled };
 }
 
 /**
@@ -1255,6 +1255,42 @@ async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId
       );
     }
   });
+}
+
+/**
+ * Open-slot grant for a person-shift delete (Deepika, 2026-11-20 —
+ * "When i delete someones shift ... i delete someone it should
+ * open empty slot"). Generalises the old group-only grant
+ * (ensureOpenSlotForGroupDelete, 2026-11-13 — Bul/Swing): deleting
+ * a person's shift must leave it as an empty open slot so someone
+ * else can pick it up, not delete the whole shift.
+ *
+ * Called POST-delete, pre-grant. s = target + extra − filled (the
+ * unclamped `raw` from openTotals). Grant g = max(0, count − s):
+ * the visible opens after the grant are max(count, s) — exactly
+ * `count` more than the opens the delete alone would leave
+ * (s clamped at 0). Standard cases match the old group grant
+ * exactly (s === 0 → grant count; s ≥ count → grant 0); absorption
+ * cases (no-target multi-filled days, over-target days) grant more
+ * so the deleted shift actually SHOWS. Never when the day is closed
+ * for the type. Recomputing after the delete makes it idempotent:
+ * a second delete on the same date/type sees the first grant and
+ * adds nothing more than its own count. Returns the number granted.
+ */
+export async function ensureOpenSlotForDelete(
+  companyId: string, date: string, shiftTypeId: string, createdBy: string | null, count = 1
+): Promise<number> {
+  try {
+    const totals = await openTotals(companyId, date, shiftTypeId);
+    if (totals.closed) return 0;
+    const grant = Math.max(0, count - totals.raw);
+    if (grant <= 0) return 0;
+    await adjustExtraOpenSlots(companyId, date, shiftTypeId, grant, createdBy);
+    return grant;
+  } catch (err) {
+    console.error('[plan-executor] delete open-slot grant failed:', (err as any)?.message);
+    return 0;
+  }
 }
 
 export async function executePlan(
@@ -1458,6 +1494,7 @@ export async function executePlan(
           // wrong here, so the exclusion is inserted directly.
           const occ = await findRotationOccurrences(companyId, user.id, change.date, shiftTypeId);
           let excluded = 0;
+          const excludedByType = new Map<string, number>();
           for (const o of occ) {
             const ins = await query(
               `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
@@ -1465,12 +1502,28 @@ export async function executePlan(
                ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
               [companyId, o.rotationId, user.id, change.date, o.shiftTypeId]
             );
-            if (ins.rowCount) excluded += ins.rowCount;
+            if (ins.rowCount) {
+              excluded += ins.rowCount;
+              excludedByType.set(o.shiftTypeId, (excludedByType.get(o.shiftTypeId) || 0) + 1);
+            }
           }
           if (excluded > 0) {
+            // Delete opens a slot (Deepika, 2026-11-20): the excluded
+            // occurrence leaves its shift as an empty open slot, same
+            // as a stored-row unassign above.
+            let slotNote = '';
+            for (const [stId, n] of excludedByType) {
+              await ensureOpenSlotForDelete(companyId, change.date as string, stId, createdBy, n);
+              const after = await openTotals(companyId, change.date as string, stId);
+              if (!after.closed && after.total >= 1) {
+                const { rows: nm } = await query('SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [stId, companyId]);
+                const typeName = nm[0]?.name || change.shiftType || 'shift';
+                slotNote += ` — leaves ${after.total} open ${typeName} slot${after.total === 1 ? '' : 's'} on ${change.date}`;
+              }
+            }
             results.push({
               action: 'unassign', success: true,
-              message: `Removed ${user.display} from ${change.date} (rotation day)`,
+              message: `Removed ${user.display} from ${change.date} (rotation day)${slotNote}`,
             });
           } else {
             results.push({
@@ -1485,7 +1538,32 @@ export async function executePlan(
           // the row is gone.
           await excludeRotationInstances(companyId, user.id, change.date);
           const removedSlots = (deleted.rows || []).map((r: any) => ({ userId: user.id, date: change.date as string, shiftTypeId: r.shift_type_id }));
-          results.push({ action: 'unassign', success: true, removedSlots, message: `Removed ${user.display} from ${change.date}` });
+          // Delete opens a slot (Deepika, 2026-11-20): every removed
+          // person-shift leaves one open slot for its date+type.
+          // Grouped per (date, type) so an unassign that spans types
+          // grants once per type; the parenthetical names the slot
+          // whenever the day shows one open afterwards (grant or
+          // natural rise from the target), never on a closed day.
+          let slotNote = '';
+          {
+            const byPair = new Map<string, { count: number; shiftTypeId: string }>();
+            for (const s of removedSlots) {
+              const k = `${s.date}|${s.shiftTypeId}`;
+              const e = byPair.get(k) || { count: 0, shiftTypeId: s.shiftTypeId };
+              e.count += 1;
+              byPair.set(k, e);
+            }
+            for (const [, e] of byPair) {
+              await ensureOpenSlotForDelete(companyId, change.date as string, e.shiftTypeId, createdBy, e.count);
+              const after = await openTotals(companyId, change.date as string, e.shiftTypeId);
+              if (!after.closed && after.total >= 1) {
+                const { rows: nm } = await query('SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [e.shiftTypeId, companyId]);
+                const typeName = nm[0]?.name || change.shiftType || 'shift';
+                slotNote += ` — leaves ${after.total} open ${typeName} slot${after.total === 1 ? '' : 's'} on ${change.date}`;
+              }
+            }
+          }
+          results.push({ action: 'unassign', success: true, removedSlots, message: `Removed ${user.display} from ${change.date}${slotNote}` });
         }
       } else if (change.action === 'move' && change.fromPerson && change.toPerson && (change.date || change.fromDate)) {
         // Move = unassign fromPerson + assign toPerson (same shift

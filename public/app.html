@@ -11659,7 +11659,7 @@ window.qsNpOfferSend = function (btn) {
           switch (c.action) {
             case 'assign': return 'Assign ' + c.person + ' → ' + c.shiftType + ' on ' + c.date;
             case 'assign_recurring': return 'Assign ' + c.person + ' → ' + c.shiftType + ' every ' + c.intervalWeeks + ' weeks from ' + c.startDate + (c.weekendsOff ? ', weekdays only' : '') + (c.untilDate ? ' until ' + c.untilDate : '');
-            case 'unassign': return 'Remove ' + c.person + ' from ' + c.date;
+            case 'unassign': return 'Remove ' + c.person + ' from ' + (c.shiftType ? c.shiftType + ' on ' : '') + c.date + (c.unassignDetail ? ' — ' + c.unassignDetail : '');
             case 'move': return 'Move ' + c.fromPerson + ' → ' + c.toPerson + ' on ' + (c.date || c.fromDate);
             case 'swap': return 'Swap ' + c.fromPerson + ' ↔ ' + c.toPerson + ' on ' + c.date;
             case 'change_member_role_in_department': return 'Change ' + c.person + '’s job role in ' + c.department + ' to ' + c.jobRoleName;
