@@ -3836,11 +3836,10 @@
         }
 
         // Number of unfilled positions for a shift type on a date.
-        function isShiftClosed(dateStr, shiftTypeId) {
-          return (sched.closedShifts || []).some(function (c) {
-            return c.date === dateStr && c.shiftTypeId === shiftTypeId;
-          });
-        }
+        // (No isShiftClosed any more — Deepika, 2026-11-21: the
+        // closed flag is gone. A close suppresses the shortfall
+        // with stored rows, and suppressedSlotCount below subtracts
+        // exactly that.)
         // Closed opens (Deepika, 2026-11-20 — "close this slot"
         // really deletes it): a computed open a manager closed
         // stays closed — it subtracts from the visible total until
@@ -3869,7 +3868,6 @@
         // notDraftedByType still drive the undrafted-date OPEN
         // suppression below — behavior unchanged, label only.
         function openCountFor(dateStr, shiftTypeId) {
-          if (isShiftClosed(dateStr, shiftTypeId)) return 0;
           // Background rotations (Deepika, 2026-11-13; decision N2):
           // on a date nothing has been drafted for yet, the staffing
           // target contributes 0 — only manually added extra slots
@@ -4055,7 +4053,7 @@
 
         function sbwCellHtml(st, wk) {
           var byPerson = {}, order = [];
-          var openDays = [], closedDays = [], anyDraft = false;
+          var openDays = [], anyDraft = false;
           wk.days.forEach(function (ds, di) {
             shiftsFor(ds).forEach(function (s) {
               if (s.shiftTypeId !== st.id) return;
@@ -4066,7 +4064,6 @@
             });
             var oc = openCountRole(ds, st);
             if (oc > 0) openDays.push({ di: di, count: oc });
-            if (isShiftClosed(ds, st.id)) closedDays.push(di);
           });
           var out = '';
           order.sort(function (a, b) { return byPerson[a].days[0] - byPerson[b].days[0] || (byPerson[a].name < byPerson[b].name ? -1 : 1); });
@@ -4087,9 +4084,9 @@
               out += '<div class="sbw-open">— OPEN ' + parts.join(', ') + ' —</div>';
             }
           }
-          if (closedDays.length === 7) out += '<div style="color:#9ca3af;font-weight:700">Closed all week</div>';
-          else if (closedDays.length) out += '<div style="color:#9ca3af;font-size:0.76rem;font-weight:600">Closed ' + sbDayRuns(closedDays, wk.dates) + '</div>';
-
+          // (No "Closed all week" / "Closed …" label any more —
+          // Deepika, 2026-11-21: the closed flag is gone. A closed
+          // type is just a type with 0 opens, which renders nothing.)
           if (!out) out = '<div style="color:#9ca3af">—</div>';
           return out;
         }
@@ -6454,26 +6451,24 @@
           if (sched.canEdit) {
             sched.shiftTypes.forEach(function (st) {
               if (!shiftTypeVisible(st)) return;
-              var closed = isShiftClosed(ds, st.id);
+              // (Deepika, 2026-11-21 — "close needs to make it gone" /
+              // "no need for close label also" / "get rid of that"):
+              // a type with no opens renders NOTHING here — no Closed
+              // label, no Reopen button, no row at all. There is no
+              // closed flag any more, so a closed type is just a
+              // type with 0 opens (its shortfall suppressed). Ways
+              // back: re-draft the day, Bulk Actions "Open extra
+              // slots", Duplicate, Undo.
               var open = openCountRole(ds, st);
-              if (closed) {
-                // (Deepika, 2026-11-21 — "close needs to make it gone" /
-                // "no need for close label also" / "get rid of that"):
-                // a closed type renders NOTHING in the day dialog — no
-                // Closed label, no Reopen button, no row at all. Ways
-                // back: re-draft the day, Bulk Actions "Open extra
-                // slots", Duplicate, Undo.
-              } else {
-                for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
-                // No "N slots removed — Restore" row any more
-                // (Deepika, 2026-11-20 — "when it says close slot it
-                // goes away permanently"): a closed slot is gone for
-                // good; the way back is Duplicate, or a re-draft of
-                // the rotation. Closed opens leave no trace here.
-                if (open > 0) {
-                  openHtml += '<div style="text-align:right;padding:2px 0 6px">' +
-                    '<button type="button" data-closed-close="' + st.id + '" style="font-size:0.8rem;color:#6b7280;background:none;border:none;cursor:pointer">Close ' + esc(st.name) + ' for this date</button></div>';
-                }
+              for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
+              // No "N slots removed — Restore" row any more
+              // (Deepika, 2026-11-20 — "when it says close slot it
+              // goes away permanently"): a closed slot is gone for
+              // good; the way back is Duplicate, or a re-draft of
+              // the rotation. Closed opens leave no trace here.
+              if (open > 0) {
+                openHtml += '<div style="text-align:right;padding:2px 0 6px">' +
+                  '<button type="button" data-closed-close="' + st.id + '" style="font-size:0.8rem;color:#6b7280;background:none;border:none;cursor:pointer">Close ' + esc(st.name) + ' for this date</button></div>';
               }
             });
           }
@@ -6500,16 +6495,29 @@
                     // the server returns the undo payload — one
                     // entry, redo replays this same close call.
                     if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: ds, shiftTypeId: stId } }]);
-                    sched.closedShifts.push({ date: ds, shiftTypeId: stId });
+                    // Optimistic (Deepika, 2026-11-21 — no closed
+                    // flag any more to push): the close deleted the
+                    // pair's extras + draft opens and suppressed the
+                    // shortfall — mirror that locally so the
+                    // re-render shows 0 opens without waiting for a
+                    // refetch.
+                    sched.extraSlots = (sched.extraSlots || []).filter(function (e) { return !(e.date === ds && String(e.shiftTypeId) === String(stId)); });
+                    delete (sched.draftOpenCounts || {})[ds + '|' + stId];
+                    var filledN = 0;
+                    sched.shifts.forEach(function (s) { if (s.date === ds && String(s.shiftTypeId) === String(stId)) filledN++; });
+                    var tg = isNotDrafted(ds, stId) ? 0 : targetCountFor(ds, stId);
+                    var sf = Math.max(0, tg - filledN);
+                    var sup = (sched.suppressedOpenSlots || []).filter(function (e) { return !(e.date === ds && String(e.shiftTypeId) === String(stId)); });
+                    if (sf > 0) sup.push({ date: ds, shiftTypeId: stId, count: sf });
+                    sched.suppressedOpenSlots = sup;
                     renderView(); renderDayModal(); pageSuccess('Shift closed for this date.');
                   }
                 });
               });
             });
             // No [data-closed-reopen] handler any more (Deepika,
-            // 2026-11-21): the Reopen button is gone, so there is
-            // nothing to bind. DELETE /closed-shifts stays on the
-            // server — re-draft and Undo manage the flag there.
+            // 2026-11-21): the Reopen button and its endpoint are
+            // gone — re-draft and Undo are the ways back.
           }
           var ch = '';
           comments.forEach(function (c) {
@@ -9765,14 +9773,15 @@
         function scFmtDay(dateStr) {
           return parseDate(dateStr).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
         }
-        function qsScCompute(shifts, closedShifts, extraSlots, suppressedOpenSlots) {
-          var filled = {}, closed = {}, extra = {}, suppressed = {};
+        function qsScCompute(shifts, extraSlots, suppressedOpenSlots) {
+          var filled = {}, extra = {}, suppressed = {};
           (shifts || []).forEach(function (s) { var k = s.date + '|' + s.shiftTypeId; filled[k] = (filled[k] || 0) + 1; });
-          (closedShifts || []).forEach(function (c) { closed[c.date + '|' + c.shiftTypeId] = true; });
           (extraSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; extra[k] = (extra[k] || 0) + (e.count || 0); });
           // Closed opens (Deepika, 2026-11-20): a closed slot is not
           // a gap to offer — it stays closed until the next
-          // draft/publish pulls it back.
+          // draft/publish pulls it back. There is no closed flag any
+          // more (Deepika, 2026-11-21) — the suppression IS the
+          // closed state, and it already subtracts below.
           (suppressedOpenSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; suppressed[k] = (suppressed[k] || 0) + (e.count || 0); });
           var rows = [];
           for (var i = 0; i < 14; i++) {
@@ -9785,7 +9794,6 @@
               var need0 = targetCountFor(date, st.id);
               if (!need0) return;
               anyTarget = true;
-              if (closed[date + '|' + st.id]) return;
               var want = need0 + (extra[date + '|' + st.id] || 0) - (suppressed[date + '|' + st.id] || 0);
               var have = filled[date + '|' + st.id] || 0;
               if (have < want) gaps.push({ st: st, have: have, need: want, short: want - have });
@@ -9818,7 +9826,7 @@
           ]).then(function (rs) {
             var r = rs[0];
             if (!r.ok) return;
-            var rows = qsScCompute(r.data.shifts || [], r.data.closedShifts || [], r.data.extraSlots || [], r.data.suppressedOpenSlots || []);
+            var rows = qsScCompute(r.data.shifts || [], r.data.extraSlots || [], r.data.suppressedOpenSlots || []);
             var gapCount = rows.reduce(function (n, x) { return n + x.gaps.length; }, 0);
             var shortTotal = rows.reduce(function (n, x) { return n + x.gaps.reduce(function (m, g) { return m + g.short; }, 0); }, 0);
             var calSessions = (rs[1].ok && rs[1].data.sessions) || [];
@@ -9922,9 +9930,7 @@
             var d = r.data;
             var h = '<div style="font-weight:800;font-size:14px;margin-bottom:2px">✉️ Offer this gap to available staff</div>' +
               '<div style="color:var(--dim);font-size:12.5px;margin-bottom:8px">From the availability link — they said they\u2019re free on ' + scFmtDay(date) + ', they\u2019re not already working, and the shift fits their role. First to pick up gets it; after that the offer closes.</div>';
-            if (d.closed) {
-              h += '<p style="font-size:13px;margin:4px 0">This day is closed for ' + esc(d.shiftTypeName) + ' — there\u2019s nothing to fill.</p>';
-            } else if (d.short <= 0 && !d.offer) {
+            if (d.short <= 0 && !d.offer) {
               h += '<p style="font-size:13px;margin:4px 0">This gap has been filled.</p>';
             } else {
               if (d.offer) {
@@ -10651,10 +10657,13 @@ function qsPrintRender() {
       window.qsJobRoleDeptLoaded = true;
     }
     var allShifts = sd.data.shifts || [];
-    var closedSet = {};
-    (sd.data.closedShifts || []).forEach(function (c) { closedSet[c.date + '|' + c.shiftTypeId] = true; });
     var extraMap = {};
     (sd.data.extraSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; extraMap[k] = (extraMap[k] || 0) + (e.count || 0); });
+    // A suppressed shortfall is not "still needed" until the next
+    // draft/publish pulls it back — it subtracts here, the same as
+    // on the grid (there is no closed flag any more to skip on).
+    var supMap = {};
+    (sd.data.suppressedOpenSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; supMap[k] = (supMap[k] || 0) + (e.count || 0); });
     var typeById = {};
     (qsPrintTypes || []).forEach(function (t) { typeById[t.id] = t; });
     var userById = {};
@@ -10731,8 +10740,7 @@ function qsPrintRender() {
         (qsPrintTypes || []).forEach(function (t) {
           if (!inDept(t)) return;
           if (!printTypeFits(t)) return;
-          if (closedSet[ds + '|' + t.id]) return;
-          var need = targetFor(ds, t.id) + (extraMap[ds + '|' + t.id] || 0);
+          var need = targetFor(ds, t.id) + (extraMap[ds + '|' + t.id] || 0) - (supMap[ds + '|' + t.id] || 0);
           var have = haveCount[ds + '|' + t.id] || 0;
           if (need > have) { bits.push((need - have) + ' ' + esc(t.shortName || t.name.split(' ')[0])); anyNeed = true; }
         });
@@ -22838,15 +22846,13 @@ window.qsNpOfferSend = function (btn) {
           }
           return 0;
         }
-        function isShiftClosed(dateStr, shiftTypeId) {
-          return (closedShifts || []).some(function (c) {
-            return c.date === dateStr && String(c.shiftTypeId) === String(shiftTypeId);
-          });
-        }
         // Number of claimable open positions for a shift type on a date
         // (mirrors the admin Schedule view: target + extra - filled).
+        // (No isShiftClosed any more — Deepika, 2026-11-21: the
+        // closed flag is gone. A close suppresses the shortfall
+        // with stored rows, and the suppressed count below subtracts
+        // exactly that.)
         function openCountFor(dateStr, shiftTypeId) {
-          if (isShiftClosed(dateStr, shiftTypeId)) return 0;
           // Background rotations (decision N2, same rule as the admin
           // grid): on an undrafted date the staffing target
           // contributes 0 — only manually added extra slots count.
@@ -23152,7 +23158,7 @@ window.qsNpOfferSend = function (btn) {
         }
         function msSbwCellHtml(st, wk) {
           var byPerson = {}, order = [];
-          var openDays = [], closedDays = [];
+          var openDays = [];
           wk.days.forEach(function (ds, di) {
             shiftsFor(ds).forEach(function (s) {
               if (String(s.shiftTypeId) !== String(st.id)) return;
@@ -23162,7 +23168,6 @@ window.qsNpOfferSend = function (btn) {
             });
             var oc = slotPasses(ds, st.id) ? openCountFor(ds, st.id) : 0;
             if (oc > 0) openDays.push({ di: di, count: oc });
-            if (isShiftClosed(ds, st.id)) closedDays.push(di);
           });
           var out = '';
           order.sort(function (a, b) { return byPerson[a].days[0] - byPerson[b].days[0] || (byPerson[a].name < byPerson[b].name ? -1 : 1); });
@@ -23185,8 +23190,9 @@ window.qsNpOfferSend = function (btn) {
               out += '<div class="sbw-open">— OPEN ' + parts.join(', ') + ' —</div>';
             }
           }
-          if (closedDays.length === 7) out += '<div style="color:#9ca3af;font-weight:700">Closed all week</div>';
-          else if (closedDays.length) out += '<div style="color:#9ca3af;font-size:0.76rem;font-weight:600">Closed ' + msSbDayRuns(closedDays, wk.dates) + '</div>';
+          // (No "Closed all week" / "Closed …" label any more —
+          // Deepika, 2026-11-21: the closed flag is gone. A closed
+          // type is just a type with 0 opens, which renders nothing.)
           if (!out) out = '<div style="color:#9ca3af">—</div>';
           return out;
         }

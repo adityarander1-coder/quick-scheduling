@@ -398,7 +398,7 @@ async function loadAskerProfile(ctx: AskContext): Promise<any | null> {
 interface OpenSlotDay { name: string; open: number; }
 
 /** Open slots per date: staffing target + extra open slots − assigned shifts,
- *  skipping closed dates — the same definition as the app's open-slots message. */
+ *  minus suppressed opens — the same definition as the app's open-slots message. */
 async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes: { id: string; name: string }[]): Promise<{ byDate: Map<string, OpenSlotDay[]>; total: number }> {
   const { rows: targets } = await query(
     `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
@@ -413,16 +413,11 @@ async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes
     `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
      FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
     [ctx.companyId, from, to]);
-  const { rows: closed } = await query(
-    `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-     FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-    [ctx.companyId, from, to]);
   const { rows: assigned } = await query(
     `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*) AS count
      FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3
      GROUP BY date, shift_type_id`,
     [ctx.companyId, from, to]);
-  const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
   const assignedMap = new Map(assigned.map((a: any) => [a.date + '|' + a.shiftTypeId, parseInt(a.count, 10)]));
   const adjMap = new Map<string, number>();
   for (const a of adjustments) {
@@ -446,7 +441,6 @@ async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes
     const ds = fmtDate(d);
     for (const t of useTypes) {
       const key = ds + '|' + t.id;
-      if (closedSet.has(key)) continue;
       let target = 0;
       for (const tg of targets) {
         if (tg.shiftTypeId !== t.id) continue;

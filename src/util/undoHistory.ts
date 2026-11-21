@@ -183,8 +183,9 @@ function cleanOpenSlotUndo(u: any): any | null {
     // Whole-type close breakdown (Deepika, 2026-11-20 — "close any
     // where it should be gone"): the close really deleted the stored
     // rows, so the undo puts them back — suppressedDeleted rows are
-    // re-inserted, draftDeleted restores the draft-open count,
-    // flagSet removes the closed flag the close set.
+    // re-inserted, draftDeleted restores the draft-open count.
+    // flagSet (pre-build entries) is validated and passed through
+    // untouched — the flag is gone and the endpoint ignores it.
     if (s.suppressedDeleted !== undefined && (!Number.isInteger(s.suppressedDeleted) || s.suppressedDeleted < 0 || s.suppressedDeleted > 1000)) return null;
     if (s.draftDeleted !== undefined && (!Number.isInteger(s.draftDeleted) || s.draftDeleted < 0 || s.draftDeleted > 1000)) return null;
     if (s.flagSet !== undefined && typeof s.flagSet !== 'boolean') return null;

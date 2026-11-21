@@ -90,11 +90,10 @@ export async function captureScheduleState(companyId: string, from: string, to: 
     const nB = `${b.firstName} ${b.lastName}`;
     return nA.localeCompare(nB);
   });
-  const { rows: closedShifts } = await query(
-    `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-     FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-    [companyId, from, to]
-  );
+  // There is no closed flag any more (Deepika, 2026-11-21) — the
+  // snapshot carries an empty list for shape-compat, so frozen
+  // copies made after the build never show a flag.
+  const closedShifts: any[] = [];
   const { rows: extraSlots } = await query(
     `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
      FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,

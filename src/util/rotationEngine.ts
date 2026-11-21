@@ -773,11 +773,11 @@ interface ShortfallTarget {
   endDate: string | null;
 }
 
-/** Staffing targets + closed dates for the shortfall computation —
+/** Staffing targets for the shortfall computation —
  *  mirrors the grid's targetCountFor (weekdays + date range). */
 async function loadShortfallInputs(
   tx: QueryFn, companyId: string, from: string, to: string
-): Promise<{ targets: ShortfallTarget[]; closed: Set<string> }> {
+): Promise<{ targets: ShortfallTarget[] }> {
   const { rows: trows } = await tx(
     `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
             weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
@@ -791,12 +791,7 @@ async function loadShortfallInputs(
     startDate: t.startDate || null,
     endDate: t.endDate || null,
   }));
-  const { rows: crows } = await tx(
-    `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-     FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-    [companyId, from, to]
-  );
-  return { targets, closed: new Set(crows.map((c: any) => `${c.date}|${c.shiftTypeId}`)) };
+  return { targets };
 }
 
 function targetForShortfall(targets: ShortfallTarget[], shiftTypeId: string, dateStr: string): number {
@@ -858,7 +853,7 @@ async function getRotationlessTypeIds(
  *  partial draft reconciles against what was actually drafted, and a
  *  hand-added person fills one of the needed positions. */
 function computeShortfallDesired(
-  inputs: { targets: ShortfallTarget[]; closed: Set<string> },
+  inputs: { targets: ShortfallTarget[] },
   storedRows: Array<{ userId: string; date: string; shiftTypeId: string }>,
   from: string, to: string, typeIds: Set<string>, today: string
 ): Map<string, number> {
@@ -874,7 +869,6 @@ function computeShortfallDesired(
     const date = dateOfDayNum(n);
     if (date < today) continue; // past is truth — never open the past
     for (const typeId of typeIds) {
-      if (inputs.closed.has(`${date}|${typeId}`)) continue;
       const t = targetForShortfall(inputs.targets, typeId, date);
       if (!t) continue;
       const s = Math.max(0, t - (placed.get(`${date}|${typeId}`) || 0));
@@ -1096,13 +1090,10 @@ export async function generateRotations(
       const typeIds = new Set([...producedTypeIds(ctx, rots, onlyShiftTypeIds), ...rotationless]);
       if (typeIds.size) {
         const inputs = await loadShortfallInputs(tx, companyId, from, to);
-        // The real run clears closures for the types it produces
-        // before computing the shortfall — simulate that here (no
-        // writes in a dry run), or the reported shortfall would miss
-        // the closed days the draft pulls back.
-        for (const k of [...inputs.closed]) {
-          if (typeIds.has(k.split('|')[1])) inputs.closed.delete(k);
-        }
+        // The real run clears the suppression for the types it
+        // produces before computing the shortfall — there is no
+        // flag to skip any more, so the dry run needs no
+        // simulation: the shortfall math is the same either way.
         const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
         for (const v of desired.values()) openedShortfall += v;
       }
@@ -1291,10 +1282,10 @@ export async function generateRotations(
       // close open shifts they should be gone for good unless pulled
       // back from rotations when drafted or published"): a draft
       // clears every closure for the types+dates it produces — the
-      // whole-type closed flag, the suppressed shortfall closes,
-      // and any legacy negative extra row — BEFORE the shortfall is
-      // computed, so the closed days come back as opens. Positive
-      // extra rows are real added slots and are never touched.
+      // suppressed shortfall closes, and any legacy negative extra
+      // row — BEFORE the shortfall is computed, so the closed days
+      // come back as opens. Positive extra rows are real added
+      // slots and are never touched.
       const clearPairs: Array<{ date: string; shiftTypeId: string }> = [];
       for (let n = dayNum(from); n <= dayNum(to); n++) {
         const date = dateOfDayNum(n);

@@ -1174,18 +1174,15 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
 /**
  * Open-slot totals for one type+date, mirroring the manual route's
  * openSlotTotals (schedule.ts:8892) — the formula the grid itself
- * uses: max(0, target + extra − filled), 0 when the day is closed
- * for the type. Rotation occurrences are NOT counted in `filled`
- * (same as the manual close): a close only ever suppresses
- * computed opens, never a stored shift row, so it can never remove
- * a person. Used by close_open_slots (gate re-checks at execution).
+ * uses: max(0, target + extra − filled). Rotation occurrences are
+ * NOT counted in `filled` (same as the manual close): a close only
+ * ever suppresses computed opens, never a stored shift row, so it
+ * can never remove a person. Used by close_open_slots (gate
+ * re-checks at execution). There is no closed flag any more
+ * (Deepika, 2026-11-21): a close suppresses the shortfall with
+ * stored rows instead, and the suppression already subtracts here.
  */
-async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean; filled: number; raw: number }> {
-  const { rows: crows } = await query(
-    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-    [companyId, date, shiftTypeId]
-  );
-  if (crows.length) return { total: 0, closed: true, filled: 0, raw: 0 };
+async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; filled: number; raw: number }> {
   const { rows: trows } = await query(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -1231,7 +1228,7 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  return { total: Math.max(0, target + extra - filled - suppressed), closed: false, filled, raw: target + extra - filled - suppressed };
+  return { total: Math.max(0, target + extra - filled - suppressed), filled, raw: target + extra - filled - suppressed };
 }
 
 /**
@@ -1284,8 +1281,8 @@ async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId
  * (s clamped at 0). Standard cases match the old group grant
  * exactly (s === 0 → grant count; s ≥ count → grant 0); absorption
  * cases (no-target multi-filled days, over-target days) grant more
- * so the deleted shift actually SHOWS. Never when the day is closed
- * for the type. Recomputing after the delete makes it idempotent:
+ * so the deleted shift actually SHOWS. Recomputing after the
+ * delete makes it idempotent:
  * a second delete on the same date/type sees the first grant and
  * adds nothing more than its own count. Returns the number granted.
  */
@@ -1294,7 +1291,6 @@ export async function ensureOpenSlotForDelete(
 ): Promise<number> {
   try {
     const totals = await openTotals(companyId, date, shiftTypeId);
-    if (totals.closed) return 0;
     const grant = Math.max(0, count - totals.raw);
     if (grant <= 0) return 0;
     await adjustExtraOpenSlots(companyId, date, shiftTypeId, grant, createdBy);
@@ -1527,7 +1523,7 @@ export async function executePlan(
             for (const [stId, n] of excludedByType) {
               await ensureOpenSlotForDelete(companyId, change.date as string, stId, createdBy, n);
               const after = await openTotals(companyId, change.date as string, stId);
-              if (!after.closed && after.total >= 1) {
+              if (after.total >= 1) {
                 const { rows: nm } = await query('SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [stId, companyId]);
                 const typeName = nm[0]?.name || change.shiftType || 'shift';
                 slotNote += ` — leaves ${after.total} open ${typeName} slot${after.total === 1 ? '' : 's'} on ${change.date}`;
@@ -1555,7 +1551,7 @@ export async function executePlan(
           // Grouped per (date, type) so an unassign that spans types
           // grants once per type; the parenthetical names the slot
           // whenever the day shows one open afterwards (grant or
-          // natural rise from the target), never on a closed day.
+          // natural rise from the target).
           let slotNote = '';
           {
             const byPair = new Map<string, { count: number; shiftTypeId: string }>();
@@ -1568,7 +1564,7 @@ export async function executePlan(
             for (const [, e] of byPair) {
               await ensureOpenSlotForDelete(companyId, change.date as string, e.shiftTypeId, createdBy, e.count);
               const after = await openTotals(companyId, change.date as string, e.shiftTypeId);
-              if (!after.closed && after.total >= 1) {
+              if (after.total >= 1) {
                 const { rows: nm } = await query('SELECT name FROM shift_types WHERE id = $1 AND company_id = $2', [e.shiftTypeId, companyId]);
                 const typeName = nm[0]?.name || change.shiftType || 'shift';
                 slotNote += ` — leaves ${after.total} open ${typeName} slot${after.total === 1 ? '' : 's'} on ${change.date}`;
@@ -1924,17 +1920,20 @@ export async function executePlan(
         // Close open slots (Deepika, 2026-11-19 — walkthrough item 1):
         // the AI's first way to touch open slots. Only ever closes
         // EMPTY slots — the write only ever touches extra_open_slots
-        // (a stored extra row is really deleted), suppressed_open_
+        // (a stored extra row is really deleted) and suppressed_open_
         // slots (a computed shortfall open, closed until the next
-        // draft/publish pulls it back) and closed_shifts; no stored
-        // shift row is ever deleted, so no person is ever removed.
-        // No negative extra row is ever written (Deepika, 2026-11-20
+        // draft/publish pulls it back); no stored shift row is ever
+        // deleted, so no person is ever removed. No negative extra
+        // row is ever written (Deepika, 2026-11-20
         // — "when it says close slot it goes away permanently").
         // Exactly one mode: closeCount (close N per date), keepCount
         // (keep N per date, close the rest), or closeAll (close the
         // whole type for the date — the shared closeTypeForDate
-        // helper really deletes every stored row and sets the flag;
-        // Deepika, 2026-11-20 — "close any where it should be gone").
+        // helper really deletes every stored row and suppresses the
+        // shortfall; Deepika, 2026-11-20 — "close any where it
+        // should be gone"). There is no closed flag any more
+        // (Deepika, 2026-11-21): a close suppresses the shortfall
+        // with stored rows, so a later add lands and shows.
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         // Department (Deepika, 2026-11-19 — "It needs to know which
@@ -1947,10 +1946,9 @@ export async function executePlan(
         // in departments they administer. The gate cannot check
         // this — it never sees the requester. The write itself still
         // hits the shared type+date pool (staffing_targets /
-        // extra_open_slots / closed_shifts have no department
-        // column), exactly like the manual close — the department
-        // scopes who may close and labels the close, it does not
-        // split the pool.
+        // extra_open_slots have no department column), exactly like
+        // the manual close — the department scopes who may close
+        // and labels the close, it does not split the pool.
         const closeDeptIds = await shiftTypesDepartmentIds([st.id], companyId);
         const { rows: closeDeptRows } = await query(
           'SELECT id, name FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[]) ORDER BY name',
@@ -2022,23 +2020,22 @@ export async function executePlan(
         for (const d of dates) {
           const t = await openTotals(companyId, d, st.id);
           if (mode === 'all') {
-            if (t.closed) { skipped.push(`${d} (already closed)`); continue; }
             // A close-all that would close nothing is a no-op the
             // gate refuses at plan time (Deepika, 2026-11-19 — Dec 2
             // formed a plan despite no open slots shown): at
             // approval time the same rule applies — skip the empty
-            // day instead of writing a closed_shifts row for it,
-            // and fail honestly when nothing closed anywhere.
+            // day instead of writing anything for it, and fail
+            // honestly when nothing closed anywhere.
             if (t.total <= 0) { skipped.push(`${d} (no open slots)`); continue; }
             // Whole-type close (Deepika, 2026-11-20 — "when i say
             // close any where it should be gone"): the shared helper
             // really deletes every stored row for the date+type
-            // (extras, draft opens, suppressed rows) and sets the
-            // closed flag — the same write the Bulk Actions close
-            // and the day dialog make. Same-brain: both doors.
-            const closed = await closeTypeForDate(query as any, companyId, d, st.id, createdBy);
-            if (closed.flagSet) { daysClosed++; slotsClosed += t.total; }
-            else skipped.push(`${d} (already closed)`);
+            // (extras, draft opens) and suppresses the shortfall —
+            // the same write the Bulk Actions close and the day
+            // dialog make. Same-brain: both doors.
+            const res = await closeTypeForDate(query as any, companyId, d, st.id, createdBy);
+            if (res.totalBefore > 0) { daysClosed++; slotsClosed += t.total; }
+            else skipped.push(`${d} (no open slots)`);
           } else if (mode === 'total') {
             // Keep-total (Deepika, 2026-11-21 — "close excess
             // slots ... to keep day hospitalist slot to 14 per
@@ -2056,10 +2053,8 @@ export async function executePlan(
             let filled: number;
             if (generatedTypes!.has(st.id)) {
               const stt = await storedTotals(query as any, companyId, d, st.id);
-              if (stt.closed) { skipped.push(`${d} (closed for ${st.name})`); continue; }
               opens = stt.opens; total = stt.total; filled = stt.filled;
             } else {
-              if (t.closed) { skipped.push(`${d} (closed for ${st.name})`); continue; }
               opens = t.total; total = t.filled + t.total; filled = t.filled;
             }
             const want = Math.min(opens, Math.max(0, total - (change.keepTotal as number)));
@@ -2088,9 +2083,7 @@ export async function executePlan(
               ? Math.min(change.closeCount as number, t.total)
               : Math.max(0, t.total - (change.keepCount as number));
             if (want <= 0) {
-              skipped.push(t.closed
-                ? `${d} (closed for ${st.name})`
-                : `${d} (no open slots${mode === 'keep' ? ` over ${change.keepCount}` : ''})`);
+              skipped.push(`${d} (no open slots${mode === 'keep' ? ` over ${change.keepCount}` : ''})`);
               continue;
             }
             // The close runs in its own transaction (row lock on the
@@ -2104,9 +2097,7 @@ export async function executePlan(
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
         if (mode === 'all') {
           if (daysClosed === 0) {
-            results.push({ action: change.action, success: false, message: skipped.length
-              ? `No open ${st.name} slots to close in ${closeDept.name}${range.replace(/^, /, ' for ')} — ${skipped.join('; ')}.`
-              : `${st.name} is already closed in ${closeDept.name}${range.replace(/^, /, ' for ')}.` });
+            results.push({ action: change.action, success: false, message: `No open ${st.name} slots to close in ${closeDept.name}${range.replace(/^, /, ' for ')}${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
           } else {
             results.push({ action: change.action, success: true, message: `Closed ${st.name} in ${closeDept.name}${range} (${slotsClosed} open slot${slotsClosed === 1 ? '' : 's'} closed; only empty slots are closed)${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` });
           }
@@ -2128,10 +2119,13 @@ export async function executePlan(
         // is ever assigned. Department resolution + access check are
         // the close's, verbatim: the department scopes WHO may add
         // and labels the add; the pool itself (extra_open_slots,
-        // keyed company+date+type) is shared. A date already CLOSED
-        // for the type is skipped — the add would be invisible
-        // there — and a plan whose every date is closed fails
-        // honestly instead of silently adding nothing.
+        // keyed company+date+type) is shared. There is no closed
+        // flag any more (Deepika, 2026-11-21): an add lands on
+        // every date, including one whose shortfall was closed —
+        // the suppression only ever hides the shortfall, never a
+        // stored extra. A plan whose every date is already at the
+        // target total fails honestly instead of silently adding
+        // nothing.
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         const addDeptIds = await shiftTypesDepartmentIds([st.id], companyId);
@@ -2193,19 +2187,12 @@ export async function executePlan(
           }
           if (cur <= last) throw new Error('That date range is too long — pick a range under a year.');
         }
-        const { rows: closedRows } = await query(
-          `SELECT date::text AS date FROM closed_shifts
-           WHERE company_id = $1 AND shift_type_id = $2 AND date >= $3 AND date <= $4`,
-          [companyId, st.id, first, last]
-        );
-        const closedSet = new Set(closedRows.map((r: any) => r.date));
         // Generated types count from the stored schedule at approval
         // time (the top-up fix); live types keep the computed count.
         const generatedTypes = addMode === 'total' ? await getGeneratedTypeIds(query as any, companyId) : null;
         let slotsAdded = 0;
         const skipped: string[] = [];
         for (const d of dates) {
-          if (closedSet.has(d)) { skipped.push(`${d} (closed for ${st.name})`); continue; }
           if (addMode === 'total') {
             // Top-up (Deepika, 2026-11-20 — "make it total 14"):
             // the delta is re-computed at approval time from the
@@ -2241,9 +2228,10 @@ export async function executePlan(
         }
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
         if (slotsAdded === 0) {
-          results.push({ action: change.action, success: false, message: addMode === 'total'
-            ? `${st.name} is already at ${change.targetTotal} total in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.`
-            : `${st.name} is already closed in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
+          // Count mode always adds (every date takes addCount), so
+          // this only ever fires for a total-mode plan whose every
+          // date is already at the target.
+          results.push({ action: change.action, success: false, message: `${st.name} is already at ${change.targetTotal} total in ${addDept.name}${range.replace(/^, /, ' for ')} — adding open slots there would do nothing${skipped.length ? ` — ${skipped.join('; ')}` : ''}.` });
         } else {
           results.push({
             action: change.action, success: true,

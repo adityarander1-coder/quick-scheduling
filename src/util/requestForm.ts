@@ -103,15 +103,15 @@ export async function buildFormPack(
   const teamShifts = all.filter((s) => s.userId !== user.id && s.shiftTypeId && visibleUsers.has(s.userId as string))
     .map((s) => ({ userId: s.userId as string, date: s.date, shiftTypeId: s.shiftTypeId as string, shiftTypeName: s.shiftTypeName }));
 
-  // Open slots for pickup: target + extra − assigned, skipping closed.
+  // Open slots for pickup: target + extra − suppressed − assigned.
   const { rows: targets } = await q(
     `SELECT shift_type_id, target_count, weekdays, start_date::text AS sd, end_date::text AS ed FROM staffing_targets WHERE company_id = $1`,
     [companyId]);
   const { rows: extras } = await q(
     'SELECT date::text AS date, shift_type_id, count FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3',
     [companyId, from, to]);
-  const { rows: closed } = await q(
-    'SELECT date::text AS date, shift_type_id FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3',
+  const { rows: suppressions } = await q(
+    'SELECT date::text AS date, shift_type_id, count FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3',
     [companyId, from, to]);
   const { rows: stRows } = await q(
     'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true ORDER BY sort_order, name', [companyId]);
@@ -122,7 +122,7 @@ export async function buildFormPack(
     assigned.set(k, (assigned.get(k) || 0) + 1);
   }
   const extraMap = new Map(extras.map((r: any) => [`${r.date}|${r.shift_type_id}`, Number(r.count) || 0]));
-  const closedSet = new Set(closed.map((r: any) => `${r.date}|${r.shift_type_id}`));
+  const supMap = new Map(suppressions.map((r: any) => [`${r.date}|${r.shift_type_id}`, Number(r.count) || 0]));
   const openShifts: FormPack['openShifts'] = [];
   const today = todayStr();
   for (const t of targets) {
@@ -133,17 +133,16 @@ export async function buildFormPack(
       const dow = new Date(d + 'T00:00:00Z').getUTCDay();
       if (!days.includes(dow)) continue;
       const k = `${d}|${t.shift_type_id}`;
-      if (closedSet.has(k)) continue;
-      const open = (Number(t.target_count) || 0) + (extraMap.get(k) || 0) - (assigned.get(k) || 0);
+      const open = (Number(t.target_count) || 0) + (extraMap.get(k) || 0) - (supMap.get(k) || 0) - (assigned.get(k) || 0);
       if (open > 0) openShifts.push({ date: d, shiftTypeId: t.shift_type_id, shiftTypeName: stName.get(t.shift_type_id) || 'Shift', open });
     }
   }
   // Extra slots on types without a target row still count as open.
   for (const [k, count] of extraMap) {
     const [d, stId] = k.split('|');
-    if (d < today || closedSet.has(k)) continue;
+    if (d < today) continue;
     if (targets.some((t: any) => t.shift_type_id === stId)) continue;
-    const open = count - (assigned.get(k) || 0);
+    const open = count - (supMap.get(k) || 0) - (assigned.get(k) || 0);
     if (open > 0) openShifts.push({ date: d, shiftTypeId: stId, shiftTypeName: stName.get(stId) || 'Shift', open });
   }
   openShifts.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.shiftTypeName.localeCompare(b.shiftTypeName)));

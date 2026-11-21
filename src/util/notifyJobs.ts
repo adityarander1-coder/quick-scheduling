@@ -642,10 +642,6 @@ export async function runShortCoverWeekly(force = false): Promise<void> {
         const k = s.date + '|' + s.shiftTypeId;
         filled.set(k, (filled.get(k) || 0) + 1);
       }
-      const { rows: closed } = await query(
-        `SELECT date::text AS date, shift_type_id AS "shiftTypeId" FROM closed_shifts
-         WHERE company_id = $1 AND date >= $2 AND date <= $3`, [c.id, today, to]);
-      const closedSet = new Set(closed.map((x: any) => x.date + '|' + x.shiftTypeId));
       const { rows: extras } = await query(
         `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM extra_open_slots
          WHERE company_id = $1 AND date >= $2 AND date <= $3`, [c.id, today, to]);
@@ -653,6 +649,14 @@ export async function runShortCoverWeekly(force = false): Promise<void> {
       for (const e of extras) {
         const k = e.date + '|' + e.shiftTypeId;
         extraMap.set(k, (extraMap.get(k) || 0) + (e.count || 0));
+      }
+      const { rows: suppressions } = await query(
+        `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM suppressed_open_slots
+         WHERE company_id = $1 AND date >= $2 AND date <= $3`, [c.id, today, to]);
+      const supMap = new Map<string, number>();
+      for (const s of suppressions) {
+        const k = s.date + '|' + s.shiftTypeId;
+        supMap.set(k, (supMap.get(k) || 0) + (s.count || 0));
       }
       type Gap = { date: string; name: string; have: number; need: number; departmentIds: string[] };
       const gaps: Gap[] = [];
@@ -664,8 +668,10 @@ export async function runShortCoverWeekly(force = false): Promise<void> {
           if (!wds.includes(dow)) continue;
           if (t.startDate && date < t.startDate) continue;
           if (t.endDate && date > t.endDate) continue;
-          if (closedSet.has(date + '|' + t.shiftTypeId)) continue;
-          const need = t.targetCount + (extraMap.get(date + '|' + t.shiftTypeId) || 0);
+          // A suppressed shortfall is not a gap until the next
+          // draft/publish pulls it back — it subtracts from the
+          // need, the same as on the grid.
+          const need = t.targetCount + (extraMap.get(date + '|' + t.shiftTypeId) || 0) - (supMap.get(date + '|' + t.shiftTypeId) || 0);
           const have = filled.get(date + '|' + t.shiftTypeId) || 0;
           if (have < need) gaps.push({ date, name: t.shiftTypeName, have, need, departmentIds: t.departmentIds || [] });
         }

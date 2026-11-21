@@ -1077,12 +1077,11 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // exactly that on her vacation dates, 2026-11-03.)
     const visibleManual = employeeView ? rows.filter((s: any) => s.published) : rows;
 
-    // Closed shifts (manually marked unavailable)
-    const { rows: closedShifts } = await query(
-      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
-      [companyId, from, to]
-    );
+    // There is no closed flag any more (Deepika, 2026-11-21) — the
+    // payload still sends an empty closedShifts list for
+    // shape-compat with older clients; the suppression rows below
+    // are what hide closed opens now.
+    const closedShifts: any[] = [];
 
     // Extra open slots (manually added beyond targets)
     const { rows: extraSlots } = await query(
@@ -2520,15 +2519,16 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
   }
 });
 
-// POST /api/schedule/closed-shifts — mark a shift type unavailable for a date (owner/scheduler; department-scoped).
+// POST /api/schedule/closed-shifts — close a shift type for a date (owner/scheduler; department-scoped).
 // Whole-type close (Deepika, 2026-11-20 — "when i say close any
 // where it should be gone"): the shared closeTypeForDate helper
 // really deletes every stored row for the date+type (extras, draft
-// opens, suppressed rows) and then sets the closed flag — a later
-// re-draft creates only the fresh shortfall, and a Reopen shows
-// only the fresh shortfall. Returns the undo payload, so the day
-// dialog and the Bulk Actions loop can push ONE undo entry per
-// close action (bulk = one entry for the whole range).
+// opens) and suppresses exactly the visible shortfall with stored
+// rows — there is no closed flag any more (Deepika, 2026-11-21),
+// so a later add lands on the date and shows, and a later re-draft
+// creates only the fresh shortfall. Returns the undo payload, so
+// the day dialog and the Bulk Actions loop can push ONE undo entry
+// per close action (bulk = one entry for the whole range).
 router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -2551,15 +2551,15 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    // The read + deletes + flag insert run in one transaction with
+    // The read + deletes + suppression run in one transaction with
     // the row lock, so two simultaneous closes on the same date
     // can't interleave and the undo payload matches the write.
     const closed = await withTransaction(async (tx) =>
       closeTypeForDate(tx.query, companyId, date, shiftTypeId, req.session.userId!)
     );
     // History snapshot (Deepika, 2026-11-17) — closing a day hides
-    // its open rows. No copy when it was already closed.
-    if (closed.flagSet) {
+    // its open rows. No copy when the close changed nothing.
+    if (closed.totalBefore > 0 || closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0) {
       const { rows: tn } = await query(
         'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
         [shiftTypeId, companyId]
@@ -2571,24 +2571,28 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       });
     }
     // Open-slot close undo: the undo endpoint reverses each part
-    // exactly — re-adds the deleted extras, re-inserts the deleted
-    // suppressed rows, restores the deleted draft-open count (only
-    // when nothing re-derived it since), and removes the flag when
-    // this close set it. `adjust` is the amount the undo adds to
-    // the visible total (extras + suppressed); the draft restore
-    // never changes the total, so it is not part of it. No slot
-    // when nothing was deleted and the flag was already set.
-    const closedCount = closed.extraDeleted + closed.suppressedDeleted;
+    // exactly — re-adds the deleted extras, un-suppresses the
+    // shortfall this close suppressed, re-inserts the suppressed
+    // rows the close deleted, and restores the deleted draft-open
+    // count (only when nothing re-derived it since). `adjust` is
+    // the net visible change of the undo — exactly totalBefore
+    // (re-added extras + un-suppressed shortfall, minus the
+    // re-inserted pre-existing suppression) — so the threshold
+    // check in the undo endpoint verifies against the same number.
+    // A close on a 0-open date that still deleted hidden stored
+    // rows carries adjust 1 (the endpoint requires a non-zero
+    // adjust); its threshold is 0, so the undo is skipped rather
+    // than duplicating. No slot when the close changed nothing.
     const undoSlots: any[] = [];
-    if (closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0 || closed.flagSet) {
+    if (closed.totalBefore > 0 || closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0) {
       undoSlots.push({
         date, shiftTypeId,
         totalBefore: closed.totalBefore, draftBefore: closed.draftBefore,
         wasDraft: closed.totalBefore <= closed.draftBefore,
-        adjust: closedCount > 0 ? closedCount : 1,
-        extraDeleted: closed.extraDeleted, suppressed: 0,
+        adjust: closed.totalBefore > 0 ? closed.totalBefore : 1,
+        extraDeleted: closed.extraDeleted, suppressed: closed.suppressedCreated,
         suppressedDeleted: closed.suppressedDeleted,
-        draftDeleted: closed.draftDeleted, flagSet: closed.flagSet,
+        draftDeleted: closed.draftDeleted,
       });
     }
     res.json({ ok: true, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
@@ -2598,44 +2602,10 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
   }
 });
 
-// DELETE /api/schedule/closed-shifts — reopen a shift type for a date (owner/scheduler; department-scoped).
-router.delete('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.session.companyId!;
-    const { date, shiftTypeId } = req.body ?? {};
-    if (!isValidDate(date) || !shiftTypeId) {
-      res.status(400).json({ error: 'Date and shift type are required.' });
-      return;
-    }
-    // Department scoping: the scheduler's active department must be one of
-    // the shift type's departments.
-    if (!(await requireActiveDepartment(
-      req, res,
-      await shiftTypesDepartmentIds([shiftTypeId], companyId)
-    ))) return;
-    const { rowCount: reopened } = await query(
-      'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-      [companyId, date, shiftTypeId]
-    );
-    // History snapshot (Deepika, 2026-11-17) — reopening a day shows
-    // its open rows again. No copy when it was not closed.
-    if ((reopened || 0) > 0) {
-      const { rows: tn } = await query(
-        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
-        [shiftTypeId, companyId]
-      );
-      await recordHistorySnapshot({
-        companyId, actorId: req.session.userId!, trigger: 'published-change',
-        summary: `Reopened ${tn[0]?.name || 'shift'} on ${date}`,
-        from: date, to: date, shiftTypeIds: [shiftTypeId],
-      });
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[schedule] reopen shift failed:', err);
-    res.status(500).json({ error: 'Something went wrong. Please try again.' });
-  }
-});
+// (No DELETE /api/schedule/closed-shifts any more: the Reopen
+// endpoint went with the closed flag, Deepika 2026-11-21. The ways
+// back from a close are re-draft/publish, Duplicate, and Undo —
+// redo replays POST /closed-shifts, never a DELETE.)
 
 // POST /api/schedule/shifts/:id/apply-range — apply shift changes across a date range (owner/scheduler).
 // Body: { userId, shiftTypeId, notes, published, dates:[...] }.
@@ -3361,8 +3331,8 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
 // slot keeps the count right either way). 'Bulk delete' pauses are
 // removed by exact id. Restores audit as action 'created' with
 // details { via: 'delete-undo' }; no notify (matches drag-undo).
-// POST /shifts does not refuse closed days, so the restore does not
-// check closed_shifts either.
+// POST /shifts does not refuse a date whose shortfall was closed, so the restore does not
+// check for a closed flag either.
 router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -3617,11 +3587,12 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
 // state (the UI renders min(draft, total) positions as draft).
 // Whole-type closes (Deepika, 2026-11-20 — "close any where it
 // should be gone") DID delete the stored rows: their entries carry
-// suppressedDeleted / draftDeleted / flagSet, and the undo
-// re-inserts the deleted suppressed rows, restores the deleted
-// draft-open count (only when nothing re-derived it since), and
-// removes the closed flag the close set. Redo replays the original
-// close calls (client-side, like delete redo).
+// suppressedDeleted / draftDeleted, and the undo re-inserts the
+// deleted suppressed rows and restores the deleted draft-open
+// count (only when nothing re-derived it since). There is no
+// closed flag any more (Deepika, 2026-11-21) — the close
+// suppresses the shortfall with stored rows instead. Redo replays
+// the original close calls (client-side, like delete redo).
 // Guard (same spirit as delete-undo: never create a duplicate open):
 // slots are grouped by date+type and the threshold is the highest
 // open count recorded at close time for that group. A slot is
@@ -3653,9 +3624,9 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
       // any where it should be gone"): the close really deleted the
       // stored rows instead of suppressing them, so the undo puts
       // them back — suppressedDeleted rows are re-inserted,
-      // draftDeleted restores the draft-open count, flagSet removes
-      // the closed flag this close set. Optional — only whole-type
-      // closes carry them.
+      // draftDeleted restores the draft-open count. Optional — only
+      // whole-type closes carry them. flagSet (pre-build entries)
+      // is accepted and ignored — the flag is gone.
       if (s.suppressedDeleted !== undefined && (!Number.isInteger(s.suppressedDeleted) || s.suppressedDeleted < 0 || s.suppressedDeleted > 1000)) return true;
       if (s.draftDeleted !== undefined && (!Number.isInteger(s.draftDeleted) || s.draftDeleted < 0 || s.draftDeleted > 1000)) return true;
       if (s.flagSet !== undefined && typeof s.flagSet !== 'boolean') return true;
@@ -3711,17 +3682,13 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
         );
         if (!trows.length) { skip(s.date, s.shiftTypeId, 'shift-type-gone'); continue; }
         const totals = await openSlotTotals(tx.query, companyId, s.date, s.shiftTypeId);
-        // A closed day shows 0 opens no matter what — restoring the
-        // extra count while closed is safe (nothing visible can
-        // duplicate), and the slot shows again when the day reopens.
-        // A re-suppression on a closed day cannot be verified the
-        // same way, so it is skipped rather than guessed.
-        let ok: boolean;
-        if (totals.closed) ok = s.adjust > 0;
-        else {
-          const result = Math.max(0, totals.total + s.adjust);
-          ok = s.adjust > 0 ? result <= threshold : result >= threshold;
-        }
+        // The threshold check runs always (Deepika, 2026-11-21 —
+        // no closed flag any more): a re-add is allowed only while
+        // the resulting open count stays at or below the count
+        // recorded at close time; a re-suppression only while it
+        // stays at or above it.
+        const result = Math.max(0, totals.total + s.adjust);
+        const ok = s.adjust > 0 ? result <= threshold : result >= threshold;
         if (!ok) { skip(s.date, s.shiftTypeId, 'slot-back'); continue; }
         // Exact reversal (Deepika, 2026-11-20 — the close really
         // deletes the slot): re-add exactly the stored extras the
@@ -3799,8 +3766,7 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
         // row holding exactly the decremented count (a partial
         // close — the per-slot X — decrements instead of deleting)
         // is put back to its before-close count, and anything else
-        // is left alone. The closed flag comes off only when this
-        // close set it; a flag that predates the close stays.
+        // is left alone.
         if (Number.isInteger(s.suppressedDeleted) && s.suppressedDeleted > 0) {
           await tx.query(
             `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
@@ -3827,12 +3793,6 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
               [s.draftBefore, companyId, s.date, s.shiftTypeId]
             );
           }
-        }
-        if (s.flagSet === true) {
-          await tx.query(
-            'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-            [companyId, s.date, s.shiftTypeId]
-          );
         }
         restored++;
         restoredSlots.push({ date: s.date, shiftTypeId: s.shiftTypeId });
@@ -8162,7 +8122,7 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
       res.json({ message: 'No shift types found.' });
       return;
     }
-    // Get staffing targets, slot adjustments, closed shifts, and assigned shifts.
+    // Get staffing targets, slot adjustments, suppressed opens, and assigned shifts.
     const { rows: targets } = await query(
       `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
               weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
@@ -8174,9 +8134,9 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
        FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, from, to]
     );
-    const { rows: closed } = await query(
-      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    const { rows: suppressions } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, from, to]
     );
     const { rows: assigned } = await query(
@@ -8185,12 +8145,19 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
        GROUP BY date, shift_type_id`,
       [companyId, from, to]
     );
-    const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
     const assignedMap = new Map(assigned.map((a: any) => [a.date + '|' + a.shiftTypeId, parseInt(a.count, 10)]));
     const adjMap = new Map<string, number>();
     adjustments.forEach((a: any) => {
       const k = a.date + '|' + a.shiftTypeId;
       adjMap.set(k, (adjMap.get(k) || 0) + (a.count || 0));
+    });
+    // A suppressed shortfall is not an open slot until the next
+    // draft/publish pulls it back — it subtracts here, the same as
+    // on the grid (there is no closed flag any more to skip on).
+    const supMap = new Map<string, number>();
+    suppressions.forEach((s: any) => {
+      const k = s.date + '|' + s.shiftTypeId;
+      supMap.set(k, (supMap.get(k) || 0) + (s.count || 0));
     });
     // Build date list.
     const dates: string[] = [];
@@ -8221,7 +8188,6 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
       const typeLines: string[] = [];
       for (const ds of dates) {
         const key = ds + '|' + t.id;
-        if (closedSet.has(key)) continue;
         // Find target for this weekday.
         let target = 0;
         const dt = new Date(ds + 'T00:00:00');
@@ -8237,7 +8203,7 @@ router.post('/open-slots-message', requireRole('owner', 'scheduler'), async (req
         const extra = adjMap.get(key) || 0;
         if (!target && !extra) continue;
         const filled = assignedMap.get(key) || 0;
-        const open = Math.max(0, target + extra - filled);
+        const open = Math.max(0, target + extra - (supMap.get(key) || 0) - filled);
         if (open > 0) {
           typeLines.push(`• ${fmtDay(ds)} — ${open} slot${open === 1 ? '' : 's'}`);
         }
@@ -8371,7 +8337,7 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
        ORDER BY st.sort_order, st.name`,
       typeParams
     );
-    // Targets, adjustments, closed, assigned — same open-slot math as broadcast.
+    // Targets, adjustments, suppressed opens, assigned — same open-slot math as broadcast.
     const { rows: targets } = await query(
       `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
               weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
@@ -8380,9 +8346,9 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
       `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
        FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, pl.from, pl.to]);
-    const { rows: closed } = await query(
-      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
-       FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    const { rows: suppressions } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, pl.from, pl.to]);
     const shiftParams: any[] = [companyId, pl.from, pl.to];
     let deptFilter = '';
@@ -8396,12 +8362,19 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
        WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 ${deptFilter}
        GROUP BY s.date, s.shift_type_id`,
       shiftParams);
-    const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
     const assignedMap = new Map(assigned.map((a: any) => [a.date + '|' + a.shiftTypeId, parseInt(a.count, 10)]));
     const adjMap = new Map<string, number>();
     adjustments.forEach((a: any) => {
       const k = a.date + '|' + a.shiftTypeId;
       adjMap.set(k, (adjMap.get(k) || 0) + (a.count || 0));
+    });
+    // A suppressed shortfall is not an open slot until the next
+    // draft/publish pulls it back — it subtracts here, the same as
+    // on the grid (there is no closed flag any more to skip on).
+    const supMap = new Map<string, number>();
+    suppressions.forEach((s: any) => {
+      const k = s.date + '|' + s.shiftTypeId;
+      supMap.set(k, (supMap.get(k) || 0) + (s.count || 0));
     });
     // Build open slots list.
     const openSlots: any[] = [];
@@ -8413,7 +8386,6 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
       const dow = d.getDay();
       for (const t of types) {
         const key = ds + '|' + t.id;
-        if (closedSet.has(key)) continue;
         const tgt = targetByType.get(t.id);
         let open = adjMap.get(key) || 0;
         if (tgt) {
@@ -8422,6 +8394,7 @@ router.get('/pickup/:token', async (req: Request, res: Response) => {
           if ((tgt.startDate && ds < tgt.startDate) || (tgt.endDate && ds > tgt.endDate)) continue;
           open += Math.max(0, (tgt.targetCount || 0) - (assignedMap.get(key) || 0));
         }
+        open = Math.max(0, open - (supMap.get(key) || 0));
         if (open > 0) openSlots.push({ date: ds, shiftTypeId: t.id, shiftTypeName: t.name, open });
       }
       d.setDate(d.getDate() + 1);
@@ -8502,10 +8475,6 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
         await withTransaction(async (tx) => {
           const tookSlot = await consumeExtraOpenSlot(tx.query, companyId, date, shiftTypeId);
           if (!tookSlot) {
-            const { rows: crows } = await tx.query(
-              'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-              [companyId, date, shiftTypeId]);
-            if (crows.length) return;
             const { rows: tgrows } = await tx.query(
               `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
                FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
@@ -8518,7 +8487,11 @@ router.post('/pickup/:token/request', async (req: Request, res: Response) => {
             const { rows: frows } = await tx.query(
               'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
               [companyId, date, shiftTypeId]);
-            if (frows[0].n >= (t.target_count || 0)) return;
+            // A suppressed shortfall is not an open slot (Deepika,
+            // 2026-11-21 — no closed flag any more): the hold needs
+            // a shortfall open left after suppression.
+            const suppressed = await suppressedTotal(tx.query, companyId, date, shiftTypeId);
+            if (frows[0].n + suppressed >= (t.target_count || 0)) return;
           }
           // Hold the slot as an unpublished shift assigned to the requester.
           await tx.query(
@@ -9167,27 +9140,20 @@ async function consumeExtraOpenSlot(q: any, companyId: string, date: string, shi
 // the grid's filled for managers, and published + unpublishedCounts
 // for employees, is the same number.
 async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string, useStored = false) {
-  const { rows: crows } = await q(
-    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-    [companyId, date, shiftTypeId]
+  const { rows: trows } = await q(
+    `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+    [companyId, shiftTypeId]
   );
-  const closed = crows.length > 0;
   let target = 0;
-  if (!closed) {
-    const { rows: trows } = await q(
-      `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
-       FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
-      [companyId, shiftTypeId]
-    );
-    if (trows.length) {
-      const t = trows[0];
-      const dow = new Date(date + 'T12:00:00').getDay();
-      const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
-      const sd: string | null = t.start_date || null;
-      const ed: string | null = t.end_date || null;
-      if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
-        target = Number(t.target_count) || 0;
-      }
+  if (trows.length) {
+    const t = trows[0];
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+    const sd: string | null = t.start_date || null;
+    const ed: string | null = t.end_date || null;
+    if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+      target = Number(t.target_count) || 0;
     }
   }
   const { rows: erows } = await q(
@@ -9217,13 +9183,13 @@ async function openSlotTotals(q: any, companyId: string, date: string, shiftType
   // so over-target filled never eats stored extras. Live-mode
   // callers keep the computed formula (target + extra - filled -
   // suppressed). The two agree whenever filled <= target.
-  const total = closed ? 0 : useStored
+  const total = useStored
     ? Math.max(0, Math.max(0, target - filled) + extra - suppressed)
     : Math.max(0, target + extra - filled - suppressed);
   // `draft` is the raw stored count (the endpoint decrements it); the
   // UI renders min(draft, total) positions as draft, so a stale row
   // left behind when opens disappear can never over-claim.
-  return { total, draft, published: Math.max(0, total - draft), closed };
+  return { total, draft, published: Math.max(0, total - draft) };
 }
 
 async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: string) {
@@ -9247,15 +9213,11 @@ async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: s
     'SELECT COALESCE(SUM(count), 0) AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
-  const { rows: crows } = await q(
-    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-    [companyId, date, shiftTypeId]
-  );
   // Suppressed opens (Deepika, 2026-11-20): a closed open is not a
   // gap to offer — it stays closed until the next draft/publish
   // pulls it back.
   const need = target + Number(erows[0]?.n || 0) - (await suppressedTotal(q, companyId, date, shiftTypeId));
-  return { have, need, short: Math.max(0, need - have), closed: crows.length > 0 };
+  return { have, need, short: Math.max(0, need - have) };
 }
 
 async function openOfferFor(q: any, companyId: string, date: string, shiftTypeId: string) {
@@ -9383,7 +9345,7 @@ router.get('/gap-offers/candidates', requireRole('owner', 'scheduler'), async (r
     const audiences = await gapAudiences(companyId, date, shiftTypeId, trows[0]);
     res.json({
       date, shiftTypeId, shiftTypeName: trows[0].name,
-      have: counts.have, need: counts.need, short: counts.short, closed: counts.closed,
+      have: counts.have, need: counts.need, short: counts.short,
       offer: offer ? { id: offer.id, needed: offer.needed, recipients: offered } : null,
       candidates: audiences.available.filter((p: any) => !offeredIds.has(p.userId)),
       roleCandidates: audiences.role.filter((p: any) => !offeredIds.has(p.userId)),
@@ -9440,7 +9402,6 @@ router.post('/gap-offers', requireRole('owner', 'scheduler'), async (req: Reques
     );
     if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
     const counts = await gapCounts(query as any, companyId, date, shiftTypeId);
-    if (counts.closed) { res.status(400).json({ error: 'That day is closed for this shift type.' }); return; }
     if (counts.short <= 0) { res.status(400).json({ error: 'That gap is already filled.' }); return; }
     let offer = await openOfferFor(query as any, companyId, date, shiftTypeId);
     if (!offer) {
@@ -9571,7 +9532,7 @@ router.post('/gap-offers/act/:token', urlencoded({ extended: false }), async (re
       const { rows: orows } = await tx.query('SELECT id, status FROM gap_offers WHERE id = $1 FOR UPDATE', [ctx.offerId]);
       if (!orows.length || orows[0].status !== 'open') { outcome = 'filled'; return; }
       const counts = await gapCounts(tx.query, ctx.companyId, ctx.date, ctx.shiftTypeId);
-      if (counts.closed || counts.have >= counts.need) {
+      if (counts.have >= counts.need) {
         await tx.query("UPDATE gap_offers SET status = 'filled' WHERE id = $1", [ctx.offerId]);
         outcome = 'filled';
         return;
@@ -13895,11 +13856,10 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
         }
         // Path 2: staffing-target gap (no extra_open_slots row). Lock the target
         // row so concurrent claims for the same shift type serialize.
-        const { rows: crows } = await tx.query(
-          'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-          [companyId, date, shiftTypeId]
-        );
-        if (crows.length) return; // closed — nothing to claim
+        // (No closed check any more — Deepika, 2026-11-21: the gate
+        // above already refuses suppressed dates via
+        // totals.published <= 0, and the filled check below counts
+        // the gap that is actually open.)
         const { rows: trows } = await tx.query(
           `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
            FROM staffing_targets
@@ -18035,11 +17995,12 @@ async function shiftGapsForUser(companyId: string, user: any, fromDate: string, 
     [companyId, fromDate, toDate]);
   const adjMap = new Map<string, number>();
   for (const a of adj) adjMap.set(a.date + '|' + a.shiftTypeId, (adjMap.get(a.date + '|' + a.shiftTypeId) || 0) + (a.count || 0));
-  const { rows: closed } = await query(
-    `SELECT date::text AS date, shift_type_id AS "shiftTypeId" FROM closed_shifts
+  const { rows: sups } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM suppressed_open_slots
      WHERE company_id = $1 AND date >= $2 AND date <= $3`,
     [companyId, fromDate, toDate]);
-  const closedSet = new Set(closed.map((c: any) => c.date + '|' + c.shiftTypeId));
+  const supMap = new Map<string, number>();
+  for (const s of sups) supMap.set(s.date + '|' + s.shiftTypeId, (supMap.get(s.date + '|' + s.shiftTypeId) || 0) + (s.count || 0));
   const shifts = await getShiftsForRange(query as any, companyId, fromDate, toDate);
   const assigned = new Map<string, number>();
   for (const s of shifts as any[]) assigned.set(s.date + '|' + s.shiftTypeId, (assigned.get(s.date + '|' + s.shiftTypeId) || 0) + 1);
@@ -18064,8 +18025,10 @@ async function shiftGapsForUser(companyId: string, user: any, fromDate: string, 
       if (tg.endDate && date > tg.endDate) continue;
       const wds: number[] = Array.isArray(tg.weekdays) ? tg.weekdays : [0, 1, 2, 3, 4, 5, 6];
       if (!wds.includes(dow)) continue;
-      if (closedSet.has(date + '|' + t.id)) continue;
-      const needed = (tg.targetCount || 0) + (adjMap.get(date + '|' + t.id) || 0) - (assigned.get(date + '|' + t.id) || 0);
+      // A suppressed shortfall is not a gap until the next
+      // draft/publish pulls it back — it subtracts here, the same
+      // as on the grid (there is no closed flag any more to skip on).
+      const needed = (tg.targetCount || 0) + (adjMap.get(date + '|' + t.id) || 0) - (supMap.get(date + '|' + t.id) || 0) - (assigned.get(date + '|' + t.id) || 0);
       if (needed <= 0) continue;
       if (!byDate.has(date)) byDate.set(date, []);
       byDate.get(date)!.push({ shiftTypeId: t.id, typeName: t.name, shortName: t.shortName, color: t.color, needed });
