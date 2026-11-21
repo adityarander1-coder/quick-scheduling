@@ -6358,10 +6358,12 @@
               var closed = isShiftClosed(ds, st.id);
               var open = openCountRole(ds, st);
               if (closed) {
-                openHtml += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">' +
-                  '<span class="shift-cat" style="background:#f3f4f6;border-color:#d1d5db;color:#6b7280">' + esc(st.name) + '</span>' +
-                  '<span style="font-size:0.8rem;color:#6b7280">Closed</span>' +
-                  '<button type="button" data-closed-reopen="' + st.id + '" style="margin-left:auto;font-size:0.8rem;color:#2563eb;background:none;border:none;cursor:pointer">Reopen</button></div>';
+                // (Deepika, 2026-11-21 — "close needs to make it gone" /
+                // "no need for close label also" / "get rid of that"):
+                // a closed type renders NOTHING in the day dialog — no
+                // Closed label, no Reopen button, no row at all. Ways
+                // back: re-draft the day, Bulk Actions "Open extra
+                // slots", Duplicate, Undo.
               } else {
                 for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
                 // No "N slots removed — Restore" row any more
@@ -6405,17 +6407,10 @@
                 });
               });
             });
-            $('sched-day-shifts').querySelectorAll('[data-closed-reopen]').forEach(function (b) {
-              b.addEventListener('click', function () {
-                var stId = b.getAttribute('data-closed-reopen');
-                api('/api/schedule/closed-shifts', { method: 'DELETE', body: JSON.stringify({ date: ds, shiftTypeId: stId }) }).then(function (r) {
-                  if (r.ok) {
-                    sched.closedShifts = sched.closedShifts.filter(function (c) { return !(c.date === ds && c.shiftTypeId === stId); });
-                    renderView(); renderDayModal(); pageSuccess('Shift reopened.');
-                  }
-                });
-              });
-            });
+            // No [data-closed-reopen] handler any more (Deepika,
+            // 2026-11-21): the Reopen button is gone, so there is
+            // nothing to bind. DELETE /closed-shifts stays on the
+            // server — re-draft and Undo manage the flag there.
           }
           var ch = '';
           comments.forEach(function (c) {

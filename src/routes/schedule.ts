@@ -2223,8 +2223,11 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
     // Open-slot close undo (Deepika, 2026-11-17): a negative
     // adjustment closes visible opens, so each date records what it
     // looked like before the close — the undo endpoint re-opens
-    // exactly that, in the same draft/published state (the draft
-    // count is never touched by a close, so it follows for free).
+    // exactly that, in the same draft/published state. The close
+    // is the shared single-slot delete (Deepika, 2026-11-21), so
+    // it can decrement the stored draft count when it closes a
+    // draft open — the entry carries draftDeleted and the undo
+    // restores it (only when nothing re-derived it since).
     const undoSlots: any[] = [];
     for (const d of dates) {
       // A positive adjustment ADDS stored extra slots. A negative
@@ -2251,6 +2254,7 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
               // The close breakdown, so the undo can reverse each
               // part exactly instead of guessing.
               extraDeleted: res.extraDeleted, suppressed: res.suppressed,
+              draftDeleted: res.draftDeleted,
             });
           }
           return;
@@ -3542,8 +3546,11 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
 // carry neither number and fall back to the old rule — suppressed
 // first, extras second. Entries from DELETE /extra-slots carry
 // extraDeleted = the deleted count and suppressed = 0 (a delete
-// removes stored extras only). A partial close never touches the
-// draft-open count, so a slot comes back in the same draft/published
+// removes stored extras only). A partial close can decrement the
+// stored draft-open count (Deepika, 2026-11-21 — one shared delete
+// for the X and the type-close), so the entry carries draftDeleted
+// and the undo puts the count back when the row still holds the
+// decremented value; a slot comes back in the same draft/published
 // state (the UI renders min(draft, total) positions as draft).
 // Whole-type closes (Deepika, 2026-11-20 — "close any where it
 // should be gone") DID delete the stored rows: their entries carry
@@ -3718,7 +3725,11 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
         // deleted, not added to). The draft-open count is restored
         // only when nothing re-derived it since — a re-draft writes
         // its own fresh shortfall, and a stale count must never
-        // overwrite it. The closed flag comes off only when this
+        // overwrite it: no row means insert the deleted count; a
+        // row holding exactly the decremented count (a partial
+        // close — the per-slot X — decrements instead of deleting)
+        // is put back to its before-close count, and anything else
+        // is left alone. The closed flag comes off only when this
         // close set it; a flag that predates the close stays.
         if (Number.isInteger(s.suppressedDeleted) && s.suppressedDeleted > 0) {
           await tx.query(
@@ -3739,6 +3750,11 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
               `INSERT INTO draft_open_slots (company_id, date, shift_type_id, count, created_by)
                VALUES ($1, $2, $3, $4, $5)`,
               [companyId, s.date, s.shiftTypeId, s.draftDeleted, req.session.userId!]
+            );
+          } else if (Number.isInteger(s.draftBefore) && Number(drows[0].count) === s.draftBefore - s.draftDeleted) {
+            await tx.query(
+              'UPDATE draft_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
+              [s.draftBefore, companyId, s.date, s.shiftTypeId]
             );
           }
         }

@@ -19,9 +19,12 @@
  * caller's transaction where one exists), so there are no cycles.
  * The History snapshot stays the caller's job for the same reason.
  * Whole-type closes (bulk, day dialog, AI closeAll) all go through
- * closeTypeForDate: it really deletes every stored row for the
- * date+type and sets the closed flag — "when i say close any where
- * it should be gone" (Deepika, 2026-11-20).
+ * closeTypeForDate: it applies the SAME single-slot delete
+ * (deleteOneOpenSlot) to every visible open for the date+type,
+ * sweeps any stored row the loop cannot reach, and sets the closed
+ * flag — "when i say close any where it should be gone" (Deepika,
+ * 2026-11-20) and "use the SAME function for both the per-slot X
+ * and the type-close" (Deepika, 2026-11-21).
  */
 
 export type OpenSlotQuery = (
@@ -75,35 +78,43 @@ export async function suppressedMap(
   return out;
 }
 
+export interface DeleteOneOpenSlotResult {
+  /** True when a stored extra row lost one. */
+  fromExtra: boolean;
+  /** True when the stored draft-open count lost one. */
+  fromDraft: boolean;
+  /** True when a computed shortfall open was suppressed. */
+  suppressed: boolean;
+}
+
 /**
- * Close `count` visible opens for one date+type — the close itself
- * (Deepika, 2026-11-20: "when it says close slot it goes away
- * permanently"). Extra slots go first: a stored positive row is
- * really deleted (delete at 0, never a negative row). Whatever is
- * left over is shortfall — computed opens with no stored row — so it
- * is recorded in suppressed_open_slots until the next draft/publish
- * of that date+type pulls it back. Returns the split, so the undo
- * payload can reverse each part exactly. Callers must only close
- * opens that are actually visible (they already guard on the total).
- *
- * Whole-type closes go through closeTypeForDate below, NOT this
- * helper: a whole-type close deletes every stored row for the
- * date+type and sets the closed flag, it never suppresses.
+ * Delete exactly ONE visible open slot for a date+type — the ONE
+ * delete every close path uses (Deepika, 2026-11-21 — "use the SAME
+ * function for both the per-slot X and the type-close"). A stored
+ * extra goes first: it is really deleted (delete at 0, never a
+ * negative row). Otherwise the slot is a computed shortfall open,
+ * so it is suppressed until the next draft/publish of that
+ * date+type pulls it back — and when that open was a draft open,
+ * the stored draft count loses one too, so the draft badge never
+ * sits one too high (the old X left it there and the UI clamped).
+ * The two are NOT double-counting: the manager count is
+ * target + extra − suppressed − filled (openCountFor) — the draft
+ * count never enters it, it only decides how many of the visible
+ * positions render with the DRAFT badge. Returns the split, so
+ * callers can reverse each part exactly. Callers must only delete
+ * opens that are actually visible.
  */
-export async function closeOpenSlots(
+export async function deleteOneOpenSlot(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
-  count: number, createdBy: string | null
-): Promise<{ extraDeleted: number; suppressed: number }> {
-  if (!Number.isInteger(count) || count <= 0) return { extraDeleted: 0, suppressed: 0 };
+  createdBy: string | null
+): Promise<DeleteOneOpenSlotResult> {
   const { rows: cur } = await q(
     'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
     [companyId, date, shiftTypeId]
   );
   const positive = cur.length ? Math.max(0, Number(cur[0].count) || 0) : 0;
-  const fromExtra = Math.min(positive, count);
-  if (fromExtra > 0) {
-    const next = positive - fromExtra;
-    if (next === 0) {
+  if (positive > 0) {
+    if (positive === 1) {
       await q(
         'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
         [companyId, date, shiftTypeId]
@@ -111,21 +122,71 @@ export async function closeOpenSlots(
     } else {
       await q(
         'UPDATE extra_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
-        [next, companyId, date, shiftTypeId]
+        [positive - 1, companyId, date, shiftTypeId]
+      );
+    }
+    return { fromExtra: true, fromDraft: false, suppressed: false };
+  }
+  const { rows: drows } = await q(
+    'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+    [companyId, date, shiftTypeId]
+  );
+  const draft = drows.length ? Math.max(0, Number(drows[0].count) || 0) : 0;
+  if (draft > 0) {
+    if (draft === 1) {
+      await q(
+        'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+        [companyId, date, shiftTypeId]
+      );
+    } else {
+      await q(
+        'UPDATE draft_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
+        [draft - 1, companyId, date, shiftTypeId]
       );
     }
   }
-  const remainder = count - fromExtra;
-  if (remainder > 0) {
-    await q(
-      `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (company_id, date, shift_type_id)
-       DO UPDATE SET count = suppressed_open_slots.count + EXCLUDED.count`,
-      [companyId, date, shiftTypeId, remainder, createdBy]
-    );
+  await q(
+    `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
+     VALUES ($1, $2, $3, 1, $4)
+     ON CONFLICT (company_id, date, shift_type_id)
+     DO UPDATE SET count = suppressed_open_slots.count + 1`,
+    [companyId, date, shiftTypeId, createdBy]
+  );
+  return { fromExtra: false, fromDraft: draft > 0, suppressed: true };
+}
+
+/**
+ * Close `count` visible opens for one date+type — the close itself
+ * (Deepika, 2026-11-20: "when it says close slot it goes away
+ * permanently"). It is the shared single-slot delete above, applied
+ * `count` times: stored extras go first (really deleted, never a
+ * negative row), then computed shortfall opens are suppressed until
+ * the next draft/publish pulls them back — and a draft open that is
+ * closed loses its stored draft count too. Returns the split, so
+ * the undo payload can reverse each part exactly. Callers must only
+ * close opens that are actually visible (they already guard on the
+ * total).
+ *
+ * Whole-type closes go through closeTypeForDate below: the same
+ * single-slot delete, applied to every visible open for the
+ * date+type, plus a sweep of any stored row the loop cannot reach
+ * and the closed flag.
+ */
+export async function closeOpenSlots(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  count: number, createdBy: string | null
+): Promise<{ extraDeleted: number; draftDeleted: number; suppressed: number }> {
+  if (!Number.isInteger(count) || count <= 0) return { extraDeleted: 0, draftDeleted: 0, suppressed: 0 };
+  let extraDeleted = 0;
+  let draftDeleted = 0;
+  let suppressed = 0;
+  for (let i = 0; i < count; i++) {
+    const r = await deleteOneOpenSlot(q, companyId, date, shiftTypeId, createdBy);
+    if (r.fromExtra) extraDeleted++;
+    if (r.fromDraft) draftDeleted++;
+    if (r.suppressed) suppressed++;
   }
-  return { extraDeleted: fromExtra, suppressed: remainder };
+  return { extraDeleted, draftDeleted, suppressed };
 }
 
 export interface CloseTypeResult {
@@ -146,19 +207,28 @@ export interface CloseTypeResult {
 /**
  * Close a whole shift type for one date — the shared whole-type
  * close (Deepika, 2026-11-20 — "when i say close any where it
- * should be gone" · "it cannot store from any where"). In one
- * transaction, for that (company, date, type):
- *   1. DELETEs the extra_open_slots row (the stored extras).
- *   2. DELETEs the draft_open_slots row (the stored draft opens).
- *   3. DELETEs the suppressed_open_slots rows.
- *   4. INSERTs the closed_shifts row (ON CONFLICT DO NOTHING —
+ * should be gone" · "it cannot store from any where"; 2026-11-21 —
+ * "use the SAME function for both the per-slot X and the type-close":
+ * the type-close is just that same delete applied to all open slots
+ * of the type for the date). In one transaction, for that (company,
+ * date, type):
+ *   1. Applies deleteOneOpenSlot once per visible open — the SAME
+ *      delete the per-slot X uses (stored extras really deleted,
+ *      shortfall opens suppressed, draft counts decremented).
+ *   2. Sweeps any stored row the loop cannot reach: extras hidden
+ *      by an over-suppression, draft rows taller than the visible
+ *      shortfall, and every suppressed row (pre-existing and the
+ *      loop's own, which never persist past this transaction).
+ *   3. INSERTs the closed_shifts row (ON CONFLICT DO NOTHING —
  *      the flag is what keeps the type shut and blocks new adds).
  * Nothing stored survives: a later re-draft creates only the fresh
- * shortfall, and a Reopen shows only the fresh shortfall. The
- * History snapshot is the caller's job (it uses the pool, not the
- * caller's query fn). Returns the breakdown, so the undo payload
- * can reverse each part exactly. Runs even on an already-closed
- * date — stored rows added while closed are deleted too.
+ * shortfall. The History snapshot is the caller's job (it uses the
+ * pool, not the caller's query fn). Returns the breakdown, so the
+ * undo payload can reverse each part exactly — suppressedDeleted
+ * counts only the suppressions that existed BEFORE this close, so
+ * an undo restores the day exactly as it was. Runs even on an
+ * already-closed date — stored rows added while closed are deleted
+ * too.
  */
 export async function closeTypeForDate(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
@@ -204,23 +274,39 @@ export async function closeTypeForDate(
   );
   const draft = drows.length ? Number(drows[0].count) || 0 : 0;
   const totalBefore = alreadyClosed ? 0 : Math.max(0, target + extra - filled - suppressed);
+  // The SAME delete every close path uses (Deepika, 2026-11-21):
+  // the shared single-slot delete, applied once per visible open
+  // for the date+type. A whole-type close is just that delete, once
+  // per open slot — plus the closed flag below.
+  let extraDeleted = 0;
+  let draftDeleted = 0;
+  for (let i = 0; i < totalBefore; i++) {
+    const r = await deleteOneOpenSlot(q, companyId, date, shiftTypeId, createdBy);
+    if (r.fromExtra) extraDeleted++;
+    if (r.fromDraft) draftDeleted++;
+  }
+  // Sweep what the loop cannot reach, so the close still deletes
+  // EVERY stored row for the date+type (never weakened): extras
+  // hidden by an over-suppression (visible opens fewer than stored
+  // extras), draft rows taller than the visible shortfall, and every
+  // suppressed row — the pre-existing ones and the loop's own, which
+  // never persist past this transaction.
   const delExtra = await q(
     'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
     [companyId, date, shiftTypeId]
   );
   // A legacy negative row is still deleted (never re-created); the
   // undo only ever re-adds the positive part.
-  const extraDeleted = Math.max(0, delExtra.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
+  extraDeleted += Math.max(0, delExtra.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
   const delDraft = await q(
     'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
     [companyId, date, shiftTypeId]
   );
-  const draftDeleted = Math.max(0, delDraft.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
-  const delSupp = await q(
-    'DELETE FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
+  draftDeleted += Math.max(0, delDraft.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
+  await q(
+    'DELETE FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
-  const suppressedDeleted = Math.max(0, delSupp.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
   const ins = await q(
     `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
      VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
@@ -228,7 +314,13 @@ export async function closeTypeForDate(
   );
   return {
     totalBefore, draftBefore: draft,
-    extraDeleted, draftDeleted, suppressedDeleted,
+    extraDeleted, draftDeleted,
+    // Only the suppressions that existed BEFORE this close: the
+    // undo re-inserts exactly these. The loop's own suppressions
+    // were transient (deleted by the sweep above) — restoring them
+    // would leave the shortfall opens suppressed after an undo,
+    // when they were visible before the close.
+    suppressedDeleted: suppressed,
     flagSet: (ins.rowCount || 0) > 0,
   };
 }
