@@ -3,8 +3,8 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, publishOpenSlotsForPairs, suppressedTotal } from './openSlots.js';
-import { getGeneratedTypeIds } from './scheduleMode.js';
+import { closeOpenSlots, publishOpenSlotsForPairs, suppressedTotal, draftOpenTotal, consumeExtraOpenSlot } from './openSlots.js';
+import { getGeneratedTypeIds, getStoredModelTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -1171,12 +1171,17 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
 
 /**
  * Open-slot totals for one type+date, mirroring the manual route's
- * openSlotTotals (schedule.ts:8892) — the formula the grid itself
- * uses: max(0, target + extra − filled), 0 when the day is closed
- * for the type. Rotation occurrences are NOT counted in `filled`
- * (same as the manual close): a close only ever suppresses
- * computed opens, never a stored shift row, so it can never remove
- * a person. Used by close_open_slots (gate re-checks at execution).
+ * openSlotTotals (schedule.ts) — the formula the grid itself uses.
+ * Detached open slots (Deepika, 2026-11-20): for a generated type
+ * the opens are STORED (extra + draft − suppressed), 0 when the day
+ * is closed for the type — no target, no filled subtraction. A
+ * close only ever touches stored opens, never a stored shift row,
+ * so it can never remove a person. Live-mode types have no stored
+ * shortfall, so they keep the legacy computed formula (target +
+ * extra − filled − suppressed). `filled` stays drawn-aware for the
+ * add top-up (total = filled + open). Used by close_open_slots
+ * (gate re-checks at execution), add_open_slots, and the
+ * delete-opens-a-slot grant.
  */
 async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; closed: boolean; filled: number; raw: number }> {
   const { rows: crows } = await query(
@@ -1184,32 +1189,18 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     [companyId, date, shiftTypeId]
   );
   if (crows.length) return { total: 0, closed: true, filled: 0, raw: 0 };
-  const { rows: trows } = await query(
-    `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
-     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
-    [companyId, shiftTypeId]
-  );
-  let target = 0;
-  if (trows.length) {
-    const t = trows[0];
-    const dow = new Date(date + 'T12:00:00').getDay();
-    const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
-    const sd: string | null = t.start_date || null;
-    const ed: string | null = t.end_date || null;
-    if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
-      target = Number(t.target_count) || 0;
-    }
-  }
+  const storedModel = await getStoredModelTypeIds(query as any, companyId);
   const { rows: erows } = await query(
     'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
   const extra = erows[0]?.n || 0;
   // Suppressed opens (Deepika, 2026-11-20 — "close this slot"
-  // really deletes it): computed opens a manager closed stay
+  // really deletes it): stored opens a manager closed stay
   // closed — they subtract from the visible total until the next
   // draft/publish of this date+type pulls them back.
   const suppressed = await suppressedTotal(query as any, companyId, date, shiftTypeId);
+  const draft = await draftOpenTotal(query as any, companyId, date, shiftTypeId);
   // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
   // 2026-11-19 — audit B sharpening, same as the gate: the grid
   // shows stored + drawn holders, so the approval-time re-check
@@ -1228,6 +1219,31 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
       [companyId, date, shiftTypeId]
     );
     filled = frows[0]?.n || 0;
+  }
+  if (storedModel.has(shiftTypeId)) {
+    // Stored-model: opens are the stored slots only. `raw` is
+    // CLAMPED at 0 — a stale suppressed row (left behind by an
+    // earlier close on a date whose stored opens have since gone)
+    // must never push a delete-grant above `count` (the phantom
+    // over-grant: raw −1 → grant 2 for one delete).
+    const raw = Math.max(0, extra + draft - suppressed);
+    return { total: raw, closed: false, filled, raw };
+  }
+  const { rows: trows } = await query(
+    `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+    [companyId, shiftTypeId]
+  );
+  let target = 0;
+  if (trows.length) {
+    const t = trows[0];
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+    const sd: string | null = t.start_date || null;
+    const ed: string | null = t.end_date || null;
+    if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+      target = Number(t.target_count) || 0;
+    }
   }
   return { total: Math.max(0, target + extra - filled - suppressed), closed: false, filled, raw: target + extra - filled - suppressed };
 }
@@ -1275,9 +1291,13 @@ async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId
  * a person's shift must leave it as an empty open slot so someone
  * else can pick it up, not delete the whole shift.
  *
- * Called POST-delete, pre-grant. s = target + extra − filled (the
- * unclamped `raw` from openTotals). Grant g = max(0, count − s):
- * the visible opens after the grant are max(count, s) — exactly
+ * Called POST-delete, pre-grant. s = the opens the delete alone
+ * would leave: for a stored-model type the stored opens (extra +
+ * draft − suppressed, clamped at 0 — a stale suppressed row can
+ * never push the grant above `count`); for a computed-model type
+ * the computed opens (target + extra − filled − suppressed,
+ * unclamped, exactly as before). Grant g = max(0, count − s): the
+ * visible opens after the grant are max(count, s) — exactly
  * `count` more than the opens the delete alone would leave
  * (s clamped at 0). Standard cases match the old group grant
  * exactly (s === 0 → grant count; s ≥ count → grant 0); absorption
@@ -1340,6 +1360,14 @@ export async function executePlan(
       } catch { /* best-effort */ }
     }
   }
+  // Stored-model types (detached open slots): only these consume a
+  // stored open when an AI assign fills one. Computed-model types
+  // are headcount only. Lazily loaded once per plan execution.
+  let storedModel: Set<string> | null = null;
+  const isStoredModel = async (typeId: string): Promise<boolean> => {
+    if (!storedModel) storedModel = await getStoredModelTypeIds(query as any, companyId);
+    return storedModel.has(typeId);
+  };
   for (const change of plan.changes || []) {
     try {
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
@@ -1357,6 +1385,20 @@ export async function executePlan(
         if (inserted.rowCount === 0) {
           results.push({ action: 'assign', success: true, message: `Already on ${st.name} on ${change.date} — no change needed` });
         } else {
+          // Filling a stored open slot (Deepika, 2026-11-20 —
+          // detached open slots): the person takes one stored
+          // published extra if one exists — otherwise the day shows
+          // the person working AND the open still standing beside
+          // them (double-fill). Stored-model types only.
+          // Best-effort: a consume failure never fails the assign
+          // itself.
+          try {
+            if (await isStoredModel(st.id)) {
+              await consumeExtraOpenSlot(query as any, companyId, change.date, st.id);
+            }
+          } catch (consumeErr: any) {
+            console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
+          }
           results.push({ action: 'assign', success: true, message: `Assigned ${user.display} to ${st.name} on ${change.date}` });
         }
       } else if (change.action === 'assign_recurring' && change.person && change.shiftType && change.startDate && change.intervalWeeks && change.untilDate) {
@@ -1377,7 +1419,20 @@ export async function executePlan(
              ON CONFLICT DO NOTHING`,
             [uuidv4(), companyId, user.id, st.id, d, createdBy]
           );
-          if ((inserted as any).rowCount) added++;
+          if ((inserted as any).rowCount) {
+            added++;
+            // Filling a stored open slot (Deepika, 2026-11-20): the
+            // person takes one stored published extra if one exists
+            // on that date. Stored-model types only.
+            // Best-effort, never fails the assign.
+            try {
+              if (await isStoredModel(st.id)) {
+                await consumeExtraOpenSlot(query as any, companyId, d, st.id);
+              }
+            } catch (consumeErr: any) {
+              console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
+            }
+          }
         }
         results.push({ action: 'assign_recurring', success: true, dates, personDisplay: user.display, message: `Assigned ${user.display} to ${st.name} every ${change.intervalWeeks} weeks from ${change.startDate}${change.weekendsOff ? ' (weekdays only)' : ''} until ${change.untilDate} (${added} new, ${dates.length - added} already on)` });
       } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
@@ -1923,7 +1978,7 @@ export async function executePlan(
         // the AI's first way to touch open slots. Only ever closes
         // EMPTY slots — the write only ever touches extra_open_slots
         // (a stored extra row is really deleted), suppressed_open_
-        // slots (a computed shortfall open, closed until the next
+        // slots (a stored shortfall open, closed until the next
         // draft/publish pulls it back) and closed_shifts; no stored
         // shift row is ever deleted, so no person is ever removed.
         // No negative extra row is ever written (Deepika, 2026-11-20
@@ -2063,7 +2118,7 @@ export async function executePlan(
         // Add open slots (Deepika, 2026-11-19 — "Can you add 3 open
         // slots for day hospitalists for nov month"): the mirror of
         // the close above, and the opposite write — a POSITIVE
-        // adjustment to extra_open_slots, so the computed opens grow
+        // adjustment to extra_open_slots, so the stored opens grow
         // by addCount per date. Only ever adds EMPTY slots: no
         // stored shift row is ever created or touched, so no person
         // is ever assigned. Department resolution + access check are

@@ -131,6 +131,25 @@ export async function getTypesWithRotations(
   );
   return new Set(rows.map((r: any) => r.shiftTypeId));
 }
+
+/**
+ * Stored-model types (detached open slots, Deepika 2026-11-20):
+ * generated AND produced by an active rotation. Only these types
+ * store their open slots at draft time and stop counting from the
+ * target afterwards. Live types and rotation-less generated types
+ * (e.g. Day NP — Nov 15 rule: its target always counts) keep the
+ * computed model: opens = target + extra − suppressed − filled.
+ */
+export async function getStoredModelTypeIds(
+  q: QueryFn,
+  companyId: string
+): Promise<Set<string>> {
+  const [generated, withRotations] = await Promise.all([
+    getGeneratedTypeIds(q, companyId),
+    getTypesWithRotations(q, companyId),
+  ]);
+  return new Set([...generated].filter((t) => withRotations.has(t)));
+}
 export async function isTypeGenerated(
   q: QueryFn,
   companyId: string,
