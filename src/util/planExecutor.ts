@@ -1,8 +1,10 @@
 // util/planExecutor.ts — executes approved schedule change plans.
 
 import crypto from 'node:crypto';
-import { query } from '../db.js';
+import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
+import { closeOpenSlots, publishOpenSlotsForPairs, suppressedTotal } from './openSlots.js';
+import { getGeneratedTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -1203,6 +1205,11 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     [companyId, date, shiftTypeId]
   );
   const extra = erows[0]?.n || 0;
+  // Suppressed opens (Deepika, 2026-11-20 — "close this slot"
+  // really deletes it): computed opens a manager closed stay
+  // closed — they subtract from the visible total until the next
+  // draft/publish of this date+type pulls them back.
+  const suppressed = await suppressedTotal(query as any, companyId, date, shiftTypeId);
   // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
   // 2026-11-19 — audit B sharpening, same as the gate: the grid
   // shows stored + drawn holders, so the approval-time re-check
@@ -1222,12 +1229,15 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  return { total: Math.max(0, target + extra - filled), closed: false, filled, raw: target + extra - filled };
+  return { total: Math.max(0, target + extra - filled - suppressed), closed: false, filled, raw: target + extra - filled - suppressed };
 }
 
 /**
- * Adjust extra_open_slots by `delta` (negative closes opens), the
- * same write the manual POST /extra-slots route makes: the row is
+ * Adjust extra_open_slots by `delta` — positive only, since
+ * 2026-11-20 (Deepika — "when it says close slot it goes away
+ * permanently"): closes never write a negative row any more, they
+ * go through closeOpenSlots (src/util/openSlots.ts), which really
+ * deletes stored extras and suppresses the shortfall. The row is
  * deleted when the adjustment lands exactly on 0 (CHECK count <> 0,
  * migration 020), and the read + write run in one transaction with a
  * row lock so two simultaneous adjustments can't interleave.
@@ -1881,8 +1891,29 @@ export async function executePlan(
         let q = `UPDATE shifts SET published = $1 WHERE company_id = $2 AND date >= $3 AND date <= $4`;
         const params: any[] = [publish, companyId, change.fromDate, change.toDate];
         if (shiftTypeId) { q += ` AND shift_type_id = $5`; params.push(shiftTypeId); }
+        // Publishing the day publishes the opens with it (Deepika,
+        // 2026-11-20): remember which (date, type) pairs actually
+        // flip from draft, so their draft opens + closures can go
+        // with them. Unpublish leaves the opens alone — the draft is
+        // what marks opens draft, and a re-draft re-derives them.
+        let flipPairs: Array<{ date: string; shiftTypeId: string }> = [];
+        if (publish) {
+          const { rows: fr } = await query(
+            `SELECT DISTINCT date::text AS date, shift_type_id AS "shiftTypeId" FROM shifts
+             WHERE company_id = $1 AND date >= $2 AND date <= $3 AND published = false
+             ${shiftTypeId ? 'AND shift_type_id = $4' : ''}`,
+            shiftTypeId
+              ? [companyId, change.fromDate, change.toDate, shiftTypeId]
+              : [companyId, change.fromDate, change.toDate]
+          );
+          flipPairs = fr.map((r: any) => ({ date: r.date, shiftTypeId: r.shiftTypeId }));
+        }
         const updated = await query(q, params);
         const count = updated.rowCount || 0;
+        if (publish && flipPairs.length) {
+          const generated = await getGeneratedTypeIds(query as any, companyId);
+          await publishOpenSlotsForPairs(query as any, companyId, flipPairs, generated);
+        }
         results.push({
           action: change.action, success: true,
           message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
@@ -1891,11 +1922,15 @@ export async function executePlan(
         // Close open slots (Deepika, 2026-11-19 — walkthrough item 1):
         // the AI's first way to touch open slots. Only ever closes
         // EMPTY slots — the write only ever touches extra_open_slots
-        // (negative counts suppress computed opens) and closed_shifts;
-        // no stored shift row is ever deleted, so no person is ever
-        // removed. Exactly one mode: closeCount (close N per date),
-        // keepCount (keep N per date, close the rest), or closeAll
-        // (close the whole type for the date — a closed_shifts row).
+        // (a stored extra row is really deleted), suppressed_open_
+        // slots (a computed shortfall open, closed until the next
+        // draft/publish pulls it back) and closed_shifts; no stored
+        // shift row is ever deleted, so no person is ever removed.
+        // No negative extra row is ever written (Deepika, 2026-11-20
+        // — "when it says close slot it goes away permanently").
+        // Exactly one mode: closeCount (close N per date), keepCount
+        // (keep N per date, close the rest), or closeAll (close the
+        // whole type for the date — a closed_shifts row).
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         // Department (Deepika, 2026-11-19 — "It needs to know which
@@ -1999,7 +2034,11 @@ export async function executePlan(
                 : `${d} (no open slots${mode === 'keep' ? ` over ${change.keepCount}` : ''})`);
               continue;
             }
-            await adjustExtraOpenSlots(companyId, d, st.id, -want, createdBy);
+            // The close runs in its own transaction (row lock on the
+            // extra row, same as the old adjustExtraOpenSlots write).
+            await withTransaction(async (tx) => {
+              await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
+            });
             slotsClosed += want;
           }
         }

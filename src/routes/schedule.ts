@@ -34,6 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
+import { closeOpenSlots, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -1090,6 +1091,16 @@ router.get('/shifts', async (req: Request, res: Response) => {
       [companyId, from, to]
     );
 
+    // Suppressed open slots (Deepika, 2026-11-20 — "close this slot"
+    // really deletes it): computed opens a manager closed. The
+    // client subtracts them from the open count; the server never
+    // renders a "removed — Restore" row for them.
+    const { rows: suppressedOpenSlots } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
+
     // Draft-open rule (Deepika, 2026-11-14): an employee's shift
     // list excludes unpublished rows, so their grid would count a
     // drafted-but-unpublished position as open AND as placed — the
@@ -1169,7 +1180,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
     } catch { /* cover markers are decoration — never fail the schedule */ }
 
     res.json({
-      shifts: all, closedShifts, extraSlots,
+      shifts: all, closedShifts, extraSlots, suppressedOpenSlots,
       unpublishedCounts, includesDrafts: !employeeView,
       draftOpenCounts,
       scheduleMode: await getCompanyModeSummary(query, companyId),
@@ -2216,32 +2227,38 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
     // count is never touched by a close, so it follows for free).
     const undoSlots: any[] = [];
     for (const d of dates) {
-      // The table forbids count = 0 (CHECK count <> 0, migration 020),
-      // so an adjustment that lands exactly on 0 must DELETE the row
-      // instead of updating it to 0 — the plain upsert to 0 threw a
-      // 500, which broke the per-slot × remover and bulk Close whenever
-      // they cancelled the last stored extra slot. Negative counts are
-      // fine (they suppress computed opens) and pass the CHECK. The
-      // read + write run in one transaction with a row lock so two
+      // A positive adjustment ADDS stored extra slots. A negative
+      // adjustment is a CLOSE (Deepika, 2026-11-20 — "when it says
+      // close slot it goes away permanently"): stored extra rows
+      // are really deleted first, and any remainder suppresses the
+      // computed shortfall opens until the next draft/publish of
+      // this date+type pulls them back. No negative extra row is
+      // ever written — there is no "removed — Restore" row any
+      // more; the way back is Duplicate, or a re-draft. The read +
+      // write run in one transaction with a row lock so two
       // simultaneous adjustments on the same date can't interleave.
       await withTransaction(async (tx) => {
-        const cur = await tx.query(
-          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
-          [companyId, d, shiftTypeId]
-        );
-        // Totals BEFORE the adjustment (the row is already locked,
-        // so this is the count the close actually removes from).
-        // Only a close that removed a visible open is undoable.
         if (clamped < 0) {
+          // Totals BEFORE the close — only a close that removed a
+          // visible open is undoable.
           const before = await openSlotTotals(tx.query, companyId, d, shiftTypeId);
+          const res = await closeOpenSlots(tx.query, companyId, d, shiftTypeId, -clamped, req.session.userId!);
           if (before.total > 0) {
             undoSlots.push({
               date: d, shiftTypeId,
               totalBefore: before.total, draftBefore: before.draft,
               wasDraft: before.total <= before.draft, adjust: -clamped,
+              // The close breakdown, so the undo can reverse each
+              // part exactly instead of guessing.
+              extraDeleted: res.extraDeleted, suppressed: res.suppressed,
             });
           }
+          return;
         }
+        const cur = await tx.query(
+          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+          [companyId, d, shiftTypeId]
+        );
         const next = (cur.rows.length ? Number(cur.rows[0].count) : 0) + clamped;
         if (next === 0) {
           await tx.query(
@@ -2305,9 +2322,12 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
 // decrements it, unpublish increments it (never past the computed
 // total — a slot that is not published cannot be unpublished, and a
 // draft that is not there cannot be published). The row is deleted at
-// 0, like extra_open_slots. Bulk publish is untouched: it flips shift
-// rows only, as today, and never overrides an explicit per-slot
-// choice. No notification is sent — bulk publish does not notify
+// 0, like extra_open_slots. Bulk publish flips shift rows AND
+// publishes the day's opens with them (Deepika, 2026-11-20) — it
+// clears the draft-open count for the pairs it touches — but it
+// never overrides an explicit per-slot choice made AFTER that
+// publish: unpublishing one slot here writes a fresh draft count
+// for it. No notification is sent — bulk publish does not notify
 // about opened slots either; the slot is pickable on next load.
 router.post('/open-slots/publish-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -2422,21 +2442,28 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
     ))) return;
     const undoSlots: any[] = [];
     const { rowCount: removedExtra } = await withTransaction(async (tx) => {
-      // Open-slot close undo (Deepika, 2026-11-17): the day-modal
-      // Restore button calls this to bring suppressed slots back, so
-      // the deleted rows are the undo payload — undoing re-inserts
-      // them exactly, which re-suppresses the same slots. Totals are
+      // Open-slot close undo (Deepika, 2026-11-17): deleting stored
+      // extra rows is undoable, so the deleted rows are the undo
+      // payload — undoing re-inserts them exactly. Totals are
       // captured per date BEFORE the delete, under the same row lock.
+      // The payload records the breakdown (Deepika, 2026-11-20):
+      // a positive row was a stored extra (extraDeleted), a
+      // negative row — legacy only, the migration converted them —
+      // was a suppression (suppressed), so the undo reverses each
+      // part exactly instead of guessing.
       const { rows: doomed } = await tx.query(
         'SELECT date::text AS date, count FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = $3 FOR UPDATE',
         [companyId, dates, shiftTypeId]
       );
       for (const row of doomed) {
         const before = await openSlotTotals(tx.query, companyId, row.date, shiftTypeId);
+        const count = Number(row.count);
         undoSlots.push({
           date: row.date, shiftTypeId,
           totalBefore: before.total, draftBefore: before.draft,
-          wasDraft: before.total > 0 && before.total <= before.draft, adjust: Number(row.count),
+          wasDraft: before.total > 0 && before.total <= before.draft, adjust: count,
+          extraDeleted: count > 0 ? count : 0,
+          suppressed: count < 0 ? -count : 0,
         });
       }
       return tx.query(
@@ -3476,11 +3503,19 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
 // note at all, so Undo did nothing for closed opens. Every close
 // path now returns { undo: { slots } } and the client pushes one
 // 'openslot' entry per close action (a bulk close is one entry).
-// Undo re-applies each slot's `adjust` to extra_open_slots — +1 for a
-// -1 close, the exact removed count for a DELETE — which re-opens the
-// slot in the same draft/published state, because a close never
-// touches the draft-open count. Redo replays the original close
-// calls (client-side, like delete redo).
+// Undo reverses the close EXACTLY (Deepika, 2026-11-20 — the close
+// really deletes the slot): the entry records how many of the
+// closed slots were stored extras (really deleted) and how many
+// were computed shortfall opens (suppressed), and the undo re-adds
+// the extras and un-suppresses the suppressed ones — it never
+// writes a negative extra row. Entries written before this build
+// carry neither number and fall back to the old rule — suppressed
+// first, extras second. Entries from DELETE /extra-slots carry
+// extraDeleted = the deleted count and suppressed = 0 (a delete
+// removes stored extras only). A close never touches the draft-open
+// count, so a slot comes back in the same draft/published state.
+// Redo replays the original close calls (client-side, like delete
+// redo).
 // Guard (same spirit as delete-undo: never create a duplicate open):
 // slots are grouped by date+type and the threshold is the highest
 // open count recorded at close time for that group. A slot is
@@ -3502,6 +3537,12 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
       if (!Number.isInteger(s.totalBefore) || s.totalBefore < 0 || s.totalBefore > 10000) return true;
       if (!Number.isInteger(s.adjust) || s.adjust === 0 || Math.abs(s.adjust) > 1000) return true;
       if (s.wasDraft !== undefined && typeof s.wasDraft !== 'boolean') return true;
+      // Close breakdown (Deepika, 2026-11-20): how many of the
+      // closed slots were stored extras vs suppressed shortfall
+      // opens. Optional — entries written before this build (and
+      // DELETE entries) may not carry them.
+      if (s.extraDeleted !== undefined && (!Number.isInteger(s.extraDeleted) || s.extraDeleted < 0 || s.extraDeleted > 1000)) return true;
+      if (s.suppressed !== undefined && (!Number.isInteger(s.suppressed) || s.suppressed < 0 || s.suppressed > 1000)) return true;
       return false;
     };
     if (!slots.length || slots.length > 1000 || slots.some(badSlot)) {
@@ -3559,26 +3600,71 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
           ok = s.adjust > 0 ? result <= threshold : result >= threshold;
         }
         if (!ok) { skip(s.date, s.shiftTypeId, 'slot-back'); continue; }
-        // Same write as POST /extra-slots: a result of exactly 0
-        // deletes the row instead of storing a 0 (CHECK count <> 0).
-        const { rows: cur } = await tx.query(
-          'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
-          [companyId, s.date, s.shiftTypeId]
-        );
-        const next = (cur.length ? Number(cur[0].count) : 0) + s.adjust;
-        if (next === 0) {
-          await tx.query(
-            'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+        // Exact reversal (Deepika, 2026-11-20 — the close really
+        // deletes the slot): re-add exactly the stored extras the
+        // close deleted, and un-suppress exactly the computed opens
+        // it suppressed. Entries written before this build carry
+        // neither number, so they fall back to the old rule —
+        // suppressed first, extras second — for a close (adjust > 0),
+        // and to re-suppressing for a delete of a suppression
+        // (adjust < 0, a legacy negative extra row). A positive
+        // adjust with no fields is a re-add of slots a DELETE
+        // removed: those were stored extras, never suppressed opens.
+        const closed = Math.abs(s.adjust);
+        let extraDeleted: number;
+        let suppressed: number;
+        if (Number.isInteger(s.extraDeleted) && Number.isInteger(s.suppressed)) {
+          extraDeleted = s.extraDeleted;
+          suppressed = s.suppressed;
+        } else if (s.adjust > 0) {
+          const { rows: srows } = await tx.query(
+            'SELECT COALESCE(SUM(count), 0)::int AS n FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
             [companyId, s.date, s.shiftTypeId]
           );
+          suppressed = Math.min(closed, srows[0]?.n || 0);
+          extraDeleted = closed - suppressed;
         } else {
+          extraDeleted = 0;
+          suppressed = closed;
+        }
+        if (extraDeleted > 0) {
           await tx.query(
             `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (company_id, date, shift_type_id)
              DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
-            [companyId, s.date, s.shiftTypeId, s.adjust, req.session.userId!]
+            [companyId, s.date, s.shiftTypeId, extraDeleted, req.session.userId!]
           );
+        }
+        if (suppressed > 0) {
+          if (s.adjust < 0) {
+            // Undo of a delete that removed a suppression: the
+            // suppression goes back on.
+            await tx.query(
+              `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (company_id, date, shift_type_id)
+               DO UPDATE SET count = suppressed_open_slots.count + EXCLUDED.count`,
+              [companyId, s.date, s.shiftTypeId, suppressed, req.session.userId!]
+            );
+          } else {
+            // Undo of a close: the suppression comes off. The
+            // table's count CHECK (> 0) fires on UPDATE, so taking
+            // a row to exactly 0 must DELETE it instead — an UPDATE
+            // to 0 fails the whole undo.
+            const { rowCount: dropped } = await tx.query(
+              `DELETE FROM suppressed_open_slots
+               WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count <= $4`,
+              [companyId, s.date, s.shiftTypeId, suppressed]
+            );
+            if (!dropped) {
+              await tx.query(
+                `UPDATE suppressed_open_slots SET count = count - $4
+                 WHERE company_id = $1 AND date = $2 AND shift_type_id = $3`,
+                [companyId, s.date, s.shiftTypeId, suppressed]
+              );
+            }
+          }
         }
         restored++;
         restoredSlots.push({ date: s.date, shiftTypeId: s.shiftTypeId });
@@ -4169,6 +4255,15 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
        WHERE company_id = $2 AND date = ANY($3::date[]) AND user_id = ANY($4::uuid[])${typeFilter}`,
       [published, companyId, dates, userIds, ...typeParams]
     );
+    // Publishing the day publishes the opens with it (Deepika,
+    // 2026-11-20): collect the (date, type) pairs this publish
+    // actually flips, so their draft opens + closures can go with
+    // them. Unpublish leaves the opens alone — the draft is what
+    // marks opens draft, and a re-draft re-derives them.
+    const publishPairs = new Set<string>();
+    if (published) {
+      for (const r of flipRows) publishPairs.add(`${r.date}|${r.shiftTypeId}`);
+    }
     // Rotation shifts: generate instances and upsert publish overrides
     let rotCount = 0;
     const rotFlips = new Map<string, number>();
@@ -4214,10 +4309,30 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
              DO UPDATE SET published = EXCLUDED.published`,
             [companyId, rot.id, a.userId, dateStr, a.shiftTypeId, published]
           );
-          if (wasPublished !== published) rotFlips.set(a.userId, (rotFlips.get(a.userId) || 0) + 1);
+          if (wasPublished !== published) {
+            rotFlips.set(a.userId, (rotFlips.get(a.userId) || 0) + 1);
+            if (published) publishPairs.add(`${dateStr}|${a.shiftTypeId}`);
+          }
           rotCount++;
         }
       }
+    }
+    // Publishing the day publishes the opens with it (Deepika,
+    // 2026-11-20): the flipped pairs' draft opens go published and
+    // any closures on them are cleared — the rotation pulls its
+    // opens back. Generated types only; live-mode types have no
+    // draft opens to clear.
+    if (published && publishPairs.size) {
+      const generated = await getGeneratedTypeIds(query, companyId);
+      await publishOpenSlotsForPairs(
+        query,
+        companyId,
+        [...publishPairs].map((k) => {
+          const [date, shiftTypeId] = k.split('|');
+          return { date, shiftTypeId };
+        }),
+        generated
+      );
     }
     // History snapshot (Deepika, 2026-11-17) — a bulk publish flip.
     if ((rowCount || 0) + rotCount > 0) {
@@ -6234,6 +6349,12 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       m.set(uid, t);
     };
     let added = 0, removed = 0, opened = 0, closed = 0, flipped = 0;
+    // Publishing the day publishes the opens with it (Deepika,
+    // 2026-11-20): the (date, type) pairs this publish actually
+    // touches — a flip, an add, or a rule-7 open — have their draft
+    // opens go published and any closures cleared. Closes are
+    // excluded: they take opens away, they don't restore them.
+    const publishPairs = new Set<string>();
 
     await withTransaction(async (tx) => {
       await tx.query(
@@ -6275,7 +6396,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
            RETURNING user_id AS "userId", date::text AS date`,
           [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, a.date, req.session.userId!, batchId, a.rotationId || null]
         );
-        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date, a.shiftTypeId); }
+        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date, a.shiftTypeId); publishPairs.add(`${ins[0].date}|${a.shiftTypeId}`); }
       }
       // Flips: hand-made draft shifts the plan named become
       // published — re-validated like everything else (still a
@@ -6307,6 +6428,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
           flipped++;
           if (f.generationId) flippedGenIds.add(f.generationId);
           bump(addedByUser, f.userId, f.date, f.shiftTypeId);
+          publishPairs.add(`${f.date}|${f.shiftTypeId}`);
         }
         // Background rotations: stamp the generations this publish
         // touched (first publish only — published_at is when the
@@ -6352,6 +6474,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       }
       for (const [k, n] of openAgg) {
         const [date, shiftTypeId] = k.split('|');
+        publishPairs.add(k);
         await tx.query(
           `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
            VALUES ($1, $2, $3, $4, $5)
@@ -6383,6 +6506,22 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
           }
           remaining -= take;
         }
+      }
+      // Publishing the day publishes the opens with it (Deepika,
+      // 2026-11-20): the pairs this publish touched have their
+      // draft opens go published and any closures cleared — the
+      // rotation pulls its opens back. Generated types only;
+      // live-mode types have no draft opens to clear.
+      if (publishPairs.size) {
+        await publishOpenSlotsForPairs(
+          tx.query,
+          companyId,
+          [...publishPairs].map((k) => {
+            const [date, shiftTypeId] = k.split('|');
+            return { date, shiftTypeId };
+          }),
+          generatedTypes
+        );
       }
     });
 
@@ -6573,6 +6712,7 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       removedByUser.set(uid, t);
     };
     let removedShifts = 0, closedSlots = 0, unflipped = 0;
+    const undoPairs = new Set<string>();
     await withTransaction(async (tx) => {
       const { rows: del } = await tx.query(
         `DELETE FROM shifts WHERE publish_batch_id = $1 AND company_id = $2 AND date >= $3::date
@@ -6582,12 +6722,14 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       for (const r of del) {
         removedShifts++;
         bumpUndo(r.userId, r.date, r.shiftTypeId);
+        undoPairs.add(`${r.date}|${r.shiftTypeId}`);
       }
       const { rows: led } = await tx.query(
         'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM publish_batch_open_slots WHERE batch_id = $1 AND company_id = $2',
         [batchId, companyId]
       );
       for (const row of led) {
+        if (row.date >= today) undoPairs.add(`${row.date}|${row.shiftTypeId}`);
         for (let i = 0; i < row.count; i++) {
           if (await consumeExtraOpenSlot(tx.query, companyId, row.date, row.shiftTypeId)) closedSlots++;
         }
@@ -6605,9 +6747,30 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       for (const r of unfl) {
         unflipped++;
         bumpUndo(r.userId, r.date, r.shiftTypeId);
+        undoPairs.add(`${r.date}|${r.shiftTypeId}`);
       }
       await tx.query('DELETE FROM publish_batch_flips WHERE batch_id = $1', [batchId]);
       await tx.query('UPDATE publish_batches SET undone_at = now() WHERE id = $1', [batchId]);
+      // Taking the publish back takes the opens back to draft
+      // (Deepika, 2026-11-20): the pairs this batch touched go
+      // back to showing their shortfall as draft opens — the same
+      // number the draft wrote — so the day reads drafted again
+      // instead of silently losing its opens. Generated types only,
+      // and only pairs the draft actually covers: a pair that was
+      // never drafted had no draft opens to restore, and writing
+      // a draft count there would invent one. Past pairs are truth
+      // and are never re-derived.
+      if (undoPairs.size) {
+        const generated = await getGeneratedTypeIds(tx.query, companyId);
+        const notDrafted = await getNotDraftedByType(tx.query, companyId, generated, brows[0].rangeStart, brows[0].rangeEnd);
+        for (const k of undoPairs) {
+          const [date, shiftTypeId] = k.split('|');
+          if (!generated.has(shiftTypeId)) continue;
+          if ((notDrafted[shiftTypeId] || []).includes(date)) continue;
+          const shortfall = await shortfallFor(tx.query, companyId, date, shiftTypeId);
+          await setDraftOpenCount(tx.query, companyId, date, shiftTypeId, shortfall, req.session.userId!);
+        }
+      }
     });
     // Change report (Deepika, 2026-11-13): mirror the publish — one
     // row per person, never one aggregate blob.
@@ -8848,6 +9011,11 @@ async function openSlotTotals(q: any, companyId: string, date: string, shiftType
     [companyId, date, shiftTypeId]
   );
   const extra = erows[0]?.n || 0;
+  // Suppressed opens (Deepika, 2026-11-20 — "close this slot"
+  // really deletes it): computed opens a manager closed stay
+  // closed — they subtract from the visible total until the next
+  // draft/publish of this date+type pulls them back.
+  const suppressed = await suppressedTotal(q, companyId, date, shiftTypeId);
   const { rows: frows } = await q(
     'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
@@ -8858,7 +9026,7 @@ async function openSlotTotals(q: any, companyId: string, date: string, shiftType
     [companyId, date, shiftTypeId]
   );
   const draft = drows.length ? Number(drows[0].count) : 0;
-  const total = closed ? 0 : Math.max(0, target + extra - filled);
+  const total = closed ? 0 : Math.max(0, target + extra - filled - suppressed);
   // `draft` is the raw stored count (the endpoint decrements it); the
   // UI renders min(draft, total) positions as draft, so a stale row
   // left behind when opens disappear can never over-claim.
@@ -8890,7 +9058,10 @@ async function gapCounts(q: any, companyId: string, date: string, shiftTypeId: s
     'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
   );
-  const need = target + Number(erows[0]?.n || 0);
+  // Suppressed opens (Deepika, 2026-11-20): a closed open is not a
+  // gap to offer — it stays closed until the next draft/publish
+  // pulls it back.
+  const need = target + Number(erows[0]?.n || 0) - (await suppressedTotal(q, companyId, date, shiftTypeId));
   return { have, need, short: Math.max(0, need - have), closed: crows.length > 0 };
 }
 

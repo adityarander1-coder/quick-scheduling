@@ -52,6 +52,15 @@ const TABLES: TableDef[] = [
     columns: ['id', 'company_id', 'date', 'shift_type_id', 'count', 'created_by', 'created_at'] },
   { name: 'closed_shifts', key: ['id'], scoped: true,
     columns: ['id', 'company_id', 'date', 'shift_type_id', 'created_by', 'created_at'] },
+  // Closed computed opens (Deepika, 2026-11-20 — "close this slot"
+  // really deletes it): an AI close writes here, and a draft writes
+  // draft_open_slots, so both must snapshot + restore like every
+  // other plan-touchable table. Keys are the (company, date, type)
+  // triples — neither table has an id column.
+  { name: 'suppressed_open_slots', key: ['company_id', 'date', 'shift_type_id'], scoped: true,
+    columns: ['company_id', 'date', 'shift_type_id', 'count', 'created_by', 'created_at'] },
+  { name: 'draft_open_slots', key: ['company_id', 'date', 'shift_type_id'], scoped: true,
+    columns: ['company_id', 'date', 'shift_type_id', 'count', 'created_by', 'updated_at'] },
   { name: 'shift_type_departments', key: ['shift_type_id', 'department_id'], scoped: false,
     columns: ['shift_type_id', 'department_id'] },
   // Per-department roles (Deepika, 2026-11-19 — change_member_role_in_
@@ -254,7 +263,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
     // 3a) Restore rows that existed before the task (re-insert or update),
     //     parents before dependents.
     const RESTORE_FIRST = ['departments', 'job_roles', 'shift_types', 'users', 'user_department_memberships', 'academic_sessions',
-      'shifts', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions', 'academic_session_overrides', 'staffing_targets', 'shift_type_departments'];
+      'shifts', 'extra_open_slots', 'closed_shifts', 'suppressed_open_slots', 'draft_open_slots', 'rotation_shift_exclusions', 'academic_session_overrides', 'staffing_targets', 'shift_type_departments'];
     for (const name of RESTORE_FIRST) {
       const def = defOf(name);
       for (const e of entries.filter((x) => x.table === name && x.before)) {
@@ -276,7 +285,7 @@ async function undoInTransaction(companyId: string, entries: UndoEntry[], verb: 
       }
     }
     // 3b) Delete rows the task created, dependents before parents.
-    const DELETE_FIRST = ['shift_type_departments', 'user_department_memberships', 'staffing_targets', 'extra_open_slots', 'closed_shifts', 'rotation_shift_exclusions',
+    const DELETE_FIRST = ['shift_type_departments', 'user_department_memberships', 'staffing_targets', 'extra_open_slots', 'closed_shifts', 'suppressed_open_slots', 'draft_open_slots', 'rotation_shift_exclusions',
       'academic_session_overrides', 'shifts', 'academic_sessions', 'users', 'shift_types', 'job_roles', 'departments'];
     for (const name of DELETE_FIRST) {
       const def = defOf(name);

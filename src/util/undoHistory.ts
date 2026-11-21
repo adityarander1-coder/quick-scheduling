@@ -136,12 +136,22 @@ function cleanOpenSlotUndo(u: any): any | null {
     if (!Number.isInteger(s.adjust) || s.adjust === 0 || Math.abs(s.adjust) > 1000) return null;
     if (s.wasDraft !== undefined && typeof s.wasDraft !== 'boolean') return null;
     if (s.draftBefore !== undefined && (!Number.isInteger(s.draftBefore) || s.draftBefore < 0)) return null;
+    // Close breakdown (Deepika, 2026-11-20 — "close this slot"
+    // really deletes it): how many of the closed slots were stored
+    // extras (really deleted) vs computed shortfall opens
+    // (suppressed until the next draft/publish). The undo endpoint
+    // reverses each part exactly; entries written before this build
+    // carry neither and fall back to the suppressed-first rule.
+    if (s.extraDeleted !== undefined && (!Number.isInteger(s.extraDeleted) || s.extraDeleted < 0 || s.extraDeleted > 1000)) return null;
+    if (s.suppressed !== undefined && (!Number.isInteger(s.suppressed) || s.suppressed < 0 || s.suppressed > 1000)) return null;
   }
   return {
     slots: u.slots.map((s: any) => ({
       date: s.date, shiftTypeId: s.shiftTypeId, totalBefore: s.totalBefore, adjust: s.adjust,
       ...(s.wasDraft !== undefined ? { wasDraft: s.wasDraft } : {}),
       ...(s.draftBefore !== undefined ? { draftBefore: s.draftBefore } : {}),
+      ...(s.extraDeleted !== undefined ? { extraDeleted: s.extraDeleted } : {}),
+      ...(s.suppressed !== undefined ? { suppressed: s.suppressed } : {}),
     })),
   };
 }

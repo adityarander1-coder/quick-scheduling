@@ -3070,6 +3070,7 @@
           shifts: [],
           closedShifts: [],
           extraSlots: [],
+          suppressedOpenSlots: [], // closed computed opens by date|type (Deepika, 2026-11-20 — close really deletes the slot)
           unpublishedCounts: {},
           draftOpenCounts: {}, // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
           includesDrafts: true,
@@ -3444,7 +3445,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3840,10 +3841,16 @@
             return c.date === dateStr && c.shiftTypeId === shiftTypeId;
           });
         }
-        function removedSlotCount(dateStr, shiftTypeId) {
+        // Closed opens (Deepika, 2026-11-20 — "close this slot"
+        // really deletes it): a computed open a manager closed
+        // stays closed — it subtracts from the visible total until
+        // the next draft/publish of this date+type pulls it back.
+        // There is no "removed — Restore" row any more; the way
+        // back is Duplicate, or a re-draft of the rotation.
+        function suppressedSlotCount(dateStr, shiftTypeId) {
           var n = 0;
-          (sched.extraSlots || []).forEach(function (e) {
-            if (e.date === dateStr && e.shiftTypeId === shiftTypeId && e.count < 0) n += -e.count;
+          (sched.suppressedOpenSlots || []).forEach(function (e) {
+            if (e.date === dateStr && e.shiftTypeId === shiftTypeId) n += (e.count || 0);
           });
           return n;
         }
@@ -3884,7 +3891,7 @@
           // the shortfall twice. Managers already see the drafts in
           // sched.shifts, so they add nothing.
           if (!sched.includesDrafts) filled += (sched.unpublishedCounts || {})[dateStr + '|' + shiftTypeId] || 0;
-          return Math.max(0, target + extra - filled);
+          return Math.max(0, target + extra - suppressedSlotCount(dateStr, shiftTypeId) - filled);
         }
 
         // Per-slot open publish state (Deepika, 2026-11-17): how many
@@ -4360,9 +4367,9 @@
         };
 
         // Open-slot close undo (Deepika, 2026-11-17): closing an open
-        // slot (multi-select Close, chevron Close, × remover, day-modal
-        // Restore) used to save no undo note at all — Undo only knew
-        // stored shifts. Every close path now returns an undo payload
+        // slot (multi-select Close, chevron Close, × remover) used to
+        // save no undo note at all — Undo only knew stored shifts.
+        // Every close path now returns an undo payload
         // and pushes one entry here: Undo re-opens the closed slot(s)
         // in the same draft/published state, Redo re-closes them. One
         // entry per close action — a bulk close is ONE entry, like a
@@ -6357,12 +6364,11 @@
                   '<button type="button" data-closed-reopen="' + st.id + '" style="margin-left:auto;font-size:0.8rem;color:#2563eb;background:none;border:none;cursor:pointer">Reopen</button></div>';
               } else {
                 for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
-                var removed = removedSlotCount(ds, st.id);
-                if (removed > 0) {
-                  openHtml += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0 2px">' +
-                    '<span style="font-size:0.8rem;color:#6b7280">' + removed + ' slot' + (removed > 1 ? 's' : '') + ' removed</span>' +
-                    '<button type="button" data-slot-restore="' + st.id + '" style="font-size:0.8rem;color:#2563eb;background:none;border:none;cursor:pointer">Restore</button></div>';
-                }
+                // No "N slots removed — Restore" row any more
+                // (Deepika, 2026-11-20 — "when it says close slot it
+                // goes away permanently"): a closed slot is gone for
+                // good; the way back is Duplicate, or a re-draft of
+                // the rotation. Closed opens leave no trace here.
                 if (open > 0) {
                   openHtml += '<div style="text-align:right;padding:2px 0 6px">' +
                     '<button type="button" data-closed-close="' + st.id + '" style="font-size:0.8rem;color:#6b7280;background:none;border:none;cursor:pointer">Close ' + esc(st.name) + ' for this date</button></div>';
@@ -6381,18 +6387,6 @@
                 // actually opens, or tapping a view-only open slot
                 // would make the popup vanish with no feedback.
                 if (openAssignModal(b.getAttribute('data-date'), b.getAttribute('data-shifttype'))) hide($('sched-day-modal'));
-              });
-            });
-            $('sched-day-shifts').querySelectorAll('[data-slot-restore]').forEach(function (b) {
-              b.addEventListener('click', function () {
-                var stId = b.getAttribute('data-slot-restore');
-                if (!confirm('Restore removed slots for this shift?')) return;
-                api('/api/schedule/extra-slots', { method: 'DELETE', body: JSON.stringify({ dates: [ds], shiftTypeId: stId }) }).then(function (r) {
-                  if (r.ok) {
-                    if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'DELETE', body: { dates: [ds], shiftTypeId: stId } }]);
-                    loadShifts(); pageSuccess('Slots restored. Tap Undo in the top bar to undo it.');
-                  }
-                });
               });
             });
             $('sched-day-shifts').querySelectorAll('[data-closed-close]').forEach(function (b) {
@@ -8854,7 +8848,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -8885,6 +8879,7 @@
               sched.shifts = fresh;
               sched.closedShifts = sR.data.closedShifts || [];
               sched.extraSlots = sR.data.extraSlots || [];
+              sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || [];
               sched.draftOpenCounts = sR.data.draftOpenCounts || {};
               sched.scheduleMode = sR.data.scheduleMode || 'live';
               sched.generatedTypeIds = sR.data.generatedTypeIds || [];
@@ -9665,11 +9660,15 @@
         function scFmtDay(dateStr) {
           return parseDate(dateStr).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
         }
-        function qsScCompute(shifts, closedShifts, extraSlots) {
-          var filled = {}, closed = {}, extra = {};
+        function qsScCompute(shifts, closedShifts, extraSlots, suppressedOpenSlots) {
+          var filled = {}, closed = {}, extra = {}, suppressed = {};
           (shifts || []).forEach(function (s) { var k = s.date + '|' + s.shiftTypeId; filled[k] = (filled[k] || 0) + 1; });
           (closedShifts || []).forEach(function (c) { closed[c.date + '|' + c.shiftTypeId] = true; });
           (extraSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; extra[k] = (extra[k] || 0) + (e.count || 0); });
+          // Closed opens (Deepika, 2026-11-20): a closed slot is not
+          // a gap to offer — it stays closed until the next
+          // draft/publish pulls it back.
+          (suppressedOpenSlots || []).forEach(function (e) { var k = e.date + '|' + e.shiftTypeId; suppressed[k] = (suppressed[k] || 0) + (e.count || 0); });
           var rows = [];
           for (var i = 0; i < 14; i++) {
             var date = scDatePlus(new Date(), i);
@@ -9682,7 +9681,7 @@
               if (!need0) return;
               anyTarget = true;
               if (closed[date + '|' + st.id]) return;
-              var want = need0 + (extra[date + '|' + st.id] || 0);
+              var want = need0 + (extra[date + '|' + st.id] || 0) - (suppressed[date + '|' + st.id] || 0);
               var have = filled[date + '|' + st.id] || 0;
               if (have < want) gaps.push({ st: st, have: have, need: want, short: want - have });
             });
@@ -9714,7 +9713,7 @@
           ]).then(function (rs) {
             var r = rs[0];
             if (!r.ok) return;
-            var rows = qsScCompute(r.data.shifts || [], r.data.closedShifts || [], r.data.extraSlots || []);
+            var rows = qsScCompute(r.data.shifts || [], r.data.closedShifts || [], r.data.extraSlots || [], r.data.suppressedOpenSlots || []);
             var gapCount = rows.reduce(function (n, x) { return n + x.gaps.length; }, 0);
             var shortTotal = rows.reduce(function (n, x) { return n + x.gaps.reduce(function (m, g) { return m + g.short; }, 0); }, 0);
             var calSessions = (rs[1].ok && rs[1].data.sessions) || [];
@@ -22152,6 +22151,7 @@ window.qsNpOfferSend = function (btn) {
         var me = null;
         var departments = [], shiftTypes = [], members = [], shifts = [];
         var extraSlots = [], closedShifts = [], staffingTargets = [];
+        var suppressedOpenSlots = []; // closed computed opens by date|type (Deepika, 2026-11-20)
         var msUnpublishedCounts = {}; // draft-open rule: reserved drafts, by date|type
         var msDraftOpenCounts = {}; // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
         var msIncludesDrafts = false; // employees never see drafts in `shifts`
@@ -22439,6 +22439,7 @@ window.qsNpOfferSend = function (btn) {
             if (rs[3].ok) {
               shifts = rs[3].data.shifts || [];
               extraSlots = rs[3].data.extraSlots || [];
+              suppressedOpenSlots = rs[3].data.suppressedOpenSlots || [];
               closedShifts = rs[3].data.closedShifts || [];
               msUnpublishedCounts = rs[3].data.unpublishedCounts || {};
               msDraftOpenCounts = rs[3].data.draftOpenCounts || {};
@@ -22749,8 +22750,14 @@ window.qsNpOfferSend = function (btn) {
           // slot — so the count below is published opens only. The
           // positions rendered start after the draft ones, so a
           // selection key made here matches the manager grid's
-          // position for the same slot.
-          return Math.max(0, target + extra - filled - msDraftCountFor(dateStr, shiftTypeId));
+          // position for the same slot. Closed opens (Deepika,
+          // 2026-11-20) subtract too — a closed slot is not
+          // claimable until the next draft/publish pulls it back.
+          var suppressed = 0;
+          (suppressedOpenSlots || []).forEach(function (e) {
+            if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) suppressed += (e.count || 0);
+          });
+          return Math.max(0, target + extra - suppressed - filled - msDraftCountFor(dateStr, shiftTypeId));
         }
         function msDraftCountFor(dateStr, shiftTypeId) {
           return (msDraftOpenCounts || {})[dateStr + '|' + shiftTypeId] || 0;

@@ -409,6 +409,10 @@ async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes
     `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
      FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
     [ctx.companyId, from, to]);
+  const { rows: suppressions } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+     FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+    [ctx.companyId, from, to]);
   const { rows: closed } = await query(
     `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
      FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
@@ -424,6 +428,15 @@ async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes
   for (const a of adjustments) {
     const k = a.date + '|' + a.shiftTypeId;
     adjMap.set(k, (adjMap.get(k) || 0) + (a.count || 0));
+  }
+  // Closed opens stay closed (Deepika, 2026-11-20): a suppressed
+  // slot is not an open slot until the next draft/publish pulls it
+  // back, so it subtracts from the answer exactly like it does on
+  // the grid.
+  const supMap = new Map<string, number>();
+  for (const s of suppressions) {
+    const k = s.date + '|' + s.shiftTypeId;
+    supMap.set(k, (supMap.get(k) || 0) + (s.count || 0));
   }
   const byDate = new Map<string, OpenSlotDay[]>();
   let total = 0;
@@ -445,8 +458,9 @@ async function loadOpenSlots(ctx: AskContext, from: string, to: string, useTypes
         break;
       }
       const extra = adjMap.get(key) || 0;
+      const suppressed = supMap.get(key) || 0;
       if (!target && !extra) continue;
-      const open = Math.max(0, target + extra - (assignedMap.get(key) || 0));
+      const open = Math.max(0, target + extra - suppressed - (assignedMap.get(key) || 0));
       if (open > 0) {
         if (!byDate.has(ds)) byDate.set(ds, []);
         byDate.get(ds)!.push({ name: t.name, open });

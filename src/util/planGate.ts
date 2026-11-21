@@ -559,13 +559,14 @@ const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> 
 interface OpenSlotInputs {
   targets: { shiftTypeId: string; targetCount: number; weekdays: number[] | null; startDate: string | null; endDate: string | null }[];
   extra: Map<string, number>;
+  suppressed: Map<string, number>;
   closed: Set<string>;
 }
 
 async function loadOpenSlotInputs(
   query: QueryFn, companyId: string, from: string, to: string
 ): Promise<OpenSlotInputs> {
-  const [{ rows: trows }, { rows: erows }, { rows: crows }] = await Promise.all([
+  const [{ rows: trows }, { rows: erows }, { rows: crows }, { rows: srows }] = await Promise.all([
     query(
       `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
               weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
@@ -582,20 +583,31 @@ async function loadOpenSlotInputs(
        FROM closed_shifts WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, from, to]
     ),
+    query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    ),
   ]);
   const extra = new Map<string, number>();
   for (const r of erows) {
     const k = `${r.date}|${r.shiftTypeId}`;
     extra.set(k, (extra.get(k) || 0) + (r.count || 0));
   }
+  const suppressed = new Map<string, number>();
+  for (const r of srows) {
+    const k = `${r.date}|${r.shiftTypeId}`;
+    suppressed.set(k, (suppressed.get(k) || 0) + (r.count || 0));
+  }
   return {
     targets: trows,
     extra,
+    suppressed,
     closed: new Set(crows.map((r: any) => `${r.date}|${r.shiftTypeId}`)),
   };
 }
 
-/** Capacity (target + extra) for one type+date; 0 when the day is
+/** Capacity (target + extra - suppressed) for one type+date; 0 when the day is
  * closed for the type or no staffing target covers it. Mirrors the
  * display's first-matching-target rule (weekday, then start/end). */
 function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string): number {
@@ -611,7 +623,7 @@ function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string):
     target = tg.targetCount || 0;
     break;
   }
-  return target + (inputs.extra.get(`${date}|${typeId}`) || 0);
+  return target + (inputs.extra.get(`${date}|${typeId}`) || 0) - (inputs.suppressed.get(`${date}|${typeId}`) || 0);
 }
 
 /**

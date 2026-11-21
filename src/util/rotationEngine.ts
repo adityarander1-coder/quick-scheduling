@@ -43,6 +43,7 @@
 import { withTransaction } from '../db.js';
 import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
 import { getGeneratedTypeIds, getTypesWithRotations } from './scheduleMode.js';
+import { clearOpenSlotClosures, setDraftOpenCount } from './openSlots.js';
 import type { AuditEntry } from './audit.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>;
@@ -1095,6 +1096,13 @@ export async function generateRotations(
       const typeIds = new Set([...producedTypeIds(ctx, rots, onlyShiftTypeIds), ...rotationless]);
       if (typeIds.size) {
         const inputs = await loadShortfallInputs(tx, companyId, from, to);
+        // The real run clears closures for the types it produces
+        // before computing the shortfall — simulate that here (no
+        // writes in a dry run), or the reported shortfall would miss
+        // the closed days the draft pulls back.
+        for (const k of [...inputs.closed]) {
+          if (typeIds.has(k.split('|')[1])) inputs.closed.delete(k);
+        }
         const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
         for (const v of desired.values()) openedShortfall += v;
       }
@@ -1279,6 +1287,21 @@ export async function generateRotations(
   if (publishMode === 'draft') {
     const typeIds = new Set([...producedTypeIds(ctx, rots, onlyShiftTypeIds), ...rotationless]);
     if (typeIds.size) {
+      // Pulled back from rotations (Deepika, 2026-11-20 — "once i
+      // close open shifts they should be gone for good unless pulled
+      // back from rotations when drafted or published"): a draft
+      // clears every closure for the types+dates it produces — the
+      // whole-type closed flag, the suppressed shortfall closes,
+      // and any legacy negative extra row — BEFORE the shortfall is
+      // computed, so the closed days come back as opens. Positive
+      // extra rows are real added slots and are never touched.
+      const clearPairs: Array<{ date: string; shiftTypeId: string }> = [];
+      for (let n = dayNum(from); n <= dayNum(to); n++) {
+        const date = dateOfDayNum(n);
+        if (date < today) continue; // past is truth — never reopen the past
+        for (const typeId of typeIds) clearPairs.push({ date, shiftTypeId: typeId });
+      }
+      await clearOpenSlotClosures(tx, companyId, clearPairs);
       const inputs = await loadShortfallInputs(tx, companyId, from, to);
       const desired = computeShortfallDesired(inputs, storedRows, from, to, typeIds, today);
       // Attribute new grants to the first generation of this call
@@ -1312,6 +1335,24 @@ export async function generateRotations(
       }
       const rec = await reconcileShortfallSlots(tx, companyId, genIdByType, from, to, desired, typeIds);
       summary.openedShortfall = rec.total;
+      // Draft opens are born DRAFT (Deepika, 2026-11-20 — "Draft has
+      // to make it draft. Cannot publish."): the draft's own opens —
+      // its shortfall, target minus filled — are written to
+      // draft_open_slots, so they render grey with a DRAFT badge and
+      // no employee can pick them up until the day is published. The
+      // count is SET from the desired shortfall on every draft, so a
+      // shortfall that is now 0 clears any stale draft count; a
+      // re-draft of a published day marks its shortfall draft again,
+      // and publishing the day publishes the opens with it.
+      // Pre-existing extras are not the draft's opens — they stay
+      // published, exactly as before.
+      for (let n = dayNum(from); n <= dayNum(to); n++) {
+        const date = dateOfDayNum(n);
+        if (date < today) continue;
+        for (const typeId of typeIds) {
+          await setDraftOpenCount(tx, companyId, date, typeId, desired.get(`${date}|${typeId}`) || 0, opts.createdBy);
+        }
+      }
     }
   }
   return summary;
