@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, suppressedTotal } from './openSlots.js';
+import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, storedTotals, suppressedTotal } from './openSlots.js';
 import { getGeneratedTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
@@ -2144,6 +2144,9 @@ export async function executePlan(
           [companyId, st.id, first, last]
         );
         const closedSet = new Set(closedRows.map((r: any) => r.date));
+        // Generated types count from the stored schedule at approval
+        // time (the top-up fix); live types keep the computed count.
+        const generatedTypes = addMode === 'total' ? await getGeneratedTypeIds(query as any, companyId) : null;
         let slotsAdded = 0;
         const skipped: string[] = [];
         for (const d of dates) {
@@ -2154,8 +2157,22 @@ export async function executePlan(
             // live schedule (filled + open), never taken from the
             // plan — a date already at the target is skipped, and
             // a delta over 20 fails honestly instead of clamping.
-            const t = await openTotals(companyId, d, st.id);
-            const delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+            // Stored model (Deepika, 2026-11-20/21 — "the
+            // calculation should come from real schedule, not from
+            // rotation"): a GENERATED type re-counts from the
+            // stored schedule (draft + published shifts + stored
+            // opens), so over-target filled never eats stored
+            // extras — the 12-filled/target-11 + 2-extras date
+            // re-counts to 14, not 13. Live types keep the
+            // computed formula (openTotals).
+            let delta: number;
+            if (generatedTypes!.has(st.id)) {
+              const stt = await storedTotals(query as any, companyId, d, st.id);
+              delta = Math.max(0, (change.targetTotal as number) - stt.total);
+            } else {
+              const t = await openTotals(companyId, d, st.id);
+              delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+            }
             if (delta === 0) { skipped.push(`${d} (already at ${change.targetTotal} total)`); continue; }
             if (delta > 20) {
               throw new Error(`Adding open ${st.name} slots to reach ${change.targetTotal} per date would need ${delta} on ${d} — I can add at most 20 open slots per date.`);

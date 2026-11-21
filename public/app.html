@@ -3891,6 +3891,18 @@
           // the shortfall twice. Managers already see the drafts in
           // sched.shifts, so they add nothing.
           if (!sched.includesDrafts) filled += (sched.unpublishedCounts || {})[dateStr + '|' + shiftTypeId] || 0;
+          // Stored model (Deepika, 2026-11-20/21 — "the calculation
+          // should come from real schedule, not from rotation"): a
+          // GENERATED type clamps the shortfall at 0 BEFORE the
+          // stored extras are added, so over-target filled never
+          // eats stored extras (12 filled against target 11 + 2
+          // extras shows 2 opens, not 1). Live-mode types keep the
+          // computed formula below. The two agree whenever filled
+          // <= target.
+          if ((sched.generatedTypeIds || []).indexOf(shiftTypeId) !== -1) {
+            var shortfall = Math.max(0, target - filled);
+            return Math.max(0, shortfall + extra - suppressedSlotCount(dateStr, shiftTypeId));
+          }
           return Math.max(0, target + extra - suppressedSlotCount(dateStr, shiftTypeId) - filled);
         }
 
@@ -22169,6 +22181,7 @@ window.qsNpOfferSend = function (btn) {
         var msDraftOpenCounts = {}; // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
         var msIncludesDrafts = false; // employees never see drafts in `shifts`
         var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
+        var msGeneratedTypeIds = []; // generated shift types (stored-model open count) — from /shifts
         var msNotDraftedByType = {}; // managers only; the server sends employees {}
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
@@ -22458,6 +22471,7 @@ window.qsNpOfferSend = function (btn) {
               msDraftOpenCounts = rs[3].data.draftOpenCounts || {};
               msIncludesDrafts = rs[3].data.includesDrafts !== false;
               msScheduleMode = rs[3].data.scheduleMode || 'live';
+              msGeneratedTypeIds = rs[3].data.generatedTypeIds || [];
               msNotDraftedByType = rs[3].data.notDraftedByType || {};
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
@@ -22770,6 +22784,18 @@ window.qsNpOfferSend = function (btn) {
           (suppressedOpenSlots || []).forEach(function (e) {
             if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) suppressed += (e.count || 0);
           });
+          // Stored model (Deepika, 2026-11-20/21 — "the calculation
+          // should come from real schedule, not from rotation"): a
+          // GENERATED type clamps the shortfall at 0 BEFORE the
+          // stored extras are added, so over-target filled never
+          // eats stored extras. Live-mode types keep the computed
+          // formula below. The draft-open subtraction stays: draft
+          // opens are hidden here (nobody can pick up an
+          // unpublished slot), so the count is published opens only.
+          if ((msGeneratedTypeIds || []).indexOf(shiftTypeId) !== -1) {
+            var msShortfall = Math.max(0, target - filled);
+            return Math.max(0, msShortfall + extra - suppressed - msDraftCountFor(dateStr, shiftTypeId));
+          }
           return Math.max(0, target + extra - suppressed - filled - msDraftCountFor(dateStr, shiftTypeId));
         }
         function msDraftCountFor(dateStr, shiftTypeId) {
@@ -23541,6 +23567,7 @@ window.qsNpOfferSend = function (btn) {
               msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
+              msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();
               requestAnimationFrame(function () { window.scrollTo(0, y); });
@@ -23575,6 +23602,7 @@ window.qsNpOfferSend = function (btn) {
               msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
               msScheduleMode = sR.data.scheduleMode || 'live';
+              msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
               renderView();
               msSuccess('Schedule updated just now.');

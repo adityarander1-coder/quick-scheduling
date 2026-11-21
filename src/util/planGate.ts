@@ -626,6 +626,23 @@ function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string):
   return target + (inputs.extra.get(`${date}|${typeId}`) || 0) - (inputs.suppressed.get(`${date}|${typeId}`) || 0);
 }
 
+/** The staffing target that applies to one type+date (0 when the day
+ * is closed for the type or no staffing target covers it) — the
+ * target half of openSlotCapacity, for the stored-model count. */
+function targetFor(inputs: OpenSlotInputs, typeId: string, date: string): number {
+  if (inputs.closed.has(`${date}|${typeId}`)) return 0;
+  const dt = new Date(date + 'T00:00:00');
+  for (const tg of inputs.targets) {
+    if (tg.shiftTypeId !== typeId) continue;
+    const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+    if (!weekdays.includes(dt.getDay())) continue;
+    if (tg.startDate && date < tg.startDate) continue;
+    if (tg.endDate && date > tg.endDate) continue;
+    return tg.targetCount || 0;
+  }
+  return 0;
+}
+
 /**
  * Gate a plan's changes. Mutates the changes it can resolve (person
  * fields are rewritten to canonical full names, like the Task path's
@@ -1045,6 +1062,9 @@ export async function gatePlanChanges(
       }
       const validDate = (d: any) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
         && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
+      // Cached once per plan for the targetTotal stored-model branch
+      // below (generated types count from the stored schedule).
+      let generatedTypes: Set<string> | null = null;
       for (const c of addChanges) {
         const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
         if (!type) {
@@ -1143,9 +1163,20 @@ export async function gatePlanChanges(
         // one plain clarification (the all-closed rule's mirror),
         // never an empty plan. A delta over 20 on any date asks,
         // never clamps (the addCount > 20 rule, mirrored).
+        // Stored model (Deepika, 2026-11-20/21 — "the calculation
+        // should come from real schedule, not from rotation"): for
+        // a GENERATED type the opens are
+        //   max(0, max(0, target - filled) + extra - suppressed)
+        // — the shortfall is clamped at 0 BEFORE the stored extras
+        // are added, so over-target filled never eats stored
+        // extras (12 filled against target 11 + 2 extras reads 2
+        // opens, total 14 — not 1 open, total 13). Live-mode types
+        // keep the computed formula above (capacity - filled).
         let deltaOn: ((d: string) => number) | null = null;
         let totalOn: ((d: string) => { filled: number; opens: number; total: number }) | null = null;
         if (addMode === 'total') {
+          if (!generatedTypes) generatedTypes = await getGeneratedTypeIds(query, companyId);
+          const isGenerated = generatedTypes.has(type.id);
           let filledByDate: Map<string, number>;
           try {
             const { getShiftsForRange } = await import('./shiftRange.js');
@@ -1165,8 +1196,14 @@ export async function gatePlanChanges(
             filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
           }
           totalOn = (d: string) => {
-            const capacity = openSlotCapacity(inputs, type.id, d);
             const filled = filledByDate.get(d) || 0;
+            if (inputs.closed.has(`${d}|${type.id}`)) return { filled, opens: 0, total: filled };
+            if (isGenerated) {
+              const shortfall = Math.max(0, targetFor(inputs, type.id, d) - filled);
+              const opens = Math.max(0, shortfall + (inputs.extra.get(`${d}|${type.id}`) || 0) - (inputs.suppressed.get(`${d}|${type.id}`) || 0));
+              return { filled, opens, total: filled + opens };
+            }
+            const capacity = openSlotCapacity(inputs, type.id, d);
             const opens = Math.max(0, capacity - filled);
             return { filled, opens, total: filled + opens };
           };

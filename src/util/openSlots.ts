@@ -14,6 +14,17 @@
  * refuses live rotations, and the publish paths filter to generated
  * types before calling publishOpenSlotsForPairs.
  *
+ * The stored-model count (Deepika, 2026-11-20/21 — "the
+ * calculation should come from real schedule, not from rotation"):
+ * for a GENERATED type the opens are
+ *   closed ? 0 : max(0, max(0, target - filled) + extra - suppressed)
+ * — the shortfall (target - filled) is clamped at 0 BEFORE the
+ * stored extras are added, so over-target filled never eats stored
+ * extras. It equals the formula above whenever filled <= target.
+ * storedTotals below is that count, from the stored schedule only
+ * (draft + published shifts + stored open slots); live-mode types
+ * keep the computed formula above.
+ *
  * This module imports nothing from the routes, the planner, or the
  * engine — every helper takes the caller's query fn (inside the
  * caller's transaction where one exists), so there are no cycles.
@@ -444,4 +455,80 @@ export async function shortfallFor(
   );
   const filled = Number(frows[0]?.n || 0);
   return Math.max(0, target - filled);
+}
+
+export interface StoredTotals {
+  /** Visible opens (0 when closed). */
+  opens: number;
+  /** Stored shifts (draft + published) for the date+type. */
+  filled: number;
+  /** True when the whole-type closed flag is set. */
+  closed: boolean;
+  /** filled + opens — the number a top-up target compares against. */
+  total: number;
+  /** Stored extra_open_slots SUM. */
+  extra: number;
+  /** Stored suppressed_open_slots SUM. */
+  suppressed: number;
+  /** The staffing target that applied (0 when none / out of range). */
+  target: number;
+}
+
+/**
+ * The stored-model totals for one date+type (Deepika, 2026-11-20/21
+ * — "the calculation should come from real schedule, not from
+ * rotation" · "stored or real current active schedule" · "drafts +
+ * published"). For a GENERATED type the opens are
+ *   closed ? 0 : max(0, max(0, target - filled) + extra - suppressed)
+ * The shortfall is clamped at 0 BEFORE the stored extras are added,
+ * so over-target filled never eats stored extras — the failure the
+ * top-up fix corrects (12 filled against target 11 + 2 extras must
+ * read 2 opens, not 1). It equals the computed formula
+ * max(0, target + extra - filled - suppressed) whenever filled <=
+ * target, so nothing changes for at/under-target dates. The target
+ * is resolved exactly like shortfallFor (first staffing_targets row,
+ * gated by weekday + start/end dates). The draft_open_slots count
+ * is deliberately NOT added: publish deletes those rows, and the
+ * computed shortfall persists as visible opens with a draft count
+ * of 0 (Dec 4 production: 11 filled published, 8 opens, 0 draft —
+ * 3 shortfall + 5 extras). Live-mode types must NOT use this
+ * helper — they keep the computed formula.
+ */
+export async function storedTotals(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string
+): Promise<StoredTotals> {
+  const { rows: crows } = await q(
+    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const closed = crows.length > 0;
+  const { rows: trows } = await q(
+    `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+    [companyId, shiftTypeId]
+  );
+  let target = 0;
+  if (trows.length) {
+    const t = trows[0];
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+    const sd: string | null = t.start_date || null;
+    const ed: string | null = t.end_date || null;
+    if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+      target = Number(t.target_count) || 0;
+    }
+  }
+  const { rows: frows } = await q(
+    'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const filled = Number(frows[0]?.n || 0);
+  const { rows: erows } = await q(
+    'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const extra = Number(erows[0]?.n || 0);
+  const suppressed = await suppressedTotal(q, companyId, date, shiftTypeId);
+  const opens = closed ? 0 : Math.max(0, Math.max(0, target - filled) + extra - suppressed);
+  return { opens, filled, closed, total: filled + opens, extra, suppressed, target };
 }

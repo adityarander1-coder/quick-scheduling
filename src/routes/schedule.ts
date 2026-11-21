@@ -9080,7 +9080,7 @@ async function consumeExtraOpenSlot(q: any, companyId: string, date: string, shi
 // as today). `filled` counts ALL stored shifts, drafts included —
 // the grid's filled for managers, and published + unpublishedCounts
 // for employees, is the same number.
-async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string) {
+async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string, useStored = false) {
   const { rows: crows } = await q(
     'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
     [companyId, date, shiftTypeId]
@@ -9124,7 +9124,16 @@ async function openSlotTotals(q: any, companyId: string, date: string, shiftType
     [companyId, date, shiftTypeId]
   );
   const draft = drows.length ? Number(drows[0].count) : 0;
-  const total = closed ? 0 : Math.max(0, target + extra - filled - suppressed);
+  // Stored model (Deepika, 2026-11-20/21 — "the calculation should
+  // come from real schedule, not from rotation"): when useStored is
+  // set (GENERATED types only — the claim endpoint passes it), the
+  // shortfall is clamped at 0 BEFORE the stored extras are added,
+  // so over-target filled never eats stored extras. Live-mode
+  // callers keep the computed formula (target + extra - filled -
+  // suppressed). The two agree whenever filled <= target.
+  const total = closed ? 0 : useStored
+    ? Math.max(0, Math.max(0, target - filled) + extra - suppressed)
+    : Math.max(0, target + extra - filled - suppressed);
   // `draft` is the raw stored count (the endpoint decrements it); the
   // UI renders min(draft, total) positions as draft, so a stale row
   // left behind when opens disappear can never over-claim.
@@ -13730,8 +13739,12 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
         // counting 0); it does not add the undrafted-date suppression,
         // so what it allows on undrafted dates is unchanged. Path 1/2
         // below are untouched — a claim that passes the gate consumes
-        // exactly as it did before.
-        const totals = await openSlotTotals(tx.query, companyId, date, shiftTypeId);
+        // exactly as it did before. The gate counts from the stored
+        // schedule for GENERATED types (the top-up fix): if the grid
+        // shows 2 opens, the gate must allow 2 claims — otherwise
+        // the shown open refuses pickup and the grid lies.
+        const generated = await getGeneratedTypeIds(tx.query, companyId);
+        const totals = await openSlotTotals(tx.query, companyId, date, shiftTypeId, generated.has(shiftTypeId));
         if (totals.published <= 0) {
           draftMsg = 'That open slot has not been published yet, so it cannot be picked up.';
           return;
