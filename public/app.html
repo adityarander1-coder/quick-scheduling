@@ -4167,6 +4167,7 @@
           if (e.kind === 'swap') return !!(e.aId && e.bId && e.redo);
           if (e.kind === 'delete') return !!(e.undo && e.redo);
           if (e.kind === 'openslot') return !!(e.undo && e.redo);
+          if (e.kind === 'import') return !!(e.undo && Array.isArray(e.undo.shiftIds) && e.undo.shiftIds.length && Array.isArray(e.undo.rows) && e.undo.rows.length && e.redo);
           return false;
         }
         // Load the saved stacks at login; called from the init block.
@@ -4335,11 +4336,21 @@
           }).catch(function () {});
         }
         window.qsRefreshUndoState = qsRefreshUndoState;
+        // 60-second window (Deepika, 2026-11-20): a grid entry is only
+        // undoable/redoable within 60s of its time (`at`); a no-time
+        // entry (written before this build) counts as expired. Plan
+        // times from /undo-state are already window-filtered
+        // server-side, so their presence alone means "in window".
+        function qsUndoFresh(at) {
+          if (!at) return false;
+          var t = Date.parse(at);
+          return !isNaN(t) && (Date.now() - t <= 60000);
+        }
         function qsUndoBtnSync() {
           var ub = document.getElementById('qs-undo-pinned');
           var rb = document.getElementById('qs-redo-pinned');
-          var canUndo = qsUndoStack.length > 0 || !!(qsPlanUndoState && qsPlanUndoState.planUndo);
-          var canRedo = qsRedoStack.length > 0 || !!(qsPlanUndoState && qsPlanUndoState.planRedo);
+          var canUndo = (qsUndoStack.length > 0 && qsUndoFresh(qsUndoStack[qsUndoStack.length - 1].at)) || !!(qsPlanUndoState && qsPlanUndoState.planUndo);
+          var canRedo = (qsRedoStack.length > 0 && qsUndoFresh(qsRedoStack[qsRedoStack.length - 1].at)) || !!(qsPlanUndoState && qsPlanUndoState.planRedo);
           if (ub) ub.disabled = !canUndo;
           if (rb) { rb.disabled = !canRedo; rb.style.display = canRedo ? '' : 'none'; }
           // Persist the stacks whenever they change (this runs at
@@ -4347,6 +4358,10 @@
           // starts, and skipped when nothing changed.
           if (typeof qsPersistUndoHistory === 'function') qsPersistUndoHistory();
         }
+        // Re-disable the pair as the window passes, even with no
+        // interaction (a tap after the window is still refused by the
+        // server — this just keeps the buttons honest).
+        setInterval(function () { if (qsUndoStack.length || qsRedoStack.length) qsUndoBtnSync(); }, 5000);
 
         // Pinned Undo/Redo (Deepika, 2026-11-19): every grid entry
         // carries the time its action happened (`at`), so the pair can
@@ -4392,6 +4407,20 @@
         window.qsPushOpenSlotUndo = function (undoPayload, redoCalls) {
           if (!undoPayload || !Array.isArray(undoPayload.slots) || !undoPayload.slots.length) return false;
           qsUndoStack.push(qsStampUndo({ kind: 'openslot', undo: undoPayload, redo: { kind: 'openslot', calls: redoCalls || [] } }));
+          qsRedoStack.length = 0;
+          qsUndoCap();
+          qsUndoBtnSync();
+          return true;
+        };
+
+        // Schedule-import undo (Deepika, 2026-11-20 — the upload-undo
+        // gap): the import returns the rows it created; Undo removes
+        // exactly those rows (no delete-opens-a-slot grant), Redo puts
+        // them back. One entry per import, like a bulk delete.
+        window.qsPushImportUndo = function (undoPayload) {
+          if (!undoPayload || !Array.isArray(undoPayload.shiftIds) || !undoPayload.shiftIds.length
+            || !Array.isArray(undoPayload.rows) || !undoPayload.rows.length) return false;
+          qsUndoStack.push(qsStampUndo({ kind: 'import', undo: undoPayload, redo: { kind: 'import', rows: undoPayload.rows } }));
           qsRedoStack.length = 0;
           qsUndoCap();
           qsUndoBtnSync();
@@ -4449,7 +4478,11 @@
           var gridTop = qsUndoStack[qsUndoStack.length - 1];
           var gridAt = gridTop && gridTop.at ? gridTop.at : null;
           var planAt = qsPlanUndoState && qsPlanUndoState.planUndo ? qsPlanUndoState.planUndo.at : null;
-          if (gridAt && (!planAt || gridAt >= planAt)) { qsUndoLast(); return; }
+          // 60-second window (Deepika, 2026-11-20): an expired grid
+          // entry never wins over a plan, and qsUndoLast refuses it
+          // plainly when it is the only thing left.
+          var gridFresh = gridTop && qsUndoFresh(gridAt);
+          if (gridFresh && (!planAt || gridAt >= planAt)) { qsUndoLast(); return; }
           if (planAt) { qsTaskUndo(); return; }
           if (gridTop) { qsUndoLast(); return; }
           qsTaskUndo();
@@ -4464,7 +4497,11 @@
           var gridTop = qsRedoStack[qsRedoStack.length - 1];
           var gridAt = gridTop && gridTop.at ? gridTop.at : null;
           var planAt = qsPlanUndoState && qsPlanUndoState.planRedo ? qsPlanUndoState.planRedo.at : null;
-          if (gridAt && (!planAt || gridAt >= planAt)) { qsRedoLast(); return; }
+          // 60-second window (Deepika, 2026-11-20): an expired grid
+          // entry never wins over a plan, and qsRedoLast refuses it
+          // plainly when it is the only thing left.
+          var gridFresh = gridTop && qsUndoFresh(gridAt);
+          if (gridFresh && (!planAt || gridAt >= planAt)) { qsRedoLast(); return; }
           if (planAt) { qsTaskRedo(); return; }
           if (gridTop) { qsRedoLast(); return; }
           qsTaskRedo();
@@ -4472,10 +4509,18 @@
       };
 
         function qsRedoLast() {
-          var r = qsRedoStack.pop();
-          if (!r) return;
+          // 60-second window (Deepika, 2026-11-20): a redo is only
+          // valid within 60s of the UNDO. The entry stays (it ages
+          // out of the depth-3 stack on its own); the server refuses
+          // a late replay too, this is the client half.
+          var r = qsRedoStack[qsRedoStack.length - 1];
+          if (!r || !qsUndoFresh(r.at)) {
+            pageError(r ? 'That undo is more than 60 seconds old, so it can no longer be redone.' : 'Nothing to redo.');
+            return;
+          }
+          qsRedoStack.pop();
           if (r.kind === 'swap') {
-            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId }) }).then(function (res) {
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId, windowAt: r.at }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
@@ -4511,7 +4556,7 @@
                     return;
                   }
                   var p = pauses[pi++];
-                  api('/api/schedule/rotations/' + p.rotationId + '/pauses', { method: 'POST', body: JSON.stringify({ startDate: p.startDate, endDate: p.endDate, reason: 'Bulk delete' }) }).then(function (res) {
+                  api('/api/schedule/rotations/' + p.rotationId + '/pauses', { method: 'POST', body: JSON.stringify({ startDate: p.startDate, endDate: p.endDate, reason: 'Bulk delete', windowAt: r.at }) }).then(function (res) {
                     if (res.ok && res.data && res.data.pause) fresh.pauses.push({ id: res.data.pause.id, rotationId: p.rotationId, startDate: p.startDate, endDate: p.endDate });
                     nextPause();
                   }).catch(function () { nextPause(); });
@@ -4520,7 +4565,11 @@
                 return;
               }
               var c = calls[ci++];
-              api(c.ep, { method: c.method, body: c.body ? JSON.stringify(c.body) : undefined }).then(function (res) {
+              // The replay carries the redo window time, so the server
+              // refuses a replay after the window (ordinary calls
+              // never send windowAt).
+              var delBody = Object.assign({}, c.body || {}, { windowAt: r.at });
+              api(c.ep, { method: c.method, body: JSON.stringify(delBody) }).then(function (res) {
                 if (res.ok) {
                   var u = res.data && res.data.undo;
                   if (u) {
@@ -4555,7 +4604,11 @@
                 return;
               }
               var c = calls[ci++];
-              api(c.ep, { method: c.method, body: c.body ? JSON.stringify(c.body) : undefined }).then(function (res) {
+              // The replay carries the redo window time, so the server
+              // refuses a replay after the window (ordinary calls
+              // never send windowAt).
+              var closeBody = Object.assign({}, c.body || {}, { windowAt: r.at });
+              api(c.ep, { method: c.method, body: JSON.stringify(closeBody) }).then(function (res) {
                 if (res.ok) {
                   var u = res.data && res.data.undo;
                   if (u && u.slots) fresh.slots = fresh.slots.concat(u.slots);
@@ -4564,9 +4617,21 @@
               }).catch(function () { failed++; nextCall(); });
             };
             nextCall();
+          } else if (r.kind === 'import') {
+            // Redo an undone import: re-insert exactly the rows the
+            // import created (same ids). The undo entry goes back on
+            // the stack, so undo/redo can alternate.
+            api('/api/schedule/shift-import/redo', { method: 'POST', body: JSON.stringify({ redo: r, at: r.at }) }).then(function (res) {
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that import.'); refreshShifts(); return; }
+              qsUndoStack.push(qsStampUndo({ kind: 'import', undo: { shiftIds: r.rows.map(function (x) { return x.id; }), rows: r.rows }, redo: r }));
+              qsUndoCap();
+              qsUndoBtnSync();
+              pageSuccess('Redone.');
+              refreshShifts();
+            }).catch(function () { pageError('Could not redo that import.'); });
           } else {
             var s = shiftById(r.shiftId);
-            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId }) }).then(function (res) {
+            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
@@ -4580,21 +4645,31 @@
         }
 
         function qsUndoLast() {
-          var u = qsUndoStack.pop();
+          // 60-second window (Deepika, 2026-11-20): an entry older
+          // than the window cannot be undone — the server refuses it
+          // too, this is the client half. The entry stays (it ages
+          // out of the depth-3 stack on its own).
+          var u = qsUndoStack[qsUndoStack.length - 1];
+          if (!u || !qsUndoFresh(u.at)) {
+            pageError(u ? 'That change is more than 60 seconds old, so it can no longer be undone.' : 'Nothing to undo.');
+            return;
+          }
+          qsUndoStack.pop();
           // The redo entry's time is the UNDO time, so a later Redo
-          // tap compares it against the plan's undone_at.
-          if (u && u.redo && !u.redo.at) u.redo.at = new Date().toISOString();
+          // tap compares it against the plan's undone_at. Always
+          // re-stamped: undo -> redo -> undo must anchor the second
+          // redo at the SECOND undo, not the first.
+          if (u.redo) u.redo.at = new Date().toISOString();
           qsUndoBtnSync();
-          if (!u) return;
           if (u.kind === 'server') {
-            api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+            api('/api/schedule/shifts/drag-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               pageSuccess('Undone — tap Redo in the top bar to redo it.');
               refreshShifts();
             }).catch(function () { pageError('Could not undo that.'); });
           } else if (u.kind === 'delete') {
-            api('/api/schedule/shifts/delete-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+            api('/api/schedule/shifts/delete-undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that delete.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               var restored = (r.data && r.data.restored) || 0;
@@ -4608,7 +4683,7 @@
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that delete.'); });
           } else if (u.kind === 'openslot') {
-            api('/api/schedule/open-slots/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo }) }).then(function (r) {
+            api('/api/schedule/open-slots/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that close.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               var restored = (r.data && r.data.restored) || 0;
@@ -4621,15 +4696,25 @@
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that close.'); });
-          } else if (u.kind === 'swap') {
-            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
+          } else if (u.kind === 'import') {
+            // Undo a schedule import: remove exactly the rows the
+            // import added (no delete-opens-a-slot grant — the opens
+            // come back via the formula alone).
+            api('/api/schedule/shift-import/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that import.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
-              pageSuccess('Undone — tap Redo in the top bar to redo it.');
+              var removed = (r.data && r.data.removed) || 0;
+              var skipped = (r.data && r.data.skipped) || [];
+              if (skipped.length) {
+                pageError('Import undone — ' + removed + ' shift(s) removed. ' + skipped.length + ' could not be removed: ' + skipped.map(function (s) { return s.message || 'could not be removed'; }).join('; ') + '.');
+              } else {
+                pageSuccess('Import undone — ' + removed + ' shift(s) removed. Tap Redo in the top bar to redo it.');
+              }
               refreshShifts();
-            }).catch(function () { pageError('Could not undo that swap.'); });
+              if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+            }).catch(function () { pageError('Could not undo that import.'); });
           } else {
-            api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType }) }).then(function (r) {
+            api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType, windowAt: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               pageSuccess('Undone — tap Redo in the top bar to redo it.');
@@ -8208,6 +8293,9 @@
               if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
               return;
             }
+            // One undo entry for the whole import (Deepika,
+            // 2026-11-20 — the upload-undo gap).
+            if (r.data && r.data.undo && typeof window.qsPushImportUndo === 'function') window.qsPushImportUndo(r.data.undo);
             shiRenderResult(r.data, publish);
           }).catch(function () {
             if (errEl) errEl.textContent = 'The import failed — please try again.';
@@ -8226,7 +8314,7 @@
           card.innerHTML =
             '<div style="font-size:1.25rem;font-weight:800">Import done</div>' +
             '<div style="margin-top:0.5rem;font-size:1rem">Imported <b>' + data.imported + '</b> shifts ' + (publish ? '(published — your team can see them)' : '(saved as drafts)') + ' · ' + skipped + ' skipped · <b>' + failed.length + '</b> failed</div>' +
-            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule now.</div>' + failHtml +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule now.' + (data.undo ? ' Tap Undo in the top bar to undo this import (within 60 seconds).' : '') + '</div>' + failHtml +
             '<div style="display:flex;justify-content:flex-end;margin-top:1.1rem"><button type="button" id="shi-done" class="btn" style="border-radius:10px;padding:0.55rem 1.1rem">Close</button></div>';
           document.getElementById('shi-done').addEventListener('click', function () { shiClose(); loadAll(); });
         }
@@ -8520,6 +8608,9 @@
               if (btn) { btn.disabled = false; btn.textContent = 'Add ' + payload.length + ' shift' + (payload.length === 1 ? '' : 's') + ' as drafts'; }
               return;
             }
+            // One undo entry for the whole import (Deepika,
+            // 2026-11-20 — the upload-undo gap).
+            if (r.data && r.data.undo && typeof window.qsPushImportUndo === 'function') window.qsPushImportUndo(r.data.undo);
             coRenderResult(r.data);
           }).catch(function () {
             if (errEl) errEl.textContent = 'The import failed — please try again.';
@@ -8538,7 +8629,7 @@
           card.innerHTML =
             '<div style="font-size:1.25rem;font-weight:800">Contract added</div>' +
             '<div style="margin-top:0.5rem;font-size:1rem">Added <b>' + data.imported + '</b> shifts (saved as drafts) · ' + skipped + ' skipped · <b>' + failed.length + '</b> failed</div>' +
-            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule as drafts — publish them from Bulk Actions when you\u2019re ready.</div>' + failHtml +
+            '<div style="color:var(--muted);font-size:0.9rem;margin-top:0.3rem">The shifts are on the schedule as drafts — publish them from Bulk Actions when you\u2019re ready.' + (data.undo ? ' Tap Undo in the top bar to undo this import (within 60 seconds).' : '') + '</div>' + failHtml +
             '<div style="display:flex;justify-content:flex-end;margin-top:1.1rem"><button type="button" id="co-done" class="btn" style="border-radius:10px;padding:0.55rem 1.1rem">Close</button></div>';
           document.getElementById('co-done').addEventListener('click', function () { coClose(); loadAll(); });
         }

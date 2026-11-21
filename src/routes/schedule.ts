@@ -19,7 +19,7 @@ import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, auditDraftIfAppeared, auditDraftsForResults, resolvePersonId, todayStr } from '../util/audit.js';
 import { recordHistorySnapshot, snapshotPlanExecution, listHistorySnapshots, getHistorySnapshot } from '../util/history.js';
-import { loadUndoHistory, saveUndoHistory } from '../util/undoHistory.js';
+import { loadUndoHistory, saveUndoHistory, undoWindowExpired, UNDO_WINDOW_EXPIRED_MSG, REDO_WINDOW_EXPIRED_MSG } from '../util/undoHistory.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, parseContractDocument, isGeminiConfigured } from '../util/gemini';
@@ -1782,6 +1782,14 @@ function emptyDeleteUndo(): DeleteUndoPayload {
 router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { dates, userIds } = req.body ?? {};
     const shiftTypeId = typeof req.body?.shiftTypeId === 'string' && req.body.shiftTypeId ? req.body.shiftTypeId : '';
     if (!Array.isArray(dates) || !dates.length || dates.length > 366) {
@@ -2094,6 +2102,14 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
 router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     // A malformed id is a missing shift, not a server error (the
     // uuid comparison below throws on non-uuid text otherwise).
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) {
@@ -2206,6 +2222,14 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
 router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
     const { shiftTypeId } = req.body ?? {};
     const n = parseInt(req.body?.count, 10) || 0;
@@ -2508,6 +2532,14 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
 router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { date, shiftTypeId } = req.body ?? {};
     if (!isValidDate(date) || !shiftTypeId) {
       res.status(400).json({ error: 'Date and shift type are required.' });
@@ -2919,6 +2951,14 @@ async function insertRotationExclusion(q: DragQueryFn, companyId: string, ref: D
 router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { date, shiftTypeId } = req.body ?? {};
     if (!isValidDate(date) || !shiftTypeId) {
       res.status(400).json({ error: 'A valid date and shift type are required.' });
@@ -3036,6 +3076,14 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
 router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { aId, bId } = req.body ?? {};
     if (!aId || !bId || aId === bId) {
       res.status(400).json({ error: 'Two different shifts are required.' });
@@ -3215,6 +3263,14 @@ router.post('/shifts/drag-undo', requireRole('owner', 'scheduler'), async (req: 
       const kinds = ['deleteShiftId', 'deleteExclusion', 'updateShiftUser'].filter((k) => op && op[k]);
       if (kinds.length !== 1) { res.status(400).json({ error: 'Nothing to undo.' }); return; }
     }
+    // 60-second window (Deepika, 2026-11-20): the entry carries the
+    // change's time (`at`, stamped by the client when the action
+    // happened); an undo after the window is refused server-side,
+    // even if the button is somehow reachable.
+    if (undoWindowExpired(req.body?.at)) {
+      res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     // Report (Deepika, 2026-11-13): a row this undo deletes may have
     // been suppressing a rotation occurrence — if it now draws as a
     // draft, say so.
@@ -3341,6 +3397,13 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
     for (const e of sweepExclusions) scopePairs.push({ userId: e.userId, shiftTypeId: e.shiftTypeId });
     for (const g of grants) scopePairs.push({ userId: null, shiftTypeId: g.shiftTypeId });
     if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
+    // 60-second window (Deepika, 2026-11-20): `at` is the entry's
+    // time; a delete payload's deletedAt (stamped by the server when
+    // the delete ran) is the fallback for entries that carry no `at`.
+    if (undoWindowExpired(req.body?.at ?? deletedAt)) {
+      res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
 
     const skipped: Array<{ userId: string | null; date: string; shiftTypeId: string | null; reason: string; message: string }> = [];
     const restoredRows: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
@@ -3610,6 +3673,13 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
       req, res,
       await shiftTypesDepartmentIds(typeIds, companyId)
     ))) return;
+    // 60-second window (Deepika, 2026-11-20): the entry carries the
+    // close's time (`at`, stamped by the client when the close
+    // happened); an undo after the window is refused server-side.
+    if (undoWindowExpired(req.body?.at)) {
+      res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
 
     const skipped: Array<{ date: string; shiftTypeId: string; reason: string; message: string }> = [];
     const restoredSlots: Array<{ date: string; shiftTypeId: string }> = [];
@@ -4087,6 +4157,14 @@ router.post('/rotation-shifts/publish-state', requireRole('owner', 'scheduler'),
 router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { rotationId, userId, date, shiftTypeId } = req.body ?? {};
     if (!rotationId || !userId || !date) {
       res.status(400).json({ error: 'rotationId, userId, and date are required.' });
@@ -7118,6 +7196,14 @@ router.get('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (re
 router.post('/rotations/:id/pauses', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
+    // 60-second window (Deepika, 2026-11-20): an undo/redo replay
+    // carries windowAt (the undo time); a replay after the window is
+    // refused. Ordinary calls never send windowAt, so they are
+    // unaffected.
+    if (req.body?.windowAt !== undefined && undoWindowExpired(req.body.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
     const { startDate, endDate, reason } = req.body ?? {};
     if (!startDate || !endDate) {
       res.status(400).json({ error: 'startDate and endDate are required.' });
@@ -12301,6 +12387,16 @@ async function performPlanUndo(req: Request, res: Response, plan: any): Promise<
     res.status(403).json({ error: 'Only the person who approved this task can undo it — or the owner.' });
     return false;
   }
+  // 60-second window (Deepika, 2026-11-20): a plan is undoable only
+  // within 60s of being applied. The timestamp is the plan's own
+  // executed_at (stamped at approve/redo time), falling back to
+  // decided_at, then created_at — all three exist on every applied
+  // plan (the approve paths stamp executed_at = now()).
+  const appliedAt = plan.executed_at || plan.decided_at || plan.created_at;
+  if (!appliedAt || undoWindowExpired(new Date(appliedAt).toISOString())) {
+    res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+    return false;
+  }
   const { undoPlanChanges } = await import('../util/planUndo.js');
   try {
     await undoPlanChanges(companyId, plan.undo_payload);
@@ -12375,6 +12471,7 @@ router.post('/plans/undo-latest', requireRole('owner', 'scheduler'), async (req:
        WHERE company_id = $1 AND undo_payload IS NOT NULL AND undone_at IS NULL
          AND status IN ('executed', 'approved', 'partial')
          AND ($2 OR decided_by = $3)
+         AND COALESCE(executed_at, decided_at, created_at) > now() - interval '60 seconds'
        ORDER BY COALESCE(executed_at, decided_at, created_at) DESC LIMIT 1`,
       [companyId, isOwner, req.session.userId!]
     );
@@ -12395,6 +12492,8 @@ router.post('/plans/undo-latest', requireRole('owner', 'scheduler'), async (req:
 // LAST (a grid change or a Task plan), not whichever stack is non-empty.
 // Same scoping as undo-latest / redo-latest (owner: anyone's;
 // scheduler: only their own). Read-only — it never applies anything.
+// 60-second window (Deepika, 2026-11-20): only plans inside the window
+// are returned — an expired plan is not offered for undo/redo at all.
 router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -12406,6 +12505,7 @@ router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request
        WHERE company_id = $1 AND undo_payload IS NOT NULL AND undone_at IS NULL
          AND status IN ('executed', 'approved', 'partial')
          AND ($2 OR decided_by = $3)
+         AND COALESCE(executed_at, decided_at, created_at) > now() - interval '60 seconds'
        ORDER BY COALESCE(executed_at, decided_at, created_at) DESC LIMIT 1`,
       [companyId, isOwner, userId]
     );
@@ -12414,6 +12514,7 @@ router.get('/undo-state', requireRole('owner', 'scheduler'), async (req: Request
        FROM schedule_plans
        WHERE company_id = $1 AND status = 'undone' AND undone_at IS NOT NULL
          AND ($2 OR undone_by = $3)
+         AND undone_at > now() - interval '60 seconds'
        ORDER BY undone_at DESC LIMIT 1`,
       [companyId, isOwner, userId]
     );
@@ -12621,6 +12722,12 @@ async function performPlanRedo(req: Request, res: Response, plan: any): Promise<
     res.status(403).json({ error: 'Only the person who undid this task can redo it — or the owner.' });
     return false;
   }
+  // 60-second redo window (Deepika, 2026-11-20): from the UNDO
+  // (undone_at), not from the original change.
+  if (!plan.undone_at || undoWindowExpired(new Date(plan.undone_at).toISOString())) {
+    res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+    return false;
+  }
   const { redoPlanChanges } = await import('../util/planUndo.js');
   try {
     await redoPlanChanges(companyId, plan.undo_payload);
@@ -12698,6 +12805,7 @@ router.post('/plans/redo-latest', requireRole('owner', 'scheduler'), async (req:
       `SELECT * FROM schedule_plans
        WHERE company_id = $1 AND status = 'undone' AND undone_at IS NOT NULL
          AND ($2 OR undone_by = $3)
+         AND undone_at > now() - interval '60 seconds'
        ORDER BY undone_at DESC LIMIT 1`,
       [companyId, isOwner, req.session.userId!]
     );
@@ -20018,6 +20126,10 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
     const acceptedByUser = new Map<string, any[]>();
     const failed: Array<{ row: number; reason: string }> = [];
     const createdByUser = new Map<string, { count: number; shiftTypeId: string; firstDate: string; lastDate: string }>();
+    // Rows this import created (Deepika, 2026-11-20 — the upload-undo
+    // gap): the import pushes ONE undo entry, so undoing it removes
+    // exactly these rows — the ids and full rows are the undo payload.
+    const importedRows: Array<{ id: string; userId: string; shiftTypeId: string; date: string; published: boolean; createdBy: string }> = [];
     let imported = 0;
     const typeDepts = await shiftTypeDeptMap(companyId);
     for (const r of rowsIn) {
@@ -20059,11 +20171,13 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
       const conflict = findShiftConflict(personName, existing, proposed);
       if (conflict) { fail(conflict); continue; }
       try {
+        const newId = crypto.randomUUID();
         await query(
           `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, notes, published, created_by)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [crypto.randomUUID(), companyId, userId, shiftTypeId, date, null, publish, req.session.userId!]
+          [newId, companyId, userId, shiftTypeId, date, null, publish, req.session.userId!]
         );
+        importedRows.push({ id: newId, userId, shiftTypeId, date, published: publish, createdBy: req.session.userId! });
       } catch (err: any) {
         if (err?.code === '23505') { fail(`${personName} already has ${typeName} on this date.`); continue; }
         throw err;
@@ -20096,7 +20210,13 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
         shiftTypeIds: impTypeIds, userIds: [...acceptedByUser.keys()],
       });
     }
-    res.json({ ok: true, imported, failed, published: publish });
+    res.json({
+      ok: true, imported, failed, published: publish,
+      // Undo payload (Deepika, 2026-11-20 — the upload-undo gap): the
+      // rows this import created, so the client can push ONE undo
+      // entry for the whole import. Absent when nothing imported.
+      ...(importedRows.length ? { undo: { shiftIds: importedRows.map((r) => r.id), rows: importedRows } } : {}),
+    });
     // Notify each member who received published shifts (drafts stay
     // silent) — one bundled bell per person, like block-assign.
     if (publish) {
@@ -20118,6 +20238,184 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
   } catch (err) {
     console.error('[schedule] shift import failed:', err);
     res.status(500).json({ error: 'Something went wrong importing those shifts. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-import/undo — undo a sheet/contract import
+// (Deepika, 2026-11-20 — the upload-undo gap: Undo after an upload
+// undid an OLDER change instead, because the import pushed no undo
+// entry). The import pushes ONE undo entry; undoing it removes
+// exactly the rows the import added, nothing else. The rows are
+// deleted DIRECTLY — the delete-opens-a-slot grant
+// (ensureOpenSlotForDelete) must NOT fire: the import filled opens
+// via the formula, so deleting its rows brings the opens back via the
+// formula alone; a grant on top would inflate them. Each row is
+// verified against the imported (user, type, date) before it is
+// deleted, so a shift that was moved or changed since the import is
+// skipped, never deleted blindly.
+router.post('/shift-import/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const undo = (req.body?.undo ?? {}) as any;
+    const shiftIds = Array.isArray(undo.shiftIds) ? undo.shiftIds : [];
+    const rows = Array.isArray(undo.rows) ? undo.rows : [];
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const badRow = (r: any): boolean => !r || typeof r !== 'object'
+      || !uuidRe.test(String(r.id || '')) || !uuidRe.test(String(r.userId || ''))
+      || !uuidRe.test(String(r.shiftTypeId || '')) || !isValidDate(r.date) || typeof r.published !== 'boolean';
+    if (!shiftIds.length || shiftIds.length > 1000 || shiftIds.some((id: any) => typeof id !== 'string' || !uuidRe.test(id))
+      || !rows.length || rows.length > 1000 || rows.some(badRow)) {
+      res.status(400).json({ error: 'Nothing to undo.' });
+      return;
+    }
+    // 60-second window: the entry carries the import's time.
+    if (undoWindowExpired(req.body?.at)) {
+      res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
+    // Department scoping: the undo touches the same departments the
+    // import did — the caller's active department must be one of them.
+    const scopePairs = rows.map((r: any) => ({ userId: r.userId, shiftTypeId: r.shiftTypeId }));
+    if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
+    const byId = new Map<string, any>(rows.map((r: any) => [r.id, r]));
+    const skipped: Array<{ userId: string; date: string; shiftTypeId: string; reason: string; message: string }> = [];
+    const removed: Array<{ userId: string; date: string; shiftTypeId: string; published: boolean }> = [];
+    await withTransaction(async (tx) => {
+      for (const id of shiftIds) {
+        const want = byId.get(id);
+        if (!want) continue;
+        const { rows: cur } = await tx.query(
+          'SELECT user_id AS "userId", shift_type_id AS "shiftTypeId", date::text AS date FROM shifts WHERE id = $1 AND company_id = $2',
+          [id, companyId]
+        );
+        if (!cur.length) continue; // already gone (deleted by hand) — nothing to remove
+        const c = cur[0];
+        if (c.userId !== want.userId || c.shiftTypeId !== want.shiftTypeId || c.date !== want.date) {
+          skipped.push({ userId: want.userId, date: want.date, shiftTypeId: want.shiftTypeId, reason: 'changed', message: 'that shift was changed since the import' });
+          continue;
+        }
+        await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [id, companyId]);
+        removed.push({ userId: want.userId, date: want.date, shiftTypeId: want.shiftTypeId, published: want.published });
+      }
+    });
+    // History snapshot (Deepika, 2026-11-17) — undoing an import
+    // removes shifts in bulk, so it gets a copy too (only when
+    // something was removed).
+    if (removed.length) {
+      const dates = removed.map((r) => r.date).sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!,
+        trigger: removed.some((r) => r.published) ? 'published-change' : 'draft-change',
+        summary: `Undid schedule import — ${removed.length} shift${removed.length === 1 ? '' : 's'} removed`,
+        from: dates[0], to: dates[dates.length - 1],
+        shiftTypeIds: [...new Set(removed.map((r) => r.shiftTypeId))],
+        userIds: [...new Set(removed.map((r) => r.userId))],
+      });
+    }
+    res.json({ ok: true, removed: removed.length, skipped });
+    // Audit: each removed row logs as deleted via import-undo.
+    for (const r of removed) {
+      const names = await shiftDisplayNames(companyId, r.userId, r.shiftTypeId);
+      await auditLog({
+        companyId, date: r.date, action: 'deleted',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'manual', changedBy: req.session.userId!,
+        affectedUserId: r.userId, scheduleDate: r.date, shiftTypeId: r.shiftTypeId,
+        details: { via: 'import-undo' },
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] shift-import undo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/shift-import/redo — redo an undone import:
+// re-insert exactly the rows the import created (same ids). A row is
+// skipped when its slot is taken now, its person is gone/inactive or
+// past their last working day, or the row is already back — never
+// overwritten.
+router.post('/shift-import/redo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const redo = (req.body?.redo ?? {}) as any;
+    const rows = Array.isArray(redo.rows) ? redo.rows : [];
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const badRow = (r: any): boolean => !r || typeof r !== 'object'
+      || !uuidRe.test(String(r.id || '')) || !uuidRe.test(String(r.userId || ''))
+      || !uuidRe.test(String(r.shiftTypeId || '')) || !isValidDate(r.date) || typeof r.published !== 'boolean';
+    if (!rows.length || rows.length > 1000 || rows.some(badRow)) {
+      res.status(400).json({ error: 'Nothing to redo.' });
+      return;
+    }
+    // 60-second redo window: from the UNDO, not the import.
+    if (undoWindowExpired(req.body?.at)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
+    // Department scoping, like the undo.
+    const scopePairs = rows.map((r: any) => ({ userId: r.userId, shiftTypeId: r.shiftTypeId }));
+    if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
+    const skipped: Array<{ userId: string; date: string; shiftTypeId: string; reason: string; message: string }> = [];
+    const restored: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
+    const skipMsg: Record<string, string> = {
+      'person-gone': 'that person is no longer on the team',
+      'person-inactive': 'that person is no longer active',
+      'past-last-day': 'that date is past their last working day',
+      'already-back': 'that shift is already back on the schedule',
+      'slot-taken': 'someone else has taken that slot since the import',
+    };
+    const skip = (r: any, reason: string) => {
+      skipped.push({ userId: r.userId, date: r.date, shiftTypeId: r.shiftTypeId, reason, message: skipMsg[reason] || reason });
+    };
+    await withTransaction(async (tx) => {
+      for (const r of rows) {
+        const { rows: ex } = await tx.query('SELECT id FROM shifts WHERE id = $1 AND company_id = $2', [r.id, companyId]);
+        if (ex.length) { skip(r, 'already-back'); continue; }
+        const { rows: urows } = await tx.query(
+          'SELECT is_active AS "isActive", end_date::text AS "endDate" FROM users WHERE id = $1 AND company_id = $2',
+          [r.userId, companyId]
+        );
+        if (!urows.length) { skip(r, 'person-gone'); continue; }
+        if (!urows[0].isActive) { skip(r, 'person-inactive'); continue; }
+        if (urows[0].endDate && r.date > urows[0].endDate) { skip(r, 'past-last-day'); continue; }
+        const { rows: clash } = await tx.query(
+          'SELECT id FROM shifts WHERE company_id = $1 AND user_id = $2 AND date = $3 AND shift_type_id = $4',
+          [companyId, r.userId, r.date, r.shiftTypeId]
+        );
+        if (clash.length) { skip(r, 'slot-taken'); continue; }
+        await tx.query(
+          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, notes, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [r.id, companyId, r.userId, r.shiftTypeId, r.date, r.published, null, r.createdBy || req.session.userId!]
+        );
+        restored.push({ userId: r.userId, date: r.date, shiftTypeId: r.shiftTypeId });
+      }
+    });
+    if (restored.length) {
+      const dates = restored.map((r) => r.date).sort();
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'published-change',
+        summary: `Redid schedule import — ${restored.length} shift${restored.length === 1 ? '' : 's'} restored`,
+        from: dates[0], to: dates[dates.length - 1],
+        shiftTypeIds: [...new Set(restored.map((r) => r.shiftTypeId))],
+        userIds: [...new Set(restored.map((r) => r.userId))],
+      });
+    }
+    res.json({ ok: true, restored: restored.length, skipped });
+    for (const r of restored) {
+      const names = await shiftDisplayNames(companyId, r.userId, r.shiftTypeId);
+      await auditLog({
+        companyId, date: r.date, action: 'created',
+        personName: names.personName, shiftTypeName: names.shiftTypeName,
+        source: 'manual', changedBy: req.session.userId!,
+        affectedUserId: r.userId, scheduleDate: r.date, shiftTypeId: r.shiftTypeId,
+        details: { via: 'import-redo' },
+      });
+    }
+  } catch (err) {
+    console.error('[schedule] shift-import redo failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 

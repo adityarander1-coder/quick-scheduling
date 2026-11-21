@@ -23,8 +23,21 @@
  *     (closing open slots — Deepika, 2026-11-17; a bulk close is ONE
  *     entry; adjust is what the undo adds back to extra_open_slots:
  *     +1 per -1 close, or the exact removed row count for a DELETE)
+ *   - { kind: 'import', undo: { shiftIds, rows }, redo: { kind: 'import', rows } }
+ *     (a schedule upload — Deepika, 2026-11-20; undo removes exactly
+ *     the rows the import added, redo puts them back)
  * Task undo is NOT stored here — it is already server-side
  * (src/util/planUndo.ts) and is untouched.
+ *
+ * 60-second window (Deepika, 2026-11-20 — "60 seconds like we planned
+ * before"): an undo is only valid within 60s of the change, a redo
+ * only within 60s of the undo. Every entry carries its action time
+ * (`at`, stamped by the client when the action happened — or when it
+ * was undone, for redo entries); the execution endpoints refuse a
+ * request whose carried time is older than the window
+ * (undoWindowExpired). A missing time is allowed through — entries
+ * written before this build carry none, and they age out of the
+ * depth-3 stacks on their own.
  *
  * The client POSTs the whole stacks whenever they change and GETs
  * them at login. Validation is strict: unknown kinds, malformed
@@ -41,6 +54,29 @@ export const UNDO_DEPTH = 3;
 // A bulk delete of 500 units carries a large undo payload; 1 MB is
 // far above any 3-entry stack in practice and far below any abuse.
 const MAX_STACK_BYTES = 1_000_000;
+
+// 60-second Undo/Redo window (Deepika, 2026-11-20 — "60 seconds like
+// we planned before"): an undo is only valid within 60s of the
+// change, a redo only within 60s of the undo. The server enforces it
+// on every undo/redo execution endpoint — a client button disable
+// alone is not enough.
+export const UNDO_WINDOW_MS = 60_000;
+export const UNDO_WINDOW_EXPIRED_MSG = 'That change is more than 60 seconds old, so it can no longer be undone.';
+export const REDO_WINDOW_EXPIRED_MSG = 'That undo is more than 60 seconds old, so it can no longer be redone.';
+
+/** True when the carried time is unparseable or more than the window
+ * old. A MISSING time is NOT expired: entries written before this
+ * build (and direct API calls, which the suites use) carry no time,
+ * and they predate the window rule — they age out of the depth-3
+ * stacks on their own. The client disables no-time entries; the
+ * server enforces the window on every request that carries a time. */
+export function undoWindowExpired(at: any): boolean {
+  if (at === undefined || at === null) return false;
+  if (typeof at !== 'string') return true;
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return true;
+  return Date.now() - t > UNDO_WINDOW_MS;
+}
 
 function isPlainObject(v: any): v is Record<string, any> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -176,6 +212,42 @@ function cleanOpenSlotRedo(r: any): any | null {
   return { kind: 'openslot', calls: r.calls };
 }
 
+function isUuid(v: any): boolean {
+  return typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
+/** One imported shift row, as the import undo/redo endpoints carry it. */
+function cleanImportRow(r: any): any | null {
+  if (!isPlainObject(r)) return null;
+  if (!isUuid(r.id) || !isUuid(r.userId) || !isUuid(r.shiftTypeId) || !isValidDate(r.date)) return null;
+  if (typeof r.published !== 'boolean') return null;
+  return {
+    id: r.id, userId: r.userId, shiftTypeId: r.shiftTypeId, date: r.date, published: r.published,
+    ...(isUuid(r.createdBy) ? { createdBy: r.createdBy } : {}),
+  };
+}
+
+/** A schedule-import undo payload: the shift ids to delete, plus the
+ * full rows so the undo can verify each row is still the imported
+ * one before deleting it. */
+function cleanImportUndo(u: any): any | null {
+  if (!isPlainObject(u)) return null;
+  if (!Array.isArray(u.shiftIds) || !u.shiftIds.length || u.shiftIds.length > 1000) return null;
+  if (u.shiftIds.some((id: any) => !isUuid(id))) return null;
+  if (!Array.isArray(u.rows) || !u.rows.length || u.rows.length > 1000) return null;
+  const rows = u.rows.map(cleanImportRow);
+  if (rows.some((r: any) => !r)) return null;
+  return { shiftIds: u.shiftIds, rows };
+}
+
+function cleanImportRedo(r: any): any | null {
+  if (!isPlainObject(r) || r.kind !== 'import') return null;
+  if (!Array.isArray(r.rows) || !r.rows.length || r.rows.length > 1000) return null;
+  const rows = r.rows.map(cleanImportRow);
+  if (rows.some((x: any) => !x)) return null;
+  return { kind: 'import', rows };
+}
+
 /** Keep an entry's action time (`at`, stamped by the client when the
  * action happened — or when it was undone, for redo entries) through
  * the sanitizer, so the pinned Undo/Redo pair can tell which action
@@ -226,6 +298,13 @@ export function cleanUndoEntry(e: any): any | null {
     if (!redo) return null;
     return withAt({ kind: 'openslot', undo, redo }, e);
   }
+  if (e.kind === 'import') {
+    const undo = cleanImportUndo(e.undo);
+    if (!undo) return null;
+    const redo = cleanImportRedo(e.redo);
+    if (!redo) return null;
+    return withAt({ kind: 'import', undo, redo }, e);
+  }
   return null;
 }
 
@@ -236,6 +315,7 @@ export function cleanRedoEntry(e: any): any | null {
   if (e.kind === 'swap') { const r = cleanSwapRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'delete') { const r = cleanDeleteRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'openslot') { const r = cleanOpenSlotRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'import') { const r = cleanImportRedo(e); return r ? withAt(r, e) : null; }
   return null;
 }
 
