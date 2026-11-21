@@ -699,7 +699,9 @@ export function isScopeCorrection(message: string, history: Array<{ q: string; a
  * - Amount, from the request's words — the model's guess never
  *   overrides them: "delete all" / "close all" is closeAll, never
  *   keepCount 0; "excess of 13" / "keep 13" is keepCount 13;
- *   "close 5" is closeCount 5.
+ *   "close 5" is closeCount 5; "keep total 14" / "close excess
+ *   ... to keep ... to 14" is keepTotal 14 (the TOTAL — filled +
+ *   open — stays at 14, close only the excess).
  * - Month scope: a close change sitting inside the named month
  *   without covering it is widened to the whole month ("nov month"
  *   → Nov 1–30, never today). A "keep N" / "in excess of N"
@@ -716,8 +718,46 @@ export function normalizeClosePlan(
   const text = requestText || '';
   const scope = parseMonthScope(text, today);
   const saysAll = /\b(delete|close)\s+all\b/i.test(text) && !/\b(keep|excess|over|above|but)\b/i.test(text);
-  const keepM = text.match(/\b(?:excess of|keep|leave)\s+(\d{1,3})\b/i);
-  const closeM = text.match(/\bclose\s+(\d{1,3})\b/i);
+  // Keep-TOTAL (Deepika, 2026-11-21 — "close excess slots for dec
+  // 2-10 to keep day hospitalist slot to 14 per day"): the TOTAL
+  // (filled + open) stays at N, close only the excess. The signal
+  // is "total" ("keep total 14", "total 14") or "excess ... keep
+  // ... to/at N". "excess of 13" (no 'keep ... to/at') stays
+  // keepCount 13, and a plain "keep 13" stays keepCount 13.
+  //
+  // The request text is the CURRENT message + the thread history
+  // (finalizeTaskPlan joins them so a bare-number answer still
+  // sees the dates it answers) — so the amount mode comes from
+  // the EARLIEST amount signal in the text, not from whichever
+  // mode is checked first: a previous request's "keep total 13"
+  // sitting in history must never override the current message's
+  // plain "keep 2". When the current message carries no amount at
+  // all, the earliest signal is the history's, and it applies.
+  const totalPats = [
+    /\bkeep\s+(?:the\s+)?total\s+(?:slots?\s+)?(?:of\s+|at\s+|to\s+)?(\d{1,3})\b/i,
+    /\btotal\s+(?:slots?\s+)?(?:up\s*to|upto|of|at|to)?\s*(\d{1,3})\b/i,
+    /\bexcess\b[^.\n]*?\bkeep\b[^.\n]*?\b(?:to|at)\s+(\d{1,3})\b/i,
+  ];
+  const keepPat = /\b(?:excess of|keep|leave)\s+(\d{1,3})\b/i;
+  const closePat = /\bclose\s+(\d{1,3})\b/i;
+  const firstMatch = (re: RegExp): { n: number; idx: number } | null => {
+    const m = text.match(re);
+    if (!m || m[1] === undefined) return null;
+    return { n: parseInt(m[1], 10), idx: text.indexOf(m[0]) };
+  };
+  const totalCands = totalPats.map(firstMatch).filter((x): x is { n: number; idx: number } => !!x);
+  const totalM = totalCands.length ? totalCands.reduce((a, b) => (a.idx <= b.idx ? a : b)) : null;
+  const keepM = firstMatch(keepPat);
+  const closeM = firstMatch(closePat);
+  // Earliest amount signal wins; ties keep the old priority
+  // (total, then keep, then close).
+  const modeOrder: Array<{ mode: 'total' | 'keep' | 'close'; n: number; idx: number } | null> = [
+    totalM ? { mode: 'total', ...totalM } : null,
+    keepM ? { mode: 'keep', ...keepM } : null,
+    closeM ? { mode: 'close', ...closeM } : null,
+  ];
+  const earliest = modeOrder.filter((x): x is { mode: 'total' | 'keep' | 'close'; n: number; idx: number } => !!x)
+    .sort((a, b) => a.idx - b.idx || (a.mode === 'total' ? 0 : a.mode === 'keep' ? 1 : 2) - (b.mode === 'total' ? 0 : b.mode === 'keep' ? 1 : 2))[0] || null;
   for (const c of plan?.changes || []) {
     if (c?.action !== 'close_open_slots') continue;
     if (c.shiftType) {
@@ -728,11 +768,14 @@ export function normalizeClosePlan(
       if (c.keepCount !== undefined || c.closeCount !== undefined || !c.closeAll) {
         delete c.keepCount; delete c.closeCount; c.closeAll = true;
       }
-    } else if (keepM) {
-      const n = parseInt(keepM[1], 10);
+    } else if (earliest?.mode === 'total') {
+      const n = earliest.n;
+      if (c.keepTotal !== n) { delete c.closeAll; delete c.closeCount; delete c.keepCount; c.keepTotal = n; }
+    } else if (earliest?.mode === 'keep') {
+      const n = earliest.n;
       if (c.keepCount !== n) { delete c.closeAll; delete c.closeCount; c.keepCount = n; }
-    } else if (closeM) {
-      const n = parseInt(closeM[1], 10);
+    } else if (earliest?.mode === 'close') {
+      const n = earliest.n;
       if (c.closeCount !== n) { delete c.closeAll; delete c.keepCount; c.closeCount = n; }
     }
     if (scope) {

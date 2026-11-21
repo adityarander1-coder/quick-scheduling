@@ -50,6 +50,8 @@ interface PlanChange {
   closeCount?: number; // close this many open slots per date
   keepCount?: number; // keep this many open per date, close the rest
   closeAll?: boolean; // close the whole type for the date(s)
+  // Close-total field (close_open_slots, Deepika 2026-11-21):
+  keepTotal?: number; // keep the TOTAL (filled + open) at this per date, close only the excess
   // Add-open-slots field (add_open_slots, Deepika 2026-11-19):
   addCount?: number; // add this many open slots per date
   // Open-slot top-up field (add_open_slots, Deepika 2026-11-20):
@@ -1978,9 +1980,10 @@ export async function executePlan(
           change.closeAll === true ? 'all' : null,
           typeof change.keepCount === 'number' ? 'keep' : null,
           typeof change.closeCount === 'number' ? 'count' : null,
+          typeof change.keepTotal === 'number' ? 'total' : null,
         ].filter(Boolean) as string[];
         if (modes.length !== 1) {
-          throw new Error(`Say how many open ${st.name} slots to close — a number, "keep N", or the whole type for the day.`);
+          throw new Error(`Say how many open ${st.name} slots to close — a number, "keep N", "keep total N", or the whole type for the day.`);
         }
         const mode = modes[0];
         if (mode === 'count' && !(Number.isInteger(change.closeCount) && (change.closeCount as number) >= 1)) {
@@ -1988,6 +1991,9 @@ export async function executePlan(
         }
         if (mode === 'keep' && !(Number.isInteger(change.keepCount) && (change.keepCount as number) >= 0)) {
           throw new Error(`Keep how many open ${st.name} slots? Give a whole number of 0 or more.`);
+        }
+        if (mode === 'total' && !(Number.isInteger(change.keepTotal) && (change.keepTotal as number) >= 1)) {
+          throw new Error(`What total should ${st.name} be kept at per date? Give a whole number of 1 or more.`);
         }
         const first = String(change.date || change.fromDate);
         const last = String(change.toDate || change.date || change.fromDate);
@@ -2005,9 +2011,14 @@ export async function executePlan(
           }
           if (cur <= last) throw new Error('That date range is too long — pick a range under a year.');
         }
+        // Generated types count from the stored schedule at approval
+        // time for keepTotal (the top-up fix); live types keep the
+        // computed count.
+        const generatedTypes = mode === 'total' ? await getGeneratedTypeIds(query as any, companyId) : null;
         let slotsClosed = 0;
         let daysClosed = 0;
         const skipped: string[] = [];
+        const stillAbove: string[] = [];
         for (const d of dates) {
           const t = await openTotals(companyId, d, st.id);
           if (mode === 'all') {
@@ -2028,6 +2039,50 @@ export async function executePlan(
             const closed = await closeTypeForDate(query as any, companyId, d, st.id, createdBy);
             if (closed.flagSet) { daysClosed++; slotsClosed += t.total; }
             else skipped.push(`${d} (already closed)`);
+          } else if (mode === 'total') {
+            // Keep-total (Deepika, 2026-11-21 — "close excess
+            // slots ... to keep day hospitalist slot to 14 per
+            // day"): the close count is re-computed at approval
+            // time from the live schedule (filled + open), never
+            // taken from the plan — a date already at the total is
+            // skipped, and a delta over 20 fails honestly instead
+            // of clamping. Stored model (the top-up fix's rule):
+            // a GENERATED type re-counts from the stored schedule
+            // (draft + published shifts + stored opens), so
+            // over-target filled never eats stored extras. Live
+            // types keep the computed formula (openTotals).
+            let opens: number;
+            let total: number;
+            let filled: number;
+            if (generatedTypes!.has(st.id)) {
+              const stt = await storedTotals(query as any, companyId, d, st.id);
+              if (stt.closed) { skipped.push(`${d} (closed for ${st.name})`); continue; }
+              opens = stt.opens; total = stt.total; filled = stt.filled;
+            } else {
+              if (t.closed) { skipped.push(`${d} (closed for ${st.name})`); continue; }
+              opens = t.total; total = t.filled + t.total; filled = t.filled;
+            }
+            const want = Math.min(opens, Math.max(0, total - (change.keepTotal as number)));
+            if (want <= 0) {
+              skipped.push(opens === 0 && total > (change.keepTotal as number)
+                ? `${d} (no open slots — ${filled} filled)`
+                : `${d} (already at or below ${change.keepTotal} total)`);
+              continue;
+            }
+            if (want > 20) {
+              throw new Error(`Closing open ${st.name} slots to keep the total at ${change.keepTotal} per date would need ${want} on ${d} — I can close at most 20 open slots per date.`);
+            }
+            // The close runs in its own transaction (row lock on the
+            // extra row, same as the old adjustExtraOpenSlots write).
+            await withTransaction(async (tx) => {
+              await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
+            });
+            slotsClosed += want;
+            // Filled alone over the total: every open closed, but
+            // the total still sits above — the plan says so.
+            if (filled > (change.keepTotal as number)) {
+              stillAbove.push(`${d} (still ${filled} filled after closing all ${opens} opens)`);
+            }
           } else {
             const want = mode === 'count'
               ? Math.min(change.closeCount as number, t.total)
@@ -2060,7 +2115,7 @@ export async function executePlan(
         } else {
           results.push({
             action: change.action, success: true,
-            message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'} in ${closeDept.name}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}`,
+            message: `Closed ${slotsClosed} open ${st.name} slot${slotsClosed === 1 ? '' : 's'} in ${closeDept.name}${mode === 'keep' ? ` (kept ${change.keepCount} per day)` : mode === 'total' ? ` (kept total ${change.keepTotal} per day)` : ''}${range}${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}${stillAbove.length ? ` — still above total: ${stillAbove.join('; ')}` : ''}`,
           });
         }
       } else if (change.action === 'add_open_slots' && change.shiftType && (change.date || (change.fromDate && change.toDate))) {

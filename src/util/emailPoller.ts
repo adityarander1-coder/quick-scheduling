@@ -190,8 +190,9 @@ export function changeProblems(change: any): string[] {
         change.closeAll === true ? 'all' : null,
         typeof change.keepCount === 'number' ? 'keep' : null,
         typeof change.closeCount === 'number' ? 'count' : null,
+        typeof change.keepTotal === 'number' ? 'total' : null,
       ].filter(Boolean);
-      if (modes.length !== 1) problems.push('no close amount given (a number, "keep N", or the whole type)');
+      if (modes.length !== 1) problems.push('no close amount given (a number, "keep N", "keep total N", or the whole type)');
       break;
     }
     case 'add_open_slots': {

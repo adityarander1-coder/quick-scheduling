@@ -752,7 +752,7 @@ export async function gatePlanChanges(
   // to exactly one department; one clarification when it belongs to
   // several, to none, or to a different department than named), the
   // date or range must be valid, and exactly one close mode must be
-  // given (closeCount / keepCount / closeAll). The gate also refuses
+  // given (closeCount / keepCount / closeAll / keepTotal). The gate also refuses
   // a plan that would close nothing — no opens on a date, already at
   // or below the keep count, or already closed — with one plain
   // clarification, the same as the N1 refusals above. The executor
@@ -798,6 +798,9 @@ export async function gatePlanChanges(
         && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
       let firstEmptyWhy: string | null = null;
       let droppedClose = 0;
+      // Cached once per plan for the keepTotal stored-model branch
+      // below (generated types count from the stored schedule).
+      let generatedTypes: Set<string> | null = null;
       for (const c of closeChanges) {
         const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
         if (!type) {
@@ -822,9 +825,10 @@ export async function gatePlanChanges(
           c.closeAll === true ? 'all' : null,
           typeof c.keepCount === 'number' ? 'keep' : null,
           typeof c.closeCount === 'number' ? 'count' : null,
+          typeof c.keepTotal === 'number' ? 'total' : null,
         ].filter(Boolean);
         if (modes.length !== 1) {
-          return { ok: false, question: `How many open ${type.name} slots should I close ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''} — one, all of them, or keep a number and close the rest?` };
+          return { ok: false, question: `How many open ${type.name} slots should I close ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''} — one, all of them, keep a number of open slots, or keep a total and close the excess?` };
         }
         const mode = modes[0];
         if (mode === 'count' && !(Number.isInteger(c.closeCount) && c.closeCount >= 1)) {
@@ -832,6 +836,9 @@ export async function gatePlanChanges(
         }
         if (mode === 'keep' && !(Number.isInteger(c.keepCount) && c.keepCount >= 0)) {
           return { ok: false, question: `How many open ${type.name} slots should I keep? Give a whole number of 0 or more.` };
+        }
+        if (mode === 'total' && !(Number.isInteger(c.keepTotal) && c.keepTotal >= 1)) {
+          return { ok: false, question: `What total should ${type.name} be kept at per date ${String(first)}${String(first) !== String(last) ? ` to ${String(last)}` : ''}? Give a whole number of 1 or more.` };
         }
         // Existence check: is there anything open to close on every
         // touched date? Capacity = target + extra (0 when closed);
@@ -880,6 +887,39 @@ export async function gatePlanChanges(
           const capacity = openSlotCapacity(inputs, type.id, d);
           return { opens: Math.max(0, capacity - (filledByDate.get(d) || 0)), closed: inputs.closed.has(`${d}|${type.id}`), capacity };
         };
+        // Keep-TOTAL (Deepika, 2026-11-21 — "close excess slots
+        // for dec 2-10 to keep day hospitalist slot to 14 per
+        // day"): per date, total = filled + open, close only the
+        // excess over the total. The count is the add gate's
+        // totalOn, verbatim: drawn-aware filled, stored-model
+        // opens for GENERATED types (shortfall clamped at 0 before
+        // extras), computed opens for live types. A closed date
+        // has 0 opens, so it never closes (its filled people are
+        // never touched). closesOn caps at the opens on the date:
+        // when filled alone is over the total, every open closes
+        // and the plan says the rest is people working.
+        let totalOn: ((d: string) => { filled: number; opens: number; total: number }) | null = null;
+        let closesOn: ((d: string) => number) | null = null;
+        if (mode === 'total') {
+          if (!generatedTypes) generatedTypes = await getGeneratedTypeIds(query, companyId);
+          const isGenerated = generatedTypes.has(type.id);
+          totalOn = (d: string) => {
+            const filled = filledByDate.get(d) || 0;
+            if (inputs.closed.has(`${d}|${type.id}`)) return { filled, opens: 0, total: filled };
+            if (isGenerated) {
+              const shortfall = Math.max(0, targetFor(inputs, type.id, d) - filled);
+              const opens = Math.max(0, shortfall + (inputs.extra.get(`${d}|${type.id}`) || 0) - (inputs.suppressed.get(`${d}|${type.id}`) || 0));
+              return { filled, opens, total: filled + opens };
+            }
+            const capacity = openSlotCapacity(inputs, type.id, d);
+            const opens = Math.max(0, capacity - filled);
+            return { filled, opens, total: filled + opens };
+          };
+          closesOn = (d: string) => {
+            const t = (totalOn as any)(d);
+            return Math.min(t.opens, Math.max(0, t.total - (c.keepTotal as number)));
+          };
+        }
         let emptyWhy: string | null = null;
         let emptyShort = '';
         if (mode === 'all') {
@@ -907,6 +947,31 @@ export async function gatePlanChanges(
                 ? `There are no open ${type.name} slots for ${String(first)} – ${String(last)} — ${why}.`
                 : `There are no open ${type.name} slots on ${bad} — ${why}.`;
               emptyShort = `no open slots${touched.length > 1 ? ` ${String(first)} – ${String(last)}` : ` on ${bad}`} (${why})`;
+            }
+          }
+        } else if (mode === 'total') {
+          // A keepTotal plan forms when ANY touched date has an
+          // excess to close; dates at or below the total are
+          // skipped and named in the plan numbers below, never a
+          // silent "will close 0" (Deepika, 2026-11-21 — the Dec
+          // 2–10 range must plan Dec 3–7 even though Dec 2, 8, 9,
+          // 10 are already at or below 14). Only when EVERY date
+          // has nothing to close is the plan refused (single
+          // type) or the type dropped (multi-type) — the add
+          // gate's all-at-target rule, mirrored. A date whose
+          // filled alone is over the total still closes its opens
+          // (closesOn caps at opens); the people working are never
+          // closed, and the plan says so.
+          if (touched.every((d) => (closesOn as any)(d) <= 0)) {
+            const allClosed = touched.every((d) => inputs.closed.has(`${d}|${type.id}`));
+            if (allClosed) {
+              emptyWhy = `${type.name} is already closed${touched.length > 1 ? ` for ${String(first)} – ${String(last)}` : ` on ${String(first)}`}.`;
+              emptyShort = `already closed${touched.length > 1 ? ` ${String(first)} – ${String(last)}` : ` on ${String(first)}`}`;
+            } else {
+              emptyWhy = touched.length > 1
+                ? `${type.name} already totals ${c.keepTotal} or fewer slots on every date ${String(first)} – ${String(last)} — there is nothing over ${c.keepTotal} to close.`
+                : `${type.name} already totals ${c.keepTotal} or fewer slots on ${String(first)} — there is nothing over ${c.keepTotal} to close.`;
+              emptyShort = `already at or below ${c.keepTotal} total${touched.length > 1 ? ` ${String(first)} – ${String(last)}` : ` on ${String(first)}`}`;
             }
           }
         } else {
@@ -946,6 +1011,14 @@ export async function gatePlanChanges(
           if (!firstEmptyWhy) firstEmptyWhy = emptyWhy;
           droppedClose++;
           continue;
+        }
+        // A keepTotal close over the 20-per-date cap asks, never
+        // clamps (the add gate's over-cap rule, mirrored).
+        if (mode === 'total') {
+          const over = touched.find((d) => (closesOn as any)(d) > 20);
+          if (over) {
+            return { ok: false, question: `Closing open ${type.name} slots to keep the total at ${c.keepTotal} per date would need ${(closesOn as any)(over)} on ${over} — I can close at most 20 open slots per date. What total should I aim for?` };
+          }
         }
         // Department (Deepika, 2026-11-19 — "It needs to know which
         // department and which shift"): every close carries the
@@ -994,6 +1067,7 @@ export async function gatePlanChanges(
         // ranges list every date; long ranges give the totals.
         {
           const willClose = (d: string) => {
+            if (mode === 'total') return (closesOn as any)(d);
             const { opens } = opensOn(d);
             return mode === 'all' ? opens : mode === 'count' ? Math.min(c.closeCount, opens) : Math.max(0, opens - c.keepCount);
           };
@@ -1001,10 +1075,38 @@ export async function gatePlanChanges(
           const label = touched.length === 1
             ? `${type.name} on ${touched[0]}`
             : `${type.name} ${touched[0]} – ${touched[touched.length - 1]}`;
-          const body = touched.length <= 7
-            ? touched.map((d) => `${d}: ${opensOn(d).opens} open, will close ${willClose(d)}`).join('; ')
-            : `${touched.reduce((s, d) => s + opensOn(d).opens, 0)} open across ${touched.length} days, will close ${total}`;
-          c.closeDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are closed; nobody is taken off a shift.`;
+          // Keep-total per-date lines name filled + open + total
+          // and the reason a date closes nothing (closed, already
+          // at/below, or filled alone over the total) — never a
+          // silent "will close 0" (Deepika, 2026-11-21).
+          let body: string;
+          if (mode === 'total') {
+            const line = (d: string) => {
+              const t = (totalOn as any)(d);
+              const w = willClose(d);
+              if (inputs.closed.has(`${d}|${type.id}`)) return `${d}: ${t.filled} filled + 0 open = ${t.total} total, closed for ${type.name} — nothing to close`;
+              if (w <= 0 && t.opens === 0 && t.total > (c.keepTotal as number)) return `${d}: ${t.filled} filled + 0 open = ${t.total} total, no open slots to close — the people working can't be closed`;
+              if (w <= 0) return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, already at or below ${c.keepTotal} — nothing to close`;
+              if (w < t.total - (c.keepTotal as number)) return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will close ${w} (all opens) — still ${t.filled} filled, the people working can't be closed`;
+              return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will close ${w}`;
+            };
+            body = touched.length <= 7
+              ? touched.map(line).join('; ')
+              : `${touched.reduce((s, d) => s + (totalOn as any)(d).opens, 0)} open across ${touched.length} days, will close ${total} to keep total ${c.keepTotal} per date`
+                + (touched.some((d) => willClose(d) <= 0)
+                    ? ` — skipped: ${touched.filter((d) => willClose(d) <= 0).map((d) => {
+                        const t = (totalOn as any)(d);
+                        return inputs.closed.has(`${d}|${type.id}`) ? `${d} (closed)` : `${d} (${t.total} total)`;
+                      }).join('; ')}`
+                    : '');
+          } else {
+            body = touched.length <= 7
+              ? touched.map((d) => `${d}: ${opensOn(d).opens} open, will close ${willClose(d)}`).join('; ')
+              : `${touched.reduce((s, d) => s + opensOn(d).opens, 0)} open across ${touched.length} days, will close ${total}`;
+          }
+          c.closeDetail = mode === 'total'
+            ? `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total, keeping total ${c.keepTotal} per date. Only empty slots are closed; nobody is taken off a shift.`
+            : `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are closed; nobody is taken off a shift.`;
           gateDetails.push(c.closeDetail);
         }
       }
