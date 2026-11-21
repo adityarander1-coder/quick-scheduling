@@ -1,44 +1,46 @@
 /**
  * openSlots.ts — the shared open-slot writes (Deepika, 2026-11-20 —
  * fix list: "Close this slot" must REALLY delete the slot, and draft
- * opens must be born DRAFT).
+ * opens must be born DRAFT; detached open slots: once drafted,
+ * detached — no mark, no live link to the rotation or the target).
  *
- * The open count for a date+type is:
+ * Open slots are STORED, not computed — for stored-model types
+ * (generated AND produced by an active rotation). For one date+type
+ * the stored opens are:
+ *   extra_open_slots (published opens, including a draft shortfall a
+ *     publish moved here) + draft_open_slots (the draft's own opens,
+ *     unclaimable until published) − suppressed_open_slots (opens a
+ *     manager closed, hidden until the next draft/publish pulls them
+ *     back). The staffing target matters only when a draft stores
+ *     its shortfall and when an explicit request (AI top-up / add)
+ *     is computed — the display never consults it.
+ * Computed-model types — live-mode (direct-pull) types and
+ * rotation-less generated types (e.g. Day NP, whose target always
+ * counts per the Nov 15 rule) — keep the computed formula:
  *   max(0, target + extra - filled - suppressed)
  * where `extra` is extra_open_slots (never negative from a close
  * anymore), `filled` is the GRID's filled count — stored shifts
  * plus the rotation occurrences the grid draws for live types
- * (a generated type never draws, so its filled is stored-only) —
- * and `suppressed` is suppressed_open_slots — computed opens a
- * manager closed, which stay closed until the next draft/publish
- * of that date+type pulls them back from the rotation
- * (target - filled). There is NO closed flag any more (Deepika,
- * 2026-11-21 — "why is it hanging on to not letting us add"): a
- * whole-type close deletes the slots and suppresses exactly the
- * visible shortfall with stored rows, so a later add lands on the
- * date and shows. Live-mode types never go through the
- * draft/publish clearing here: the draft panel refuses live
- * rotations, and the publish paths filter to generated types
- * before calling publishOpenSlotsForPairs.
- *
- * The stored-model count (Deepika, 2026-11-20/21 — "the
- * calculation should come from real schedule, not from rotation"):
- * for a GENERATED type the opens are
- *   max(0, max(0, target - filled) + extra - suppressed)
- * — the shortfall (target - filled) is clamped at 0 BEFORE the
- * stored extras are added, so over-target filled never eats stored
- * extras. It equals the formula above whenever filled <= target.
- * storedTotals below is that count, from the stored schedule only
- * (draft + published shifts + stored open slots); live-mode types
- * keep the computed formula above.
+ * (a generated type never draws, so its filled is stored-only).
+ * There is NO closed flag any more (Deepika, 2026-11-21 — "why is
+ * it hanging on to not letting us add"): a whole-type close
+ * deletes the slots and suppresses exactly the visible shortfall
+ * with stored rows, so a later add lands on the date and shows.
+ * Live-mode types never go through the draft/publish clearing
+ * here: the draft panel refuses live rotations, and the publish
+ * paths filter to generated types before calling
+ * publishOpenSlotsForPairs (the bulk open-slot publish passes
+ * includeLive so a live type's draft opens can be republished).
  *
  * This module imports nothing from the routes, the planner, or the
  * engine — every helper takes the caller's query fn (inside the
  * caller's transaction where one exists), so there are no cycles.
  * The one exception is scheduleMode, a sibling util: closeTypeForDate
  * needs the undrafted check (on an undrafted generated date the
- * target contributes 0 to the grid, so nothing is suppressed there).
- * The History snapshot stays the caller's job for the same reason.
+ * target contributes 0 to the grid, so nothing is suppressed there),
+ * and the stored-model checks need getStoredModelTypeIds (which
+ * itself imports nothing from the routes). The History snapshot
+ * stays the caller's job for the same reason.
  * Whole-type closes (bulk, day dialog, AI closeAll) all go through
  * closeTypeForDate: it applies the SAME single-slot delete
  * (deleteOneOpenSlot) to every visible open for the date+type,
@@ -48,9 +50,8 @@
  * for both the per-slot X and the type-close" (Deepika, 2026-11-21).
  */
 
-import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType, getStoredModelTypeIds } from './scheduleMode.js';
 import { getShiftsForRange } from './shiftRange.js';
-
 export type OpenSlotQuery = (
   text: string,
   params?: any[]
@@ -87,6 +88,44 @@ export async function suppressedTotal(
   return Number(rows[0]?.n || 0);
 }
 
+/** Draft opens for one date+type (0 when none). */
+export async function draftOpenTotal(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string
+): Promise<number> {
+  const { rows } = await q(
+    'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  return rows.length ? Number(rows[0].count) || 0 : 0;
+}
+
+/**
+ * The stored opens for one date+type (Deepika, 2026-11-20 —
+ * detached open slots): extra + draft − suppressed, 0 when the day
+ * is closed for the type. No target, no filled count — the opens
+ * are rows, not a computation. `published` is the claimable part
+ * (total minus the draft positions, which render first).
+ */
+export async function storedOpenSlots(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string
+): Promise<{ extra: number; draft: number; suppressed: number; closed: boolean; total: number; published: number }> {
+  // No closed flag any more (migration 121, Deepika, 2026-11-21):
+  // the closed_shifts table is always empty, so a date is never
+  // closed by a flag — a close suppresses the shortfall instead.
+  // `closed` stays in the return shape for the claim endpoint's
+  // callers and is always false.
+  const closed = false;
+  const { rows: erows } = await q(
+    'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const extra = Number(erows[0]?.n || 0);
+  const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
+  const suppressed = await suppressedTotal(q, companyId, date, shiftTypeId);
+  const total = Math.max(0, extra + draft - suppressed);
+  return { extra, draft, suppressed, closed, total, published: Math.max(0, total - draft) };
+}
+
 /** Suppressed opens for a range, keyed "date|shiftTypeId". */
 export async function suppressedMap(
   q: OpenSlotQuery, companyId: string, from: string, to: string
@@ -100,6 +139,60 @@ export async function suppressedMap(
   const out = new Map<string, number>();
   for (const r of rows) out.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
   return out;
+}
+
+// Consume one manually-added extra open slot without ever writing count = 0:
+// migration 020's CHECK (count <> 0) kills a plain decrement 1 → 0 before any
+// delete-at-zero cleanup can run (found 2026-11-06 — last-slot claims 500'd on
+// every claim path). One atomic statement instead: decrement when count > 1,
+// delete the row when count = 1. Returns true when a slot was consumed.
+export async function consumeExtraOpenSlot(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string
+): Promise<boolean> {
+  const { rows } = await q(
+    `WITH dec AS (
+       UPDATE extra_open_slots SET count = count - 1
+        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 1
+        RETURNING 1 AS taken
+     ), del AS (
+       DELETE FROM extra_open_slots
+        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count = 1
+          AND NOT EXISTS (SELECT 1 FROM dec)
+        RETURNING 1 AS taken
+     )
+     SELECT taken FROM dec UNION ALL SELECT taken FROM del`,
+    [companyId, date, shiftTypeId]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Filling a stored open slot (Deepika, 2026-11-20 — detached open
+ * slots): when a person is ASSIGNED onto a date+type, they take one
+ * stored open if one exists. The claim endpoint, the gap-offer
+ * claim and the pickup link already consumed on taking a slot; the
+ * assign doors did not, so an assigned person left the open
+ * standing beside them — the day showed the person working AND the
+ * open still there to be claimed again (double-fill), and the
+ * top-up total (filled + open) grew with every assign instead of
+ * staying put. A published assign takes a published extra; a draft
+ * assign takes a draft open first (same state), falling back to a
+ * published extra. When neither pool has one, the assign just adds
+ * headcount — a manager may always staff above the stored opens.
+ * Returns true when a slot was consumed.
+ */
+export async function consumeOpenSlotForAssign(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  published: boolean, createdBy: string | null
+): Promise<boolean> {
+  if (!published) {
+    const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
+    if (draft > 0) {
+      await setDraftOpenCount(q, companyId, date, shiftTypeId, draft - 1, createdBy);
+      return true;
+    }
+  }
+  return consumeExtraOpenSlot(q, companyId, date, shiftTypeId);
 }
 
 export interface DeleteOneOpenSlotResult {
@@ -128,8 +221,7 @@ export interface DeleteOneOpenSlotResult {
  * callers can reverse each part exactly. Safety (Deepika,
  * 2026-11-21): when no visible open is left the primitive refuses
  * (no-op, no suppression row) — a raw count past the visible total
- * can never store a phantom suppression.
- */
+ * can never store a phantom suppression. */
 export async function deleteOneOpenSlot(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
   createdBy: string | null
@@ -456,10 +548,29 @@ export async function clearDraftOpenSlots(
 /**
  * Publishing the day publishes the opens with it (Deepika,
  * 2026-11-20 — "when i publish them then they should go to be
+ * Publishing the day publishes the opens with it (Deepika,
+ * 2026-11-20 — "when i publish them then they should go to be
  * available"): for every GENERATED (date, type) pair the publish
  * touched, the draft-open rows go (the opens become published) and
- * the closures go (a suppressed or closed day is pulled back). Live
- * types are filtered out by default — their opens were never
+ * the closures go (a suppressed or closed day is pulled back).
+ * For STORED-MODEL pairs (generated AND rotation-backed) the
+ * draft's stored shortfall MOVES into extra_open_slots — the
+ * published store — so the opens stay visible after the draft row
+ * goes, with no live link back to the target. The move is the
+ * draft's count minus what this publish itself stamped into filled
+ * positions (opts.stampedByPair, per "date|type"): a publish that
+ * stamps people into the open positions fills them, so they stop
+ * being opens. A target change after the draft does NOT shrink the
+ * move — the draft is detached from the target. The move is never
+ * more than the draft stored: a publish that removes people does
+ * not invent opens here. When opts.batchId is given (the bulk
+ * publish), each move is ledgered in publish_batch_draft_moves so
+ * undoing the batch can put the opens back to draft exactly; the
+ * flip path and AI publish pass no batch and record nothing.
+ * Rotation-less generated pairs keep the base behavior — clear the
+ * draft rows and the closures, no move, no ledger (their opens are
+ * computed from the target, so there is nothing stored to move).
+ * Live types are filtered out by default — their opens were never
  * draft and their closures are not this rule's business. The bulk
  * publish-open-slots function (Deepika, 2026-11-22) passes
  * includeLive: a live type's opens CAN be draft — a per-slot
@@ -468,10 +579,37 @@ export async function clearDraftOpenSlots(
  */
 export async function publishOpenSlotsForPairs(
   q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
-  generatedTypeIds: Set<string>, includeLive = false
-): Promise<void> {
+  generatedTypeIds: Set<string>, includeLive = false,
+  opts?: { batchId?: string | null; stampedByPair?: Map<string, number> }): Promise<void> {
   const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
   if (!list.length) return;
+  const storedModel = await getStoredModelTypeIds(q, companyId);
+  const storedList = list.filter((p) => storedModel.has(p.shiftTypeId));
+  for (const p of storedList) {
+    const draft = await draftOpenTotal(q, companyId, p.date, p.shiftTypeId);
+    if (draft > 0) {
+      const stamped = opts?.stampedByPair?.get(pairKey(p)) || 0;
+      const move = Math.max(0, draft - stamped);
+      if (move > 0) {
+        await q(
+          `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+           VALUES ($1, $2, $3, $4, NULL)
+           ON CONFLICT (company_id, date, shift_type_id)
+           DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+          [companyId, p.date, p.shiftTypeId, move]
+        );
+        if (opts?.batchId) {
+          await q(
+            `INSERT INTO publish_batch_draft_moves (batch_id, company_id, date, shift_type_id, count)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (batch_id, date, shift_type_id)
+             DO UPDATE SET count = publish_batch_draft_moves.count + EXCLUDED.count`,
+            [opts.batchId, companyId, p.date, p.shiftTypeId, move]
+          );
+        }
+      }
+    }
+  }
   await clearDraftOpenSlots(q, companyId, list);
   await clearOpenSlotClosures(q, companyId, list);
 }

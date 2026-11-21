@@ -3079,6 +3079,7 @@
           staffingTargets: [],
           scheduleMode: 'live',
           generatedTypeIds: [],
+          storedModelTypeIds: [],
           notDraftedDates: [],
           notDraftedByType: {},
           highlights: {},
@@ -3471,7 +3472,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -3892,17 +3893,29 @@
         // "Not drafted yet" day-header label REMOVED (Deepika, 2026-11-14):
         // the notice is gone, but isNotDrafted / notDraftedDates /
         // notDraftedByType still drive the undrafted-date OPEN
-        // suppression below — behavior unchanged, label only.
+        // suppression below for computed-model types — behavior
+        // unchanged, label only. Stored-model types ignore the mark
+        // entirely (Deepika, 2026-11-20 — detached open slots).
         function openCountFor(dateStr, shiftTypeId) {
-          // Background rotations (Deepika, 2026-11-13; decision N2):
-          // on a date nothing has been drafted for yet, the staffing
-          // target contributes 0 — only manually added extra slots
-          // count toward OPEN rows. No phantom OPEN rows.
-          var target = isNotDrafted(dateStr, shiftTypeId) ? 0 : targetCountFor(dateStr, shiftTypeId);
+
           var extra = 0;
           (sched.extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && e.shiftTypeId === shiftTypeId) extra += (e.count || 0);
           });
+          var draft = (sched.draftOpenCounts || {})[dateStr + '|' + shiftTypeId] || 0;
+          var suppressed = suppressedSlotCount(dateStr, shiftTypeId);
+          // Detached open slots (Deepika, 2026-11-20): a
+          // stored-model type draws its STORED opens only (extra +
+          // draft − suppressed) — the target never enters, and no
+          // draft mark gates anything. Computed-model types (live
+          // types and rotation-less generated types) keep the base
+          // rule: on an undrafted date the staffing target
+          // contributes 0 — only manually added extra slots count
+          // toward OPEN rows. No phantom OPEN rows.
+          if ((sched.storedModelTypeIds || []).indexOf(shiftTypeId) !== -1) {
+            return Math.max(0, extra + draft - suppressed);
+          }
+          var target = isNotDrafted(dateStr, shiftTypeId) ? 0 : targetCountFor(dateStr, shiftTypeId);
           if (!target && !extra) return 0;
           var filled = 0;
           for (var i = 0; i < sched.shifts.length; i++) {
@@ -9140,7 +9153,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -9175,6 +9188,7 @@
               sched.draftOpenCounts = sR.data.draftOpenCounts || {};
               sched.scheduleMode = sR.data.scheduleMode || 'live';
               sched.generatedTypeIds = sR.data.generatedTypeIds || [];
+              sched.storedModelTypeIds = sR.data.storedModelTypeIds || [];
               sched.notDraftedDates = sR.data.notDraftedDates || [];
               sched.notDraftedByType = sR.data.notDraftedByType || {};
               renderView();
@@ -23053,6 +23067,7 @@ window.qsNpOfferSend = function (btn) {
         var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
         var msGeneratedTypeIds = []; // generated shift types (stored-model open count) — from /shifts
         var msNotDraftedByType = {}; // managers only; the server sends employees {}
+        var msStoredModelTypeIds = []; // stored-model (detached) types, for the stored-opens count
         var dashEvents = []; // dashboard sessions shown alongside shifts (2026-10-20)
         var jobRoleNames = {}; // job role id -> name (for "Requires: X" notes)
         var msView = 'month';
@@ -23361,6 +23376,7 @@ window.qsNpOfferSend = function (btn) {
               msScheduleMode = rs[3].data.scheduleMode || 'live';
               msGeneratedTypeIds = rs[3].data.generatedTypeIds || [];
               msNotDraftedByType = rs[3].data.notDraftedByType || {};
+              msStoredModelTypeIds = rs[3].data.storedModelTypeIds || [];
             }
             if (rs[4].ok) staffingTargets = rs[4].data.targets || [];
             if (rs[5] && rs[5].ok) dashEvents = rs[5].data.sessions || [];
@@ -23634,20 +23650,33 @@ window.qsNpOfferSend = function (btn) {
           return 0;
         }
         // Number of claimable open positions for a shift type on a date
-        // (mirrors the admin Schedule view: target + extra - filled).
-        // (No isShiftClosed any more — Deepika, 2026-11-21: the
-        // closed flag is gone. A close suppresses the shortfall
-        // with stored rows, and the suppressed count below subtracts
-        // exactly that.)
+        // (mirrors the admin Schedule view). Detached open slots
+        // (Deepika, 2026-11-20): a stored-model type's opens are the
+        // STORED opens (extra + draft − suppressed), and only the
+        // published ones are claimable here — draft opens are hidden,
+        // so the count is extra − suppressed. Computed-model types
+        // keep the base rule (target + extra − suppressed − filled,
+        // minus draft opens; on an undrafted date the target
+        // contributes 0). (No isShiftClosed any more — Deepika,
+        // 2026-11-21: the closed flag is gone. A close suppresses the
+        // shortfall with stored rows, and the suppressed count below
+        // subtracts exactly that.)
         function openCountFor(dateStr, shiftTypeId) {
-          // Background rotations (decision N2, same rule as the admin
-          // grid): on an undrafted date the staffing target
-          // contributes 0 — only manually added extra slots count.
-          var target = ((msNotDraftedByType[shiftTypeId] || []).indexOf(dateStr) !== -1) ? 0 : targetCountFor(dateStr, shiftTypeId);
           var extra = 0;
           (extraSlots || []).forEach(function (e) {
             if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) extra += (e.count || 0);
           });
+          var suppressed = 0;
+          (suppressedOpenSlots || []).forEach(function (e) {
+            if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) suppressed += (e.count || 0);
+          });
+          if ((msStoredModelTypeIds || []).indexOf(shiftTypeId) !== -1) {
+            return Math.max(0, extra - suppressed);
+          }
+          // Background rotations (decision N2, same rule as the admin
+          // grid): on an undrafted date the staffing target
+          // contributes 0 — only manually added extra slots count.
+          var target = ((msNotDraftedByType[shiftTypeId] || []).indexOf(dateStr) !== -1) ? 0 : targetCountFor(dateStr, shiftTypeId);
           if (!target && !extra) return 0;
           var filled = 0;
           for (var i = 0; i < shifts.length; i++) {
@@ -23666,10 +23695,6 @@ window.qsNpOfferSend = function (btn) {
           // position for the same slot. Closed opens (Deepika,
           // 2026-11-20) subtract too — a closed slot is not
           // claimable until the next draft/publish pulls it back.
-          var suppressed = 0;
-          (suppressedOpenSlots || []).forEach(function (e) {
-            if (e.date === dateStr && String(e.shiftTypeId) === String(shiftTypeId)) suppressed += (e.count || 0);
-          });
           // Stored model (Deepika, 2026-11-20/21 — "the calculation
           // should come from real schedule, not from rotation"): a
           // GENERATED type clamps the shortfall at 0 BEFORE the
@@ -24455,6 +24480,7 @@ window.qsNpOfferSend = function (btn) {
               msScheduleMode = sR.data.scheduleMode || 'live';
               msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
+              msStoredModelTypeIds = sR.data.storedModelTypeIds || [];
               renderView();
               requestAnimationFrame(function () { window.scrollTo(0, y); });
             }
@@ -24490,6 +24516,7 @@ window.qsNpOfferSend = function (btn) {
               msScheduleMode = sR.data.scheduleMode || 'live';
               msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
+              msStoredModelTypeIds = sR.data.storedModelTypeIds || [];
               renderView();
               msSuccess('Schedule updated just now.');
             }

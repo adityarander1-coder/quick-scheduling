@@ -3,8 +3,8 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal } from './openSlots.js';
-import { getGeneratedTypeIds, getNotDraftedByType } from './scheduleMode.js';
+import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal, draftOpenTotal, consumeExtraOpenSlot } from './openSlots.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -1357,32 +1357,40 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
  * The ONE shared open-slot count (Deepika, 2026-11-22 — "no
  * connection to rotations or targets once drafted"): this is the
  * count the GRID shows, so every path that reads or writes opens
- * through it agrees with the screen. Undrafted generated dates
- * count the target as 0 (the N2 rule, read from the grid's own
- * getNotDraftedByType map) — only stored extras show there — so a
- * caller can never count a target shortfall the grid does not
- * show. Generated types use the grid's stored model
- * (max(0, max(0, effTarget − filled) + extra − suppressed)); live
- * types keep the unclamped formula the grid uses for them
+ * through it agrees with the screen.
+ * Stored-model types (generated AND produced by an active
+ * rotation — detached open slots, Deepika, 2026-11-20): the opens
+ * are the stored slots only (extra + draft − suppressed, clamped
+ * at 0) — no target, no filled subtraction. `extra` carries
+ * extra + draft and `effTarget` is 0, so gridOpensAt is
+ * filled-independent: a delete grants exactly `count` (the
+ * stored-row swap), and a stale suppressed row can never push a
+ * grant above `count` (the phantom over-grant: raw −1 → grant 2
+ * for one delete).
+ * Computed-model types (live types and rotation-less generated
+ * types) keep the grid's formula: undrafted generated dates count
+ * the target as 0 (the N2 rule, read from the grid's own
+ * getNotDraftedByType map) — only stored extras show there.
+ * Generated types use max(0, max(0, effTarget − filled) + extra −
+ * suppressed); live types keep the unclamped formula
  * (max(0, effTarget + extra − filled − suppressed), effTarget =
  * target — live types are never undrafted). `total` is the
- * grid-visible opens; `raw` is the same count unclamped.
- * `filled` counts stored shifts PLUS rotation-drawn holders
- * (Deepika, 2026-11-19 — audit B sharpening, same as the gate:
- * the grid shows stored + drawn holders, so the approval-time
- * re-check must count both, or a closeCount larger than the real
- * opens would over-close into the extra pool). For generated
- * types getShiftsForRange draws nothing — stored rows are the
- * whole truth — so `filled` matches the grid there too. Falls
- * back to the stored-only count when the drawn read fails.
- * The strict stored-only rule (no target shortfall on drafted
- * dates either) is the detach rebuild, NOT this function: the
- * grid still shows the shortfall on drafted dates, so a count
- * that ignored it would disagree with the screen. This function
- * is the delete/unassign/open-slot paths' counting rule — one
- * path, no per-type exceptions.
+ * grid-visible opens; `raw` is the same count unclamped (for a
+ * stored-model type `raw` is the clamped stored count, the same
+ * as `total`). `filled` counts stored shifts PLUS rotation-drawn
+ * holders (Deepika, 2026-11-19 — audit B sharpening, same as the
+ * gate: the grid shows stored + drawn holders, so the
+ * approval-time re-check must count both, or a closeCount larger
+ * than the real opens would over-close into the extra pool). For
+ * generated types getShiftsForRange draws nothing — stored rows
+ * are the whole truth — so `filled` matches the grid there too.
+ * Falls back to the stored-only count when the drawn read fails.
+ * This function is the delete/unassign/open-slot paths' counting
+ * rule — one path, no per-type exceptions.
  */
 async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; filled: number; raw: number; extra: number; suppressed: number; effTarget: number; isGenerated: boolean }> {
+  const storedModel = await getStoredModelTypeIds(query as any, companyId);
+  const isStored = storedModel.has(shiftTypeId);
   const { rows: trows } = await query(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -1405,10 +1413,11 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
   );
   const extra = erows[0]?.n || 0;
   // Suppressed opens (Deepika, 2026-11-20 — "close this slot"
-  // really deletes it): computed opens a manager closed stay
+  // really deletes it): stored opens a manager closed stay
   // closed — they subtract from the visible total until the next
   // draft/publish of this date+type pulls them back.
   const suppressed = await suppressedTotal(query as any, companyId, date, shiftTypeId);
+  const draft = isStored ? await draftOpenTotal(query as any, companyId, date, shiftTypeId) : 0;
   // N2 (Deepika, 2026-11-22): an undrafted generated date counts
   // the target as 0 — the grid shows no shortfall there. The
   // generated set + the not-drafted map are the grid's own reads.
@@ -1443,6 +1452,15 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
+  if (isStored) {
+    // Stored-model: opens are the stored slots only. `raw` is
+    // CLAMPED at 0 — a stale suppressed row (left behind by an
+    // earlier close on a date whose stored opens have since gone)
+    // must never push a delete-grant above `count` (the phantom
+    // over-grant: raw −1 → grant 2 for one delete).
+    const raw = Math.max(0, extra + draft - suppressed);
+    return { total: raw, filled, raw, extra: extra + draft, suppressed, effTarget: 0, isGenerated: true };
+  }
   // The grid's own per-type formula (stored model for generated
   // types since the top-up fix, unclamped for live types).
   const raw = isGenerated
@@ -1456,6 +1474,9 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
  * count — the same formula openTotals uses, so a caller holding
  * an openTotals result can re-count it with a different filled
  * (e.g. the count BEFORE a delete removed `count` holders).
+ * For a stored-model type the struct carries effTarget 0 and
+ * `extra` already includes the draft opens, so the count is
+ * filled-independent — exactly as openTotals returns it.
  */
 function gridOpensAt(t: { extra: number; suppressed: number; effTarget: number; isGenerated: boolean }, filled: number): number {
   const raw = t.isGenerated
@@ -1525,6 +1546,12 @@ async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId
  * 2/6). The delta also stops the old over-grant: absorption cases
  * (no-target multi-filled days, over-target days) used to grant
  * more than the shifts deleted; now one deletion is one open.
+ * For a stored-model type (detached open slots, Deepika,
+ * 2026-11-20) openTotals is filled-independent — the stored opens
+ * do not move when a holder leaves — so before == after and the
+ * grant is exactly `count`: the delete is a stored-row swap, one
+ * person out, one open in. A stale suppressed row can never push
+ * the grant above `count` (openTotals clamps the stored raw at 0).
  * Recomputing after the delete makes it idempotent: a second
  * delete on the same date/type sees the first grant and adds
  * nothing more than its own count. Returns the number granted.
@@ -1583,6 +1610,14 @@ export async function executePlan(
       } catch { /* best-effort */ }
     }
   }
+  // Stored-model types (detached open slots): only these consume a
+  // stored open when an AI assign fills one. Computed-model types
+  // are headcount only. Lazily loaded once per plan execution.
+  let storedModel: Set<string> | null = null;
+  const isStoredModel = async (typeId: string): Promise<boolean> => {
+    if (!storedModel) storedModel = await getStoredModelTypeIds(query as any, companyId);
+    return storedModel.has(typeId);
+  };
   for (const change of plan.changes || []) {
     try {
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
@@ -1600,6 +1635,20 @@ export async function executePlan(
         if (inserted.rowCount === 0) {
           results.push({ action: 'assign', success: true, message: `Already on ${st.name} on ${change.date} — no change needed` });
         } else {
+          // Filling a stored open slot (Deepika, 2026-11-20 —
+          // detached open slots): the person takes one stored
+          // published extra if one exists — otherwise the day shows
+          // the person working AND the open still standing beside
+          // them (double-fill). Stored-model types only.
+          // Best-effort: a consume failure never fails the assign
+          // itself.
+          try {
+            if (await isStoredModel(st.id)) {
+              await consumeExtraOpenSlot(query as any, companyId, change.date, st.id);
+            }
+          } catch (consumeErr: any) {
+            console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
+          }
           results.push({ action: 'assign', success: true, message: `Assigned ${user.display} to ${st.name} on ${change.date}` });
         }
       } else if (change.action === 'assign_recurring' && change.person && change.shiftType && change.startDate && change.intervalWeeks && change.untilDate) {
@@ -1620,7 +1669,20 @@ export async function executePlan(
              ON CONFLICT DO NOTHING`,
             [uuidv4(), companyId, user.id, st.id, d, createdBy]
           );
-          if ((inserted as any).rowCount) added++;
+          if ((inserted as any).rowCount) {
+            added++;
+            // Filling a stored open slot (Deepika, 2026-11-20): the
+            // person takes one stored published extra if one exists
+            // on that date. Stored-model types only.
+            // Best-effort, never fails the assign.
+            try {
+              if (await isStoredModel(st.id)) {
+                await consumeExtraOpenSlot(query as any, companyId, d, st.id);
+              }
+            } catch (consumeErr: any) {
+              console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
+            }
+          }
         }
         results.push({ action: 'assign_recurring', success: true, dates, personDisplay: user.display, message: `Assigned ${user.display} to ${st.name} every ${change.intervalWeeks} weeks from ${change.startDate}${change.weekendsOff ? ' (weekdays only)' : ''} until ${change.untilDate} (${added} new, ${dates.length - added} already on)` });
       } else if (change.action === 'swap' && change.fromPerson && change.toPerson) {
@@ -2262,7 +2324,7 @@ export async function executePlan(
         // the AI's first way to touch open slots. Only ever closes
         // EMPTY slots — the write only ever touches extra_open_slots
         // (a stored extra row is really deleted) and suppressed_open_
-        // slots (a computed shortfall open, closed until the next
+        // slots (a shortfall open, closed until the next
         // draft/publish pulls it back); no stored shift row is ever
         // deleted, so no person is ever removed. No negative extra
         // row is ever written (Deepika, 2026-11-20
@@ -2514,7 +2576,7 @@ export async function executePlan(
         // Add open slots (Deepika, 2026-11-19 — "Can you add 3 open
         // slots for day hospitalists for nov month"): the mirror of
         // the close above, and the opposite write — a POSITIVE
-        // adjustment to extra_open_slots, so the computed opens grow
+        // adjustment to extra_open_slots, so the stored opens grow
         // by addCount per date. Only ever adds EMPTY slots: no
         // stored shift row is ever created or touched, so no person
         // is ever assigned. Department resolution + access check are

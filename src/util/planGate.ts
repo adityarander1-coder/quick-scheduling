@@ -37,7 +37,7 @@ import { matchName } from './planHelpers.js';
 import { resolveRotationPattern } from './planExecutor.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
-import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds } from './scheduleMode.js';
 import { shiftTypesDepartmentIds } from './departmentAccess.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -550,9 +550,14 @@ const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> 
 /**
  * Open-slot inputs for rotation-less types (Deepika, 2026-11-16 —
  * the Day NP plan-gate change): the same sources the display uses
- * to show open slots (schedule.ts open-slots-message and the draft
- * shortfall) — the staffing target for the weekday, extra open
- * slots, and suppressed opens. There is no closed flag any more
+ * to show open slots — the staffing target for the weekday, extra
+ * open slots, draft opens, and suppressed opens. Detached open slots
+ * (Deepika, 2026-11-20): for a STORED-MODEL type (generated AND
+ * produced by an active rotation) the opens are STORED (extra +
+ * draft − suppressed), so the target is only consulted for
+ * computed-model types — live types, which have no draft to detach
+ * from, and rotation-less generated types, whose target always
+ * counts (Nov 15 Day NP rule). There is no closed flag any more
  * (Deepika, 2026-11-21): a close suppresses the shortfall with
  * stored rows, so the suppression already subtracts here. Filled
  * counts come from the gate's own `entries` (getShiftsForRange),
@@ -562,13 +567,15 @@ const PERSON_FIELDS: Array<{ actions: string[]; field: string; label: string }> 
 interface OpenSlotInputs {
   targets: { shiftTypeId: string; targetCount: number; weekdays: number[] | null; startDate: string | null; endDate: string | null }[];
   extra: Map<string, number>;
+  draft: Map<string, number>;
   suppressed: Map<string, number>;
+  storedModel: Set<string>;
 }
 
 async function loadOpenSlotInputs(
   query: QueryFn, companyId: string, from: string, to: string
 ): Promise<OpenSlotInputs> {
-  const [{ rows: trows }, { rows: erows }, { rows: srows }] = await Promise.all([
+  const [{ rows: trows }, { rows: erows }, { rows: srows }, { rows: drows }, storedModel] = await Promise.all([
     query(
       `SELECT shift_type_id AS "shiftTypeId", target_count AS "targetCount",
               weekdays, start_date::text AS "startDate", end_date::text AS "endDate"
@@ -585,6 +592,12 @@ async function loadOpenSlotInputs(
        FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
       [companyId, from, to]
     ),
+    query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", count
+       FROM draft_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    ),
+    getStoredModelTypeIds(query, companyId),
   ]);
   const extra = new Map<string, number>();
   for (const r of erows) {
@@ -596,10 +609,17 @@ async function loadOpenSlotInputs(
     const k = `${r.date}|${r.shiftTypeId}`;
     suppressed.set(k, (suppressed.get(k) || 0) + (r.count || 0));
   }
+  const draft = new Map<string, number>();
+  for (const r of drows) {
+    const k = `${r.date}|${r.shiftTypeId}`;
+    draft.set(k, (draft.get(k) || 0) + (r.count || 0));
+  }
   return {
     targets: trows,
     extra,
+    draft,
     suppressed,
+    storedModel,
   };
 }
 
@@ -619,6 +639,36 @@ function openSlotCapacity(inputs: OpenSlotInputs, typeId: string, date: string):
     break;
   }
   return target + (inputs.extra.get(`${date}|${typeId}`) || 0) - (inputs.suppressed.get(`${date}|${typeId}`) || 0);
+}
+
+/** Visible open slots for one type+date (Deepika, 2026-11-20 —
+ * detached open slots). Stored-model types: the STORED opens (extra
+ * + draft − suppressed) — the target never enters. Computed-model
+ * types: the computed opens (target + extra − suppressed − filled) —
+ * the live-type formula; a generated computed-model type must NOT be
+ * routed through this function, the gate's opensOn/totalOn use the
+ * Nov 22 shortfall-clamped formula for those. `filled` is the
+ * drawn-aware count the caller already has; stored-model types
+ * ignore it. */
+function openSlotOpens(inputs: OpenSlotInputs, typeId: string, date: string, filled: number): number {
+  if (inputs.storedModel.has(typeId)) {
+    return Math.max(0,
+      (inputs.extra.get(`${date}|${typeId}`) || 0) +
+      (inputs.draft.get(`${date}|${typeId}`) || 0) -
+      (inputs.suppressed.get(`${date}|${typeId}`) || 0));
+  }
+  const dt = new Date(date + 'T00:00:00');
+  let target = 0;
+  for (const tg of inputs.targets) {
+    if (tg.shiftTypeId !== typeId) continue;
+    const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+    if (!weekdays.includes(dt.getDay())) continue;
+    if (tg.startDate && date < tg.startDate) continue;
+    if (tg.endDate && date > tg.endDate) continue;
+    target = tg.targetCount || 0;
+    break;
+  }
+  return Math.max(0, target + (inputs.extra.get(`${date}|${typeId}`) || 0) - (inputs.suppressed.get(`${date}|${typeId}`) || 0) - filled);
 }
 
 /** The staffing target that applies to one type+date (0 when no
@@ -897,30 +947,57 @@ export async function gatePlanChanges(
         const opensOn = (d: string) => {
           const filled = filledByDate.get(d) || 0;
           const suppressed = inputs.suppressed.get(`${d}|${type.id}`) || 0;
+          if (inputs.storedModel.has(type.id)) {
+            // Stored-model (detached open slots, Deepika, 2026-11-20):
+            // the opens are the STORED slots only (extra + draft −
+            // suppressed) — no target, no filled subtraction.
+            const opens = openSlotOpens(inputs, type.id, d, filled);
+            return { opens, capacity: opens, suppressed, positions: filled + opens };
+          }
           if (isGeneratedType) {
-            // Stored model (Deepika, 2026-11-21 — no closed flag
-            // any more): the shortfall is clamped at 0 BEFORE the
-            // stored extras are added, minus the suppression — the
-            // same count the grid and the executor use. A date
-            // whose shortfall was closed has its opens suppressed,
-            // never zeroed by a flag. On an undrafted date the
-            // target counts as 0 (N2), so only stored extras show,
-            // minus suppression.
+            // Computed-model generated types (Deepika, 2026-11-21 —
+            // no closed flag any more): the shortfall is clamped at 0
+            // BEFORE the stored extras are added, minus the
+            // suppression — the same count the grid and the executor
+            // use. A date whose shortfall was closed has its opens
+            // suppressed, never zeroed by a flag. On an undrafted
+            // date the target counts as 0 (N2), so only stored
+            // extras show, minus suppression.
             const effTarget = undraftedDates?.has(d) ? 0 : targetFor(inputs, type.id, d);
             const shortfall = Math.max(0, effTarget - filled);
             const extra = inputs.extra.get(`${d}|${type.id}`) || 0;
-            return { opens: Math.max(0, shortfall + extra - suppressed), capacity: shortfall + extra - suppressed, suppressed };
+            const opens = Math.max(0, shortfall + extra - suppressed);
+            return { opens, capacity: shortfall + extra - suppressed, suppressed, positions: filled + opens };
           }
           const capacity = openSlotCapacity(inputs, type.id, d);
-          return { opens: Math.max(0, capacity - filled), capacity, suppressed };
+          const opens = Math.max(0, capacity - filled);
+          return { opens, capacity, suppressed, positions: filled + opens };
+        };
+        // The why for an empty date (Deepika, 2026-11-20 — a plan
+        // must SAY when a date gets 0 and why): a suppressed date's
+        // opens were closed by an earlier close — not a missing
+        // target. A date with people working is "all N are already
+        // filled" (positions = filled + opens — the capacity the old
+        // text used is never positive on an empty date, so it could
+        // never name the filled case). A stored-model date with
+        // nothing stored has no stored opens; a computed-model date
+        // with no target has no target.
+        const whyEmpty = (d: string) => {
+          const { suppressed, positions } = opensOn(d);
+          if (suppressed > 0) return `the open slots were already closed`;
+          if (positions > 0) return `all ${positions} are already filled`;
+          return inputs.storedModel.has(type.id)
+            ? `no open slots are stored for that day`
+            : `no staffing target is set for ${type.name} that day`;
         };
         // Keep-TOTAL (Deepika, 2026-11-21 — "close excess slots
         // for dec 2-10 to keep day hospitalist slot to 14 per
         // day"): per date, total = filled + open, close only the
         // excess over the total. The count is the add gate's
-        // totalOn, verbatim: drawn-aware filled, stored-model
-        // opens for GENERATED types (shortfall clamped at 0 before
-        // extras), computed opens for live types. A date whose
+        // totalOn, verbatim: drawn-aware filled, stored opens for
+        // STORED-MODEL types (extra + draft − suppressed, no
+        // target), shortfall-clamped opens for other GENERATED
+        // types, computed opens for live types. A date whose
         // shortfall was closed has 0 opens, so it never closes
         // (its filled people are never touched). closesOn caps at
         // the opens on the date: when filled alone is over the
@@ -952,16 +1029,7 @@ export async function gatePlanChanges(
           const emptyDays = touched.filter((d) => opensOn(d).opens <= 0);
           if (emptyDays.length === touched.length) {
             const bad = emptyDays[0];
-            const { capacity, suppressed } = opensOn(bad);
-            // The why names the actual cause (Deepika, 2026-11-20 —
-            // a plan must SAY when a date gets 0 and why): a
-            // suppressed date's opens were closed by an earlier
-            // close — not a missing target.
-            const why = suppressed > 0
-              ? `the open slots were already closed`
-              : capacity > 0
-                ? `all ${capacity} are already filled`
-                : `no staffing target is set for ${type.name} that day`;
+            const why = whyEmpty(bad);
             emptyWhy = touched.length > 1
               ? `There are no open ${type.name} slots for ${String(first)} – ${String(last)} — ${why}.`
               : `There are no open ${type.name} slots on ${bad} — ${why}.`;
@@ -1014,13 +1082,9 @@ export async function gatePlanChanges(
             return mode === 'count' ? opens <= 0 : opens <= (c.keepCount as number);
           });
           if (bad) {
-            const { opens, capacity, suppressed } = opensOn(bad);
+            const { opens } = opensOn(bad);
             if (mode === 'count') {
-              const why = suppressed > 0
-                ? `the open slots were already closed`
-                : capacity > 0
-                  ? `all ${capacity} are already filled`
-                  : `no staffing target is set for ${type.name} that day`;
+              const why = whyEmpty(bad);
               emptyWhy = `There are no open ${type.name} slots on ${bad} — ${why}.`;
               emptyShort = `no open slots on ${bad} (${why})`;
             } else {
@@ -1321,6 +1385,18 @@ export async function gatePlanChanges(
           }
           totalOn = (d: string) => {
             const filled = filledByDate.get(d) || 0;
+            // Detached open slots (Deepika, 2026-11-20): the opens
+            // are the STORED opens for a stored-model type — the
+            // target never enters the total — and the computed opens
+            // for a computed-model type. A top-up still counts
+            // filled + opens as they actually are, so "make it total
+            // 17" adds only the difference; a stored shortfall never
+            // appearing (it was never stored) stays absent, not
+            // topped up into being.
+            if (inputs.storedModel.has(type.id)) {
+              const opens = openSlotOpens(inputs, type.id, d, filled);
+              return { filled, opens, total: filled + opens };
+            }
             if (isGenerated) {
               const shortfall = Math.max(0, targetFor(inputs, type.id, d) - filled);
               const opens = Math.max(0, shortfall + (inputs.extra.get(`${d}|${type.id}`) || 0) - (inputs.suppressed.get(`${d}|${type.id}`) || 0));
@@ -1431,9 +1507,8 @@ export async function gatePlanChanges(
         const entries = drawn.filter((e: any) => e.date === date && e.shiftTypeId === type.id);
         const personHolds = entries.filter((e: any) => e.userId === user.id).length;
         if (!personHolds) continue;
-        const capacity = openSlotCapacity(inputs, type.id, date);
-        const sPost = capacity - (entries.length - personHolds);
-        const visibleAfter = Math.max(1, sPost);
+        const capacity = openSlotOpens(inputs, type.id, date, entries.length - personHolds);
+        const visibleAfter = Math.max(1, capacity);
         c.unassignDetail = `leaves ${visibleAfter} open ${type.name} slot${visibleAfter === 1 ? '' : 's'} on ${date}`;
         gateDetails.push(`Remove ${user.fullName} from ${type.name} on ${date} — ${c.unassignDetail}`);
       }
@@ -1526,29 +1601,27 @@ export async function gatePlanChanges(
   const holdersOf = (date: string, typeId: string): string[] =>
     [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
 
-  // N1 (background rotations, Deepika 2026-11-13 — per department,
-  // 2026-11-14): for a generated shift type the AI sees stored
-  // shifts only — an undrafted date has no holder to verify
-  // against, so the workability loop below would ask a misleading
-  // holder-mismatch question ("X doesn't hold that shift" when
-  // nobody has been drafted for it yet). Clarify FIRST: the date is
-  // not drafted yet, and the fix is to draft it. Live types skip
-  // this — their holders draw from the rotation as always.
+  // N1 — detached open slots (Deepika, 2026-11-20): for a generated
+  // shift type an assign needs an OPEN slot on every touched date —
+  // a stored open for stored-model types, a computed open (target −
+  // filled) for rotation-less generated types. The old "that date
+  // hasn't been drafted" refusal is gone: a drafted date is detached
+  // from its rotation and target, so whether it was drafted says
+  // nothing about its opens. A date with no opens refuses with one
+  // clarification ("no open slots are stored for that day" for a
+  // stored-model type, "no staffing target is set" for a computed
+  // one), same as a full date. Live types skip this — their holders
+  // draw from the rotation as always.
   //
-  // Rotation-less types are never "not drafted" (Deepika, 2026-11-15
-  // display rule, extended to the gate 2026-11-16): no rotation can
-  // ever draft them, so the draft-first refusal never fires for
-  // them. Assigns onto one still need an open slot (shortfall > 0)
-  // on every touched date — a full date refuses with one
-  // clarification, same as today. Moves/swaps don't consume a slot,
-  // so they skip N1 and the holder checks below govern.
+  // Moves/swaps don't consume a slot, so they skip N1 and the
+  // holder checks below govern.
   {
     const generatedTypes = await getGeneratedTypeIds(query, companyId);
-    const withRotations = await getTypesWithRotations(query, companyId);
     let openInputs: OpenSlotInputs | null = null;
     for (const c of dated) {
       const type = resolveType(c.shiftType);
       if (!type || !generatedTypes.has(type.id)) continue;
+      if (c.action !== 'assign' && c.action !== 'assign_recurring') continue;
       const touched: string[] = [];
       for (const d of [c.date, c.fromDate, c.toDate, c.startDate]) if (d) touched.push(String(d));
       // A range change touches every date in its span.
@@ -1563,34 +1636,28 @@ export async function gatePlanChanges(
       }
       if (!touched.length) continue;
       touched.sort();
-      if (!withRotations.has(type.id)) {
-        if (c.action !== 'assign' && c.action !== 'assign_recurring') continue;
-        if (!openInputs) openInputs = await loadOpenSlotInputs(query, companyId, dates[0], dates[dates.length - 1]);
-        const per = resolved.get(c)!;
-        const person = per.get('person');
-        const bad = touched.find((d) => {
-          // Already on it — the workability loop no-ops, no slot needed.
-          if (person && heldBy(person.id, d, type.id).length) return false;
-          const filled = new Set(
-            entries.filter((e) => e.date === d && e.shiftTypeId === type.id).map((e) => e.userId)
-          ).size;
-          return openSlotCapacity(openInputs!, type.id, d) - filled <= 0;
-        });
-        if (bad) {
-          const capacity = openSlotCapacity(openInputs, type.id, bad);
-          const why = capacity > 0
-            ? `all ${capacity} are already filled`
-            : `no staffing target is set for ${type.name} that day`;
-          return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}. Pick a date with an open slot, or add an extra open slot for that day first.` };
-        }
-        continue;
-      }
-      const undrafted = new Set(await getUndraftedDatesForType(
-        query, companyId, type.id, touched[0], touched[touched.length - 1]
-      ));
-      const bad = touched.find((d) => undrafted.has(d));
+      if (!openInputs) openInputs = await loadOpenSlotInputs(query, companyId, dates[0], dates[dates.length - 1]);
+      const per = resolved.get(c)!;
+      const person = per.get('person');
+      const bad = touched.find((d) => {
+        // Already on it — the workability loop no-ops, no slot needed.
+        if (person && heldBy(person.id, d, type.id).length) return false;
+        const filled = new Set(
+          entries.filter((e) => e.date === d && e.shiftTypeId === type.id).map((e) => e.userId)
+        ).size;
+        return openSlotOpens(openInputs!, type.id, d, filled) <= 0;
+      });
       if (bad) {
-        return { ok: false, question: `I can't plan a change for ${bad} yet — that date hasn't been drafted from the rotations. Draft the schedule for that date first (Bulk Actions → Draft schedule from rotation), then ask again.` };
+        const filled = new Set(
+          entries.filter((e) => e.date === bad && e.shiftTypeId === type.id).map((e) => e.userId)
+        ).size;
+        const positions = filled + openSlotOpens(openInputs, type.id, bad, filled);
+        const why = positions > 0
+          ? `all ${positions} are already filled`
+          : openInputs.storedModel.has(type.id)
+            ? `no open slots are stored for that day`
+            : `no staffing target is set for ${type.name} that day`;
+        return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}. Pick a date with an open slot, or add an extra open slot for that day first.` };
       }
     }
   }

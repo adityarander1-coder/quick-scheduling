@@ -32,9 +32,9 @@ import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
-import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
+import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -1075,15 +1075,18 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // 2026-11-14): a shift type is drawn only when its departments
     // are all 'live'. Types in a generated department are NOT drawn
     // — the grid shows their stored rows only (drafts grey, published
-    // solid). Dates no generation has covered for a generated type
-    // come back in `notDraftedByType`, so the grid can suppress that
-    // type's OPEN rows instead of looking short-staffed (managers
-    // only — employees see their own published shifts only, and an
-    // undrafted date is simply not their concern). `notDraftedDates`
-    // is the day-level version (any generation covering the date =
-    // drafted) for the "Not drafted yet" day header; `scheduleMode`
-    // is the company summary: 'live' | 'generated' | 'mixed'.
+    // solid). `notDraftedByType` is still computed and sent: it gates
+    // the open count for COMPUTED-model types (live types and
+    // rotation-less generated types, whose target always counts),
+    // while stored-model types (generated AND rotation-backed) show
+    // their stored opens and the draft mark gates nothing for them.
+    // `storedModelTypeIds` tells the client which types those are.
+    // `notDraftedDates` is the day-level version (any generation
+    // covering the date = drafted) for the "Not drafted yet" day
+    // header; `scheduleMode` is the company summary:
+    // 'live' | 'generated' | 'mixed'.
     const generatedTypes = await getGeneratedTypeIds(query, companyId);
+    const storedModelTypes = await getStoredModelTypeIds(query, companyId);
     const rotationShifts: any[] = [];
     let notDraftedDates: string[] = [];
     let notDraftedByType: Record<string, string[]> = {};
@@ -1212,6 +1215,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       draftOpenCounts,
       scheduleMode: await getCompanyModeSummary(query, companyId),
       generatedTypeIds: [...generatedTypes],
+      storedModelTypeIds: [...storedModelTypes],
       notDraftedDates, notDraftedByType,
     });
   } catch (err) {
@@ -1314,6 +1318,22 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
         return;
       }
       throw err;
+    }
+    // Filling a stored open slot (Deepika, 2026-11-20 — detached
+    // open slots): the person takes one stored open if one exists
+    // (a draft open first for a draft assign, else a published
+    // extra) — otherwise the day shows the person working AND the
+    // open still standing beside them. STORED-MODEL types only:
+    // a computed-model type's opens come from the target, so an
+    // assign is headcount only and consumes nothing. Best-effort
+    // bookkeeping after a successful insert: a consume failure
+    // never fails the assign itself.
+    try {
+      if ((await getStoredModelTypeIds(query, companyId)).has(shiftTypeId)) {
+        await consumeOpenSlotForAssign(query, companyId, date, shiftTypeId, published !== false, req.session.userId!);
+      }
+    } catch (consumeErr: any) {
+      console.error('[schedule] open-slot consume after assign failed:', consumeErr?.message);
     }
     // History snapshot (Deepika, 2026-11-17): a frozen copy after
     // every change to a published shift, and every draft change.
@@ -1504,6 +1524,10 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
     let firstRoleError: string | null = null;
     const createdByUser = new Map<string, { count: number; shiftTypeId: string; shiftTypeName: string; firstDate: string; lastDate: string }>();
     const typeDepts = await shiftTypeDeptMap(companyId);
+    // Stored-model types (detached open slots): only these consume a
+    // stored open when an assign fills one. Computed-model types are
+    // headcount only.
+    const storedModelTypes = await getStoredModelTypeIds(query, companyId);
     for (const group of assignments) {
       const userId = group?.userId, shiftTypeId = group?.shiftTypeId;
       const rawDates: any[] = Array.isArray(group?.dates) ? group.dates : [];
@@ -1544,6 +1568,18 @@ router.post('/block-assign', requireRole('owner', 'scheduler'), async (req: Requ
             [crypto.randomUUID(), companyId, userId, shiftTypeId, date, null, published !== false, req.session.userId!]
           );
           created++;
+          // Filling a stored open slot (Deepika, 2026-11-20 —
+          // detached open slots): the person takes one stored open
+          // if one exists (a draft open first for a draft assign,
+          // else a published extra). Stored-model types only.
+          // Best-effort — a consume failure never fails the assign.
+          try {
+            if (storedModelTypes.has(shiftTypeId)) {
+              await consumeOpenSlotForAssign(query, companyId, date, shiftTypeId, published !== false, req.session.userId!);
+            }
+          } catch (consumeErr: any) {
+            console.error('[schedule] open-slot consume after block-assign failed:', consumeErr?.message);
+          }
           const tally = createdByUser.get(userId) || { count: 0, shiftTypeId, shiftTypeName: '', firstDate: date, lastDate: date };
           tally.count++;
           if (date < tally.firstDate) tally.firstDate = date;
@@ -6958,6 +6994,12 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     // opens go published and any closures cleared. Closes are
     // excluded: they take opens away, they don't restore them.
     const publishPairs = new Set<string>();
+    // Stamped positions per pair (detached open slots, 2026-11-20):
+    // each add this publish stamps fills one open position, so the
+    // draft shortfall that moves to published opens shrinks by
+    // exactly this many. Flips don't change filled, so they don't
+    // count here.
+    const stampedByPair = new Map<string, number>();
 
     await withTransaction(async (tx) => {
       await tx.query(
@@ -6999,7 +7041,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
            RETURNING user_id AS "userId", date::text AS date`,
           [crypto.randomUUID(), companyId, a.userId, a.shiftTypeId, a.date, req.session.userId!, batchId, a.rotationId || null]
         );
-        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date, a.shiftTypeId); publishPairs.add(`${ins[0].date}|${a.shiftTypeId}`); }
+        if (ins.length) { added++; bump(addedByUser, ins[0].userId, ins[0].date, a.shiftTypeId); publishPairs.add(`${ins[0].date}|${a.shiftTypeId}`); const sk = `${ins[0].date}|${a.shiftTypeId}`; stampedByPair.set(sk, (stampedByPair.get(sk) || 0) + 1); }
       }
       // Flips: hand-made draft shifts the plan named become
       // published — re-validated like everything else (still a
@@ -7117,7 +7159,11 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // live-mode types have no draft opens to clear. Skipped when
       // the publish picker asked for assigned drafts only
       // (publishOpens: false) — the open-slot function owns the
-      // opens, so each kind touches only its own.
+      // opens, so each kind touches only its own. The draft
+      // shortfall moves into extra_open_slots (detached open slots,
+      // 2026-11-20) — minus what this publish itself stamped into
+      // filled positions — and the moves are ledgered under this
+      // batch so undoing it can put them back to draft exactly.
       if (publishOpens && publishPairs.size) {
         await publishOpenSlotsForPairs(
           tx.query,
@@ -7126,7 +7172,9 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
             const [date, shiftTypeId] = k.split('|');
             return { date, shiftTypeId };
           }),
-          generatedTypes
+          generatedTypes,
+          false,
+          { batchId, stampedByPair }
         );
       }
     });
@@ -7330,6 +7378,39 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
         bumpUndo(r.userId, r.date, r.shiftTypeId);
         undoPairs.add(`${r.date}|${r.shiftTypeId}`);
       }
+      // Taking the publish back takes the opens back to draft
+      // (Deepika, 2026-11-20 — detached open slots): the publish
+      // moved the draft's stored shortfall into published extras,
+      // and the move was ledgered in publish_batch_draft_moves —
+      // so the undo reads the ledger, consumes that many extras,
+      // and restores the draft count exactly. No recomputation
+      // from the target (it may have changed since, and the draft
+      // is detached from it), and no "was it drafted" check — a
+      // pair with no ledger row had no draft opens to restore, so
+      // nothing is invented. This runs BEFORE the rule-7 take-back
+      // below, so the draft's own opens are restored first; extra
+      // rows are fungible, so if a manager closed some published
+      // opens after the publish, the restore takes only what is
+      // left and the closed ones stay closed. Past pairs are truth
+      // and are never re-derived.
+      const { rows: moves } = await tx.query(
+        'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM publish_batch_draft_moves WHERE batch_id = $1 AND company_id = $2',
+        [batchId, companyId]
+      );
+      if (moves.length) {
+        const storedModel = await getStoredModelTypeIds(tx.query, companyId);
+        for (const row of moves) {
+          if (row.date < today) continue;
+          if (!storedModel.has(row.shiftTypeId)) continue;
+          let restored = 0;
+          for (let i = 0; i < row.count; i++) {
+            if (await consumeExtraOpenSlot(tx.query, companyId, row.date, row.shiftTypeId)) restored++;
+            else break;
+          }
+          await setDraftOpenCount(tx.query, companyId, row.date, row.shiftTypeId, restored, req.session.userId!);
+        }
+        await tx.query('DELETE FROM publish_batch_draft_moves WHERE batch_id = $1', [batchId]);
+      }
       const { rows: led } = await tx.query(
         'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM publish_batch_open_slots WHERE batch_id = $1 AND company_id = $2',
         [batchId, companyId]
@@ -7358,20 +7439,24 @@ router.post('/publish/batches/:id/undo', requireRole('owner', 'scheduler'), asyn
       await tx.query('DELETE FROM publish_batch_flips WHERE batch_id = $1', [batchId]);
       await tx.query('UPDATE publish_batches SET undone_at = now() WHERE id = $1', [batchId]);
       // Taking the publish back takes the opens back to draft
-      // (Deepika, 2026-11-20): the pairs this batch touched go
-      // back to showing their shortfall as draft opens — the same
+      // (Deepika, 2026-11-20) — for COMPUTED-model generated types
+      // (rotation-less, e.g. Day NP): the pairs this batch touched
+      // go back to showing their shortfall as draft opens — the same
       // number the draft wrote — so the day reads drafted again
-      // instead of silently losing its opens. Generated types only,
-      // and only pairs the draft actually covers: a pair that was
-      // never drafted had no draft opens to restore, and writing
-      // a draft count there would invent one. Past pairs are truth
+      // instead of silently losing its opens. Only pairs the draft
+      // actually covers: a pair that was never drafted had no draft
+      // opens to restore, and writing a draft count there would
+      // invent one. Stored-model pairs are handled by the ledger
+      // restore above and are skipped here. Past pairs are truth
       // and are never re-derived.
       if (undoPairs.size) {
         const generated = await getGeneratedTypeIds(tx.query, companyId);
+        const storedModel = await getStoredModelTypeIds(tx.query, companyId);
         const notDrafted = await getNotDraftedByType(tx.query, companyId, generated, brows[0].rangeStart, brows[0].rangeEnd);
         for (const k of undoPairs) {
           const [date, shiftTypeId] = k.split('|');
           if (!generated.has(shiftTypeId)) continue;
+          if (storedModel.has(shiftTypeId)) continue;
           if ((notDrafted[shiftTypeId] || []).includes(date)) continue;
           const shortfall = await shortfallFor(tx.query, companyId, date, shiftTypeId);
           await setDraftOpenCount(tx.query, companyId, date, shiftTypeId, shortfall, req.session.userId!);
@@ -9575,41 +9660,30 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
 // recipient gets a bell + an email with a personal login-free link;
 // the link's page button claims the shift (first pickup wins), under
 // the same eligibility + conflict guards as an open-slot claim.
-// Consume one manually-added extra open slot without ever writing count = 0:
-// migration 020's CHECK (count <> 0) kills a plain decrement 1 → 0 before any
-// delete-at-zero cleanup can run (found 2026-11-06 — last-slot claims 500'd on
-// every claim path). One atomic statement instead: decrement when count > 1,
-// delete the row when count = 1. Returns true when a slot was consumed.
-async function consumeExtraOpenSlot(q: any, companyId: string, date: string, shiftTypeId: string): Promise<boolean> {
-  const { rows } = await q(
-    `WITH dec AS (
-       UPDATE extra_open_slots SET count = count - 1
-        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count > 1
-        RETURNING 1 AS taken
-     ), del AS (
-       DELETE FROM extra_open_slots
-        WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 AND count = 1
-          AND NOT EXISTS (SELECT 1 FROM dec)
-        RETURNING 1 AS taken
-     )
-     SELECT taken FROM dec UNION ALL SELECT taken FROM del`,
-    [companyId, date, shiftTypeId]
-  );
-  return rows.length > 0;
-}
-
 // Per-slot open publish state (Deepika, 2026-11-17): how many of a
-// date+type's COMPUTED opens are draft, and how many are published.
-// The total is the same formula the grid uses (target + extra -
-// filled), with a closed date counting 0 — but WITHOUT the
-// undrafted-date suppression: the claim endpoint never applied that
-// rule, and this helper must not change what it allows on undrafted
-// dates (a draft count can only be set where the grid renders an
-// open, so on an undrafted date it is 0 and the gate behaves exactly
-// as today). `filled` counts ALL stored shifts, drafts included —
-// the grid's filled for managers, and published + unpublishedCounts
-// for employees, is the same number.
+// date+type's opens are draft, and how many are published.
+// Detached open slots (Deepika, 2026-11-20): for a STORED-MODEL type
+// the total is extra + draft − suppressed — never the target minus
+// filled. `draft` is the raw stored count (the endpoint decrements
+// it); the UI renders min(draft, total) positions as draft, so a
+// stale row left behind when opens disappear can never over-claim.
+// For other types the total is the same formula the grid uses
+// (target + extra - filled), with a closed date counting 0 — but
+// WITHOUT the undrafted-date suppression: the claim endpoint never
+// applied that rule, and this helper must not change what it allows
+// on undrafted dates (a draft count can only be set where the grid
+// renders an open, so on an undrafted date it is 0 and the gate
+// behaves exactly as today). `filled` counts ALL stored shifts,
+// drafts included — the grid's filled for managers, and published +
+// unpublishedCounts for employees, is the same number. Live-mode
+// types have no stored shortfall, so the computed formula is the
+// one place it survives, for types with no draft to detach from.
 async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string, useStored = false) {
+  const storedModel = await getStoredModelTypeIds(q, companyId);
+  if (storedModel.has(shiftTypeId)) {
+    const stored = await storedOpenSlots(q, companyId, date, shiftTypeId);
+    return { total: stored.total, draft: stored.draft, published: stored.published, closed: stored.closed };
+  }
   const { rows: trows } = await q(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -14307,8 +14381,17 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
         // exactly as it did before. The gate counts from the stored
         // schedule for GENERATED types (the top-up fix): if the grid
         // shows 2 opens, the gate must allow 2 claims — otherwise
-        // the shown open refuses pickup and the grid lies.
+        // the shown open refuses pickup and the grid lies. Detached
+        // open slots (Deepika, 2026-11-20): on a stored-model type a
+        // claim consumes a STORED open slot only (Path 1). If the
+        // gate passed (published > 0) there IS a stored extra row to
+        // consume; Path 1 can only lose a race, and then the claim
+        // fails honestly instead of inventing a slot. On a
+        // computed-model type the base flow stands (Path 1, then
+        // Path 2 — the staffing-target gap with no stored row behind
+        // it), exactly as before.
         const generated = await getGeneratedTypeIds(tx.query, companyId);
+        const storedModel = await getStoredModelTypeIds(tx.query, companyId);
         const totals = await openSlotTotals(tx.query, companyId, date, shiftTypeId, generated.has(shiftTypeId));
         if (totals.published <= 0) {
           draftMsg = 'That open slot has not been published yet, so it cannot be picked up.';
@@ -14324,37 +14407,42 @@ router.post('/open-slots/claim', requireRole('owner', 'scheduler', 'employee'), 
           claimed = true;
           return;
         }
-        // Path 2: staffing-target gap (no extra_open_slots row). Lock the target
-        // row so concurrent claims for the same shift type serialize.
+        // Path 2 (computed-model types only): staffing-target gap
+        // (no extra_open_slots row). Lock the target row so
+        // concurrent claims for the same shift type serialize.
         // (No closed check any more — Deepika, 2026-11-21: the gate
         // above already refuses suppressed dates via
         // totals.published <= 0, and the filled check below counts
         // the gap that is actually open.)
-        const { rows: trows } = await tx.query(
-          `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
-           FROM staffing_targets
-           WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
-          [companyId, shiftTypeId]
-        );
-        if (!trows.length) return; // no target and no extra slots — nothing to claim
-        const t = trows[0];
-        const dow = new Date(date + 'T00:00:00').getDay();
-        const wdays: number[] = t.weekdays || [0, 1, 2, 3, 4, 5, 6];
-        if (wdays.indexOf(dow) === -1) return;
-        const sd: string | null = t.start_date || null;
-        const ed: string | null = t.end_date || null;
-        if ((sd && date < sd) || (ed && date > ed)) return;
-        const { rows: frows } = await tx.query(
-          'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-          [companyId, date, shiftTypeId]
-        );
-        if (frows[0].n >= (t.target_count || 0)) return; // gap already filled
-        await tx.query(
-          `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
-           VALUES ($1, $2, $3, $4, $5, true, $6)`,
-          [shiftId, companyId, me, shiftTypeId, date, me]
-        );
-        claimed = true;
+        if (!storedModel.has(shiftTypeId)) {
+          const { rows: trows } = await tx.query(
+            `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+             FROM staffing_targets
+             WHERE company_id = $1 AND shift_type_id = $2 FOR UPDATE`,
+            [companyId, shiftTypeId]
+          );
+          if (!trows.length) return; // no target and no extra slots — nothing to claim
+          const t = trows[0];
+          const dow = new Date(date + 'T00:00:00').getDay();
+          const wdays: number[] = t.weekdays || [0, 1, 2, 3, 4, 5, 6];
+          if (wdays.indexOf(dow) === -1) return;
+          const sd: string | null = t.start_date || null;
+          const ed: string | null = t.end_date || null;
+          if ((sd && date < sd) || (ed && date > ed)) return;
+          const { rows: frows } = await tx.query(
+            'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, date, shiftTypeId]
+          );
+          if (frows[0].n >= (t.target_count || 0)) return; // gap already filled
+          await tx.query(
+            `INSERT INTO shifts (id, company_id, user_id, shift_type_id, date, published, created_by)
+             VALUES ($1, $2, $3, $4, $5, true, $6)`,
+            [shiftId, companyId, me, shiftTypeId, date, me]
+          );
+          claimed = true;
+        }
+        // No stored open left to consume — the gate passed, so one
+        // existed a moment ago; someone else just took it.
       });
     } catch (err: any) {
       if (err?.code === '23505') {
