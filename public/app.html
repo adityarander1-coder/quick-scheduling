@@ -4360,8 +4360,10 @@
         }
         // Re-disable the pair as the window passes, even with no
         // interaction (a tap after the window is still refused by the
-        // server — this just keeps the buttons honest).
-        setInterval(function () { if (qsUndoStack.length || qsRedoStack.length) qsUndoBtnSync(); }, 5000);
+        // server — this just keeps the buttons honest). Every second,
+        // so the buttons go honest within a second of the window
+        // passing (a 5s cadence left them enabled past 60s).
+        setInterval(function () { if (qsUndoStack.length || qsRedoStack.length) qsUndoBtnSync(); }, 1000);
 
         // Pinned Undo/Redo (Deepika, 2026-11-19): every grid entry
         // carries the time its action happened (`at`), so the pair can
