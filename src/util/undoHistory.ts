@@ -144,6 +144,14 @@ function cleanOpenSlotUndo(u: any): any | null {
     // carry neither and fall back to the suppressed-first rule.
     if (s.extraDeleted !== undefined && (!Number.isInteger(s.extraDeleted) || s.extraDeleted < 0 || s.extraDeleted > 1000)) return null;
     if (s.suppressed !== undefined && (!Number.isInteger(s.suppressed) || s.suppressed < 0 || s.suppressed > 1000)) return null;
+    // Whole-type close breakdown (Deepika, 2026-11-20 — "close any
+    // where it should be gone"): the close really deleted the stored
+    // rows, so the undo puts them back — suppressedDeleted rows are
+    // re-inserted, draftDeleted restores the draft-open count,
+    // flagSet removes the closed flag the close set.
+    if (s.suppressedDeleted !== undefined && (!Number.isInteger(s.suppressedDeleted) || s.suppressedDeleted < 0 || s.suppressedDeleted > 1000)) return null;
+    if (s.draftDeleted !== undefined && (!Number.isInteger(s.draftDeleted) || s.draftDeleted < 0 || s.draftDeleted > 1000)) return null;
+    if (s.flagSet !== undefined && typeof s.flagSet !== 'boolean') return null;
   }
   return {
     slots: u.slots.map((s: any) => ({
@@ -152,6 +160,9 @@ function cleanOpenSlotUndo(u: any): any | null {
       ...(s.draftBefore !== undefined ? { draftBefore: s.draftBefore } : {}),
       ...(s.extraDeleted !== undefined ? { extraDeleted: s.extraDeleted } : {}),
       ...(s.suppressed !== undefined ? { suppressed: s.suppressed } : {}),
+      ...(s.suppressedDeleted !== undefined ? { suppressedDeleted: s.suppressedDeleted } : {}),
+      ...(s.draftDeleted !== undefined ? { draftDeleted: s.draftDeleted } : {}),
+      ...(s.flagSet !== undefined ? { flagSet: s.flagSet } : {}),
     })),
   };
 }

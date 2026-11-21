@@ -34,7 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
-import { closeOpenSlots, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -2493,6 +2493,14 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
 });
 
 // POST /api/schedule/closed-shifts — mark a shift type unavailable for a date (owner/scheduler; department-scoped).
+// Whole-type close (Deepika, 2026-11-20 — "when i say close any
+// where it should be gone"): the shared closeTypeForDate helper
+// really deletes every stored row for the date+type (extras, draft
+// opens, suppressed rows) and then sets the closed flag — a later
+// re-draft creates only the fresh shortfall, and a Reopen shows
+// only the fresh shortfall. Returns the undo payload, so the day
+// dialog and the Bulk Actions loop can push ONE undo entry per
+// close action (bulk = one entry for the whole range).
 router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -2507,14 +2515,15 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       req, res,
       await shiftTypesDepartmentIds([shiftTypeId], companyId)
     ))) return;
-    const { rowCount: closedNew } = await query(
-      `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
-       VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
-      [companyId, date, shiftTypeId, req.session.userId!]
+    // The read + deletes + flag insert run in one transaction with
+    // the row lock, so two simultaneous closes on the same date
+    // can't interleave and the undo payload matches the write.
+    const closed = await withTransaction(async (tx) =>
+      closeTypeForDate(tx.query, companyId, date, shiftTypeId, req.session.userId!)
     );
     // History snapshot (Deepika, 2026-11-17) — closing a day hides
     // its open rows. No copy when it was already closed.
-    if ((closedNew || 0) > 0) {
+    if (closed.flagSet) {
       const { rows: tn } = await query(
         'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
         [shiftTypeId, companyId]
@@ -2525,7 +2534,28 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
         from: date, to: date, shiftTypeIds: [shiftTypeId],
       });
     }
-    res.json({ ok: true });
+    // Open-slot close undo: the undo endpoint reverses each part
+    // exactly — re-adds the deleted extras, re-inserts the deleted
+    // suppressed rows, restores the deleted draft-open count (only
+    // when nothing re-derived it since), and removes the flag when
+    // this close set it. `adjust` is the amount the undo adds to
+    // the visible total (extras + suppressed); the draft restore
+    // never changes the total, so it is not part of it. No slot
+    // when nothing was deleted and the flag was already set.
+    const closedCount = closed.extraDeleted + closed.suppressedDeleted;
+    const undoSlots: any[] = [];
+    if (closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0 || closed.flagSet) {
+      undoSlots.push({
+        date, shiftTypeId,
+        totalBefore: closed.totalBefore, draftBefore: closed.draftBefore,
+        wasDraft: closed.totalBefore <= closed.draftBefore,
+        adjust: closedCount > 0 ? closedCount : 1,
+        extraDeleted: closed.extraDeleted, suppressed: 0,
+        suppressedDeleted: closed.suppressedDeleted,
+        draftDeleted: closed.draftDeleted, flagSet: closed.flagSet,
+      });
+    }
+    res.json({ ok: true, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
   } catch (err) {
     console.error('[schedule] close shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
@@ -3512,10 +3542,16 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
 // carry neither number and fall back to the old rule — suppressed
 // first, extras second. Entries from DELETE /extra-slots carry
 // extraDeleted = the deleted count and suppressed = 0 (a delete
-// removes stored extras only). A close never touches the draft-open
-// count, so a slot comes back in the same draft/published state.
-// Redo replays the original close calls (client-side, like delete
-// redo).
+// removes stored extras only). A partial close never touches the
+// draft-open count, so a slot comes back in the same draft/published
+// state (the UI renders min(draft, total) positions as draft).
+// Whole-type closes (Deepika, 2026-11-20 — "close any where it
+// should be gone") DID delete the stored rows: their entries carry
+// suppressedDeleted / draftDeleted / flagSet, and the undo
+// re-inserts the deleted suppressed rows, restores the deleted
+// draft-open count (only when nothing re-derived it since), and
+// removes the closed flag the close set. Redo replays the original
+// close calls (client-side, like delete redo).
 // Guard (same spirit as delete-undo: never create a duplicate open):
 // slots are grouped by date+type and the threshold is the highest
 // open count recorded at close time for that group. A slot is
@@ -3543,6 +3579,16 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
       // DELETE entries) may not carry them.
       if (s.extraDeleted !== undefined && (!Number.isInteger(s.extraDeleted) || s.extraDeleted < 0 || s.extraDeleted > 1000)) return true;
       if (s.suppressed !== undefined && (!Number.isInteger(s.suppressed) || s.suppressed < 0 || s.suppressed > 1000)) return true;
+      // Whole-type close breakdown (Deepika, 2026-11-20 — "close
+      // any where it should be gone"): the close really deleted the
+      // stored rows instead of suppressing them, so the undo puts
+      // them back — suppressedDeleted rows are re-inserted,
+      // draftDeleted restores the draft-open count, flagSet removes
+      // the closed flag this close set. Optional — only whole-type
+      // closes carry them.
+      if (s.suppressedDeleted !== undefined && (!Number.isInteger(s.suppressedDeleted) || s.suppressedDeleted < 0 || s.suppressedDeleted > 1000)) return true;
+      if (s.draftDeleted !== undefined && (!Number.isInteger(s.draftDeleted) || s.draftDeleted < 0 || s.draftDeleted > 1000)) return true;
+      if (s.flagSet !== undefined && typeof s.flagSet !== 'boolean') return true;
       return false;
     };
     if (!slots.length || slots.length > 1000 || slots.some(badSlot)) {
@@ -3665,6 +3711,42 @@ router.post('/open-slots/undo', requireRole('owner', 'scheduler'), async (req: R
               );
             }
           }
+        }
+        // Whole-type close reversal (Deepika, 2026-11-20): the
+        // close really deleted the stored rows, so the undo puts
+        // them back. Suppressed rows are re-inserted (they were
+        // deleted, not added to). The draft-open count is restored
+        // only when nothing re-derived it since — a re-draft writes
+        // its own fresh shortfall, and a stale count must never
+        // overwrite it. The closed flag comes off only when this
+        // close set it; a flag that predates the close stays.
+        if (Number.isInteger(s.suppressedDeleted) && s.suppressedDeleted > 0) {
+          await tx.query(
+            `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (company_id, date, shift_type_id)
+             DO UPDATE SET count = suppressed_open_slots.count + EXCLUDED.count`,
+            [companyId, s.date, s.shiftTypeId, s.suppressedDeleted, req.session.userId!]
+          );
+        }
+        if (Number.isInteger(s.draftDeleted) && s.draftDeleted > 0) {
+          const { rows: drows } = await tx.query(
+            'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, s.date, s.shiftTypeId]
+          );
+          if (!drows.length) {
+            await tx.query(
+              `INSERT INTO draft_open_slots (company_id, date, shift_type_id, count, created_by)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [companyId, s.date, s.shiftTypeId, s.draftDeleted, req.session.userId!]
+            );
+          }
+        }
+        if (s.flagSet === true) {
+          await tx.query(
+            'DELETE FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+            [companyId, s.date, s.shiftTypeId]
+          );
         }
         restored++;
         restoredSlots.push({ date: s.date, shiftTypeId: s.shiftTypeId });

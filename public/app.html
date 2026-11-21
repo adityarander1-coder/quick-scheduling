@@ -6394,6 +6394,11 @@
                 var stId = b.getAttribute('data-closed-close');
                 api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: ds, shiftTypeId: stId }) }).then(function (r) {
                   if (r.ok) {
+                    // Whole-type close undo (Deepika, 2026-11-20):
+                    // the close really deleted the stored rows, so
+                    // the server returns the undo payload — one
+                    // entry, redo replays this same close call.
+                    if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: ds, shiftTypeId: stId } }]);
                     sched.closedShifts.push({ date: ds, shiftTypeId: stId });
                     renderView(); renderDayModal(); pageSuccess('Shift closed for this date.');
                   }
@@ -21213,13 +21218,26 @@ window.qsNpOfferSend = function (btn) {
               if (!confirm('Close ' + stName + ' on ' + dates.length + ' date(s)? No open slots will show.')) return;
               showResult('Working…', false);
               var done = 0, failed = 0;
+              // Whole-type close undo (Deepika, 2026-11-20): the
+              // close really deleted the stored rows, so each call
+              // returns an undo payload — collect them and push ONE
+              // entry for the whole bulk close, like a bulk delete.
+              // The redo replays one close call per closed date.
+              var bulkUndoSlots = [], bulkRedoCalls = [];
               var next = function (i) {
                 if (i >= dates.length) {
+                  if (bulkUndoSlots.length && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo({ slots: bulkUndoSlots }, bulkRedoCalls);
                   showResult(failed ? 'Done with ' + failed + ' error(s).' : 'Done — ' + stName + ' closed on ' + dates.length + ' date(s).', !!failed);
                   return;
                 }
                 api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: dates[i], shiftTypeId: stId }) }).then(function (r) {
-                  if (r.ok) done++; else failed++;
+                  if (r.ok) {
+                    done++;
+                    if (r.data && r.data.undo && Array.isArray(r.data.undo.slots) && r.data.undo.slots.length) {
+                      bulkUndoSlots = bulkUndoSlots.concat(r.data.undo.slots);
+                      bulkRedoCalls.push({ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: dates[i], shiftTypeId: stId } });
+                    }
+                  } else failed++;
                   next(i + 1);
                 }).catch(function () { failed++; next(i + 1); });
               };

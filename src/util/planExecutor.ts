@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, publishOpenSlotsForPairs, suppressedTotal } from './openSlots.js';
+import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, suppressedTotal } from './openSlots.js';
 import { getGeneratedTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
@@ -1930,7 +1930,9 @@ export async function executePlan(
         // — "when it says close slot it goes away permanently").
         // Exactly one mode: closeCount (close N per date), keepCount
         // (keep N per date, close the rest), or closeAll (close the
-        // whole type for the date — a closed_shifts row).
+        // whole type for the date — the shared closeTypeForDate
+        // helper really deletes every stored row and sets the flag;
+        // Deepika, 2026-11-20 — "close any where it should be gone").
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
         // Department (Deepika, 2026-11-19 — "It needs to know which
@@ -2017,12 +2019,14 @@ export async function executePlan(
             // day instead of writing a closed_shifts row for it,
             // and fail honestly when nothing closed anywhere.
             if (t.total <= 0) { skipped.push(`${d} (no open slots)`); continue; }
-            const ins = await query(
-              `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
-               VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
-              [companyId, d, st.id, createdBy]
-            );
-            if ((ins.rowCount || 0) > 0) { daysClosed++; slotsClosed += t.total; }
+            // Whole-type close (Deepika, 2026-11-20 — "when i say
+            // close any where it should be gone"): the shared helper
+            // really deletes every stored row for the date+type
+            // (extras, draft opens, suppressed rows) and sets the
+            // closed flag — the same write the Bulk Actions close
+            // and the day dialog make. Same-brain: both doors.
+            const closed = await closeTypeForDate(query as any, companyId, d, st.id, createdBy);
+            if (closed.flagSet) { daysClosed++; slotsClosed += t.total; }
             else skipped.push(`${d} (already closed)`);
           } else {
             const want = mode === 'count'

@@ -17,6 +17,11 @@
  * This module imports nothing from the routes, the planner, or the
  * engine — every helper takes the caller's query fn (inside the
  * caller's transaction where one exists), so there are no cycles.
+ * The History snapshot stays the caller's job for the same reason.
+ * Whole-type closes (bulk, day dialog, AI closeAll) all go through
+ * closeTypeForDate: it really deletes every stored row for the
+ * date+type and sets the closed flag — "when i say close any where
+ * it should be gone" (Deepika, 2026-11-20).
  */
 
 export type OpenSlotQuery = (
@@ -80,6 +85,10 @@ export async function suppressedMap(
  * of that date+type pulls it back. Returns the split, so the undo
  * payload can reverse each part exactly. Callers must only close
  * opens that are actually visible (they already guard on the total).
+ *
+ * Whole-type closes go through closeTypeForDate below, NOT this
+ * helper: a whole-type close deletes every stored row for the
+ * date+type and sets the closed flag, it never suppresses.
  */
 export async function closeOpenSlots(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
@@ -117,6 +126,111 @@ export async function closeOpenSlots(
     );
   }
   return { extraDeleted: fromExtra, suppressed: remainder };
+}
+
+export interface CloseTypeResult {
+  /** Visible opens before the close (0 when already closed). */
+  totalBefore: number;
+  /** Stored draft-open count before the close. */
+  draftBefore: number;
+  /** Stored extras really deleted (never negative). */
+  extraDeleted: number;
+  /** Stored draft opens really deleted. */
+  draftDeleted: number;
+  /** Suppressed rows really deleted. */
+  suppressedDeleted: number;
+  /** True when this call newly set the closed flag. */
+  flagSet: boolean;
+}
+
+/**
+ * Close a whole shift type for one date — the shared whole-type
+ * close (Deepika, 2026-11-20 — "when i say close any where it
+ * should be gone" · "it cannot store from any where"). In one
+ * transaction, for that (company, date, type):
+ *   1. DELETEs the extra_open_slots row (the stored extras).
+ *   2. DELETEs the draft_open_slots row (the stored draft opens).
+ *   3. DELETEs the suppressed_open_slots rows.
+ *   4. INSERTs the closed_shifts row (ON CONFLICT DO NOTHING —
+ *      the flag is what keeps the type shut and blocks new adds).
+ * Nothing stored survives: a later re-draft creates only the fresh
+ * shortfall, and a Reopen shows only the fresh shortfall. The
+ * History snapshot is the caller's job (it uses the pool, not the
+ * caller's query fn). Returns the breakdown, so the undo payload
+ * can reverse each part exactly. Runs even on an already-closed
+ * date — stored rows added while closed are deleted too.
+ */
+export async function closeTypeForDate(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  createdBy: string | null
+): Promise<CloseTypeResult> {
+  const { rows: crows } = await q(
+    'SELECT 1 FROM closed_shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const alreadyClosed = crows.length > 0;
+  let target = 0;
+  if (!alreadyClosed) {
+    const { rows: trows } = await q(
+      `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
+       FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
+      [companyId, shiftTypeId]
+    );
+    if (trows.length) {
+      const t = trows[0];
+      const dow = new Date(date + 'T12:00:00').getDay();
+      const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      const sd: string | null = t.start_date || null;
+      const ed: string | null = t.end_date || null;
+      if (wdays.indexOf(dow) !== -1 && !(sd && date < sd) && !(ed && date > ed)) {
+        target = Number(t.target_count) || 0;
+      }
+    }
+  }
+  const { rows: erows } = await q(
+    'SELECT COALESCE(SUM(count), 0)::int AS n FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const extra = Number(erows[0]?.n || 0);
+  const suppressed = await suppressedTotal(q, companyId, date, shiftTypeId);
+  const { rows: frows } = await q(
+    'SELECT COUNT(*)::int AS n FROM shifts WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const filled = Number(frows[0]?.n || 0);
+  const { rows: drows } = await q(
+    'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+    [companyId, date, shiftTypeId]
+  );
+  const draft = drows.length ? Number(drows[0].count) || 0 : 0;
+  const totalBefore = alreadyClosed ? 0 : Math.max(0, target + extra - filled - suppressed);
+  const delExtra = await q(
+    'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
+    [companyId, date, shiftTypeId]
+  );
+  // A legacy negative row is still deleted (never re-created); the
+  // undo only ever re-adds the positive part.
+  const extraDeleted = Math.max(0, delExtra.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
+  const delDraft = await q(
+    'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
+    [companyId, date, shiftTypeId]
+  );
+  const draftDeleted = Math.max(0, delDraft.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
+  const delSupp = await q(
+    'DELETE FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 RETURNING count',
+    [companyId, date, shiftTypeId]
+  );
+  const suppressedDeleted = Math.max(0, delSupp.rows.reduce((n: number, r: any) => n + (Number(r.count) || 0), 0));
+  const ins = await q(
+    `INSERT INTO closed_shifts (company_id, date, shift_type_id, created_by)
+     VALUES ($1, $2, $3, $4) ON CONFLICT (company_id, date, shift_type_id) DO NOTHING`,
+    [companyId, date, shiftTypeId, createdBy]
+  );
+  return {
+    totalBefore, draftBefore: draft,
+    extraDeleted, draftDeleted, suppressedDeleted,
+    flagSet: (ins.rowCount || 0) > 0,
+  };
 }
 
 /**
