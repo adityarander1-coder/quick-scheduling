@@ -146,6 +146,15 @@ export function extractRequestDates(text: string, today: string): string[] {
   for (const m of t.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MON})\\b`, 'g'))) {
     yearless(REQUEST_MONTHS[m[2]], +m[1]);
   }
+  // Same-month day range ("dec 2-10" — Deepika's own phrasing in
+  // the Dec 2–10 Task): the month word carries two day numbers,
+  // and BOTH dates count. Without this the range collapsed to the
+  // first day alone, so "what about other days" had no other days
+  // to ask about.
+  for (const m of t.matchAll(new RegExp(`\\b(${MON})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*[-–—]\\s*(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'g'))) {
+    yearless(REQUEST_MONTHS[m[1]], +m[2]);
+    yearless(REQUEST_MONTHS[m[1]], +m[3]);
+  }
   if (/\btoday\b/.test(t)) found.add(today);
   if (/\btomorrow\b/.test(t)) {
     const d = new Date(base); d.setUTCDate(d.getUTCDate() + 1); found.add(iso(d));
@@ -622,6 +631,50 @@ export function isTaskCorrection(message: string, history: Array<{ q: string; a:
     || /\bthe whole month\b/i.test(m);
   if (!correction) return false;
   return !!lastTaskTurn(history);
+}
+
+/** Expand a bare follow-up question from the thread (Deepika,
+ * 2026-11-21 — Task answers questions: "What about other days?!"
+ * names nothing, so the Ask engine alone falls back). When the
+ * message is a "what about" follow-up and the last task turn names
+ * a shift type + date range, the question becomes a standalone
+ * open-slots question over the dates the last answer did NOT
+ * already cover ("How many open Day Hospitalist slots are there
+ * from 2026-12-03 to 2026-12-10?"). ISO dates keep the expansion
+ * exact whatever day it runs. The range is the contiguous span
+ * from the first uncovered date to the range end — a covered date
+ * in the middle still shows in the per-date answer, so nothing is
+ * hidden. Returns null when no expansion applies — the caller
+ * then asks the engine the raw message, which answers or falls
+ * back in its own words. */
+export function expandThreadFollowUp(
+  message: string,
+  history: Array<{ q: string; a: string }>,
+  shiftNames: string[],
+  today: string,
+): string | null {
+  const m = (message || '').trim();
+  if (!/^\s*what about\b/i.test(m) && !/^\s*and (the )?(other|rest)\b/i.test(m)) return null;
+  const lastTask = lastTaskTurn(history);
+  if (!lastTask) return null;
+  const type = matchShiftType(lastTask.q, shiftNames);
+  const range = extractRequestRange(lastTask.q, today);
+  if (!type || !range) return null;
+  // Dates the last answer already covered — ISO dates it names
+  // ("2026-12-02" in the gate's refusal) plus pretty dates
+  // ("Dec 2" in a plan summary).
+  const covered = new Set<string>();
+  const lastA = history[history.length - 1]?.a || '';
+  for (const d of lastA.match(/\b20\d{2}-\d{2}-\d{2}\b/g) || []) covered.add(d);
+  for (const d of extractRequestDates(lastA, today)) covered.add(d);
+  let from = range[0];
+  while (from < range[1] && covered.has(from)) {
+    const d = new Date(from + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + 1);
+    from = d.toISOString().slice(0, 10);
+  }
+  if (covered.has(from)) return null; // every date already covered
+  return `How many open ${type} slots are there from ${from} to ${range[1]}?`;
 }
 
 /** The close-shaped scope correction (Deepika, 2026-11-19 — issue

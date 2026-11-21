@@ -75,15 +75,16 @@ export function isTaskLike(message: string): boolean {
 // ---------------------------------------------------------------------------
 // Ask | Task toggle (Deepika, 2026-11-08): the bar's two modes are fully
 // separate — Ask answers questions, Task builds plans. No routing engine:
-// the user picks the side. The ONLY crossover is a one-line signpost when
-// text lands on the wrong side, and detection stays deliberately narrow so
-// it can never swallow a real question or a real task.
+// the user picks the side. The one crossover left is a one-line signpost
+// when an instruction lands on the Ask side; a question landing on the
+// Task side is ANSWERED there by the Ask engine (Deepika, 2026-11-21 —
+// "cant it consult ask directly"), never signposted. Detection stays
+// deliberately narrow so it can never swallow a real question or a
+// real task.
 // ---------------------------------------------------------------------------
 
 export const ASK_MODE_SIGNPOST =
   'That’s an instruction, not a question — flip to Task and I’ll make it a plan.';
-export const TASK_MODE_SIGNPOST =
-  'That looks like a question — flip to Ask for an answer.';
 
 // The small, finite verb list for the Ask-side signpost (Deepika's spec):
 // a message is a "bare instruction" when one of these verbs leads it (an

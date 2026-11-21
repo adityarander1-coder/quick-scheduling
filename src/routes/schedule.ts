@@ -11639,6 +11639,29 @@ async function buildAskContext(req: Request) {
   };
 }
 
+// Task answers questions (Deepika, 2026-11-21 — "cant it consult
+// ask directly"): a question inside a Task thread is answered right
+// here by the Ask engine — the same brain, the same scope rules
+// (signed-in company + asker's visible departments, personal info
+// for the asker only) — never the flip-to-Ask signpost. A bare
+// follow-up ("What about other days?!") is expanded from the
+// thread first, so the engine gets a question it can answer. The
+// answer rides back as kind 'answer', which keeps the stored
+// markers — a pending plan or clarification is untouched by the
+// question. When the engine cannot answer, its own "I don't know"
+// wording is returned, never a bounce and never an invented
+// answer.
+async function answerTaskQuestion(req: Request, message: string, history: Array<{ q: string; a: string }>) {
+  const ctx = await buildAskContext(req);
+  const layer = await import('../util/requestUnderstanding.js');
+  const shiftNames = (ctx.shiftTypes || []).map((t: any) => t.name);
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const expanded = layer.expandThreadFollowUp(message, history, shiftNames, todayISO) || message;
+  const { answerQuestionDetailed } = await import('../util/askEngine.js');
+  const { answer } = await answerQuestionDetailed(expanded, ctx);
+  return { kind: 'answer', answer };
+}
+
 // The signed-in user's email — the sender key for an in-app Task
 // clarification's pending row (same (company, sender) keying the
 // email door uses, so one open question per person per door).
@@ -11991,19 +12014,20 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
           }
         }
       }
-      // Question deflection (Deepika, 2026-11-19 — issue H): Task
-      // mode runs the planner directly, so a question-form message
+      // Question answering (Deepika, 2026-11-21 — Task answers
+      // questions: "cant it consult ask directly"): Task mode used
+      // to run the planner directly, so a question-form message
       // ("Are we short next week?") was hijacked by the thread's
-      // history and deflected into a close question. A message that
-      // reads as a question and not as a task gets the flip-to-Ask
-      // signpost here, before the planner ever sees it. (A real
-      // short-staffed check is a separate decision — the signpost
-      // lands the question where the Ask engine can answer it.)
-      // N1: a task correction is exempt — it is a refinement, not a
-      // question, even when phrased as one.
-      const { isQuestionForm, isTaskLike, TASK_MODE_SIGNPOST } = await import('../util/askRouting.js');
+      // history and deflected into a close question (issue H). Now
+      // a message that reads as a question and not as a task is
+      // answered right here by the Ask engine, before the planner
+      // ever sees it — the same answer Ask would give, in the same
+      // thread, with the pending plan untouched. N1: a task
+      // correction is exempt — it is a refinement, not a question,
+      // even when phrased as one.
+      const { isQuestionForm, isTaskLike } = await import('../util/askRouting.js');
       if (isQuestionForm(effectiveMessage) && !isTaskLike(effectiveMessage) && !layer.isTaskCorrection(effectiveMessage, history)) {
-        await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'answer', answer: TASK_MODE_SIGNPOST });
+        await replyTaskResult(res, companyId, req.session.userId, stored, message, await answerTaskQuestion(req, effectiveMessage, history));
         return;
       }
       let plan: any, memberNames: string[], shiftNames: string[];
@@ -12017,15 +12041,17 @@ router.post('/ask-task', requireRole('owner', 'scheduler', 'employee'), async (r
       }
       if ((plan as any).emailType === 'schedule_question') {
         // The planner's "not an instruction" outcome: on the Task side a
-        // pure question gets the flip-to-Ask signpost, not an answer —
-        // EXCEPT a task correction ("I asked you about the whole nov
-        // month"), which is a refinement the deterministic fixer
-        // above should have caught; if it could not rebuild it, the
-        // honest clarification below is still better than deflecting
-        // a correction to Ask (Deepika, 2026-11-19 — issue L, shared
-        // understanding layer: any task correction, not just a close).
+        // pure question is answered by the Ask engine, never bounced
+        // (Deepika, 2026-11-21 — Task answers questions) — EXCEPT a
+        // task correction ("I asked you about the whole nov month"),
+        // which is a refinement the deterministic fixer above should
+        // have caught; if it could not rebuild it, the honest
+        // clarification below is still better than answering a
+        // correction as a question (Deepika, 2026-11-19 — issue L,
+        // shared understanding layer: any task correction, not just
+        // a close).
         if (!layer.isTaskCorrection(effectiveMessage, history)) {
-          await replyTaskResult(res, companyId, req.session.userId, stored, message, { kind: 'answer', answer: TASK_MODE_SIGNPOST });
+          await replyTaskResult(res, companyId, req.session.userId, stored, message, await answerTaskQuestion(req, effectiveMessage, history));
           return;
         }
       }
