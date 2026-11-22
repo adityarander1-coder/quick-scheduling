@@ -21470,7 +21470,57 @@ window.qsNpOfferSend = function (btn) {
             }
           });
           var rotationlessTypeIds = rotationlessDraftTypeIds(typeIds);
-          return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds, rotationlessTypeIds: rotationlessTypeIds };
+          return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds, rotationlessTypeIds: rotationlessTypeIds, fullDraft: draftIsFullSelection(typeIds, userIds, rotIds) };
+        }
+        // Full-draft decision (Deepika, 2026-11-21 — draft-panel full):
+        // the panel drafts FULL when its selection covers everything —
+        // every offered shift ticked AND every offered team member
+        // ticked AND every person the resolved rotations can place is
+        // picked. The last clause guards a narrowed scope (e.g. a
+        // department filter): if a resolved rotation can place someone
+        // outside the picked set, dropping userIds would draft them
+        // too, so the draft stays partial. People the panel does not
+        // know as active — a stale assignment for someone since
+        // deactivated, whom the engine skips anyway — never block a
+        // full draft.
+        function draftIsFullSelection(typeIds, userIds, rotationIds) {
+          var offeredTypes = draftOfferedTypes();
+          var offeredMembers = draftOfferedMembers();
+          if (!offeredTypes.length || !offeredMembers.length) return false;
+          if (typeIds.length !== offeredTypes.length || userIds.length !== offeredMembers.length) return false;
+          var pickedT = {}, pickedU = {};
+          typeIds.forEach(function (id) { pickedT[id] = true; });
+          userIds.forEach(function (id) { pickedU[id] = true; });
+          if (!offeredTypes.every(function (st) { return pickedT[st.id]; })) return false;
+          if (!offeredMembers.every(function (u) { return pickedU[u.id]; })) return false;
+          var activeIds = {};
+          (bulkAllMembers || []).forEach(function (u) { activeIds[u.id] = true; });
+          var placeable = {};
+          (rotationIds || []).forEach(function (rid) {
+            var rot = null;
+            (draftRotations || []).forEach(function (r) { if (String(r.id) === String(rid)) rot = r; });
+            if (!rot) return;
+            if (rot.groupId && rot.groupShiftTypeId) {
+              draftGroupMemberIds(rot).forEach(function (uid) { if (activeIds[uid]) placeable[uid] = true; });
+            } else {
+              (rot.assignments || []).forEach(function (a) { if (a.userId && activeIds[a.userId]) placeable[a.userId] = true; });
+            }
+          });
+          for (var uid in placeable) if (!pickedU[uid]) return false;
+          return true;
+        }
+        // Request body for a draft generate (Deepika, 2026-11-21 —
+        // draft-panel full): a FULL selection sends no userIds, so the
+        // engine inserts the generation row with user_ids NULL (full
+        // coverage by range) instead of a partial generation for the
+        // listed members. shiftTypeIds stays sent: only explicitly
+        // picked types draft their rotation-less opens, so dropping it
+        // would lose them.
+        function draftGenerateBody(picks, from, to, extra) {
+          var body = { rotationIds: picks.rotationIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to };
+          if (!picks.fullDraft) body.userIds = picks.userIds;
+          if (extra) for (var k in extra) body[k] = extra[k];
+          return body;
         }
         // Types no generatable rotation produces: they draft their
         // open positions from the target (rotation-places-0). The
@@ -21495,7 +21545,7 @@ window.qsNpOfferSend = function (btn) {
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Checking what would change…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, dryRun: true }) }).then(function (r) {
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify(draftGenerateBody(picks, from, to, { dryRun: true })) }).then(function (r) {
             if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             var existing = (r.data && r.data.existingDrafts) || 0;
             var deleted = (r.data && r.data.deletedCount) || 0;
@@ -21522,7 +21572,7 @@ window.qsNpOfferSend = function (btn) {
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Drafting…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode }) }).then(function (r) {
+          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify(draftGenerateBody(picks, from, to, { mode: mode })) }).then(function (r) {
             btn.disabled = false;
             if (!r.ok) { showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             showDraftResult(r.data || {});
