@@ -705,8 +705,11 @@ export async function gatePlanChanges(
   // add_rotation: the person is resolved exactly by step 1 above.
   // The shift type must exist, the start date must be valid, and the
   // pattern must resolve — anything missing or ambiguous is one
-  // clarification, never a guess. No eligibility gate, matching the
-  // manual flow (known open gap, flagged 2026-11-14).
+  // clarification, never a guess. Eligibility is enforced at
+  // execution time (checkRotationEligible in planExecutor, the same
+  // gate the manual flow uses): an ineligible person fails the
+  // change with the reason and the plan goes partial — the gate
+  // never blocks plan creation itself.
   {
     const rotChanges = list.filter((c) => c.action === 'add_rotation');
     if (rotChanges.length) {

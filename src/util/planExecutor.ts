@@ -995,6 +995,59 @@ export async function checkPersonEligible(
 }
 
 /**
+ * Rotation-creation eligibility gate (Deepika, 2026-11-21 — the
+ * per-person rotation creation gap): a rotation may only be created
+ * for a person who is eligible for its shift type. ONE definition,
+ * reused by every rotation-creation path (manual form, copy,
+ * change-from, swap-from, and the plan executor's add_rotation):
+ *   1. the person must be a member of this company;
+ *   2. the person must be active;
+ *   3. the planner's checkPersonEligible must pass — the shift
+ *      type's eligible job-role list (explicit list: one of the
+ *      member's roles must be on it; empty list: the member must
+ *      hold a job role in one of the type's own departments; a type
+ *      with no departments stays open to everyone), membership-aware
+ *      via roleInDepartments/userRoles (cross-department pulls
+ *      count). Members with no role set fail department-scoped types.
+ * The refusal names the person, the shift type, and what makes them
+ * ineligible — never silent. Existing rotations are untouched.
+ */
+export async function checkRotationEligible(
+  companyId: string,
+  userId: string,
+  shiftTypeId: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { rows: trows } = await query(
+    'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2',
+    [shiftTypeId, companyId]
+  );
+  if (!trows.length) return { ok: false, reason: 'That shift type no longer exists.' };
+  const typeName: string = trows[0].name;
+  const hasExplicitList: boolean = Array.isArray(trows[0].eligible_job_role_ids) && trows[0].eligible_job_role_ids.length > 0;
+  const { rows: urows } = await query(
+    'SELECT first_name, last_name, is_active FROM users WHERE id = $1 AND company_id = $2',
+    [userId, companyId]
+  );
+  if (!urows.length) {
+    return { ok: false, reason: `That person is not a member of this company, so no rotation can be created for them on ${typeName}.` };
+  }
+  const personName = `${urows[0].first_name} ${urows[0].last_name || ''}`.trim() || 'That person';
+  if (!urows[0].is_active) {
+    return { ok: false, reason: `${personName} is not an active team member, so no rotation can be created for them on ${typeName}.` };
+  }
+  const elig = await checkPersonEligible(companyId, userId, shiftTypeId);
+  if (elig.ok) return { ok: true };
+  if (hasExplicitList) {
+    const roleNote = elig.roleName
+      ? ` (${personName} is a ${elig.roleName})`
+      : ` (${personName} holds no job role on that list)`;
+    return { ok: false, reason: `${personName} can't be put on a ${typeName} rotation — ${typeName} allows only: ${elig.eligibleNames}${roleNote}.` };
+  }
+  const deptNames = String(elig.eligibleNames || '').replace(/^any job role in /, '');
+  return { ok: false, reason: `${personName} can't be put on a ${typeName} rotation — ${typeName} is only open to people with a job role in ${deptNames}.` };
+}
+
+/**
  * Warn-and-override validation for a plan's changes (Deepika, 2026-10-26).
  * Attaches a `warning` to every assign / assign_recurring / move / swap
  * change that puts someone on a shift type their job role is not eligible
@@ -1815,14 +1868,19 @@ export async function executePlan(
         // (rotations + one rotation_assignments row per pattern day),
         // same validation, same defaults. Group rotations and pairing
         // are NOT covered: this is one person, one shift type, one
-        // repeating pattern. No eligibility gate — the manual flow
-        // has none (known open gap, flagged 2026-11-14). Times come
-        // from the shift type's Settings times, as the manual form
-        // pulls them on the type pick (Deepika, 2026-11-09).
+        // repeating pattern. Eligibility gate (Deepika, 2026-11-21):
+        // the same checkRotationEligible the manual flow uses — an
+        // ineligible person throws with the reason, so the change
+        // fails, the plan goes partial, and nothing is created.
+        // Times come from the shift type's Settings times, as the
+        // manual form pulls them on the type pick (Deepika,
+        // 2026-11-09).
         const member = await findMember(companyId, change.person);
         if (!member) throw new Error(noExactMatch(change.person));
         const st = await findShiftType(companyId, change.shiftType);
         if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+        const gate = await checkRotationEligible(companyId, member.id, st.id);
+        if (!gate.ok) throw new Error(gate.reason);
         const { cycleDays, days } = resolveRotationPattern(change);
         const { rows: trows } = await query(
           'SELECT start_time, end_time FROM shift_types WHERE id = $1 AND company_id = $2',

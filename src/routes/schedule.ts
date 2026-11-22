@@ -31,7 +31,7 @@ import { sendGapOfferNotifications } from '../util/gapOfferEmails.js';
 import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
-import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
+import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete, checkRotationEligible } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
 import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
@@ -4909,7 +4909,6 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
         [gShiftTypeId, companyId]
       );
       if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
-      const typeDepts = await shiftTypeDeptMap(companyId);
       const allMembers: any[] = [];
       for (const gid of groupIds) {
         const { rows: grows } = await query(
@@ -4926,11 +4925,13 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
           return;
         }
         for (const m of members) {
-          const elig = await checkShiftEligibility(companyId, m.userId, trows[0].eligibleIds, typeDepts.get(gShiftTypeId) || []);
-          if (!elig.ok) {
-            res.status(400).json({
-              error: `${m.firstName} ${m.lastName} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
-            });
+          // Eligibility gate (Deepika, 2026-11-21): the same
+          // checkRotationEligible every rotation-creation path
+          // uses, so the refusal names the person, the shift type,
+          // and the cause.
+          const gate = await checkRotationEligible(companyId, m.userId, gShiftTypeId);
+          if (!gate.ok) {
+            res.status(400).json({ error: gate.reason });
             return;
           }
           allMembers.push(m);
@@ -4987,6 +4988,27 @@ router.post('/rotations', requireRole('owner', 'scheduler'), async (req: Request
       if (missingRef || !cleanAssignments.length) {
         res.status(400).json({ error: 'Some pattern days are missing a person or a shift type — nothing was saved.' });
         return;
+      }
+    }
+    // Eligibility gate (Deepika, 2026-11-21): a per-person rotation
+    // may only be created for someone eligible for its shift type
+    // (member + active + the shift type's job-role rule — the same
+    // checkRotationEligible the group-rotation branch above, the
+    // pair flow, and the plan executor use). Checked BEFORE the
+    // insert, so a refusal saves nothing. Group saves send no
+    // assignments, so this loop is a no-op for them — their members
+    // were already gated in the group branch above.
+    if (cleanAssignments.length) {
+      const seenPairs = new Set<string>();
+      for (const a of cleanAssignments) {
+        const pkey = `${a.userId}|${a.shiftTypeId}`;
+        if (seenPairs.has(pkey)) continue;
+        seenPairs.add(pkey);
+        const gate = await checkRotationEligible(companyId, a.userId, a.shiftTypeId);
+        if (!gate.ok) {
+          res.status(400).json({ error: gate.reason });
+          return;
+        }
       }
     }
     const id = crypto.randomUUID();
@@ -5146,6 +5168,22 @@ router.post('/rotations/copy', requireRole('owner', 'scheduler'), async (req: Re
         continue;
       }
       const name = `${urows[0].firstName} ${urows[0].lastName}`.trim();
+      // Eligibility gate (Deepika, 2026-11-21): copying a pattern
+      // creates a NEW per-person rotation for the target, so the
+      // target must be eligible for every shift type the pattern
+      // uses. An ineligible target is SKIPPED with the reason (the
+      // copy result names them) and the other copies still go
+      // ahead — the same per-target skip shape the already-has and
+      // inactive cases use.
+      let blocked: string | null = null;
+      for (const tid of [...new Set(effPairs.map((p: any) => String(p.shiftTypeId)))]) {
+        const gate = await checkRotationEligible(companyId, uid, tid);
+        if (!gate.ok) { blocked = gate.reason; break; }
+      }
+      if (blocked) {
+        decisions.push({ userId: uid, name, skip: blocked });
+        continue;
+      }
       const { rows: theirRots } = await query(
         `SELECT r.id, r.cycle_days AS "cycleDays", r.start_time::text AS "startTime", r.end_time::text AS "endTime",
                 r.end_date::text AS "endDate"
@@ -5323,19 +5361,18 @@ router.post('/rotations/pair', requireRole('owner', 'scheduler'), async (req: Re
       members.push({ id: uid, name: nm, firstName: String(urows[0].firstName || nm) });
     }
     // Eligibility + department scope, exactly as a group rotation
-    // created through the form is checked.
+    // created through the form is checked — the same
+    // checkRotationEligible every rotation-creation path uses, so
+    // the refusal names the person, the shift type, and the cause.
     const { rows: trows } = await query(
       'SELECT eligible_job_role_ids AS "eligibleIds" FROM shift_types WHERE id = $1 AND company_id = $2',
       [groupShiftTypeId, companyId]
     );
     if (!trows.length) { res.status(400).json({ error: 'That shift type no longer exists.' }); return; }
-    const typeDepts = await shiftTypeDeptMap(companyId);
     for (const m of members) {
-      const elig = await checkShiftEligibility(companyId, m.id, trows[0].eligibleIds, typeDepts.get(groupShiftTypeId) || []);
-      if (!elig.ok) {
-        res.status(400).json({
-          error: `${m.name} can't take this shift — ${elig.error.replace(/^This shift can only be picked up by:/, 'it is limited to:')}`,
-        });
+      const gate = await checkRotationEligible(companyId, m.id, groupShiftTypeId);
+      if (!gate.ok) {
+        res.status(400).json({ error: gate.reason });
         return;
       }
     }
@@ -5624,6 +5661,15 @@ router.post('/rotations/:id/change-from', requireRole('owner', 'scheduler'), asy
     );
     if (!urows.length || !urows[0].isActive) { res.status(400).json({ error: 'That person is not an active team member.' }); return; }
     const personName = `${urows[0].firstName} ${urows[0].lastName}`.trim();
+    // Eligibility gate (Deepika, 2026-11-21): changing from a date
+    // creates a NEW per-person rotation for this person, so they
+    // must be eligible for every shift type the new pattern uses.
+    // Refused before anything is written; the old rotation is
+    // untouched.
+    for (const tid of typeIds) {
+      const gate = await checkRotationEligible(companyId, userId, tid);
+      if (!gate.ok) { res.status(400).json({ error: gate.reason }); return; }
+    }
     // Department scope: ending the old rotation and starting the new
     // one must both sit inside the scheduler's active department.
     const scopeDepts = new Set<string>([
@@ -5715,6 +5761,21 @@ router.post('/rotations/swap-from', requireRole('owner', 'scheduler'), async (re
         return;
       }
       prepared.push({ userId, rotation: rot, pattern: await readPersonPattern(query, rot, userId) });
+    }
+
+    // Eligibility gate (Deepika, 2026-11-21): a swap creates a NEW
+    // per-person rotation for each receiver with the giver's
+    // pattern, so each receiver must be eligible for every shift
+    // type in the pattern they would receive. All-or-nothing like
+    // the rest of this validation — one ineligible receiver refuses
+    // the whole swap with the reason, before anything is written.
+    for (let i = 0; i < prepared.length; i++) {
+      const receiver = prepared[i];
+      const giverPattern = prepared[(i + 1) % prepared.length].pattern;
+      for (const tid of [...new Set(giverPattern.pairs.map((p) => String(p.shiftTypeId)))]) {
+        const gate = await checkRotationEligible(companyId, receiver.userId, tid);
+        if (!gate.ok) { res.status(400).json({ error: gate.reason }); return; }
+      }
     }
 
     // Department scope across every ended rotation and every new one.
