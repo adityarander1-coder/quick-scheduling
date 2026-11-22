@@ -20559,6 +20559,17 @@ window.qsNpOfferSend = function (btn) {
         @media (min-width: 900px) {
           #tab-bulk .bulk-band { margin: 0 -2rem 1rem; padding: 14px 2rem; flex-wrap: nowrap; }
         }
+        /* Close shifts tidies (Deepika, 2026-11-21): the fixed Tools
+           rail (58px, 172px when expanded) overlays the band's far
+           right and clipped the Run button to "Ru". Reserve the
+           rail's width on this band only — the rail itself, and
+           every other tab, are untouched. */
+        body.qs-tools-on #tab-bulk .bulk-band { padding-right: calc(1.5rem + 66px); }
+        body.qs-tools-on.qs-tools-wide #tab-bulk .bulk-band { padding-right: calc(1.5rem + 180px); }
+        @media (min-width: 900px) {
+          body.qs-tools-on #tab-bulk .bulk-band { padding-right: calc(2rem + 66px); }
+          body.qs-tools-on.qs-tools-wide #tab-bulk .bulk-band { padding-right: calc(2rem + 180px); }
+        }
       </style>
       <div class="bulk-band">
         <div id="bulk-action-wrap" class="bulk-fld">
@@ -20960,7 +20971,9 @@ window.qsNpOfferSend = function (btn) {
           if (!box) return;
           bulkCloseDates = bulkCloseDates.slice().sort();
           box.innerHTML = bulkCloseDates.map(function (d) {
-            var label = bulkPubFmtDay(d).replace(/, \d{4}$/, '');
+            // Tidies (Deepika, 2026-11-21): the chip label keeps the
+            // year — "Dec 15, 2026", not "Dec 15".
+            var label = bulkPubFmtDay(d);
             return '<span class="bulk-close-chip" data-date="' + d + '" style="display:inline-flex;align-items:center;gap:4px;background:#fff;color:#222;border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;font-size:0.85rem">' + esc(label) +
               '<button type="button" data-remove-date="' + d + '" aria-label="Remove ' + esc(label) + '" style="border:none;background:none;cursor:pointer;font-size:1rem;line-height:1;padding:0 2px;color:#6b7280">×</button></span>';
           }).join('');
@@ -21691,6 +21704,12 @@ window.qsNpOfferSend = function (btn) {
             var f = $('bulk-close-span-from').value, t = $('bulk-close-span-to').value;
             if (!f || !t || f > t) { showResult('Pick a valid date range for the span.', true); return; }
             datesInRange(f, t).forEach(bulkCloseAddDate);
+            // Tidies (Deepika, 2026-11-21): clear the from–to fields
+            // after adding, exactly like Add date clears its field.
+            // A second click then has empty inputs (and the add itself
+            // dedupes), so the same range can never double-add.
+            $('bulk-close-span-from').value = '';
+            $('bulk-close-span-to').value = '';
           });
           var chips = document.getElementById('bulk-close-chips');
           if (chips) chips.addEventListener('click', function (e) {
