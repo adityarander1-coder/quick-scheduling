@@ -1337,12 +1337,39 @@ export async function gatePlanChanges(
           if (addMode === 'total') {
             const deltas = touched.map((d) => (deltaOn as any)(d));
             const total = deltas.reduce((s: number, n: number) => s + n, 0);
+            // A date that adds 0 is NAMED with its reason — never
+            // a silent "will add 0" (Deepika, 2026-11-21, fix-list
+            // item 5, ADD side — the mirror of the close side's
+            // keepTotal lines). The reasons come from the gate's
+            // own checks on the real schedule: a suppressed date
+            // (its opens were closed by an earlier close) says so;
+            // a date already at or above the target says so. A
+            // reason that matches neither is said to be not
+            // determined, never guessed.
+            const zeroReason = (d: string): string => {
+              const t = (totalOn as any)(d);
+              const suppressed = inputs.suppressed.get(`${d}|${type.id}`) || 0;
+              if (t.opens === 0 && suppressed > 0) return 'the open slots were already closed';
+              if (t.total >= (c.targetTotal as number)) return `already at ${c.targetTotal} or more total`;
+              return 'reason not determined';
+            };
+            const zeroShort = (d: string): string => {
+              const t = (totalOn as any)(d);
+              const suppressed = inputs.suppressed.get(`${d}|${type.id}`) || 0;
+              if (t.opens === 0 && suppressed > 0) return 'already closed';
+              if (t.total >= (c.targetTotal as number)) return `already at ${c.targetTotal} or more total`;
+              return 'reason not determined';
+            };
             const body = touched.length <= 7
               ? touched.map((d, i) => {
                   const t = (totalOn as any)(d);
+                  if (deltas[i] <= 0) return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will add 0 — ${zeroReason(d)}, nothing to add`;
                   return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will add ${deltas[i]}`;
                 }).join('; ')
-              : `will add ${total} slots over ${touched.length} days to reach ${c.targetTotal} per date`;
+              : `will add ${total} slots over ${touched.length} days to reach ${c.targetTotal} per date`
+                + (deltas.some((n: number) => n <= 0)
+                    ? ` — skipped: ${touched.filter((d, i) => deltas[i] <= 0).map((d) => `${d} (${zeroShort(d)})`).join('; ')}`
+                    : '');
             c.addDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are added; nobody is assigned to a shift.`;
             gateDetails.push(c.addDetail);
             continue;
