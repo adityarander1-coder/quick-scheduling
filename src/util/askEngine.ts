@@ -6,6 +6,8 @@ import { query } from '../db.js';
 import { isGeminiConfigured, answerAskWithData } from './gemini.js';
 import { loadSpeakers } from './sessionPeople.js';
 import { extractRequestRange, matchShiftType, matchMemberName } from './requestUnderstanding.js';
+import { getGeneratedTypeIds, getNotDraftedByType } from './scheduleMode.js';
+import { suppressedMap } from './openSlots.js';
 
 interface ShiftType { id: string; name: string; }
 interface Member { id: string; name: string; firstName: string; lastName: string; nickname: string | null; email?: string | null; phone?: string | null; departmentId?: string | null; }
@@ -554,52 +556,137 @@ export async function answerQuestion(question: string, ctx: AskContext): Promise
   const rangeTo = (dflt: string) => reqRange?.[1] || dflt;
 
   // --- "Are we short / where are we short" ---
+  // Counts come from the real schedule (Deepika, 2026-11-20/21 —
+  // the top-up rule: draft shifts + published shifts + stored open
+  // slots, never the rotation pattern or the target alone). A day
+  // is short only when its filled shifts (draft AND published —
+  // a draft shift is a person on the floor) fall below the staffing
+  // target that applies that day (weekday + start/end gated, like
+  // the grid's open count). Two day states are NOT short and are
+  // named for what they are instead of counted as ordinary days:
+  //   • CLOSED — the type was closed for that date (whole-type
+  //     close: stored extras deleted, the visible shortfall
+  //     suppressed, so 0 opens can ever show). Suppression rows
+  //     are the record left behind (no closed flag since 5304270):
+  //     shortfall > 0, suppressed > 0, opens 0.
+  //   • NOT DRAFTED — a generated type whose rotation was never
+  //     drafted for that date (getNotDraftedByType): the grid
+  //     counts its target as 0 there, so "short" is meaningless.
+  //     Generated types no rotation produces are never undrafted
+  //     (their target always counts) — same rule as the grid.
   if (isShort) {
     const from = rangeFrom(date || week?.from || fmtDate(today));
     const to = rangeTo(date || week?.to || fmtDate(today));
-    // Get staffing targets.
-    const { rows: targets } = await query(
-      `SELECT st.name, t.target_count FROM staffing_targets t
+    // Staffing targets, scoped to the asker's visible departments
+    // (same rule as every other Ask branch) and gated per date by
+    // weekday + start/end, like loadOpenSlots.
+    const targetClauses = ['t.company_id = $1'];
+    const targetParams: any[] = [ctx.companyId];
+    if (ctx.visibleDeptIds !== null) {
+      targetParams.push(ctx.visibleDeptIds);
+      targetClauses.push(`(st.department_id IS NULL OR st.department_id = ANY($${targetParams.length}))`);
+    }
+    const { rows: targetRows } = await query(
+      `SELECT st.id AS "shiftTypeId", st.name, t.target_count AS "targetCount",
+              t.weekdays, t.start_date::text AS "startDate", t.end_date::text AS "endDate"
+       FROM staffing_targets t
        JOIN shift_types st ON st.id = t.shift_type_id
-       WHERE t.company_id = $1`,
-      [ctx.companyId]
+       WHERE ${targetClauses.join(' AND ')}`,
+      targetParams
     );
-    if (!targets.length) {
+    if (!targetRows.length) {
       return 'No staffing targets are set up yet. Set them in Settings so I can check for gaps.';
     }
+    const targetFor = (typeId: string, ds: string, dow: number): number => {
+      for (const tg of targetRows) {
+        if (tg.shiftTypeId !== typeId) continue;
+        const weekdays = tg.weekdays || [0, 1, 2, 3, 4, 5, 6];
+        if (!weekdays.includes(dow)) continue;
+        if (tg.startDate && ds < tg.startDate) continue;
+        if (tg.endDate && ds > tg.endDate) continue;
+        return tg.targetCount || 0;
+      }
+      return 0;
+    };
+    // Filled = draft + published shifts (both are real schedule).
+    const shiftClauses = ['s.company_id = $1', 's.date >= $2', 's.date <= $3'];
+    const shiftParams: any[] = [ctx.companyId, from, to];
+    if (ctx.visibleDeptIds !== null) {
+      shiftParams.push(ctx.visibleDeptIds);
+      shiftClauses.push(`(st.department_id IS NULL OR st.department_id = ANY($${shiftParams.length}))`);
+    }
     const { rows: shifts } = await query(
-      `SELECT s.date::text AS date, st.name AS "shiftTypeName", COUNT(*) AS count
+      `SELECT s.date::text AS date, st.id AS "shiftTypeId", st.name AS "shiftTypeName", COUNT(*) AS count
        FROM shifts s JOIN shift_types st ON st.id = s.shift_type_id
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = true
-       GROUP BY s.date, st.name`,
-      [ctx.companyId, from, to]
+       WHERE ${shiftClauses.join(' AND ')}
+       GROUP BY s.date, st.id, st.name`,
+      shiftParams
     );
-    // Drafts don't count as staffed (Deepika, 2026-11-19 — issue
-    // N9): a draft shift is not a person on the floor. They are
-    // reported separately below, never counted in the gaps.
-    const { rows: draftRows } = await query(
-      `SELECT COUNT(*)::int AS n FROM shifts s
-       WHERE s.company_id = $1 AND s.date >= $2 AND s.date <= $3 AND s.published = false`,
-      [ctx.companyId, from, to]
-    );
-    const draftCount = draftRows[0]?.n || 0;
     const byDateShift = new Map<string, number>();
-    for (const s of shifts) byDateShift.set(s.date + '|' + s.shiftTypeName, Number(s.count));
+    for (const s of shifts) byDateShift.set(s.date + '|' + s.shiftTypeId, Number(s.count));
+    // Stored extras + suppressions in the window (the close record).
+    const { rows: extraRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+       FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3
+       GROUP BY date, shift_type_id`,
+      [ctx.companyId, from, to]
+    );
+    const extraMap = new Map(extraRows.map((r: any) => [`${r.date}|${r.shiftTypeId}`, Number(r.n || 0)]));
+    const supMap = await suppressedMap(query as any, ctx.companyId, from, to);
+    // Undrafted dates per generated type (never for live types,
+    // never for generated types no rotation produces).
+    const generatedIds = await getGeneratedTypeIds(query as any, ctx.companyId);
+    const notDrafted = await getNotDraftedByType(query as any, ctx.companyId, generatedIds, from, to);
+    const undraftedSet = new Set<string>();
+    for (const [typeId, dates] of Object.entries(notDrafted)) {
+      for (const ds of dates as string[]) undraftedSet.add(`${ds}|${typeId}`);
+    }
     const gaps: string[] = [];
+    const closedLines: string[] = [];
+    const undraftedLines: string[] = [];
+    // One evaluation per shift type (a type can carry several
+    // target rows for different ranges; targetFor picks the one
+    // that applies that day).
+    const types = [...new Map(targetRows.map((t: any) => [t.shiftTypeId, t])).values()];
     const d = new Date(from + 'T00:00:00');
     const end = new Date(to + 'T00:00:00');
     while (d <= end) {
       const ds = fmtDate(d);
-      for (const t of targets) {
-        const have = byDateShift.get(ds + '|' + t.name) || 0;
-        if (have < t.target_count) {
-          gaps.push(`${prettyDate(ds)}: ${t.name} — ${have}/${t.target_count}`);
+      for (const t of types) {
+        const target = targetFor(t.shiftTypeId, ds, d.getDay());
+        if (!target) continue;
+        const filled = byDateShift.get(ds + '|' + t.shiftTypeId) || 0;
+        const shortfall = target - filled;
+        if (shortfall <= 0) continue;
+        const key = ds + '|' + t.shiftTypeId;
+        // Undrafted generated date: the target counts 0 on the
+        // grid, so this is not a gap — say it was never drafted.
+        if (undraftedSet.has(key)) {
+          undraftedLines.push(`${prettyDate(ds)}: ${t.name} — not drafted yet`);
+          continue;
         }
+        // Closed date: the shortfall was suppressed and no opens
+        // can show (stored extras are swept by the close, so opens
+        // land at 0) — say it is closed, never short.
+        const extra = extraMap.get(key) || 0;
+        const suppressed = supMap.get(key) || 0;
+        const opens = Math.max(0, Math.max(0, shortfall) + extra - suppressed);
+        if (suppressed > 0 && opens === 0) {
+          closedLines.push(`${prettyDate(ds)}: ${t.name} — closed`);
+          continue;
+        }
+        gaps.push(`${prettyDate(ds)}: ${t.name} — ${filled}/${target}`);
       }
       d.setDate(d.getDate() + 1);
     }
-    if (!gaps.length) return `You're fully staffed ${date ? 'on ' + prettyDate(date) : 'for that period'}.${draftCount ? ` (${draftCount} draft shift${draftCount === 1 ? '' : 's'} not counted.)` : ''}`;
-    return `Short spots:\n${gaps.join('\n')}${draftCount ? `\n(${draftCount} draft shift${draftCount === 1 ? '' : 's'} in that period not counted — drafts don't count as staffed.)` : ''}`;
+    const stateLines: string[] = [];
+    if (closedLines.length) stateLines.push(`Closed:\n${closedLines.join('\n')}`);
+    if (undraftedLines.length) stateLines.push(`Not drafted yet:\n${undraftedLines.join('\n')}`);
+    if (!gaps.length) {
+      const head = `You're not short ${date ? 'on ' + prettyDate(date) : 'for that period'}.`;
+      return stateLines.length ? `${head}\n${stateLines.join('\n')}` : `You're fully staffed ${date ? 'on ' + prettyDate(date) : 'for that period'}.`;
+    }
+    return `Short spots:\n${gaps.join('\n')}${stateLines.length ? `\n${stateLines.join('\n')}` : ''}`;
   }
 
   // --- Open shifts: staffing target + extra open slots − assigned shifts,
