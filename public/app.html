@@ -20589,11 +20589,11 @@ window.qsNpOfferSend = function (btn) {
             <div id="bulk-pub-types" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:110px;overflow-y:auto;min-width:220px"></div>
           </div>
         </div>
-        <div class="bulk-fld bulk-date-fld">
+        <div id="bulk-from-wrap" class="bulk-fld bulk-date-fld">
           <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
           <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
         </div>
-        <div class="bulk-fld bulk-date-fld">
+        <div id="bulk-to-wrap" class="bulk-fld bulk-date-fld">
           <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To</label>
           <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
         </div>
@@ -20605,6 +20605,37 @@ window.qsNpOfferSend = function (btn) {
           <div id="bulk-count-wrap">
             <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Slots per date</label>
             <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
+          </div>
+        </div>
+        <div id="bulk-close-panel" class="hidden" style="flex:1 1 100%;display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;background:rgba(255,255,255,0.08);border-radius:8px;padding:10px 12px">
+          <div style="flex:1 1 200px;min-width:190px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Departments</label>
+            <div id="bulk-close-depts" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:120px;overflow-y:auto"></div>
+            <p style="font-size:0.82rem;color:#cfe3e6;margin:6px 0 0">Tick departments to narrow the shift types. None ticked means all departments.</p>
+          </div>
+          <div style="flex:1 1 240px;min-width:210px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Shift types</label>
+            <div id="bulk-close-types" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:140px;overflow-y:auto"></div>
+          </div>
+          <div style="flex:1 1 260px;min-width:220px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Dates</label>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <input type="date" id="bulk-close-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+              <button type="button" id="bulk-close-add-date" class="btn-secondary" style="padding:8px 12px">Add date</button>
+            </div>
+            <div id="bulk-close-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+              <input type="date" id="bulk-close-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+              <span style="color:#fff">to</span>
+              <input type="date" id="bulk-close-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+              <button type="button" id="bulk-close-add-span" class="btn-secondary" style="padding:8px 12px">Add range</button>
+            </div>
+            <p id="bulk-close-hint" class="hidden" style="font-size:0.85rem;color:#ffd9a8;margin:8px 0 0">Pick at least one shift type and one date</p>
+          </div>
+          <div style="flex:1 1 200px;min-width:190px">
+            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">How many to close per date</label>
+            <input type="number" id="bulk-close-count" min="1" max="20" placeholder="All" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;width:90px">
+            <p style="font-size:0.82rem;color:#cfe3e6;margin:6px 0 0">Leave empty to close all. A number closes at most that many per date, for each shift type — the rest stay showing.</p>
           </div>
         </div>
         <button type="button" id="bulk-run" class="btn">Run</button>
@@ -20764,6 +20795,7 @@ window.qsNpOfferSend = function (btn) {
             if (!r.ok) return;
             bulkAllShiftTypes = r.data.shiftTypes || [];
             renderBulkPubTypes();
+            renderBulkCloseTypes();
             if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
             var sel = $('bulk-shifttype');
             var fsel = $('bulk-shifttype-filter');
@@ -20784,15 +20816,22 @@ window.qsNpOfferSend = function (btn) {
         }
         function updateBulkSlotVisibility() {
           var a = $('bulk-action').value;
-          var isSlotAction = (a === 'open-slots' || a === 'close-shifts');
+          var isSlotAction = (a === 'open-slots');
+          var isClose = (a === 'close-shifts');
           var isPublish = a === 'publish';
           var isDraft = a === 'draft-schedule';
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
-          if (mw) mw.style.display = (isSlotAction || isDraft) ? 'none' : '';
+          if (mw) mw.style.display = (isSlotAction || isClose || isDraft) ? 'none' : '';
           var fw = $('bulk-shifttype-filter-wrap');
-          if (fw) fw.style.display = (isSlotAction || isPublish || isDraft) ? 'none' : '';
+          if (fw) fw.style.display = (isSlotAction || isClose || isPublish || isDraft) ? 'none' : '';
+          // Close shifts uses its own pickers (departments + types +
+          // dates) instead of the From / To range.
+          var cp = $('bulk-close-panel');
+          if (cp) cp.classList.toggle('hidden', !isClose);
+          var frw = $('bulk-from-wrap'); if (frw) frw.style.display = isClose ? 'none' : '';
+          var tow = $('bulk-to-wrap'); if (tow) tow.style.display = isClose ? 'none' : '';
           var po = $('bulk-pub-opts');
           if (po) po.style.display = isPublish ? 'flex' : 'none';
           var run = $('bulk-run');
@@ -20801,6 +20840,7 @@ window.qsNpOfferSend = function (btn) {
             // The draft panel has its own "Draft schedule" button.
             run.style.display = isDraft ? 'none' : '';
           }
+          syncBulkCloseRun();
           var dp = $('bulk-draft-panel');
           if (dp) {
             dp.classList.toggle('hidden', !isDraft);
@@ -20810,6 +20850,234 @@ window.qsNpOfferSend = function (btn) {
             }
           }
           if (!isPublish) resetBulkPublishPreview();
+        }
+
+        // ---- Bulk Actions "Close shifts" pickers (Deepika, 2026-11-21):
+        // shift types grouped by department, multi-select departments
+        // AND shift types, multi-date picker (single dates + a
+        // from–to span helper). Close-only pickers — the shared
+        // #bulk-shifttype select stays exactly as it is for
+        // "Open extra slots".
+        var bulkCloseDepts = []; // department ids (empty = all)
+        var bulkCloseTypeIds = []; // shift type ids
+        var bulkCloseDates = []; // ISO dates, sorted
+        function bulkCloseDeptIdsOf(st) {
+          if (window.qsStDeptIds) return window.qsStDeptIds(st);
+          if (st.departmentIds && st.departmentIds.length) return st.departmentIds.map(String);
+          if (st.departmentId) return [String(st.departmentId)];
+          return [];
+        }
+        // Types the close picker may offer (same gate as the
+        // open-slots select: active + editable in a department the
+        // global filter allows).
+        function bulkCloseOfferedTypes() {
+          return (bulkAllShiftTypes || []).filter(function (st) {
+            if (!st || !st.isActive) return false;
+            if (!window.qsStEditable(st)) return false;
+            var deptIds = bulkCloseDeptIdsOf(st);
+            if (deptIds.length && !window.isOwner && window.qsActiveDeptId) {
+              if (!deptIds.some(window.qsDeptFilterAllows)) return false;
+            }
+            return true;
+          }).sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+        }
+        function bulkCloseAllDepts() {
+          var known = window.qsDepartments || [];
+          if (known.length) return known.filter(function (d) { return !window.qsCanViewDept || window.qsCanViewDept(d.id); });
+          return null; // fetch below
+        }
+        function loadBulkCloseDepts() {
+          var box = $('bulk-close-depts');
+          if (!box) return;
+          var known = bulkCloseAllDepts();
+          if (known) { renderBulkCloseDepts(known); return; }
+          api('/api/departments').then(function (r) {
+            renderBulkCloseDepts(r.ok && r.data.departments ? r.data.departments : []);
+          }).catch(function () { renderBulkCloseDepts([]); });
+        }
+        function renderBulkCloseDepts(allDepts) {
+          var box = $('bulk-close-depts');
+          if (!box) return;
+          var depts = (allDepts || []).filter(function (d) {
+            return !window.qsCanViewDept || window.qsCanViewDept(d.id);
+          });
+          box.innerHTML = depts.length ? depts.map(function (d) {
+            var checked = bulkCloseDepts.indexOf(String(d.id)) !== -1 ? ' checked' : '';
+            return '<label style="display:block;font-size:0.9rem;padding:2px 4px;cursor:pointer;color:#222">' +
+              '<input type="checkbox" class="bulk-close-dept-cb" value="' + d.id + '"' + checked + ' style="margin-right:6px">' + esc(d.name) + '</label>';
+          }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No departments.</p>';
+          renderBulkCloseTypes();
+        }
+        // Grouped by department: a type that belongs to several
+        // departments shows under each. Picking departments narrows
+        // the list; picking none shows every department.
+        function renderBulkCloseTypes() {
+          var box = $('bulk-close-types');
+          if (!box) return;
+          var types = bulkCloseOfferedTypes();
+          var depts = bulkCloseAllDepts();
+          var selDepts = bulkCloseDepts.slice();
+          function deptName(id) {
+            var d = (depts || []).find(function (x) { return String(x.id) === String(id); });
+            return d ? d.name : null;
+          }
+          // Department order: the department list order, then
+          // "No department" for unassigned types.
+          var order = [];
+          (depts || []).forEach(function (d) { order.push(String(d.id)); });
+          var groups = {};
+          types.forEach(function (st) {
+            var ids = bulkCloseDeptIdsOf(st);
+            if (!ids.length) {
+              (groups[''] = groups[''] || []).push(st);
+              return;
+            }
+            ids.forEach(function (id) {
+              if (selDepts.length && selDepts.indexOf(String(id)) === -1) return;
+              (groups[String(id)] = groups[String(id)] || []).push(st);
+            });
+          });
+          var keys = order.filter(function (id) { return groups[id] && groups[id].length; });
+          if (groups[''] && groups[''].length && !selDepts.length) keys.push('');
+          var html = keys.map(function (key) {
+            var name = key === '' ? 'No department' : (deptName(key) || 'Department');
+            var rows = groups[key].map(function (st) {
+              var checked = bulkCloseTypeIds.indexOf(String(st.id)) !== -1 ? ' checked' : '';
+              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
+                '<input type="checkbox" class="bulk-close-type-cb" value="' + st.id + '"' + checked + ' style="margin-right:6px">' + esc(st.name) + '</label>';
+            }).join('');
+            return '<div class="bulk-close-type-group" data-dept="' + esc(name) + '"><div class="bulk-close-type-group-h" style="font-size:0.88rem;font-weight:700;padding:4px 4px 0;color:#222">' + esc(name) + '</div>' + rows + '</div>';
+          }).join('');
+          box.innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shift types for these departments.</p>';
+        }
+        function bulkCloseSyncTypeBoxes() {
+          document.querySelectorAll('.bulk-close-type-cb').forEach(function (cb) {
+            cb.checked = bulkCloseTypeIds.indexOf(String(cb.value)) !== -1;
+          });
+        }
+        function renderBulkCloseChips() {
+          var box = $('bulk-close-chips');
+          if (!box) return;
+          bulkCloseDates = bulkCloseDates.slice().sort();
+          box.innerHTML = bulkCloseDates.map(function (d) {
+            var label = bulkPubFmtDay(d).replace(/, \d{4}$/, '');
+            return '<span class="bulk-close-chip" data-date="' + d + '" style="display:inline-flex;align-items:center;gap:4px;background:#fff;color:#222;border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;font-size:0.85rem">' + esc(label) +
+              '<button type="button" data-remove-date="' + d + '" aria-label="Remove ' + esc(label) + '" style="border:none;background:none;cursor:pointer;font-size:1rem;line-height:1;padding:0 2px;color:#6b7280">×</button></span>';
+          }).join('');
+          syncBulkCloseRun();
+        }
+        function bulkCloseAddDate(d) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d || '')) return false;
+          if (bulkCloseDates.indexOf(d) === -1) bulkCloseDates.push(d);
+          renderBulkCloseChips();
+          return true;
+        }
+        function syncBulkCloseRun() {
+          var run = $('bulk-run');
+          var hint = $('bulk-close-hint');
+          if (!$('bulk-action')) return;
+          var isClose = $('bulk-action').value === 'close-shifts';
+          var ok = bulkCloseTypeIds.length > 0 && bulkCloseDates.length > 0;
+          if (run) run.disabled = isClose && !ok;
+          if (hint) hint.classList.toggle('hidden', !isClose || ok);
+        }
+        // "How many to close per date" (Deepika, 2026-11-21):
+        // empty = All (today's whole-type close); a number closes
+        // at most that many per date, per type.
+        function bulkCloseCount() {
+          var inp = $('bulk-close-count');
+          if (!inp) return 0;
+          var n = parseInt(inp.value, 10);
+          if (!isFinite(n) || n < 1) return 0;
+          return Math.min(20, n);
+        }
+        // The confirm is the in-app dialog (Deepika, 2026-11-21 —
+        // the Nov 21 no-effect bug: the old native confirm() was
+        // auto-dismissed by the browser task, so Bulk Close silently
+        // did nothing while the per-day buttons, which never confirm,
+        // worked). The dialog names the selected types and the
+        // number of dates before anything is written.
+        function runBulkClose() {
+          var types = bulkCloseTypeIds.map(function (id) {
+            return (bulkAllShiftTypes || []).find(function (st) { return String(st.id) === String(id); });
+          }).filter(Boolean);
+          var dates = bulkCloseDates.slice().sort();
+          if (!types.length || !dates.length) { showResult('Pick at least one shift type and one date.', true); return; }
+          var typeNames = types.map(function (st) { return st.name; }).join(', ');
+          var count = bulkCloseCount();
+          var dateWord = dates.length + ' date' + (dates.length === 1 ? '' : 's');
+          var msg = count
+            ? 'Close up to ' + count + ' open ' + typeNames + ' slots per date on ' + dateWord + '? The rest stay showing.'
+            : 'Close all open ' + typeNames + ' slots on ' + dateWord + '? No open slots will show.';
+          var go = function () { doBulkClose(types, dates, typeNames, count); };
+          if (window.qsShowDialog) {
+            window.qsShowDialog('Close shifts?', '<p>' + esc(msg) + '</p>', [
+              { label: 'Cancel' },
+              { label: 'Close shifts', primary: true, onClick: go }
+            ]);
+          } else if (confirm(msg)) go();
+        }
+        function doBulkClose(types, dates, typeNames, count) {
+          showResult('Working…', false);
+          var bulkUndoSlots = [], bulkRedoCalls = [];
+          var failed = 0;
+          // Type-major order, so the undo slots group by type.
+          var pairs = [];
+          types.forEach(function (st) { dates.forEach(function (d) { pairs.push({ st: st, date: d }); }); });
+          var next = function (i) {
+            if (i >= pairs.length) {
+              if (bulkUndoSlots.length && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo({ slots: bulkUndoSlots }, bulkRedoCalls);
+              var dateNames = dates.map(bulkPubFmtDay).join(', ');
+              var doneMsg = count
+                ? 'Done — closed up to ' + count + ' open slots per date for ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.'
+                : 'Done — closed ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.';
+              showResult(failed ? 'Done with ' + failed + ' error(s) — closed ' + typeNames + ' on ' + (pairs.length - failed) + ' date(s).' : doneMsg, !!failed);
+              // A finished run clears the picks, so the next run
+              // starts fresh and can never silently re-close the
+              // last run's types and dates. On a partial failure
+              // the picks stay, so she can re-run the same picks.
+              if (!failed) {
+                bulkCloseTypeIds = [];
+                bulkCloseDates = [];
+                var ci = $('bulk-close-count'); if (ci) ci.value = '';
+                renderBulkCloseTypes();
+                renderBulkCloseChips();
+              }
+              return;
+            }
+            var p = pairs[i];
+            if (!count) {
+              // "All": today's whole-type close.
+              api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: p.date, shiftTypeId: p.st.id }) }).then(function (r) {
+                if (r.ok) {
+                  if (r.data && r.data.undo && Array.isArray(r.data.undo.slots) && r.data.undo.slots.length) {
+                    bulkUndoSlots = bulkUndoSlots.concat(r.data.undo.slots);
+                    bulkRedoCalls.push({ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: p.date, shiftTypeId: p.st.id } });
+                  }
+                } else failed++;
+                next(i + 1);
+              }).catch(function () { failed++; next(i + 1); });
+            } else {
+              // A number: the per-slot delete loop, the same one
+              // the AI close-count mode uses (POST /extra-slots
+              // with a negative count -> closeOpenSlots) — NOT the
+              // whole-type close, so the remaining shortfall is NOT
+              // suppressed and the leftover opens stay showing. The
+              // server clamps per date to the visible opens ("at
+              // most N"); the redo replays the actual closed count.
+              api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [p.date], shiftTypeId: p.st.id, count: -count }) }).then(function (r) {
+                if (r.ok) {
+                  var slot = r.data && r.data.undo && Array.isArray(r.data.undo.slots) ? r.data.undo.slots[0] : null;
+                  if (slot) {
+                    bulkUndoSlots.push(slot);
+                    bulkRedoCalls.push({ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [p.date], shiftTypeId: p.st.id, count: -(slot.adjust || count) } });
+                  }
+                } else failed++;
+                next(i + 1);
+              }).catch(function () { failed++; next(i + 1); });
+            }
+          };
+          next(0);
         }
 
         // ---- Draft schedule from rotation (background rotations,
@@ -21297,10 +21565,14 @@ window.qsNpOfferSend = function (btn) {
           el.classList.toggle('alert-success', !isError);
         }
         $('bulk-run').addEventListener('click', function () {
+          var action = $('bulk-action').value;
+          // Close shifts has its own pickers (departments + types +
+          // dates) and its own in-app confirm — it never reads the
+          // From / To range or the shared shift-type select.
+          if (action === 'close-shifts') { runBulkClose(); return; }
+          if (action === 'draft-schedule') return; // the draft panel has its own button.
           var from = $('bulk-from').value;
           var to = $('bulk-to').value;
-          var action = $('bulk-action').value;
-          if (action === 'draft-schedule') return; // the draft panel has its own button.
           if (!from || !to || from > to) {
             showResult('Pick a valid date range.', true);
             return;
@@ -21310,47 +21582,17 @@ window.qsNpOfferSend = function (btn) {
           // Step-2 engine first; the manager confirms the exact plan
           // before anything is written.
           if (action === 'publish') { bulkPubPreview(); return; }
-          // Slot actions (open extra slots / close shifts) work on shift types, not members.
-          if (action === 'open-slots' || action === 'close-shifts') {
+          // Slot actions (open extra slots) work on shift types, not members.
+          if (action === 'open-slots') {
             var stId = $('bulk-shifttype').value;
             if (!stId) { showResult('Pick a shift type.', true); return; }
             var stName = $('bulk-shifttype').selectedOptions[0].textContent;
-            if (action === 'open-slots') {
-              var count = Math.max(1, Math.min(20, parseInt($('bulk-slot-count').value, 10) || 1));
-              if (!confirm('Open ' + count + ' extra ' + stName + ' slot(s) per date on ' + dates.length + ' date(s)?')) return;
-              showResult('Working…', false);
-              api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: dates, shiftTypeId: stId, count: count }) }).then(function (r) {
-                showResult(r.ok ? 'Done — extra slots opened on ' + dates.length + ' date(s).' : ((r.data && r.data.error) || 'Could not complete.'), !r.ok);
-              }).catch(function () { showResult('Network error.', true); });
-            } else {
-              if (!confirm('Close ' + stName + ' on ' + dates.length + ' date(s)? No open slots will show.')) return;
-              showResult('Working…', false);
-              var done = 0, failed = 0;
-              // Whole-type close undo (Deepika, 2026-11-20): the
-              // close really deleted the stored rows, so each call
-              // returns an undo payload — collect them and push ONE
-              // entry for the whole bulk close, like a bulk delete.
-              // The redo replays one close call per closed date.
-              var bulkUndoSlots = [], bulkRedoCalls = [];
-              var next = function (i) {
-                if (i >= dates.length) {
-                  if (bulkUndoSlots.length && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo({ slots: bulkUndoSlots }, bulkRedoCalls);
-                  showResult(failed ? 'Done with ' + failed + ' error(s).' : 'Done — ' + stName + ' closed on ' + dates.length + ' date(s).', !!failed);
-                  return;
-                }
-                api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: dates[i], shiftTypeId: stId }) }).then(function (r) {
-                  if (r.ok) {
-                    done++;
-                    if (r.data && r.data.undo && Array.isArray(r.data.undo.slots) && r.data.undo.slots.length) {
-                      bulkUndoSlots = bulkUndoSlots.concat(r.data.undo.slots);
-                      bulkRedoCalls.push({ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: dates[i], shiftTypeId: stId } });
-                    }
-                  } else failed++;
-                  next(i + 1);
-                }).catch(function () { failed++; next(i + 1); });
-              };
-              next(0);
-            }
+            var count = Math.max(1, Math.min(20, parseInt($('bulk-slot-count').value, 10) || 1));
+            if (!confirm('Open ' + count + ' extra ' + stName + ' slot(s) per date on ' + dates.length + ' date(s)?')) return;
+            showResult('Working…', false);
+            api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: dates, shiftTypeId: stId, count: count }) }).then(function (r) {
+              showResult(r.ok ? 'Done — extra slots opened on ' + dates.length + ' date(s).' : ((r.data && r.data.error) || 'Could not complete.'), !r.ok);
+            }).catch(function () { showResult('Network error.', true); });
             return;
           }
           var memberIds = selectedMemberIds();
@@ -21406,8 +21648,8 @@ window.qsNpOfferSend = function (btn) {
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-select-all').addEventListener('change', function () {
           var on = this.checked;
@@ -21416,6 +21658,49 @@ window.qsNpOfferSend = function (btn) {
         $('bulk-members').addEventListener('change', syncBulkSelectAll);
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        // Close-shifts pickers: delegated so the handlers survive
+        // re-renders of the department / type lists and chips.
+        (function () {
+          var deptBox = document.getElementById('bulk-close-depts');
+          if (deptBox) deptBox.addEventListener('change', function (e) {
+            var t = e.target;
+            if (!t.classList.contains('bulk-close-dept-cb')) return;
+            bulkCloseDepts = [];
+            document.querySelectorAll('.bulk-close-dept-cb:checked').forEach(function (cb) { bulkCloseDepts.push(String(cb.value)); });
+            renderBulkCloseTypes();
+          });
+          var typeBox = document.getElementById('bulk-close-types');
+          if (typeBox) typeBox.addEventListener('change', function (e) {
+            var t = e.target;
+            if (!t.classList.contains('bulk-close-type-cb')) return;
+            bulkCloseTypeIds = [];
+            document.querySelectorAll('.bulk-close-type-cb:checked').forEach(function (cb) {
+              if (bulkCloseTypeIds.indexOf(String(cb.value)) === -1) bulkCloseTypeIds.push(String(cb.value));
+            });
+            bulkCloseSyncTypeBoxes(); // a type under two departments stays in sync
+            syncBulkCloseRun();
+          });
+          var addBtn = document.getElementById('bulk-close-add-date');
+          if (addBtn) addBtn.addEventListener('click', function () {
+            var inp = $('bulk-close-date');
+            if (!inp || !bulkCloseAddDate(inp.value)) { showResult('Pick a date first.', true); return; }
+            inp.value = '';
+          });
+          var spanBtn = document.getElementById('bulk-close-add-span');
+          if (spanBtn) spanBtn.addEventListener('click', function () {
+            var f = $('bulk-close-span-from').value, t = $('bulk-close-span-to').value;
+            if (!f || !t || f > t) { showResult('Pick a valid date range for the span.', true); return; }
+            datesInRange(f, t).forEach(bulkCloseAddDate);
+          });
+          var chips = document.getElementById('bulk-close-chips');
+          if (chips) chips.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('[data-remove-date]') : null;
+            if (!b) return;
+            var d = b.getAttribute('data-remove-date');
+            bulkCloseDates = bulkCloseDates.filter(function (x) { return x !== d; });
+            renderBulkCloseChips();
+          });
+        })();
         document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
           b.addEventListener('click', function () { setDraftPreset(b.getAttribute('data-preset')); });
         });

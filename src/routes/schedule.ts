@@ -2268,12 +2268,20 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
           // Totals BEFORE the close — only a close that removed a
           // visible open is undoable.
           const before = await openSlotTotals(tx.query, companyId, d, shiftTypeId);
-          const res = await closeOpenSlots(tx.query, companyId, d, shiftTypeId, -clamped, req.session.userId!);
+          // "At most N" (Deepika, 2026-11-21, bulk close count):
+          // never delete more opens than are actually visible on
+          // the date. deleteOneOpenSlot still writes a suppression
+          // row when no visible open is left, so extra loop turns
+          // would over-suppress and hide a later add. Existing
+          // callers post -1 with a visible open, so this changes
+          // nothing for them.
+          const want = Math.min(-clamped, before.total);
+          const res = await closeOpenSlots(tx.query, companyId, d, shiftTypeId, want, req.session.userId!);
           if (before.total > 0) {
             undoSlots.push({
               date: d, shiftTypeId,
               totalBefore: before.total, draftBefore: before.draft,
-              wasDraft: before.total <= before.draft, adjust: -clamped,
+              wasDraft: before.total <= before.draft, adjust: want,
               // The close breakdown, so the undo can reverse each
               // part exactly instead of guessing.
               extraDeleted: res.extraDeleted, suppressed: res.suppressed,

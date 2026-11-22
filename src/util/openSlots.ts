@@ -121,8 +121,10 @@ export interface DeleteOneOpenSlotResult {
  * target + extra − suppressed − filled (openCountFor) — the draft
  * count never enters it, it only decides how many of the visible
  * positions render with the DRAFT badge. Returns the split, so
- * callers can reverse each part exactly. Callers must only delete
- * opens that are actually visible.
+ * callers can reverse each part exactly. Safety (Deepika,
+ * 2026-11-21): when no visible open is left the primitive refuses
+ * (no-op, no suppression row) — a raw count past the visible total
+ * can never store a phantom suppression.
  */
 export async function deleteOneOpenSlot(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
@@ -147,6 +149,26 @@ export async function deleteOneOpenSlot(
     }
     return { fromExtra: true, fromDraft: false, suppressed: false };
   }
+  // Safety (Deepika, 2026-11-21 — "if she closes 5 when only 4
+  // opens exist, the 5th must NOT be stored"): with no stored extra
+  // left, refuse when no visible open is left. The suppression
+  // insert below would otherwise write a phantom +1 row that hides
+  // a later add. Callers already clamp to the visible total; this
+  // is the last line of defence, so a raw count can never
+  // over-suppress. No row is written and nothing is decremented.
+  const totals = await storedTotals(q, companyId, date, shiftTypeId);
+  let visible = totals.opens;
+  if (visible > 0) {
+    // Undrafted generated dates show only stored extras (the
+    // target counts 0) — and there are none left here — so nothing
+    // is visible even when the raw target has a shortfall.
+    const generatedIds = await getGeneratedTypeIds(q, companyId);
+    if (generatedIds.has(shiftTypeId) &&
+        (await getUndraftedDatesForType(q, companyId, shiftTypeId, date, date)).includes(date)) {
+      visible = 0;
+    }
+  }
+  if (visible <= 0) return { fromExtra: false, fromDraft: false, suppressed: false };
   const { rows: drows } = await q(
     'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
     [companyId, date, shiftTypeId]
@@ -183,9 +205,9 @@ export async function deleteOneOpenSlot(
  * negative row), then computed shortfall opens are suppressed until
  * the next draft/publish pulls them back — and a draft open that is
  * closed loses its stored draft count too. Returns the split, so
- * the undo payload can reverse each part exactly. Callers must only
- * close opens that are actually visible (they already guard on the
- * total).
+ * the undo payload can reverse each part exactly. A count past the
+ * visible total stops at the last visible open: the primitive
+ * refuses the extra turns, so nothing phantom is stored.
  *
  * Whole-type closes go through closeTypeForDate below: the same
  * single-slot delete, applied to every visible open for the
