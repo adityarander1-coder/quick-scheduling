@@ -355,9 +355,9 @@ async function checkShiftEligibility(
 // assigns someone by hand to a shift type their job role is not
 // eligible for, the server answers 403 with this body. The client's
 // popup shows her exact words as the message, with the detail below
-// it — the popup IS the notice, and overriding from it is the manual
-// override. Claim/pickup paths do NOT use this body: employees can't
-// override, so they keep the plain error.
+// it — the popup IS the notice. The block is absolute (Deepika,
+// 2026-11-21): there is no override anywhere. Claim/pickup paths do
+// NOT use this body: employees get the plain error.
 const ROLE_INCOMPATIBLE_MSG = 'the job role is not compatible so cannot assign it';
 function roleIncompatibleBody(personName: string, personRole: string | null, shiftTypeName: string, allowedNames: string) {
   return {
@@ -1254,9 +1254,9 @@ router.post('/shifts', requireRole('owner', 'scheduler'), async (req: Request, r
     }
     // Job role enforcement: member's role must be eligible for this shift type.
     // An empty eligible list means all roles of the type's own departments.
-    // Admin override (Deepika, 2026-11-17): overrideRole skips the check —
-    // the popup is the notice, and assigning from it is the override.
-    if (req.body?.overrideRole !== true) {
+    // The block is absolute (Deepika, 2026-11-21): no override — an
+    // incompatible assign 403s, and the popup is the notice.
+    {
       const typeDepts = await shiftTypeDeptMap(companyId);
       const eligibility = await checkShiftEligibility(companyId, userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
       if (!eligibility.ok) {
@@ -2674,6 +2674,25 @@ router.post('/shifts/:id/apply-range', requireRole('owner', 'scheduler'), async 
         companyId)
     ))) return;
     const origDate = orig[0].date;
+    // Job role enforcement (Deepika, 2026-11-21): changing the person
+    // (or the shift type) on a shift is a replace — the new person
+    // must be eligible for the (new) type. The block is absolute: no
+    // override. Edits that keep the same person and type are untouched.
+    if (userId !== orig[0].userId || shiftTypeId !== orig[0].shiftTypeId) {
+      const { rows: arTrows } = await query(
+        'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [shiftTypeId, companyId]
+      );
+      if (arTrows.length) {
+        const arTypeDepts = await shiftTypeDeptMap(companyId);
+        const arElig = await checkShiftEligibility(companyId, userId, arTrows[0].eligible_job_role_ids, arTypeDepts.get(shiftTypeId) || []);
+        if (!arElig.ok) {
+          const arNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+          res.status(403).json(roleIncompatibleBody(arNames.personName || 'This person', arElig.personRole, arNames.shiftTypeName || arTrows[0].name, arElig.allowedNames));
+          return;
+        }
+      }
+    }
     let updated = 0, created = 0;
     for (const d of dateList) {
       if (d === origDate) {
@@ -2785,6 +2804,25 @@ router.put('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Request
           [{ userId, shiftTypeId }, { userId: existRows[0].userId, shiftTypeId: existRows[0].shiftTypeId }],
           companyId)
       ))) return;
+    }
+    // Job role enforcement (Deepika, 2026-11-21): changing the person
+    // (or the shift type) on a shift is a replace — the new person
+    // must be eligible for the (new) type. The block is absolute: no
+    // override. Edits that keep the same person and type are untouched.
+    if (existRows.length && (userId !== existRows[0].userId || shiftTypeId !== existRows[0].shiftTypeId)) {
+      const { rows: putTrows } = await query(
+        'SELECT id, name, eligible_job_role_ids FROM shift_types WHERE id = $1 AND company_id = $2 AND is_active = true',
+        [shiftTypeId, companyId]
+      );
+      if (putTrows.length) {
+        const putTypeDepts = await shiftTypeDeptMap(companyId);
+        const putElig = await checkShiftEligibility(companyId, userId, putTrows[0].eligible_job_role_ids, putTypeDepts.get(shiftTypeId) || []);
+        if (!putElig.ok) {
+          const putNames = await shiftDisplayNames(companyId, userId, shiftTypeId);
+          res.status(403).json(roleIncompatibleBody(putNames.personName || 'This person', putElig.personRole, putNames.shiftTypeName || putTrows[0].name, putElig.allowedNames));
+          return;
+        }
+      }
     }
     // Prevent duplicates.
     const { rows: dup } = await query(
@@ -2989,9 +3027,10 @@ router.post('/shifts/:id/drag-move', requireRole('owner', 'scheduler'), async (r
     );
     if (!trows.length) { res.status(404).json({ error: 'Shift type not found.' }); return; }
     const names = await shiftDisplayNames(companyId, src.userId, shiftTypeId);
-    // Job role enforcement (Deepika, 2026-11-17): overrideRole skips the
-    // check — the popup is the notice, moving from it is the override.
-    if (req.body?.overrideRole !== true) {
+    // Job role enforcement (Deepika, 2026-11-17): the block is
+    // absolute (Deepika, 2026-11-21) — no override. The popup is the
+    // notice, and an incompatible move 403s.
+    {
       const typeDepts = await shiftTypeDeptMap(companyId);
       const eligibility = await checkShiftEligibility(companyId, src.userId, trows[0].eligible_job_role_ids, typeDepts.get(shiftTypeId) || []);
       if (!eligibility.ok) {
@@ -3132,10 +3171,10 @@ router.post('/shifts/drag-swap', requireRole('owner', 'scheduler'), async (req: 
     const namesA = await shiftDisplayNames(companyId, a.userId, a.shiftTypeId);
     const namesB = await shiftDisplayNames(companyId, b.userId, b.shiftTypeId);
     // Job role enforcement (Deepika, 2026-11-17): BOTH directions — each
-    // person must be able to work the shift they'd take. Admin override
-    // (overrideRole) skips the check — the popup is the notice, swapping
-    // from it is the override.
-    if (req.body?.overrideRole !== true) {
+    // person must be able to work the shift they'd take. The block is
+    // absolute (Deepika, 2026-11-21): no override — the popup is the
+    // notice, and an incompatible swap 403s.
+    {
       const eligA = await checkShiftEligibility(companyId, a.userId, eligFor(b.shiftTypeId), typeDepts.get(b.shiftTypeId) || []);
       if (!eligA.ok) { res.status(403).json(roleIncompatibleBody(namesA.personName || 'This person', eligA.personRole, namesB.shiftTypeName || 'this shift', eligA.allowedNames)); return; }
       const eligB = await checkShiftEligibility(companyId, b.userId, eligFor(a.shiftTypeId), typeDepts.get(a.shiftTypeId) || []);
