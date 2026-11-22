@@ -45,7 +45,7 @@
  * for both the per-slot X and the type-close" (Deepika, 2026-11-21).
  */
 
-import { getGeneratedTypeIds, getUndraftedDatesForType } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType } from './scheduleMode.js';
 
 export type OpenSlotQuery = (
   text: string,
@@ -466,6 +466,112 @@ export async function publishOpenSlotsForPairs(
   if (!list.length) return;
   await clearDraftOpenSlots(q, companyId, list);
   await clearOpenSlotClosures(q, companyId, list);
+}
+
+/**
+ * Unpublishing the day unpublishes the opens with it (Deepika,
+ * 2026-11-22 — "Unpublish could have moved the current open
+ * slots"): for every GENERATED (date, type) pair the unpublish
+ * touches, every currently-visible published open becomes a draft
+ * open — the stored draft-open count is raised to the visible
+ * total, so the opens render as draft and a later publish (which
+ * clears the draft rows, above) brings them back as published.
+ * Live types are filtered out by the caller — the same rule as the
+ * publish mirror: their opens were never draft and their closures
+ * are not this rule's business.
+ *
+ * A stored extra has no published flag of its own (extra_open_
+ * slots is just a count), so a published extra IS an extra no
+ * draft count covers yet; the computed shortfall moves with it,
+ * because the grid shows one open count, not two. The pairs are
+ * EVERY date in the unpublish range for the type — not only pairs
+ * with shifts that flipped: the Dec 12–17 live case had no shifts
+ * at all, only 3 stored published extras per date, and the old
+ * flip-only read found nothing to move. The visible count is the
+ * grid's own count (stored model, target 0 on undrafted generated
+ * dates — getNotDraftedByType, the same map the grid reads, so a
+ * rotation-less generated type is never "not drafted").
+ *
+ * Returns how many opens newly became draft, so the caller can
+ * report the true moved count — and report a 0-move plainly
+ * instead of "applied".
+ */
+export async function unpublishOpenSlotsForPairs(
+  q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
+  generatedTypeIds: Set<string>, createdBy: string | null
+): Promise<{ opensMoved: number; pairsTouched: number }> {
+  const list = dedupePairs(pairs).filter((p) => generatedTypeIds.has(p.shiftTypeId));
+  if (!list.length) return { opensMoved: 0, pairsTouched: 0 };
+  // One batched read per table for the whole range, then the grid's
+  // own per-pair math in memory.
+  const dates = [...new Set(list.map((p) => p.date))].sort();
+  const typeIds = [...new Set(list.map((p) => p.shiftTypeId))];
+  const from = dates[0];
+  const to = dates[dates.length - 1];
+  const notDrafted = await getNotDraftedByType(q, companyId, generatedTypeIds, from, to);
+  const { rows: trows } = await q(
+    `SELECT shift_type_id AS "shiftTypeId", target_count, weekdays,
+            start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = ANY($2::uuid[])`,
+    [companyId, typeIds]
+  );
+  const targets = new Map<string, any>();
+  for (const r of trows) if (!targets.has(r.shiftTypeId)) targets.set(r.shiftTypeId, r);
+  // draft_open_slots / suppressed_open_slots carry shift_type_id
+  // as TEXT (migrations 111/119), extra_open_slots as UUID —
+  // the ANY() cast must match the column, or Postgres refuses
+  // with "operator does not exist: text = uuid".
+  const sumBy = async (table: string, idCast: 'uuid' | 'text') => {
+    const { rows } = await q(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+       FROM ${table} WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::${idCast}[])
+       GROUP BY date, shift_type_id`,
+      [companyId, from, to, typeIds]
+    );
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
+    return m;
+  };
+  const extras = await sumBy('extra_open_slots', 'uuid');
+  const suppressed = await sumBy('suppressed_open_slots', 'text');
+  const drafts = await sumBy('draft_open_slots', 'text');
+  const { rows: frows } = await q(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*)::int AS n
+     FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::uuid[])
+     GROUP BY date, shift_type_id`,
+    [companyId, from, to, typeIds]
+  );
+  const filled = new Map<string, number>();
+  for (const r of frows) filled.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
+  let opensMoved = 0;
+  let pairsTouched = 0;
+  for (const p of list) {
+    const k = pairKey(p);
+    const t = targets.get(p.shiftTypeId);
+    let target = 0;
+    if (t) {
+      const dow = new Date(p.date + 'T12:00:00').getDay();
+      const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      const sd: string | null = t.start_date || null;
+      const ed: string | null = t.end_date || null;
+      if (wdays.indexOf(dow) !== -1 && !(sd && p.date < sd) && !(ed && p.date > ed)) {
+        target = Number(t.target_count) || 0;
+      }
+    }
+    // Undrafted generated dates count the target as 0 — only stored
+    // extras show there (the N2 rule, read from the grid's own map).
+    const undrafted = (notDrafted[p.shiftTypeId] || []).includes(p.date);
+    const effTarget = undrafted ? 0 : target;
+    const f = filled.get(k) || 0;
+    const visible = Math.max(0, Math.max(0, effTarget - f) + (extras.get(k) || 0) - (suppressed.get(k) || 0));
+    const draftBefore = drafts.get(k) || 0;
+    if (visible > draftBefore) {
+      await setDraftOpenCount(q, companyId, p.date, p.shiftTypeId, visible, createdBy);
+      opensMoved += visible - draftBefore;
+      pairsTouched++;
+    }
+  }
+  return { opensMoved, pairsTouched };
 }
 
 /**
