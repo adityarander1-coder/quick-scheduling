@@ -2252,6 +2252,12 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
     // draft open — the entry carries draftDeleted and the undo
     // restores it (only when nothing re-derived it since).
     const undoSlots: any[] = [];
+    // Closed count (Deepika, 2026-11-21 — rotation-less type: a close that
+    // removed nothing still said "applied"): the number of visible
+    // opens the close REALLY removed, summed over the dates — never
+    // the number asked for. A negative close that removed nothing
+    // records no History entry and returns closed 0 with the reason.
+    let closedTotal = 0;
     for (const d of dates) {
       // A positive adjustment ADDS stored extra slots. A negative
       // adjustment is a CLOSE (Deepika, 2026-11-20 — "when it says
@@ -2277,11 +2283,21 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
           // nothing for them.
           const want = Math.min(-clamped, before.total);
           const res = await closeOpenSlots(tx.query, companyId, d, shiftTypeId, want, req.session.userId!);
-          if (before.total > 0) {
+          // The close's real yield, not the ask: closeOpenSlots
+          // stops at the last visible open, so a date whose opens
+          // the primitive could not reach closes 0 here — and an
+          // undo entry for 0 removed would re-add a phantom open.
+          // One visible open removed is one stored extra deleted
+          // OR one shortfall open suppressed; draftDeleted is a
+          // sub-count of the suppressed ones (how many of them
+          // carried the DRAFT badge), never a second slot.
+          const actual = res.extraDeleted + res.suppressed;
+          closedTotal += actual;
+          if (actual > 0) {
             undoSlots.push({
               date: d, shiftTypeId,
               totalBefore: before.total, draftBefore: before.draft,
-              wasDraft: before.total <= before.draft, adjust: want,
+              wasDraft: before.total <= before.draft, adjust: actual,
               // The close breakdown, so the undo can reverse each
               // part exactly instead of guessing.
               extraDeleted: res.extraDeleted, suppressed: res.suppressed,
@@ -2312,20 +2328,23 @@ router.post('/extra-slots', requireRole('owner', 'scheduler'), async (req: Reque
       });
     }
     // History snapshot (Deepika, 2026-11-17) — open slots added or
-    // closed change the published schedule's open rows.
-    {
-      const { rows: tn } = await query(
-        'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
-        [shiftTypeId, companyId]
-      );
-      const sorted = [...dates].sort();
+    // closed change the published schedule's open rows. A close
+    // that removed nothing records nothing and says so (rotation-less types,
+    // 2026-11-21): the summary counts the opens REALLY removed.
+    const { rows: tn } = await query(
+      'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+      [shiftTypeId, companyId]
+    );
+    const sorted = [...dates].sort();
+    const typeName = tn[0]?.name || 'shift';
+    if (clamped > 0 || closedTotal > 0) {
       await recordHistorySnapshot({
         companyId, actorId: req.session.userId!, trigger: 'published-change',
-        summary: `${clamped > 0 ? 'Added' : 'Removed'} ${Math.abs(clamped)} open slot${Math.abs(clamped) === 1 ? '' : 's'} — ${tn[0]?.name || 'shift'}, ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
+        summary: `${clamped > 0 ? 'Added' : 'Removed'} ${clamped > 0 ? Math.abs(clamped) : closedTotal} open slot${(clamped > 0 ? Math.abs(clamped) : closedTotal) === 1 ? '' : 's'} — ${typeName}, ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`,
         from: sorted[0], to: sorted[sorted.length - 1], shiftTypeIds: [shiftTypeId],
       });
     }
-    res.json({ ok: true, dates: dates.length, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
+    res.json({ ok: true, dates: dates.length, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}), ...(clamped < 0 ? { closed: closedTotal, ...(closedTotal === 0 ? { message: `No open ${typeName} slots to close on ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}.` } : {}) } : {}) });
     // Tell eligible members about newly opened pickup slots.
     if (clamped > 0) {
       const eligible = await eligibleMemberIds(companyId, shiftTypeId);
@@ -2566,8 +2585,12 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
       closeTypeForDate(tx.query, companyId, date, shiftTypeId, req.session.userId!)
     );
     // History snapshot (Deepika, 2026-11-17) — closing a day hides
-    // its open rows. No copy when the close changed nothing.
-    if (closed.totalBefore > 0 || closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0) {
+    // its open rows. No copy when the close changed nothing: a
+    // re-close of an already-closed date only rewrites its own
+    // suppression row (suppressedDeleted == suppressedCreated), so
+    // suppressedDeleted alone is not a change — only visible opens
+    // removed or hidden stored rows deleted count.
+    if (closed.totalBefore > 0 || closed.extraDeleted + closed.draftDeleted > 0) {
       const { rows: tn } = await query(
         'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
         [shiftTypeId, companyId]
@@ -2590,9 +2613,11 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
     // A close on a 0-open date that still deleted hidden stored
     // rows carries adjust 1 (the endpoint requires a non-zero
     // adjust); its threshold is 0, so the undo is skipped rather
-    // than duplicating. No slot when the close changed nothing.
+    // than duplicating. No slot when the close changed nothing:
+    // a re-close only rewrites its own suppression row, so
+    // suppressedDeleted alone is not a change.
     const undoSlots: any[] = [];
-    if (closed.totalBefore > 0 || closed.extraDeleted + closed.suppressedDeleted + closed.draftDeleted > 0) {
+    if (closed.totalBefore > 0 || closed.extraDeleted + closed.draftDeleted > 0) {
       undoSlots.push({
         date, shiftTypeId,
         totalBefore: closed.totalBefore, draftBefore: closed.draftBefore,
@@ -2603,7 +2628,17 @@ router.post('/closed-shifts', requireRole('owner', 'scheduler'), async (req: Req
         draftDeleted: closed.draftDeleted,
       });
     }
-    res.json({ ok: true, ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
+    // The close reports the truth (Deepika, 2026-11-21 — rotation-less types:
+    // "applied" with nothing closed): `closed` is the visible opens
+    // really removed, and a 0-close names its reason instead of
+    // looking like a success.
+    const { rows: closeTn } = await query(
+      'SELECT name FROM shift_types WHERE id = $1 AND company_id = $2',
+      [shiftTypeId, companyId]
+    );
+    const closeTypeName = closeTn[0]?.name || 'shift';
+    const closeChanged = closed.totalBefore > 0 || closed.extraDeleted + closed.draftDeleted > 0;
+    res.json({ ok: true, closed: closed.totalBefore, ...(closed.totalBefore === 0 ? { message: closeChanged ? `No open ${closeTypeName} slots were showing on ${date}, but hidden stored slots were removed.` : `No open ${closeTypeName} slots to close on ${date}.` } : {}), ...(undoSlots.length ? { undo: { slots: undoSlots } } : {}) });
   } catch (err) {
     console.error('[schedule] close shift failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });

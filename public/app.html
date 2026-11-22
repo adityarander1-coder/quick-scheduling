@@ -6490,6 +6490,14 @@
                 var stId = b.getAttribute('data-closed-close');
                 api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: ds, shiftTypeId: stId }) }).then(function (r) {
                   if (r.ok) {
+                    // A close that removed nothing says so (Deepika,
+                    // 2026-11-21 — Day NP): never the success toast
+                    // and never the optimistic local suppression,
+                    // which would hide opens the server still shows.
+                    if (r.data && typeof r.data.closed === 'number' && r.data.closed === 0) {
+                      pageError((r.data && r.data.message) || 'No open slots to close for this date.');
+                      return;
+                    }
                     // Whole-type close undo (Deepika, 2026-11-20):
                     // the close really deleted the stored rows, so
                     // the server returns the undo payload — one
@@ -6873,6 +6881,9 @@
             api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [date], shiftTypeId: typeId, count: -1 }) }).then(function (r) {
               if (r.ok) {
                 if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [date], shiftTypeId: typeId, count: -1 } }]);
+                // A close that removed nothing says so (Deepika,
+                // 2026-11-21 — Day NP), never "Open slot removed."
+                if (r.data && typeof r.data.closed === 'number' && r.data.closed === 0) { refreshSlotView(); pageError((r.data && r.data.message) || 'No open slots to close for this date.'); return; }
                 refreshSlotView(); pageSuccess('Open slot removed. Tap Undo in the top bar to undo it.');
               }
               else pageError((r.data && r.data.error) || 'Could not close that slot.');
@@ -6991,6 +7002,9 @@
           api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [d], shiftTypeId: stId, count: -1 }) }).then(function (r) {
             if (r.ok) {
               if (r.data && r.data.undo && typeof window.qsPushOpenSlotUndo === 'function') window.qsPushOpenSlotUndo(r.data.undo, [{ ep: '/api/schedule/extra-slots', method: 'POST', body: { dates: [d], shiftTypeId: stId, count: -1 } }]);
+              // A close that removed nothing says so (Deepika,
+              // 2026-11-21 — Day NP), never "Open slot removed."
+              if (r.data && typeof r.data.closed === 'number' && r.data.closed === 0) { loadShifts(); pageError((r.data && r.data.message) || 'No open slots to close for this date.'); return; }
               loadShifts(); pageSuccess('Open slot removed. Tap Undo in the top bar to undo it.');
             }
           });
@@ -21175,6 +21189,13 @@ window.qsNpOfferSend = function (btn) {
           showResult('Working…', false);
           var bulkUndoSlots = [], bulkRedoCalls = [];
           var failed = 0;
+          // Truthful result (Deepika, 2026-11-21 — Day NP): the run
+          // must not say "Done — closed ..." when every close
+          // removed nothing. closedTotal sums the server's real
+          // closed counts; closedReported counts the replies that
+          // carried one, so an older server (no closed field) keeps
+          // today's message instead of a false "nothing closed".
+          var closedTotal = 0, closedReported = 0;
           // Type-major order, so the undo slots group by type.
           var pairs = [];
           types.forEach(function (st) { dates.forEach(function (d) { pairs.push({ st: st, date: d }); }); });
@@ -21185,7 +21206,8 @@ window.qsNpOfferSend = function (btn) {
               var doneMsg = count
                 ? 'Done — closed up to ' + count + ' open slots per date for ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.'
                 : 'Done — closed ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.';
-              showResult(failed ? 'Done with ' + failed + ' error(s) — closed ' + typeNames + ' on ' + (pairs.length - failed) + ' date(s).' : doneMsg, !!failed);
+              var nothingMsg = 'Nothing closed — no open slots for ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.';
+              showResult(failed ? 'Done with ' + failed + ' error(s) — closed ' + typeNames + ' on ' + (pairs.length - failed) + ' date(s).' : (!failed && closedReported === pairs.length && closedTotal === 0 ? nothingMsg : doneMsg), !!failed);
               // A finished run clears the picks, so the next run
               // starts fresh and can never silently re-close the
               // last run's types and dates. On a partial failure
@@ -21204,6 +21226,7 @@ window.qsNpOfferSend = function (btn) {
               // "All": today's whole-type close.
               api('/api/schedule/closed-shifts', { method: 'POST', body: JSON.stringify({ date: p.date, shiftTypeId: p.st.id }) }).then(function (r) {
                 if (r.ok) {
+                  if (r.data && typeof r.data.closed === 'number') { closedTotal += r.data.closed; closedReported++; }
                   if (r.data && r.data.undo && Array.isArray(r.data.undo.slots) && r.data.undo.slots.length) {
                     bulkUndoSlots = bulkUndoSlots.concat(r.data.undo.slots);
                     bulkRedoCalls.push({ ep: '/api/schedule/closed-shifts', method: 'POST', body: { date: p.date, shiftTypeId: p.st.id } });
@@ -21221,6 +21244,7 @@ window.qsNpOfferSend = function (btn) {
               // most N"); the redo replays the actual closed count.
               api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: [p.date], shiftTypeId: p.st.id, count: -count }) }).then(function (r) {
                 if (r.ok) {
+                  if (r.data && typeof r.data.closed === 'number') { closedTotal += r.data.closed; closedReported++; }
                   var slot = r.data && r.data.undo && Array.isArray(r.data.undo.slots) ? r.data.undo.slots[0] : null;
                   if (slot) {
                     bulkUndoSlots.push(slot);

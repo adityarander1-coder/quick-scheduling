@@ -2034,7 +2034,10 @@ export async function executePlan(
             // the same write the Bulk Actions close and the day
             // dialog make. Same-brain: both doors.
             const res = await closeTypeForDate(query as any, companyId, d, st.id, createdBy);
-            if (res.totalBefore > 0) { daysClosed++; slotsClosed += t.total; }
+            // Report the truth (Deepika, 2026-11-21 — rotation-less types): the
+            // count is what the close REALLY removed, not the
+            // computed total from before it ran.
+            if (res.totalBefore > 0) { daysClosed++; slotsClosed += res.totalBefore; }
             else skipped.push(`${d} (no open slots)`);
           } else if (mode === 'total') {
             // Keep-total (Deepika, 2026-11-21 — "close excess
@@ -2069,14 +2072,26 @@ export async function executePlan(
             }
             // The close runs in its own transaction (row lock on the
             // extra row, same as the old adjustExtraOpenSlots write).
-            await withTransaction(async (tx) => {
-              await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
+            // Report the truth (Deepika, 2026-11-21 — rotation-less types): the
+            // count is what closeOpenSlots REALLY removed, not the
+            // number asked for — a date it could not reach is
+            // skipped with its reason, never counted as closed.
+            const totalRes = await withTransaction(async (tx) => {
+              return await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
             });
-            slotsClosed += want;
+            // One visible open removed is one stored extra deleted
+            // OR one shortfall open suppressed; draftDeleted is a
+            // sub-count of the suppressed ones, never a second slot.
+            const totalActual = totalRes.extraDeleted + totalRes.suppressed;
+            if (totalActual <= 0) {
+              skipped.push(`${d} (no open slots)`);
+              continue;
+            }
+            slotsClosed += totalActual;
             // Filled alone over the total: every open closed, but
             // the total still sits above — the plan says so.
             if (filled > (change.keepTotal as number)) {
-              stillAbove.push(`${d} (still ${filled} filled after closing all ${opens} opens)`);
+              stillAbove.push(`${d} (still ${filled} filled after closing ${totalActual} open slot${totalActual === 1 ? '' : 's'})`);
             }
           } else {
             const want = mode === 'count'
@@ -2088,10 +2103,22 @@ export async function executePlan(
             }
             // The close runs in its own transaction (row lock on the
             // extra row, same as the old adjustExtraOpenSlots write).
-            await withTransaction(async (tx) => {
-              await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
+            // Report the truth (Deepika, 2026-11-21 — rotation-less types): the
+            // count is what closeOpenSlots REALLY removed, not the
+            // number asked for — a date it could not reach is
+            // skipped with its reason, never counted as closed.
+            const countRes = await withTransaction(async (tx) => {
+              return await closeOpenSlots(tx.query, companyId, d, st.id, want, createdBy);
             });
-            slotsClosed += want;
+            // One visible open removed is one stored extra deleted
+            // OR one shortfall open suppressed; draftDeleted is a
+            // sub-count of the suppressed ones, never a second slot.
+            const countActual = countRes.extraDeleted + countRes.suppressed;
+            if (countActual <= 0) {
+              skipped.push(`${d} (no open slots)`);
+              continue;
+            }
+            slotsClosed += countActual;
           }
         }
         const range = dates.length > 1 ? `, ${first} – ${last}` : ` on ${first}`;
