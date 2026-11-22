@@ -480,6 +480,20 @@ export function isAddScopeCorrection(message: string, history: Array<{ q: string
  *   DIFFERENCE the system works out, so it must never override
  *   the total. A plain "add 14 open slots" (no total word) stays
  *   addCount 14.
+ * - HISTORY ORDERING (Deepika, 2026-11-21 — the mirror of the
+ *   close-side fix in 9af328e): the request text is the CURRENT
+ *   message + the thread history (finalizeTaskPlan joins them so a
+ *   bare-number answer still sees the dates it answers) — so the
+ *   amount mode comes from the EARLIEST amount signal in the text,
+ *   not from whichever mode is checked first: a previous request's
+ *   "make it total 14" sitting in history must never override the
+ *   current message's plain "add 3". When the current message
+ *   carries no amount at all, the earliest signal is the history's,
+ *   and it applies. One carve-out: inside ONE sentence ("add 2
+ *   open slots to make it 14") the add number is the difference,
+ *   so a total signal in the same sentence as an earlier add signal
+ *   still wins — a single-message add with no thread history
+ *   behaves exactly as before.
  * - Month scope: an add change sitting inside the named month
  *   without covering it is widened to the whole month ("nov month"
  *   → Nov 1–30, never today).
@@ -494,26 +508,51 @@ export function normalizeAddPlan(
 ): void {
   const text = requestText || '';
   const scope = parseMonthScope(text, today);
-  const addM = text.match(/\badd\s+(\d{1,3})\b/i);
   // Top-up total, from the request's words: "total slots upto 14",
   // "total 14 slots", "make it total 14", "make it 14", "up to 14
-  // total slots". Checked BEFORE the add-count rule below — the
-  // "add 2" in "add 2 open slots to make it 14" is not an amount.
-  const totalM = text.match(/\btotal\s+(?:slots?\s+)?(?:up\s*to|upto|of)?\s*(\d{1,3})\b/i)
-    || text.match(/\bmake\s+it\s+(?:total\s+)?(\d{1,3})\b/i)
-    || text.match(/\bup\s*to\s+(\d{1,3})\s+(?:total\s+)?slots?\b/i);
+  // total slots". The earliest total signal across the three
+  // patterns wins (not whichever pattern is listed first) — the
+  // same earliest-across-patterns shape normalizeClosePlan uses.
+  const totalPats = [
+    /\btotal\s+(?:slots?\s+)?(?:up\s*to|upto|of)?\s*(\d{1,3})\b/i,
+    /\bmake\s+it\s+(?:total\s+)?(\d{1,3})\b/i,
+    /\bup\s*to\s+(\d{1,3})\s+(?:total\s+)?slots?\b/i,
+  ];
+  const addPat = /\badd\s+(\d{1,3})\b/i;
+  const firstMatch = (re: RegExp): { n: number; idx: number } | null => {
+    const m = text.match(re);
+    if (!m || m[1] === undefined || m.index === undefined) return null;
+    return { n: parseInt(m[1], 10), idx: m.index };
+  };
+  const totalCands = totalPats.map(firstMatch).filter((x): x is { n: number; idx: number } => !!x);
+  const totalM = totalCands.length ? totalCands.reduce((a, b) => (a.idx <= b.idx ? a : b)) : null;
+  const addM = firstMatch(addPat);
+  // Earliest amount signal wins — except a total signal in the
+  // same sentence as an earlier add signal, where the add is the
+  // difference and the total wins (the top-up sentence). A sentence
+  // ends at '.', '!' , '?' or a line break: the current message
+  // and each history turn sit on their own lines, so a history
+  // signal can never share a sentence with the current message.
+  let mode: 'total' | 'add' | null = null;
+  let amount = 0;
+  if (totalM && addM) {
+    if (totalM.idx < addM.idx) { mode = 'total'; amount = totalM.n; }
+    else if (!/[.!?\n]/.test(text.slice(addM.idx, totalM.idx))) { mode = 'total'; amount = totalM.n; }
+    else { mode = 'add'; amount = addM.n; }
+  } else if (totalM) { mode = 'total'; amount = totalM.n; }
+  else if (addM) { mode = 'add'; amount = addM.n; }
   for (const c of plan?.changes || []) {
     if (c?.action !== 'add_open_slots') continue;
     if (c.shiftType) {
       const hit = shiftNames.find((n) => new RegExp(`^${NAME_ESC(n)}s?$`, 'i').test(String(c.shiftType).trim()));
       if (hit) c.shiftType = hit;
     }
-    if (totalM) {
-      const n = parseInt(totalM[1], 10);
+    if (mode === 'total') {
+      const n = amount;
       if (c.targetTotal !== n) { delete c.addCount; c.targetTotal = n; }
-    } else if (addM) {
-      const n = parseInt(addM[1], 10);
-      if (c.addCount !== n) c.addCount = n;
+    } else if (mode === 'add') {
+      const n = amount;
+      if (c.addCount !== n) { delete c.targetTotal; c.addCount = n; }
     }
     if (scope) {
       if (c.fromDate === scope.fromDate && c.toDate === scope.toDate) continue;
