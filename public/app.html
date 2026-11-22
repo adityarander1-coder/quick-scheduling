@@ -4267,31 +4267,47 @@
           if (!target || target.kind === 'none') return;
           if (target.kind === 'swap') {
             var other = target.shift;
-            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: shift.id, bId: other.id }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); refreshShifts(); return; }
-              var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
-              entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
-              qsUndoStack.push(qsStampUndo(entry));
-              qsRedoStack.length = 0;
-              qsUndoCap();
-              qsUndoBtnSync();
-              pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Tap Undo in the top bar to undo it.');
-              refreshShifts();
-            }).catch(function () { pageError('Could not swap those shifts.'); });
+            var doSwap = function (payload) {
+              api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
+                if (!r.ok && r.data && r.data.roleIncompatible) {
+                  showRolePopup(r.data.roleDetail, 'Swap anyway', function () { doSwap(Object.assign({}, payload, { overrideRole: true })); });
+                  return;
+                }
+                if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); refreshShifts(); return; }
+                var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
+                entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
+                if (payload.overrideRole) entry.redo.overrideRole = true;
+                qsUndoStack.push(qsStampUndo(entry));
+                qsRedoStack.length = 0;
+                qsUndoCap();
+                qsUndoBtnSync();
+                pageSuccess('Swapped ' + displayName(shift) + ' and ' + displayName(other) + '. Tap Undo in the top bar to undo it.');
+                refreshShifts();
+              }).catch(function () { pageError('Could not swap those shifts.'); });
+            };
+            doSwap({ aId: shift.id, bId: other.id });
           } else {
             var date = target.date, typeId = target.shiftTypeId || shift.shiftTypeId;
             if (date === shift.date && typeId === shift.shiftTypeId) return;
-            api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify({ date: date, shiftTypeId: typeId }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); refreshShifts(); return; }
-              var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
-              entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
-              qsUndoStack.push(qsStampUndo(entry));
-              qsRedoStack.length = 0;
-              qsUndoCap();
-              qsUndoBtnSync();
-              pageSuccess('Moved. Tap Undo in the top bar to undo it.');
-              refreshShifts();
-            }).catch(function () { pageError('Could not move that shift.'); });
+            var doMove = function (payload) {
+              api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
+                if (!r.ok && r.data && r.data.roleIncompatible) {
+                  showRolePopup(r.data.roleDetail, 'Move anyway', function () { doMove(Object.assign({}, payload, { overrideRole: true })); });
+                  return;
+                }
+                if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); refreshShifts(); return; }
+                var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
+                entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
+                if (payload.overrideRole) entry.redo.overrideRole = true;
+                qsUndoStack.push(qsStampUndo(entry));
+                qsRedoStack.length = 0;
+                qsUndoCap();
+                qsUndoBtnSync();
+                pageSuccess('Moved. Tap Undo in the top bar to undo it.');
+                refreshShifts();
+              }).catch(function () { pageError('Could not move that shift.'); });
+            };
+            doMove({ date: date, shiftTypeId: typeId });
           }
         }
 
@@ -4519,7 +4535,7 @@
           }
           qsRedoStack.pop();
           if (r.kind === 'swap') {
-            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId, windowAt: r.at }) }).then(function (res) {
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId, windowAt: r.at, overrideRole: r.overrideRole || undefined }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
@@ -4630,7 +4646,7 @@
             }).catch(function () { pageError('Could not redo that import.'); });
           } else {
             var s = shiftById(r.shiftId);
-            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at }) }).then(function (res) {
+            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at, overrideRole: r.overrideRole || undefined }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
@@ -6031,6 +6047,15 @@
                           });
                           return;
                         }
+                        if (r.status === 403 && r.data && r.data.roleIncompatible) {
+                          showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
+                            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { overrideRole: true })) }).then(function (r2) {
+                              if (r2 && r2.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
+                              else pageError('Could not replace shift.');
+                            });
+                          });
+                          return;
+                        }
                         pageError('Could not replace shift.');
                       });
                     });
@@ -6977,6 +7002,21 @@
             { label: 'Add anyway', primary: true, onClick: onAddAnyway }
           ]);
         }
+        // Job-role block (Deepika, 2026-11-17): assigning someone by hand
+        // to a shift type their job role is not eligible for is stopped
+        // with her exact words. The popup IS the notice — the admin can
+        // override from it (Assign/Swap/Move anyway), or cancel.
+        function showRolePopup(detail, overrideLabel, onOverride, onCancel) {
+          var d = detail || {};
+          var who = (d.personName || 'This person') + (d.personRole ? ' (' + d.personRole + ')' : ' (no job role set)');
+          var sub = who + ' → ' + (d.shiftTypeName || 'this shift') + (d.allowedNames ? ' — allows only: ' + d.allowedNames : '');
+          showDialog('Job role not compatible',
+            '<p>the job role is not compatible so cannot assign it</p>' +
+            '<p style="color:var(--dim)">' + esc(sub) + '</p>', [
+            { label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } },
+            { label: overrideLabel || 'Assign anyway', primary: true, onClick: onOverride }
+          ]);
+        }
         // Remove a single open slot — works in every view (delegated).
         document.addEventListener('click', function (e) {
           var x = e.target.closest ? e.target.closest('.open-slot-x') : null;
@@ -7333,6 +7373,15 @@
                   else { paMessage((r2.data && r2.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
                 });
               });
+              return;
+            }
+            if (r.status === 403 && r.data && r.data.roleIncompatible) {
+              showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
+                api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, payload, { overrideRole: true })) }).then(function (r2) {
+                  if (r2.ok) refreshShifts();
+                  else { paMessage((r2.data && r2.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
+                });
+              }, function () { refreshShifts(); });
               return;
             }
             paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts();
@@ -9236,6 +9285,12 @@
               published: wantPublished,
             };
             var handleSingle = function (r) {
+              if (r.status === 403 && r.data && r.data.roleIncompatible) {
+                showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
+                  api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, body, { overrideRole: true })) }).then(handleSingle);
+                }, function () { onDone(); });
+                return;
+              }
               if (r.status === 409 && r.data && r.data.conflict) {
                 showConflictDialog(r.data.conflict, function () {
                   api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, body, { confirmConflict: true })) }).then(handleSingle);
@@ -12169,7 +12224,7 @@ window.qsNpOfferSend = function (btn) {
           adoptThread(pd, { q: qq, a: pd.summary || 'Here is my plan:' });
           var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
             '<ol style="margin:0.5rem 0;padding-left:1.2rem">' +
-            pd.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') +
+            pd.changes.map(function (c) { return '<li>' + esc(describeChange(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + (c.roleBlock ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.roleBlock) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') +
             '</ol>' +
             (pd.status === 'awaiting_partner'
               ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
@@ -12518,7 +12573,7 @@ window.qsNpOfferSend = function (btn) {
             d.style.cssText = 'margin-bottom:0.75rem;padding:0.6rem 0.8rem;border-radius:10px;white-space:pre-wrap;color:#17242e;background:#fff;border:1px solid var(--border);margin-right:2rem;';
             var desc = window.qsDescribeChange || function (c) { return c.action; };
             var html = '<b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
-              '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>';
+              '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + (c.roleBlock ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.roleBlock) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>';
             if (pd.status === 'awaiting_partner') {
               html += '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>';
             } else {
@@ -12579,7 +12634,7 @@ window.qsNpOfferSend = function (btn) {
                 mirrorPlan(qq, pd);
                 var desc = window.qsDescribeChange || function (c) { return c.action; };
                 var html2 = '<div class="tb-q">' + esc(qq) + '</div><div class="tb-a" style="white-space:pre-wrap"><b>Q-Scheduler:</b> ' + esc(pd.summary || 'Here is my plan:') +
-                  '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>' +
+                  '<ol style="margin:0.5rem 0;padding-left:1.2rem">' + pd.changes.map(function (c) { return '<li>' + esc(desc(c)) + (c.warning ? '<br><span style="color:#b45309;font-weight:700">⚠️ ' + esc(c.warning) + '</span>' : '') + (c.conflict ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.conflict) + ' This swap will be skipped if approved.</span>' : '') + (c.roleBlock ? '<br><span style="color:#b91c1c;font-weight:700">⛔ ' + esc(c.roleBlock) + ' This swap will be skipped if approved.</span>' : '') + '</li>'; }).join('') + '</ol>' +
                   (pd.status === 'awaiting_partner'
                     ? '<div style="margin-top:0.5rem;color:#5b6b76">⏳ Waiting for ' + esc(pd.partnerName || 'your swap partner') + ' to agree — the plan reaches the admins only after they do. Nothing has changed yet.</div>'
                     : '<div style="display:flex;gap:0.5rem;margin-top:0.5rem">' +

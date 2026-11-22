@@ -1348,7 +1348,7 @@ export function renderChangeList(plan: any): string {
       : c.action === 'update_session' ? `Change session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : c.action === 'cancel_session' ? `Cancel session "${c.sessionTitle}" on ${c.dashboard}${c.date ? ` (${c.date})` : ''}`
       : `${c.action}`;
-    return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}${c.conflict ? `\n   ⛔ ${c.conflict}` : ''}`;
+    return `${i + 1}. ${desc}${c.warning ? `\n   ⚠️ ${c.warning}` : ''}${c.conflict ? `\n   ⛔ ${c.conflict}` : ''}${c.roleBlock ? `\n   ⛔ Job-role block: ${c.roleBlock} This swap will be skipped if approved.` : ''}`;
   }).join('\n');
 }
 
@@ -1823,6 +1823,16 @@ export async function createPendingPlanFromChanges(
     skipApproverNotify?: boolean;
   }
 ): Promise<string> {
+    // Job-role block (Deepika 2026-11-17): a swap that would put someone
+    // on a shift type their job role is not eligible for is BLOCKED, not
+    // warned — the block rides on the change into the requester email
+    // and the summary flag carries it into the approver email +
+    // Requests list; approving does NOT override it, the swap is
+    // skipped at execution with the reason. Runs FIRST so the
+    // warn-and-override below skips blocked swaps (no duplicate note).
+    const { validatePlanSwapCompatibility } = await import('./planExecutor.js');
+    const roleBlocked = await validatePlanSwapCompatibility(companyId, plan.changes || []);
+
     // Warn-and-override: flag every change that puts someone on a shift type
     // their job role is not eligible for. The warning rides on the change
     // into the requester email and the summary flag carries it into the
@@ -1831,6 +1841,9 @@ export async function createPendingPlanFromChanges(
     const warned = await validatePlanEligibility(companyId, plan.changes || []);
     if (warned > 0) {
       plan.summary = `⚠️ Job-role warning: ${warned} change${warned === 1 ? '' : 's'} ${warned === 1 ? 'assigns' : 'assign'} someone outside the allowed roles — approving overrides the rule. ` + (plan.summary || '');
+    }
+    if (roleBlocked > 0) {
+      plan.summary = `⛔ Job-role block: ${roleBlocked} swap${roleBlocked === 1 ? '' : 's'} can't happen as written (a job role doesn't fit the shift) — if approved, the blocked swap${roleBlocked === 1 ? '' : 's'} will be skipped and reported with the reason. ` + (plan.summary || '');
     }
 
     // Schedule-conflict flags (Deepika 2026-11-01): a swap that would
@@ -1846,7 +1859,11 @@ export async function createPendingPlanFromChanges(
     // Swap staging (Deepika 2026-11-01; multi-partner 2026-11-17):
     // a plan that swaps is born 'awaiting_partner' — the partners
     // are asked FIRST, in order, and the approvers are notified
-    // only when the last one agrees.
+    // only when the last one agrees. A plan with a role-blocked swap
+    // is NEVER staged: the partner must not be asked to agree to a
+    // swap that can never run — it goes straight to the approvers as
+    // 'pending' with the block in its summary.
+    const hasRoleBlock = (plan.changes || []).some((c: any) => c.roleBlock);
     let requesterId: string | null = input.requesterUserId || null;
     if (!requesterId) {
       try {
@@ -1858,9 +1875,11 @@ export async function createPendingPlanFromChanges(
       } catch { /* staging just falls back to the direct flow */ }
     }
     let partners: Array<{ id: string; name: string | null }> = [];
-    try {
-      partners = await resolveSwapPartners(query, companyId, plan, requesterId, input.partnerUserId || null);
-    } catch { partners = []; }
+    if (!hasRoleBlock) {
+      try {
+        partners = await resolveSwapPartners(query, companyId, plan, requesterId, input.partnerUserId || null);
+      } catch { partners = []; }
+    }
     const partner = partners.length ? partners[0] : null;
     const partnerRemaining = partners.slice(1);
     const partnerApproveToken = partner ? crypto.randomBytes(32).toString('hex') : null;

@@ -95,6 +95,17 @@ interface PlanChange {
    * this reason.
    */
   conflict?: string;
+  /**
+   * Job-role block attached at plan-creation time (Deepika, 2026-11-17):
+   * the swap would put someone on a shift type their job role is not
+   * eligible for. Like `conflict` this is NOT overridable by approving
+   * — shown in every plan preview, the partner is never asked about a
+   * blocked swap, and at execution the blocked swap change is skipped
+   * and reported as failed with this reason. The admin override for a
+   * blocked swap is to do it by hand in the app, where the popup is
+   * the notice.
+   */
+  roleBlock?: string;
 }
 
 interface ExecuteResult {
@@ -1019,6 +1030,10 @@ export async function validatePlanEligibility(companyId: string, changes: PlanCh
         const w = await check(user.display, user.id, st.id, st.name);
         if (w) { c.warning = w; warned++; }
       } else if (c.action === 'move' && c.fromPerson && c.toPerson && (c.date || c.fromDate)) {
+        // A move that is one half of a role-blocked swap carries the
+        // block, not the warning (Deepika, 2026-11-17): the warning
+        // is overridable by approving, the block is not.
+        if (c.roleBlock) continue;
         const fromUser = await findUser(companyId, c.fromPerson);
         const toUser = await findUser(companyId, c.toPerson);
         if (!fromUser || !toUser) continue;
@@ -1027,6 +1042,10 @@ export async function validatePlanEligibility(companyId: string, changes: PlanCh
         const w = await check(toUser.display, toUser.id, row.shift_type_id, row.shift_type_name);
         if (w) { c.warning = w; warned++; }
       } else if (c.action === 'swap' && c.fromPerson && c.toPerson) {
+        // A role-blocked swap carries the block, not the warning
+        // (Deepika, 2026-11-17): the warning is overridable by
+        // approving, the block is not.
+        if (c.roleBlock) continue;
         const fromUser = await findUser(companyId, c.fromPerson);
         const toUser = await findUser(companyId, c.toPerson);
         if (!fromUser || !toUser) continue;
@@ -1092,6 +1111,161 @@ async function swapConflictReason(
       receives: [{ date: toSide ? fromDate : toDate, ...fromType }],
     },
   ]);
+}
+
+/**
+ * Role-compatibility reason for one resolved swap, or null when both
+ * people can work the shift they'd take (Deepika, 2026-11-17 — a swap
+ * is allowed only if EACH person can work the shift they'd take).
+ * The reason names the person, the shift (type + date), the role they
+ * hold, and the roles the shift allows — never a bare refusal. Shared
+ * by the creation-time validation (validatePlanSwapCompatibility) and
+ * the execution-time guard in executePlan, mirroring the conflict
+ * guard: a swap that was fine when the plan was written but has become
+ * impossible since is still refused at approval time.
+ */
+async function swapRoleReason(
+  companyId: string,
+  fromUser: { id: string; display: string },
+  toUser: { id: string; display: string },
+  fromSide: SwapSide,
+  toSide: SwapSide | null,
+  fromDate: string,
+  toDate: string
+): Promise<string | null> {
+  const typeOf = (side: SwapSide) => side.kind === 'manual'
+    ? { shiftTypeId: side.row.shift_type_id, shiftTypeName: side.row.shift_type_name }
+    : { shiftTypeId: side.shiftTypeId, shiftTypeName: side.shiftTypeName };
+  const fromType = typeOf(fromSide);
+  const toType = toSide ? typeOf(toSide) : null;
+  const reasons: string[] = [];
+  const r1 = await checkPersonEligible(companyId, toUser.id, fromType.shiftTypeId);
+  if (!r1.ok) reasons.push(`${toUser.display} (${r1.roleName || 'no job role set'}) can't take ${fromType.shiftTypeName} on ${fromDate} — it allows only: ${r1.eligibleNames}.`);
+  if (toType) {
+    const r2 = await checkPersonEligible(companyId, fromUser.id, toType.shiftTypeId);
+    if (!r2.ok) reasons.push(`${fromUser.display} (${r2.roleName || 'no job role set'}) can't take ${toType.shiftTypeName} on ${toDate} — it allows only: ${r2.eligibleNames}.`);
+  }
+  return reasons.length ? reasons.join(' ') : null;
+}
+
+/**
+ * Role-compatibility reason for one leg of a two-move swap, or null
+ * when the leg is a lone move or the pair fits. The complement is
+ * found by resolved user id (not by written name), mirroring
+ * resolveSwapPartners: the other leg hands this leg's toPerson's
+ * shift back to this leg's fromPerson. Checked live at execution so
+ * a blocked pair can never half-apply.
+ */
+async function movePairRoleReason(
+  companyId: string,
+  changes: PlanChange[],
+  change: PlanChange,
+  fromUser: { id: string; display: string },
+  toUser: { id: string; display: string },
+  side: SwapSide,
+  date: string
+): Promise<string | null> {
+  for (const other of changes || []) {
+    if (other === change || other.action !== 'move' || !other.fromPerson || !other.toPerson) continue;
+    let oFrom: any, oTo: any;
+    try {
+      oFrom = await findUser(companyId, other.fromPerson);
+      oTo = await findUser(companyId, other.toPerson);
+    } catch { continue; }
+    if (!oFrom || !oTo) continue;
+    if (oFrom.id !== toUser.id || oTo.id !== fromUser.id) continue;
+    const oDate = other.fromDate || other.date;
+    if (!oDate) continue;
+    const oSide = await resolveSwapSide(companyId, oFrom.id, oDate, other.shiftType);
+    if (!oSide) continue;
+    // This move hands fromUser's shift to toUser; the complement hands
+    // toUser's shift back to fromUser. Together they are one swap.
+    return swapRoleReason(companyId, fromUser, toUser, side, oSide, date, oDate);
+  }
+  return null;
+}
+
+/**
+ * Role-compatibility validation for a plan's swaps (Deepika,
+ * 2026-11-17). Attaches a `roleBlock` note to every swap change that
+ * would put someone on a shift type their job role is not eligible
+ * for, and returns how many swaps were blocked. Covers both shapes a
+ * swap arrives in: an action-'swap' change, and a complementary move
+ * pair (each move hands one person's shift to the other — the shape
+ * the planner returns for a swap). A pair is blocked as a pair: one
+ * blocked direction blocks BOTH moves, so a half-swap can never run.
+ * Best-effort like validatePlanEligibility: an unresolvable swap
+ * skips the note instead of blocking plan creation — but unlike the
+ * role-rule warning, a blocked swap is NOT applied at execution
+ * (executePlan re-checks live and fails it with the reason).
+ */
+export async function validatePlanSwapCompatibility(companyId: string, changes: PlanChange[]): Promise<number> {
+  let blocked = 0;
+  const list = changes || [];
+  // Complementary move pairs, resolved by user id (not by written
+  // name, so a nickname in one move still pairs with the full name
+  // in the other — same rule as resolveSwapPartners).
+  const moveUsers: Array<{ from: any; to: any } | null> = [];
+  for (const c of list) {
+    if (c.action !== 'move' || !c.fromPerson || !c.toPerson) { moveUsers.push(null); continue; }
+    try {
+      const fromUser = await findUser(companyId, c.fromPerson);
+      const toUser = await findUser(companyId, c.toPerson);
+      moveUsers.push(fromUser && toUser ? { from: fromUser, to: toUser } : null);
+    } catch { moveUsers.push(null); }
+  }
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = moveUsers[i], b = moveUsers[j];
+      if (!a || !b) continue;
+      if (a.from.id === b.to.id && a.to.id === b.from.id) pairs.push([i, j]);
+    }
+  }
+  const paired = new Set<number>(pairs.flat());
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    try {
+      if (c.action === 'swap' && c.fromPerson && c.toPerson) {
+        const fromUser = await findUser(companyId, c.fromPerson);
+        const toUser = await findUser(companyId, c.toPerson);
+        if (!fromUser || !toUser) continue;
+        const fromDate = c.fromDate || c.date;
+        const toDate = c.toDate || c.date;
+        if (!fromDate || !toDate) continue;
+        const fromSide = await resolveSwapSide(companyId, fromUser.id, fromDate, c.shiftType);
+        if (!fromSide) continue;
+        const toSide = await resolveSwapSide(companyId, toUser.id, toDate, c.shiftType);
+        const reason = await swapRoleReason(companyId, fromUser, toUser, fromSide, toSide, fromDate, toDate);
+        if (reason) { c.roleBlock = reason; blocked++; }
+      } else if (c.action === 'move' && paired.has(i)) {
+        const j = pairs.find(([a, b]) => a === i || b === i)?.find((x) => x !== i);
+        if (j === undefined) continue;
+        const a = list[i], b = list[j];
+        const aUsers = moveUsers[i]!, bUsers = moveUsers[j]!;
+        const aDate = a.fromDate || a.date;
+        const bDate = b.fromDate || b.date;
+        if (!aDate || !bDate) continue;
+        // Move i hands a.from's shift to a.to; move j hands b.from's
+        // shift to b.to. Together they are one swap: check both
+        // directions with the swap helper.
+        const fromSide = await resolveSwapSide(companyId, aUsers.from.id, aDate, a.shiftType);
+        if (!fromSide) continue;
+        const toSide = await resolveSwapSide(companyId, bUsers.from.id, bDate, b.shiftType);
+        const reason = await swapRoleReason(companyId, aUsers.from, aUsers.to, fromSide, toSide, aDate, bDate);
+        if (reason) { a.roleBlock = reason; b.roleBlock = reason; blocked++; }
+      }
+    } catch { /* a validation note must never block plan creation */ }
+  }
+  // Each pair was visited twice (once per leg) but must count once.
+  // Re-count from the flags: one per blocked swap change, minus the
+  // extra leg of each blocked pair.
+  if (blocked) {
+    const flaggedSwaps = list.filter((c) => c.action === 'swap' && c.roleBlock).length;
+    const flaggedPairLegs = list.filter((c) => c.action === 'move' && c.roleBlock).length;
+    blocked = flaggedSwaps + Math.floor(flaggedPairLegs / 2);
+  }
+  return blocked;
 }
 
 /**
@@ -1403,6 +1577,13 @@ export async function executePlan(
         // the schedule may have changed since the plan was written.
         const conflictReason = await swapConflictReason(companyId, fromUser, toUser, fromSide, toSide, fromDate, toDate);
         if (conflictReason) throw new Error(`Swap not applied — ${conflictReason}`);
+        // Role guard (Deepika 2026-11-17): never apply a swap that puts
+        // someone on a shift type their job role is not eligible for —
+        // skip it and report it failed with the reason, even when the
+        // plan was approved. Re-checked live here because the eligible
+        // list or the holders may have changed since the plan was written.
+        const roleReason = await swapRoleReason(companyId, fromUser, toUser, fromSide, toSide, fromDate, toDate);
+        if (roleReason) throw new Error(`Swap not applied — ${roleReason}`);
         const { withTransaction } = await import('../db.js');
         await withTransaction(async (tx) => {
           // Remove fromUser's shift: delete a manual row, or exclude a
@@ -1592,6 +1773,14 @@ export async function executePlan(
         if (!side) throw new Error(noShiftFoundMsg(fromUser.display, date, change.shiftType));
         const typeId = side.kind === 'manual' ? side.row.shift_type_id : side.shiftTypeId;
         const typeName = side.kind === 'manual' ? side.row.shift_type_name : side.shiftTypeName;
+        // Role guard for one half of a swap (Deepika, 2026-11-17): the
+        // planner returns a swap as two complementary moves, so a move
+        // with a complement is one leg of a swap — re-check the whole
+        // pair live and refuse the leg when either direction still
+        // doesn't fit, or the swap would half-apply. A lone move (no
+        // complement) keeps the warn-and-override rule.
+        const pairReason = await movePairRoleReason(companyId, plan.changes, change, fromUser, toUser, side, date);
+        if (pairReason) throw new Error(`Move not applied — ${pairReason}`);
         const { withTransaction } = await import('../db.js');
         await withTransaction(async (tx) => {
           if (side.kind === 'manual') {
