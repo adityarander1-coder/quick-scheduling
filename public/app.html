@@ -20555,6 +20555,15 @@ window.qsNpOfferSend = function (btn) {
         #tab-bulk .ba-side button.active { background:#0e7c86; color:#fff; font-weight:600; box-shadow:0 2px 8px rgba(14,124,134,.35); }
         #tab-bulk .ba-side button .sub { display:block; font-size:11.5px; font-weight:400; opacity:.75; margin-top:2px; }
         #tab-bulk .ba-panel-col { flex:1; padding:26px 30px; min-width:0; }
+        /* Run-rail fix (Deepika, 2026-11-21): the fixed Tools rail
+           (58px, 172px when expanded) overlays the panel column's
+           far right and covered the Run button (live, Nov 21, 7:57 PM
+           — the tidies' band-padding fix died with the band in the
+           restyle rebase). Reserve the rail's width on the panel
+           column only — the rail itself, and every other tab, are
+           untouched. */
+        body.qs-tools-on #tab-bulk .ba-panel-col { padding-right: calc(30px + 66px); }
+        body.qs-tools-on.qs-tools-wide #tab-bulk .ba-panel-col { padding-right: calc(30px + 180px); }
         #tab-bulk .ba-action-panel { display:none; }
         #tab-bulk .ba-action-panel.active { display:block; }
         #tab-bulk .ba-action-panel h3 { font-size:18px; color:#083f4d; margin:0 0 4px; }
@@ -20579,6 +20588,8 @@ window.qsNpOfferSend = function (btn) {
           #tab-bulk .ba-card { flex-direction:column; }
           #tab-bulk .ba-side { width:100%; border-right:none; border-bottom:1px solid #e3ecec; }
           #tab-bulk .ba-panel-col { padding:20px; }
+          body.qs-tools-on #tab-bulk .ba-panel-col { padding-right: calc(20px + 66px); }
+          body.qs-tools-on.qs-tools-wide #tab-bulk .ba-panel-col { padding-right: calc(20px + 180px); }
           #tab-bulk #bulk-close-panel { grid-template-columns:1fr; }
           #tab-bulk .ba-panel-col .bulk-fld { flex:1 1 100%; }
           #tab-bulk .ba-panel-col .bulk-fld input, #tab-bulk .ba-panel-col .bulk-fld select { width:100%; }
