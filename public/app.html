@@ -4194,6 +4194,12 @@
         };
         var qsDrag = null;      // candidate / active drag
         var qsPlace = null;     // touch place-mode: { shift }
+        // Swap entered from the chevron menu's Swap button (Deepika,
+        // 2026-11-21): the incompatibility block is ABSOLUTE on that
+        // path — Cancel only, no override of any kind. Set by the
+        // menu's swap action, read by qsExecuteDrop, cleared by
+        // qsExitPlace / the drop itself.
+        var qsSwapFromButton = false;
         var qsSwallowClick = false;
 
         function qsDragSource(e) {
@@ -4263,13 +4269,16 @@
           if (qsDrag.timer) clearTimeout(qsDrag.timer);
         }
 
-        function qsExecuteDrop(shift, target) {
+        function qsExecuteDrop(shift, target, fromButton) {
           if (!target || target.kind === 'none') return;
           if (target.kind === 'swap') {
             var other = target.shift;
             var doSwap = function (payload) {
               api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
                 if (!r.ok && r.data && r.data.roleIncompatible) {
+                  // Chevron Swap button (Deepika, 2026-11-21): the
+                  // block is ABSOLUTE — Cancel ONLY, no "Swap anyway".
+                  if (fromButton) { showRolePopup(r.data.roleDetail, null, null); return; }
                   showRolePopup(r.data.roleDetail, 'Swap anyway', function () { doSwap(Object.assign({}, payload, { overrideRole: true })); });
                   return;
                 }
@@ -4330,6 +4339,7 @@
             document.querySelectorAll('#tab-schedule .qs-drag-src').forEach(function (n) { n.classList.remove('qs-drag-src'); });
           }
           qsPlace = null;
+          qsSwapFromButton = false;
           var b = document.getElementById('qs-place-banner');
           if (b) b.remove();
         }
@@ -5451,8 +5461,12 @@
               }
               e.stopPropagation(); e.preventDefault();
               var shift = qsPlace.shift;
+              // Capture BEFORE qsExitPlace clears it: a swap started
+              // from the chevron Swap button keeps its absolute block
+              // (Cancel only) through the drop.
+              var fromBtn = qsSwapFromButton;
               qsExitPlace();
-              if (target) qsExecuteDrop(shift, target);
+              if (target) qsExecuteDrop(shift, target, fromBtn);
             }
           }, true);
 
@@ -6791,6 +6805,13 @@
             // dialog as the old box 🔄 (qsReplaceShift, Off/Working
             // badges); it also works for rotation occurrences.
             html += '<button class="sp-item" data-act="replace"><span class="sp-ic" style="background:#e3f0fa">🔄</span>Replace person</button>';
+            // Swap (Deepika, 2026-11-21): a visible button for swapping
+            // two people, not only drag-and-drop. The handler enters
+            // the SAME tap-to-place swap flow drag-and-drop starts
+            // (qsEnterPlace) — tap the other person's shift to swap
+            // with them — through the same drag-swap endpoint and
+            // compatibility gate. Sits right after Replace person.
+            html += '<button class="sp-item" data-act="swap"><span class="sp-ic" style="background:#e3f0fa">⇄</span>Swap with another person</button>';
             // Convert (Deepika, 2026-11-07): make a separate calendar
             // event from this shift — the shift itself is untouched.
             html += '<button class="sp-item" data-act="make-event"><span class="sp-ic" style="background:#e8f5f3">📅</span>Make calendar event</button>';
@@ -7010,12 +7031,13 @@
           var d = detail || {};
           var who = (d.personName || 'This person') + (d.personRole ? ' (' + d.personRole + ')' : ' (no job role set)');
           var sub = who + ' → ' + (d.shiftTypeName || 'this shift') + (d.allowedNames ? ' — allows only: ' + d.allowedNames : '');
+          var buttons = [{ label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } }];
+          // No override label (the chevron Swap button — Deepika,
+          // 2026-11-21: the block is absolute) means Cancel ONLY.
+          if (overrideLabel && onOverride) buttons.push({ label: overrideLabel, primary: true, onClick: onOverride });
           showDialog('Job role not compatible',
             '<p>the job role is not compatible so cannot assign it</p>' +
-            '<p style="color:var(--dim)">' + esc(sub) + '</p>', [
-            { label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } },
-            { label: overrideLabel || 'Assign anyway', primary: true, onClick: onOverride }
-          ]);
+            '<p style="color:var(--dim)">' + esc(sub) + '</p>', buttons);
         }
         // Remove a single open slot — works in every view (delegated).
         document.addEventListener('click', function (e) {
@@ -7152,6 +7174,21 @@
               var repSid = s.id;
               closeShiftPopup();
               window.qsReplaceShift(repSid);
+            } else if (act === 'swap') {
+              // Swap with another person — the SAME tap-to-place flow
+              // drag-and-drop starts (qsEnterPlace): the banner says
+              // to tap the day, open slot, or person to swap with, and
+              // tapping another person's shift swaps through the same
+              // drag-swap endpoint and gate. qsSwapFromButton marks
+              // the button path so an incompatible swap blocks with
+              // Cancel ONLY (Deepika, 2026-11-21: absolute, no
+              // override). Set AFTER qsEnterPlace — it calls
+              // qsExitPlace first, which clears the flag. No new swap
+              // UX, no new endpoint.
+              var swShift = s;
+              closeShiftPopup();
+              qsEnterPlace(swShift, null);
+              qsSwapFromButton = true;
             } else if (act === 'select') {
               // Multi-select (Deepika, 2026-11-17): close the popup and
               // enter selection mode with this shift already selected.
