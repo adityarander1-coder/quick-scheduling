@@ -20541,165 +20541,247 @@ window.qsNpOfferSend = function (btn) {
     <section id="tab-bulk" class="tab-panel">
       <style>
         #tab-bulk h2 { display: none; }
-        #tab-bulk .bulk-band { background: #21414c; margin: 0 -1.5rem 1rem; padding: 14px 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
-        #tab-bulk .bulk-band .bulk-fld label { font-size: 0.9rem; font-weight: 600; display: block; margin-bottom: 4px; color: #fff; }
-        #tab-bulk .bulk-band #bulk-slot-options label { color: #fff; }
-        #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
-        #tab-bulk #bulk-members > label:nth-child(even) { background: #e8edee; border-radius: 4px; }
+        /* Bulk Actions sidebar (Deepika, 2026-11-21): the actions live
+           in a sidebar inside Bulk Actions; the selected action's panel
+           shows beside it. Less boxy — softer corners, wider spacing,
+           same teal. The Action dropdown is gone; the hidden
+           #bulk-action select stays the source of truth (see the
+           sidebar wiring in the script below). */
+        #tab-bulk .ba-card { background:#fff; border-radius:20px; box-shadow:0 2px 14px rgba(8,63,77,.08); display:flex; overflow:hidden; margin-bottom:1rem; }
+        #tab-bulk .ba-side { width:248px; flex-shrink:0; background:#f4f8f8; padding:20px 14px; border-right:1px solid #e3ecec; }
+        #tab-bulk .ba-side h2 { display:block; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:#5b7a80; font-weight:700; padding:4px 12px 12px; margin:0; }
+        #tab-bulk .ba-side button { display:block; width:100%; text-align:left; border:none; background:transparent; font-size:14.5px; color:#2b3f45; padding:12px 14px; border-radius:12px; cursor:pointer; margin-bottom:4px; }
+        #tab-bulk .ba-side button:hover { background:#e6f0f0; }
+        #tab-bulk .ba-side button.active { background:#0e7c86; color:#fff; font-weight:600; box-shadow:0 2px 8px rgba(14,124,134,.35); }
+        #tab-bulk .ba-side button .sub { display:block; font-size:11.5px; font-weight:400; opacity:.75; margin-top:2px; }
+        #tab-bulk .ba-panel-col { flex:1; padding:26px 30px; min-width:0; }
+        #tab-bulk .ba-action-panel { display:none; }
+        #tab-bulk .ba-action-panel.active { display:block; }
+        #tab-bulk .ba-action-panel h3 { font-size:18px; color:#083f4d; margin:0 0 4px; }
+        #tab-bulk .ba-action-panel .lede { font-size:13.5px; color:#5f7a7f; margin:0 0 20px; }
+        #tab-bulk .ba-top-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px; }
+        #tab-bulk .ba-dates { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+        #tab-bulk .ba-run { display:flex; align-items:flex-end; }
+        #tab-bulk .ba-run-row { display:flex; justify-content:flex-end; margin-top:24px; }
+        #tab-bulk .ba-run-row .btn { padding:12px 34px; font-size:15px; }
+        #tab-bulk .ba-panel-col .bulk-fld > label { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:#5b7a80; font-weight:700; display:block; margin-bottom:8px; }
+        #tab-bulk .ba-panel-col input[type="date"], #tab-bulk .ba-panel-col input[type="number"], #tab-bulk .ba-panel-col input[type="text"], #tab-bulk .ba-panel-col select { border-radius:999px !important; padding:9px 14px !important; }
+        #tab-bulk .ba-panel-col .btn, #tab-bulk .ba-panel-col .btn-secondary { border-radius:999px; }
+        #tab-bulk #bulk-close-panel { display:grid; grid-template-columns:1fr 1.25fr; gap:22px; }
+        #tab-bulk #bulk-close-panel > div:nth-child(3), #tab-bulk #bulk-close-panel > div:nth-child(4) { grid-column:1 / -1; }
         /* Draft schedule from rotation: picker checkboxes must stay
-           checkbox-sized — the band's phone CSS makes band inputs
+           checkbox-sized — the phone CSS below makes panel inputs
            width:100%, which would stretch them full-width. */
         #bulk-draft-panel input[type="checkbox"] { width: auto !important; flex: none; }
+        #tab-bulk #bulk-members > label:nth-child(even) { background: #e8edee; border-radius: 4px; }
+        #tab-bulk .ba-below { border-radius:20px; box-shadow:0 2px 14px rgba(8,63,77,.08); }
         @media (max-width: 700px) {
-          #tab-bulk .bulk-band .bulk-fld { flex: 1 1 100%; }
-          #tab-bulk .bulk-band .bulk-fld input, #tab-bulk .bulk-band .bulk-fld select { width: 100%; }
-          #tab-bulk .bulk-band .bulk-date-fld { flex: 1 1 calc(50% - 0.5rem); }
-          #tab-bulk #bulk-run { flex: 1 1 100%; }
-        }
-        @media (min-width: 900px) {
-          #tab-bulk .bulk-band { margin: 0 -2rem 1rem; padding: 14px 2rem; flex-wrap: nowrap; }
-        }
-        /* Close shifts tidies (Deepika, 2026-11-21): the fixed Tools
-           rail (58px, 172px when expanded) overlays the band's far
-           right and clipped the Run button to "Ru". Reserve the
-           rail's width on this band only — the rail itself, and
-           every other tab, are untouched. */
-        body.qs-tools-on #tab-bulk .bulk-band { padding-right: calc(1.5rem + 66px); }
-        body.qs-tools-on.qs-tools-wide #tab-bulk .bulk-band { padding-right: calc(1.5rem + 180px); }
-        @media (min-width: 900px) {
-          body.qs-tools-on #tab-bulk .bulk-band { padding-right: calc(2rem + 66px); }
-          body.qs-tools-on.qs-tools-wide #tab-bulk .bulk-band { padding-right: calc(2rem + 180px); }
+          #tab-bulk .ba-card { flex-direction:column; }
+          #tab-bulk .ba-side { width:100%; border-right:none; border-bottom:1px solid #e3ecec; }
+          #tab-bulk .ba-panel-col { padding:20px; }
+          #tab-bulk #bulk-close-panel { grid-template-columns:1fr; }
+          #tab-bulk .ba-panel-col .bulk-fld { flex:1 1 100%; }
+          #tab-bulk .ba-panel-col .bulk-fld input, #tab-bulk .ba-panel-col .bulk-fld select { width:100%; }
+          #tab-bulk .ba-run-row .btn { width:100%; }
         }
       </style>
-      <div class="bulk-band">
-        <div id="bulk-action-wrap" class="bulk-fld">
-          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Action</label>
-          <select id="bulk-action" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-            <option value="publish">Publish shifts</option>
-            <option value="unpublish">Move to draft</option>
-            <option value="delete-shifts">Delete shifts (manual + rotation)</option>
-            <option value="open-slots">Open extra slots</option>
-            <option value="close-shifts">Close shifts</option>
-          </select>
-        </div>
-        <div id="bulk-shifttype-filter-wrap" class="bulk-fld">
-          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
-          <select id="bulk-shifttype-filter" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-            <option value="">All shift types</option>
-          </select>
-        </div>
-        <div id="bulk-pub-opts" style="display:none;flex:1 1 100%;gap:1rem;flex-wrap:wrap;align-items:flex-start">
-          <div class="bulk-fld">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Department</label>
-            <select id="bulk-pub-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-              <option value="">All departments I can access</option>
-            </select>
-          </div>
-          <div class="bulk-fld" style="flex:1 1 280px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift types to publish</label>
-            <div id="bulk-pub-types" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:110px;overflow-y:auto;min-width:220px"></div>
-          </div>
-        </div>
-        <div id="bulk-from-wrap" class="bulk-fld bulk-date-fld">
-          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">From</label>
-          <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-        </div>
-        <div id="bulk-to-wrap" class="bulk-fld bulk-date-fld">
-          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">To</label>
-          <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
-        </div>
-        <div id="bulk-slot-options" class="hidden" style="display:flex;gap:1rem;align-items:flex-end">
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shift type</label>
-            <select id="bulk-shifttype" style="padding:8px;border:1px solid var(--border);border-radius:8px"></select>
-          </div>
-          <div id="bulk-count-wrap">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Slots per date</label>
-            <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
-          </div>
-        </div>
-        <div id="bulk-close-panel" class="hidden" style="flex:1 1 100%;display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;background:rgba(255,255,255,0.08);border-radius:8px;padding:10px 12px">
-          <div style="flex:1 1 200px;min-width:190px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Departments</label>
-            <div id="bulk-close-depts" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:120px;overflow-y:auto"></div>
-            <p style="font-size:0.82rem;color:#cfe3e6;margin:6px 0 0">Tick departments to narrow the shift types. None ticked means all departments.</p>
-          </div>
-          <div style="flex:1 1 240px;min-width:210px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Shift types</label>
-            <div id="bulk-close-types" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:140px;overflow-y:auto"></div>
-          </div>
-          <div style="flex:1 1 260px;min-width:220px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">Dates</label>
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-              <input type="date" id="bulk-close-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-              <button type="button" id="bulk-close-add-date" class="btn-secondary" style="padding:8px 12px">Add date</button>
-            </div>
-            <div id="bulk-close-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
-              <input type="date" id="bulk-close-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-              <span style="color:#fff">to</span>
-              <input type="date" id="bulk-close-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-              <button type="button" id="bulk-close-add-span" class="btn-secondary" style="padding:8px 12px">Add range</button>
-            </div>
-            <p id="bulk-close-hint" class="hidden" style="font-size:0.85rem;color:#ffd9a8;margin:8px 0 0">Pick at least one shift type and one date</p>
-          </div>
-          <div style="flex:1 1 200px;min-width:190px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px;color:#fff">How many to close per date</label>
-            <input type="number" id="bulk-close-count" min="1" max="20" placeholder="All" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;width:90px">
-            <p style="font-size:0.82rem;color:#cfe3e6;margin:6px 0 0">Leave empty to close all. A number closes at most that many per date, for each shift type — the rest stay showing.</p>
-          </div>
-        </div>
-        <button type="button" id="bulk-run" class="btn">Run</button>
+      <!-- The Action dropdown is gone — the sidebar below is the picker
+           now (Deepika, 2026-11-21). The select stays, hidden, as the
+           single source of truth: sidebar buttons set its value and
+           fire 'change', so every existing handler works unchanged. -->
+      <div style="display:none">
+        <select id="bulk-action">
+          <option value="publish">Publish shifts</option>
+          <option value="unpublish">Move to draft</option>
+          <option value="delete-shifts">Delete shifts (manual + rotation)</option>
+          <option value="open-slots">Open extra slots</option>
+          <option value="close-shifts">Close shifts</option>
+        </select>
       </div>
-      <!-- Draft schedule from rotation (background rotations, Deepika
-           2026-11-13). Shown only when the Action is
-           "Draft schedule from rotation", which itself only exists
-           while the company is in generated mode. Picking (Deepika,
-           Nov 14): by SHIFT (multi-select or All) + TEAM MEMBERS
-           (multi-select or All) — NOT by rotation names; the panel
-           resolves the picks to the rotations behind them. -->
-      <div id="bulk-draft-panel" class="hidden" style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:1rem">
-        <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start">
-          <div style="flex:1 1 260px;min-width:220px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Shifts</label>
-            <div id="bulk-draft-types" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
-          </div>
-          <div style="flex:1 1 260px;min-width:220px">
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members</label>
-            <div id="bulk-draft-members" style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;max-height:150px;overflow-y:auto;min-width:220px"></div>
-          </div>
-          <div>
-            <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Period</label>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="4w">Next 4 weeks</button>
-              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="3m">Next 3 months</button>
-              <button type="button" class="btn-secondary bulk-draft-preset" data-preset="custom">Custom</button>
+      <div class="ba-card">
+        <aside class="ba-side" id="bulk-side">
+          <h2>Actions</h2>
+          <button type="button" data-bulk-action="close-shifts">Close shifts<span class="sub">Remove open slots by type &amp; date</span></button>
+          <button type="button" data-bulk-action="publish" class="active">Publish shifts<span class="sub">Preview &amp; publish drafts</span></button>
+          <button type="button" data-bulk-action="unpublish">Move to draft<span class="sub">Unpublish back to draft</span></button>
+          <button type="button" data-bulk-action="delete-shifts">Delete shifts<span class="sub">Manual + rotation shifts</span></button>
+          <button type="button" data-bulk-action="open-slots">Open extra slots<span class="sub">Add open slots per date</span></button>
+          <button type="button" data-bulk-action="draft-schedule">Draft schedule from rotation<span class="sub">Generate from rotations</span></button>
+        </aside>
+        <div class="ba-panel-col">
+          <!-- PUBLISH SHIFTS -->
+          <div class="ba-action-panel active" id="ba-panel-publish">
+            <h3>Publish shifts</h3>
+            <p class="lede">Preview what will go live, then publish.</p>
+            <div class="ba-top-row">
+              <div class="bulk-fld">
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Department</label>
+                <select id="bulk-pub-dept" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <option value="">All departments I can access</option>
+                </select>
+              </div>
+              <div class="ba-dates" id="ba-slot-publish-dates">
+                <div id="bulk-from-wrap" class="bulk-fld bulk-date-fld">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">From</label>
+                  <input type="date" id="bulk-from" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+                </div>
+                <div id="bulk-to-wrap" class="bulk-fld bulk-date-fld">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">To</label>
+                  <input type="date" id="bulk-to" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+                </div>
+              </div>
+              <div class="ba-run" id="ba-slot-publish-run">
+                <button type="button" id="bulk-run" class="btn">Run</button>
+              </div>
             </div>
-            <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">Custom uses the From / To dates above.</p>
+            <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">Shift types to publish</div>
+            <div id="bulk-pub-types" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:220px;overflow-y:auto;min-width:220px"></div>
+            <div id="ba-slot-publish-members" style="margin-top:18px">
+              <div id="bulk-members-wrap">
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Team members <span style="font-weight:400;color:var(--dim);text-transform:none;letter-spacing:0">(all if none selected)</span></label>
+                <select id="bulk-jobrole-filter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px">
+                  <option value="">All job roles</option>
+                </select>
+                <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
+                <label id="bulk-select-all-wrap" style="display:block;font-size:0.9rem;font-weight:600;margin-bottom:4px;cursor:pointer"><input type="checkbox" id="bulk-select-all" style="margin-right:6px">Select all</label>
+                <div id="bulk-members" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:220px;overflow-y:auto;min-width:200px"></div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div style="margin-top:12px">
-          <button type="button" id="bulk-draft-run" class="btn">Draft schedule</button>
+          <!-- MOVE TO DRAFT -->
+          <div class="ba-action-panel" id="ba-panel-unpublish">
+            <h3>Move to draft</h3>
+            <p class="lede">Move published shifts back to draft.</p>
+            <div class="ba-top-row">
+              <div id="ba-slot-unpublish-filter">
+                <div id="bulk-shifttype-filter-wrap" class="bulk-fld">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shift type</label>
+                  <select id="bulk-shifttype-filter" style="padding:8px;border:1px solid var(--border);border-radius:8px">
+                    <option value="">All shift types</option>
+                  </select>
+                </div>
+              </div>
+              <div class="ba-dates" id="ba-slot-unpublish-dates"></div>
+              <div class="ba-run" id="ba-slot-unpublish-run"></div>
+            </div>
+            <div id="ba-slot-unpublish-members"></div>
+          </div>
+          <!-- DELETE SHIFTS -->
+          <div class="ba-action-panel" id="ba-panel-delete-shifts">
+            <h3>Delete shifts <span style="font-size:13px;color:#5f7a7f;font-weight:400;">(manual + rotation)</span></h3>
+            <p class="lede">Delete shifts in a date range, for the people picked below.</p>
+            <div class="ba-top-row">
+              <div id="ba-slot-delete-filter"></div>
+              <div class="ba-dates" id="ba-slot-delete-dates"></div>
+              <div class="ba-run" id="ba-slot-delete-run"></div>
+            </div>
+            <div id="ba-slot-delete-members"></div>
+          </div>
+          <!-- OPEN EXTRA SLOTS -->
+          <div class="ba-action-panel" id="ba-panel-open-slots">
+            <h3>Open extra slots</h3>
+            <p class="lede">Add open slots on top of what drafting already made.</p>
+            <div class="ba-top-row">
+              <div class="ba-dates" id="ba-slot-open-dates"></div>
+              <div id="bulk-slot-options" class="hidden" style="display:flex;gap:1rem;align-items:flex-end">
+                <div>
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shift type</label>
+                  <select id="bulk-shifttype" style="padding:8px;border:1px solid var(--border);border-radius:8px"></select>
+                </div>
+                <div id="bulk-count-wrap">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Slots per date</label>
+                  <input type="number" id="bulk-slot-count" value="1" min="1" max="20" style="padding:8px;border:1px solid var(--border);border-radius:8px;width:80px">
+                </div>
+              </div>
+              <div class="ba-run" id="ba-slot-open-run"></div>
+            </div>
+            <p style="font-size:12px;color:#7a9499;margin-top:8px;line-height:1.45">Works any time — even on a closed date.</p>
+          </div>
+          <!-- CLOSE SHIFTS -->
+          <div class="ba-action-panel" id="ba-panel-close-shifts">
+            <h3>Close shifts</h3>
+            <p class="lede">Pick the departments and shift types, then the dates — or close a set number per date instead of all of them.</p>
+            <div id="bulk-close-panel" class="hidden">
+              <div>
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Departments</label>
+                <div id="bulk-close-depts" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:120px;overflow-y:auto"></div>
+                <p style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Tick departments to narrow the shift types. None ticked means all departments.</p>
+              </div>
+              <div>
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shift types</label>
+                <div id="bulk-close-types" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:140px;overflow-y:auto"></div>
+              </div>
+              <div>
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Dates</label>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                  <input type="date" id="bulk-close-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <button type="button" id="bulk-close-add-date" class="btn-secondary" style="padding:8px 12px">Add date</button>
+                </div>
+                <div id="bulk-close-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+                  <input type="date" id="bulk-close-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <span style="color:#7a9499;font-size:13px">to</span>
+                  <input type="date" id="bulk-close-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <button type="button" id="bulk-close-add-span" class="btn-secondary" style="padding:8px 12px">Add range</button>
+                </div>
+                <p id="bulk-close-hint" class="hidden" style="font-size:13px;color:#b7791f;background:#fdf6e3;border-radius:10px;padding:9px 12px;margin:14px 0 0">Pick at least one shift type and one date</p>
+              </div>
+              <div>
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">How many to close per date</label>
+                <input type="number" id="bulk-close-count" min="1" max="20" placeholder="All" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;width:90px">
+                <p style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Leave empty to close all. A number closes at most that many per date, for each shift type — the rest stay showing.</p>
+              </div>
+            </div>
+            <div class="ba-run-row" id="ba-slot-close-run"></div>
+          </div>
+          <!-- DRAFT SCHEDULE FROM ROTATION -->
+          <div class="ba-action-panel" id="ba-panel-draft-schedule">
+            <h3>Draft schedule from rotation</h3>
+            <p class="lede">Generate draft shifts from the rotation patterns for the period below.</p>
+            <div class="ba-top-row">
+              <div class="ba-dates" id="ba-slot-draft-dates"></div>
+            </div>
+            <!-- Draft schedule from rotation (background rotations, Deepika
+                 2026-11-13). Shown only when the Action is
+                 "Draft schedule from rotation", which itself only exists
+                 while the company is in generated mode. Picking (Deepika,
+                 Nov 14): by SHIFT (multi-select or All) + TEAM MEMBERS
+                 (multi-select or All) — NOT by rotation names; the panel
+                 resolves the picks to the rotations behind them. -->
+            <div id="bulk-draft-panel" class="hidden" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px">
+              <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+                <div style="flex:1 1 260px;min-width:220px">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shifts</label>
+                  <div id="bulk-draft-types" style="background:#fff;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:150px;overflow-y:auto;min-width:220px"></div>
+                </div>
+                <div style="flex:1 1 260px;min-width:220px">
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Team members</label>
+                  <div id="bulk-draft-members" style="background:#fff;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:150px;overflow-y:auto;min-width:220px"></div>
+                </div>
+                <div>
+                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Period</label>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="4w">Next 4 weeks</button>
+                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="3m">Next 3 months</button>
+                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="custom">Custom</button>
+                  </div>
+                  <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">Custom uses the From / To dates above.</p>
+                </div>
+              </div>
+              <div style="margin-top:12px">
+                <button type="button" id="bulk-draft-run" class="btn">Draft schedule</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="card">
-        <h2>Bulk Actions</h2>
+      <div class="card ba-below">
         <p style="color:var(--dim)">Apply an action to every date in a range.</p>
-        <div id="bulk-members-wrap">
-          <label style="font-size:0.9rem;font-weight:600;display:block;margin-bottom:4px">Team members <span style="font-weight:400;color:var(--dim)">(all if none selected)</span></label>
-          <select id="bulk-jobrole-filter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px">
-            <option value="">All job roles</option>
-          </select>
-          <input type="text" id="bulk-member-search" placeholder="Search team members…" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px" autocomplete="off">
-          <label id="bulk-select-all-wrap" style="display:block;font-size:0.9rem;font-weight:600;margin-bottom:4px;cursor:pointer"><input type="checkbox" id="bulk-select-all" style="margin-right:6px">Select all</label>
-          <div id="bulk-members" style="border:1px solid var(--border);border-radius:8px;padding:0.5rem;max-height:120px;overflow-y:auto;min-width:200px"></div>
-        </div>
         <div id="bulk-result" class="alert hidden" role="status"></div>
         <div id="bulk-pub-preview"></div>
         <div style="margin-top:10px">
           <button type="button" id="bulk-pub-confirm" class="btn hidden">Publish</button>
         </div>
-        <div id="bulk-pub-history"></div>
       </div>
       <script>
       (function () {
@@ -20861,6 +20943,54 @@ window.qsNpOfferSend = function (btn) {
             }
           }
           if (!isPublish) resetBulkPublishPreview();
+          layoutBulkPanels();
+        }
+
+        // ---- Bulk Actions sidebar (Deepika, 2026-11-21): the Action
+        // dropdown is replaced by a sidebar inside Bulk Actions. The
+        // hidden #bulk-action select stays the single source of truth
+        // — sidebar buttons set its value and fire 'change', so every
+        // existing handler (visibility, Run, draft-option sync) works
+        // unchanged. The shared groups (From / To, Run, Team members,
+        // Shift type filter) move into the active action's panel with
+        // appendChild, which keeps their listeners, values and checked
+        // state — nothing is re-created. Static groups (close panel,
+        // publish types, slot options, draft panel) already live
+        // inside their own panels in the markup.
+        function syncBulkSidebar() {
+          var cur = $('bulk-action') ? $('bulk-action').value : 'publish';
+          document.querySelectorAll('.ba-side button[data-bulk-action]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-bulk-action') === cur);
+          });
+          var draftBtn = document.querySelector('.ba-side button[data-bulk-action="draft-schedule"]');
+          if (draftBtn) draftBtn.style.display = (bulkScheduleMode === 'generated') ? '' : 'none';
+        }
+        function setBulkAction(action) {
+          var sel = $('bulk-action');
+          if (!sel) return;
+          if (sel.value === action) { syncBulkSidebar(); return; }
+          sel.value = action;
+          sel.dispatchEvent(new Event('change'));
+        }
+        function layoutBulkPanels() {
+          var a = $('bulk-action') ? $('bulk-action').value : 'publish';
+          function slot(id) { return document.getElementById(id); }
+          function move(el, destId) {
+            var d = slot(destId);
+            if (el && d && el.parentNode !== d) d.appendChild(el);
+          }
+          var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
+          if (datesSlot) { move($('bulk-from-wrap'), datesSlot); move($('bulk-to-wrap'), datesSlot); }
+          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
+          if (runSlot) move($('bulk-run'), runSlot);
+          var memSlot = { publish: 'ba-slot-publish-members', unpublish: 'ba-slot-unpublish-members', 'delete-shifts': 'ba-slot-delete-members' }[a];
+          if (memSlot) move($('bulk-members-wrap'), memSlot);
+          var filtSlot = { unpublish: 'ba-slot-unpublish-filter', 'delete-shifts': 'ba-slot-delete-filter' }[a];
+          if (filtSlot) move($('bulk-shifttype-filter-wrap'), filtSlot);
+          document.querySelectorAll('.ba-action-panel').forEach(function (p) {
+            p.classList.toggle('active', p.id === 'ba-panel-' + a);
+          });
+          syncBulkSidebar();
         }
 
         // ---- Bulk Actions "Close shifts" pickers (Deepika, 2026-11-21):
@@ -21539,26 +21669,8 @@ window.qsNpOfferSend = function (btn) {
             if (r.data.opened) bits.push(r.data.opened + ' opened for cover');
             showResult('✓ Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + '.', false);
             resetBulkPublishPreview();
-            bulkPubLoadHistory();
             if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
           }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
-        }
-        function bulkPubLoadHistory() {
-          var el = $('bulk-pub-history');
-          if (!el) return;
-          api('/api/schedule/publish/batches').then(function (r) {
-            if (!r.ok || !r.data || !r.data.batches || !r.data.batches.length) { el.innerHTML = ''; return; }
-            var h = '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px"><div style="font-weight:700;font-size:0.9rem;margin-bottom:6px">Recent publishes</div>';
-            r.data.batches.slice(0, 8).forEach(function (b) {
-              var when = new Date(b.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-              var counts = b.shiftCount + ' shift' + (b.shiftCount === 1 ? '' : 's');
-              if (b.flipCount) counts += ' · ' + b.flipCount + ' draft' + (b.flipCount === 1 ? '' : 's') + ' published';
-              if (b.openCount) counts += ' · ' + b.openCount + ' open';
-              h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.87rem;padding:3px 0;flex-wrap:wrap"><span>' + bulkPubFmtDay(b.rangeStart) + ' – ' + bulkPubFmtDay(b.rangeEnd) + '</span><span style="color:var(--dim)">by ' + esc(b.createdByName || 'Manager') + ' · ' + when + ' · ' + counts + '</span>' +
-                (b.undoneAt ? '<span style="color:var(--dim)">(undone)</span>' : '<button type="button" class="btn-secondary bulk-pub-undo" data-batch="' + b.id + '" style="padding:2px 10px;font-size:0.82rem">Undo</button>') + '</div>';
-            });
-            el.innerHTML = h + '</div>';
-          }).catch(function () { /* history is decoration */ });
         }
         function datesInRange(from, to) {
           var out = [];
@@ -21661,8 +21773,8 @@ window.qsNpOfferSend = function (btn) {
             }
           }).catch(function () { showResult('Network error.', true); });
         });
-        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); } });
-        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); bulkPubLoadHistory(); loadBulkScheduleMode(); }
+        window.addEventListener('hashchange', function () { if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); loadBulkScheduleMode(); } });
+        if (isActive()) { loadMembers(); loadBulkShiftTypes(); loadBulkCloseDepts(); loadBulkPubDepts(); loadBulkScheduleMode(); }
         $('bulk-member-search').addEventListener('input', function () { renderBulkMembers(this.value); });
         $('bulk-select-all').addEventListener('change', function () {
           var on = this.checked;
@@ -21671,6 +21783,9 @@ window.qsNpOfferSend = function (btn) {
         $('bulk-members').addEventListener('change', syncBulkSelectAll);
         $('bulk-jobrole-filter').addEventListener('change', function () { renderBulkMembers($('bulk-member-search').value); });
         $('bulk-action').addEventListener('change', updateBulkSlotVisibility);
+        document.querySelectorAll('.ba-side button[data-bulk-action]').forEach(function (b) {
+          b.addEventListener('click', function () { setBulkAction(b.getAttribute('data-bulk-action')); });
+        });
         // Close-shifts pickers: delegated so the handlers survive
         // re-renders of the department / type lists and chips.
         (function () {
@@ -21730,17 +21845,6 @@ window.qsNpOfferSend = function (btn) {
         $('bulk-from').addEventListener('change', resetBulkPublishPreview);
         $('bulk-to').addEventListener('change', resetBulkPublishPreview);
         $('bulk-members').addEventListener('change', resetBulkPublishPreview);
-        $('bulk-pub-history').addEventListener('click', function (ev) {
-          var b = ev.target && ev.target.closest ? ev.target.closest('.bulk-pub-undo') : null;
-          if (!b) return;
-          if (!confirm('Undo this publish? Its future shifts will be removed and its published drafts returned to draft (past shifts stay).')) return;
-          api('/api/schedule/publish/batches/' + b.getAttribute('data-batch') + '/undo', { method: 'POST', body: '{}' }).then(function (r) {
-            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not undo that publish.', true); return; }
-            showResult('✓ Publish undone — ' + r.data.removedShifts + ' future shift(s) removed' + (r.data.unflipped ? ', ' + r.data.unflipped + ' draft(s) back to draft' : '') + '.', false);
-            bulkPubLoadHistory();
-            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
-          }).catch(function () { showResult('Network error.', true); });
-        });
         // Expose refresh for department filter changes.
         window.qsRefreshBulkMembers = function () {
           if (isActive()) { renderBulkMembers($('bulk-member-search').value); loadBulkShiftTypes(); loadJobRoles(); loadBulkPubDepts(); }
