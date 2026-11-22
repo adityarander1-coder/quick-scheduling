@@ -2589,6 +2589,33 @@
         }
         .sc-offer { border: 2px solid #0e7c86; border-radius: 12px; padding: 12px 14px; margin: 4px 0 12px; background: #f6fefe; }
         .sc-off-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid #d9ecec; cursor: pointer; }
+        /* Short cover — available people right in the list (Deepika,
+           approved mock 2026-11-18): under each gap, the people who
+           marked themselves available that day AND are eligible for
+           that shift type, with an Offer button per person. */
+        .sc-avail { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 4px 0 12px; }
+        .sc-avail-head { font-size: 12px; font-weight: 800; color: #0a6270; letter-spacing: .3px; margin-bottom: 2px; }
+        .sc-avail-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid var(--border); }
+        .sc-avail-head + .sc-avail-row { border-top: none; padding-top: 4px; }
+        .sc-avail-offer { margin-left: auto; }
+        .sc-avail-none { color: var(--dim); font-size: 13px; margin: 4px 0; }
+        /* Availability — date range grid (Deepika, approved mock
+           2026-11-18): one row per person, one column per day. */
+        .av-grid { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px 10px; overflow-x: auto; }
+        .av-grid-row { display: flex; align-items: center; border-top: 1px solid var(--border); min-width: 520px; }
+        .av-grid-row:first-child { border-top: none; }
+        .av-grid-head { font-size: 11px; font-weight: 800; color: #0a6270; }
+        .av-grid-head .av-grid-cell { padding: 8px 0; }
+        .av-grid-name { flex: 0 0 130px; font-size: 13px; font-weight: 700; padding: 8px 4px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .av-grid-cell { flex: 1; text-align: center; padding: 8px 0; font-size: 15px; min-width: 30px; }
+        .av-grid-cell.ok { color: #15803d; font-weight: 800; }
+        .av-grid-cell.no { color: #c92a2a; font-weight: 800; }
+        .av-grid-cell.na { color: #94a3b8; }
+        .av-grid-ok { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+        .av-grid-ok:hover { background: #e7f7ee; }
+        .av-grid-count { flex: 0 0 52px; text-align: right; font-size: 11.5px; font-weight: 800; color: #0a6270; }
+        .av-legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+        .av-legend b.ok { color: #15803d; } .av-legend b.no { color: #c92a2a; } .av-legend b.na { color: #94a3b8; }
         @media (max-width: 640px) { .sc-gap .acts { margin-left: 0; width: 100%; } .sc-gap .acts button { flex: 1; } }
         /* Tools rail — right side, web + phone (Deepika 2026-11-03): slim ⇄ wide, hideable like the left bar */
         #qs-tools-rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 80; width: 58px; background: #083f4d; border-radius: 12px 0 0 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 6px; box-shadow: -2px 4px 14px rgba(8, 63, 77, .35); transition: transform .22s ease, width .22s ease; }
@@ -9880,7 +9907,8 @@
                     '<span class="acts"><button type="button" class="btn" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScShare(\'' + g.st.id + '\',\'' + row.date + '\')">Share link to fill</button>' +
                     '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOfferToggle(\'' + g.st.id + '\',\'' + row.date + '\')">✉️ Offer</button>' +
                     '<button type="button" class="btn-secondary" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOpenDay(\'' + row.date + '\')">Open day</button></span></div>' +
-                    '<div class="sc-offer hidden" id="sc-offer-' + row.date + '-' + g.st.id + '"></div>';
+                    '<div class="sc-offer hidden" id="sc-offer-' + row.date + '-' + g.st.id + '"></div>' +
+                    '<div class="sc-avail" id="sc-avail-' + row.date + '-' + g.st.id + '" data-date="' + row.date + '" data-type="' + g.st.id + '"></div>';
                 });
                 h += '</div>';
               });
@@ -9893,6 +9921,7 @@
             } else {
               if (bodyEl) bodyEl.innerHTML = shell + h;
               qsScLoadOffers(from, to);
+              qsScLoadInlineAvail();
             }
           }).catch(function () {});
         };
@@ -9916,6 +9945,52 @@
             });
           })).catch(function () {});
         }
+        // --- Short cover: available people right in the list (Deepika,
+        // approved mock 2026-11-18) ------------------------------------
+        // Under each gap, the people who marked themselves available
+        // that day AND are eligible for that shift type — the SAME
+        // candidates endpoint the Offer panel uses (same eligibility
+        // check via checkShiftEligibility, same worked-last-night
+        // tag), so the list can never disagree with the panel. The
+        // per-person Offer button opens the existing Offer panel with
+        // just that person ticked; the Offer flow itself is untouched.
+        function qsScLoadInlineAvail() {
+          document.querySelectorAll('.sc-avail').forEach(function (box) {
+            var typeId = box.getAttribute('data-type'), date = box.getAttribute('data-date');
+            if (!typeId || !date) return;
+            box.innerHTML = '<p style="color:var(--dim);font-size:12.5px;margin:2px 0">Loading who\u2019s available…</p>';
+            (api('/api/schedule/gap-offers/candidates?date=' + date + '&shiftTypeId=' + typeId).then(function (r) {
+              if (!r.ok) { box.innerHTML = ''; return; }
+              var d = r.data;
+              if (d.candidates.length) {
+                var h = '<div class="sc-avail-head">AVAILABLE THIS DAY — ELIGIBLE FOR ' + esc((d.shiftTypeName || '').toUpperCase()) + '</div>';
+                d.candidates.forEach(function (c) {
+                  var tags = c.workedLastNight
+                    ? '<span class="av-tag warn">⚠ Worked last night — ' + esc(c.workedLastNight) + '</span>'
+                    : '<span class="av-tag ok">✓ Marked available</span>';
+                  if (c.conflict) tags += ' <span class="av-tag bad">⚠ ' + esc(c.conflict) + '</span>';
+                  h += '<div class="sc-avail-row"><b style="font-size:14px">' + esc(c.name) + '</b>' +
+                    '<span style="color:var(--dim);font-size:12.5px">' + esc(c.jobRoleName || '') + '</span>' + tags +
+                    '<button type="button" class="btn sc-avail-offer" style="padding:6px 12px;font-size:12.5px" onclick="window.qsScOfferOne(\'' + typeId + '\',\'' + date + '\',\'' + c.userId + '\')"' + (c.conflict ? ' disabled' : '') + '>✉️ Offer</button></div>';
+                });
+                box.innerHTML = h;
+              } else if (!d.offer) {
+                box.innerHTML = '<p class="sc-avail-none">Nobody has marked themselves available for this day yet. Share the availability link (Availability tool) and answers will appear here.</p>';
+              } else {
+                box.innerHTML = '';
+              }
+            })).catch(function () { box.innerHTML = ''; });
+          });
+        }
+        var qsScOfferPending = null;
+        window.qsScOfferOne = function (typeId, date, userId) {
+          var panel = document.getElementById('sc-offer-' + date + '-' + typeId);
+          if (!panel) return;
+          qsScOfferPending = { typeId: typeId, date: date, userId: userId };
+          panel.classList.remove('hidden');
+          qsScRenderOfferPanel(typeId, date, panel);
+          try { panel.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+        };
         window.qsScOfferToggle = function (typeId, date) {
           var panel = document.getElementById('sc-offer-' + date + '-' + typeId);
           if (!panel) return;
@@ -9977,6 +10052,13 @@
               }
             }
             panel.innerHTML = h;
+            // Per-person Offer from the inline list: tick just that
+            // person in the existing Offer panel, nothing else.
+            if (qsScOfferPending && qsScOfferPending.typeId === typeId && qsScOfferPending.date === date) {
+              var only = qsScOfferPending.userId;
+              qsScOfferPending = null;
+              panel.querySelectorAll('.sc-off-cb').forEach(function (cb) { if (!cb.disabled) cb.checked = (cb.value === only); });
+            }
           })).catch(function () { panel.innerHTML = '<p style="color:#c92a2a;font-size:13px;margin:2px 0">Could not load.</p>'; });
         }
         window.qsScOfferToggleAll = function (master) {
@@ -10398,7 +10480,8 @@ function qsAvRenderLinkList() {
       '<button type="button" class="btn-secondary" style="margin-left:auto;padding:4px 10px;font-size:12px;color:#c92a2a" onclick="window.qsAvDelete(\'' + q.id + '\')">Delete</button></div>';
   }).join('');
 }
-window.qsAvDayChange = function () { qsAvRenderDay(); };
+window.qsAvDayChange = function () { qsAvRenderRange(); };
+window.qsAvApplyRange = function () { qsAvRenderRange(); };
 window.qsAvAssign = function (date) {
   location.hash = 'schedule';
   setTimeout(function () { try { openDayModal(date); } catch (err) {} }, 150);
@@ -10412,8 +10495,9 @@ window.qsLoadAvailability = function () {
     if (listBox) listBox.innerHTML = '';
     return;
   }
-  var din = document.getElementById('av-date');
-  if (din && !din.value) din.value = scDatePlus(new Date(), 0);
+  var avFrom = document.getElementById('av-from'), avTo = document.getElementById('av-to');
+  if (avFrom && !avFrom.value) avFrom.value = scDatePlus(new Date(), 0);
+  if (avTo && !avTo.value) avTo.value = scDatePlus(new Date(), 6);
   var tsel = document.getElementById('av-type');
   if (tsel && (sched.shiftTypes || []).length && tsel.options.length <= 1) {
     var cur = tsel.value;
@@ -10430,92 +10514,97 @@ window.qsLoadAvailability = function () {
   (Promise.all([usersP, api('/api/schedule/availability')]).then(function (rs) {
     if (rs[1].ok) qsAvRequests = rs[1].data.requests || [];
     qsAvRenderLinkList();
-    qsAvRenderDay();
+    qsAvRenderRange();
   })).catch(function () {});
 };
-function qsAvRenderDay() {
+function qsAvDays(from, to) {
+  var out = [], d = new Date(from + 'T12:00:00'), end = new Date(to + 'T12:00:00');
+  while (d <= end) {
+    out.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+function qsAvRenderDay() { qsAvRenderRange(); }
+// Date RANGE view (Deepika, approved mock 2026-11-18): the same link
+// responses as the old single-day view, over a From/To range — one
+// row per person, one column per day. No new data source: responses
+// come from GET /api/schedule/availability/:id/responses, newest
+// request wins per name+date, exactly as the day view did. A ✓ is a
+// button that takes you to assign that person that day, as the old
+// day view's Assign button did (qsAvAssign opens the day modal).
+// People who haven't responded are never counted as available.
+function qsAvRenderRange() {
   var body = document.getElementById('av-body');
   if (!body || !qsAvUsers) return;
-  var din = document.getElementById('av-date');
-  var day = (din && din.value) || scDatePlus(new Date(), 0);
-  var prev = scDatePlus(new Date(day + 'T12:00:00'), -1);
+  var fromEl = document.getElementById('av-from'), toEl = document.getElementById('av-to');
+  var from = (fromEl && fromEl.value) || scDatePlus(new Date(), 0);
+  var to = (toEl && toEl.value) || scDatePlus(new Date(), 6);
   var typeFilter = (document.getElementById('av-type') || {}).value || '';
-  var covering = qsAvRequests.filter(function (q) { return q.fromDate <= day && q.toDate >= day; });
+  var days = qsAvDays(from, to);
+  if (from > to) {
+    body.innerHTML = '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>Pick a From date on or before the To date</b></div>';
+    return;
+  }
+  if (days.length > 31) {
+    body.innerHTML = '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>Pick a range of 31 days or fewer</b><p style="color:var(--dim);margin:6px 0 0">The range view shows up to a month at a glance — narrow the dates and Apply again.</p></div>';
+    return;
+  }
+  var covering = qsAvRequests.filter(function (q) { return q.fromDate <= to && q.toDate >= from; });
   var fetches = covering.map(function (q) { return api('/api/schedule/availability/' + q.id + '/responses'); });
-  fetches.push(api('/api/schedule/shifts?from=' + prev + '&to=' + day));
   (Promise.all(fetches).then(function (rs) {
-    // said: rawName -> available (newest request wins: the list is
-    // created_at DESC, so the first response seen for a name stands)
+    // said: rawName -> { date: available } (newest request wins: the
+    // list is created_at DESC, so the first response seen for a
+    // name+date stands — same rule as the old day view).
     var said = {};
-    rs.slice(0, covering.length).forEach(function (r) {
+    rs.forEach(function (r) {
       if (!r.ok) return;
       (r.data.responses || []).forEach(function (x) {
-        if (x.date === day && !(x.name in said)) said[x.name] = !!x.available;
+        if (!said[x.name]) said[x.name] = {};
+        if (!(x.date in said[x.name])) said[x.name][x.date] = !!x.available;
       });
     });
-    var sd = rs[rs.length - 1];
-    var shifts = (sd.ok && sd.data.shifts) || [];
-    var onDay = {}, prevNight = {};
-    shifts.forEach(function (s) {
-      if (s.date === day) (onDay[s.userId] = onDay[s.userId] || []).push(s);
-      if (s.date === prev && /night/i.test(s.shiftTypeName)) prevNight[s.userId] = s.shiftTypeName;
-    });
-    var saidByUser = {}, extrasAvail = [], extrasUnavail = [];
+    var saidByUser = {}, extras = {};
     Object.keys(said).forEach(function (name) {
       var u = avMatchUser(name);
       if (u) saidByUser[u.id] = said[name];
-      else if (said[name]) extrasAvail.push(name);
-      else extrasUnavail.push(name);
+      else extras[name] = said[name];
     });
-    var avail = [], working = [], unavail = [], noResp = [];
-    qsAvUsers.forEach(function (u) {
-      if (onDay[u.id]) working.push(u);
-      else if (saidByUser[u.id] === true) avail.push(u);
-      else if (saidByUser[u.id] === false) unavail.push(u);
-      else noResp.push(u);
-    });
-    var h = '<div class="sc-band"><div><h2>Availability</h2><div class="sc-sub">' + scFmtDay(day) + ' · from the availability link responses' + (typeFilter ? ' · ' + esc(typeFilter) : '') + '</div></div>' +
-      '<div class="sc-total"><b>' + (avail.length + extrasAvail.length) + ' available</b>of ' + qsAvUsers.length + ' team members</div></div>';
+    var rows = qsAvUsers.map(function (u) { return { user: u, said: saidByUser[u.id] || {} }; });
+    Object.keys(extras).sort().forEach(function (name) { rows.push({ user: { name: name }, said: extras[name], extra: true }); });
+    var totalAvail = 0;
+    rows.forEach(function (row) { days.forEach(function (d) { if (row.said[d] === true) totalAvail++; }); });
+    var rangeLabel = scFmtDay(from) + ' – ' + scFmtDay(to);
+    var h = '<div class="sc-band"><div><h2>Availability</h2><div class="sc-sub">' + rangeLabel + ' · from the availability link responses' + (typeFilter ? ' · ' + esc(typeFilter) : '') + '</div></div>' +
+      '<div class="sc-total"><b>' + totalAvail + ' available-days</b> · ' + qsAvUsers.length + ' team members</div></div>';
     if (!covering.length) {
-      h += '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>No availability link covers this day</b><p style="color:var(--dim);margin:6px 0 0">Create a link above that includes ' + scFmtDay(day) + ' and share it — answers will appear here.</p></div>';
+      h += '<div class="sc-day" style="text-align:center;padding:22px 16px"><b>No availability link covers this range</b><p style="color:var(--dim);margin:6px 0 0">Create a link above that includes ' + rangeLabel + ' and share it — answers will appear here.</p></div>';
     }
-    function sect(t) { return '<div class="av-sect">' + t + '</div>'; }
-    function row(inner) { return '<div class="sc-day" style="margin-bottom:10px"><div class="cred-row">' + inner + '</div></div>'; }
-    function who(u, sub) { return '<div class="cred-who"><div class="cred-name">' + esc(u.name) + '</div><div class="cred-meta">' + esc(sub || u.role) + '</div></div>'; }
-    h += sect('AVAILABLE — SAID THEY\u2019RE FREE · ' + (avail.length + extrasAvail.length));
-    if (!avail.length && !extrasAvail.length) h += '<p style="color:var(--dim);font-size:13px;margin:2px 2px 8px">Nobody has marked themselves available for this day.</p>';
-    avail.forEach(function (u) {
-      var tag = prevNight[u.id]
-        ? '<span class="av-tag warn">⚠ Worked last night — ' + esc(prevNight[u.id]) + '</span>'
-        : '<span class="av-tag ok">✓ Marked available</span>';
-      h += row(who(u) + '<div class="cred-right">' + tag + '<button type="button" class="btn" style="padding:6px 14px;font-size:12.5px" onclick="window.qsAvAssign(\'' + day + '\')">＋ Assign</button></div>');
+    var wd = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    h += '<div class="av-grid">';
+    h += '<div class="av-grid-row av-grid-head"><div class="av-grid-name"></div>' + days.map(function (d) {
+      var dt = new Date(d + 'T12:00:00');
+      return '<div class="av-grid-cell">' + wd[dt.getDay()] + ' ' + dt.getDate() + '</div>';
+    }).join('') + '<div class="av-grid-count"></div></div>';
+    rows.forEach(function (row) {
+      var n = 0;
+      var cells = days.map(function (d) {
+        var v = row.said[d];
+        if (v === true) {
+          n++;
+          return '<div class="av-grid-cell ok"><button type="button" class="av-grid-ok" data-av-date="' + d + '" data-av-user="' + esc(row.user.name) + '" onclick="window.qsAvAssign(\'' + d + '\')" aria-label="Assign ' + esc(row.user.name) + ' on ' + d + '">✓</button></div>';
+        }
+        if (v === false) return '<div class="av-grid-cell no">✕</div>';
+        return '<div class="av-grid-cell na">—</div>';
+      }).join('');
+      h += '<div class="av-grid-row" data-av-row="' + esc(row.user.name) + '"><div class="av-grid-name" title="' + esc(row.user.name) + (row.extra ? ' — answered on the link, not on the team list' : '') + '">' + esc(row.user.name) + '</div>' + cells + '<div class="av-grid-count">' + n + ' of ' + days.length + '</div></div>';
     });
-    extrasAvail.forEach(function (name) {
-      h += row(who({ name: name }, 'Answered on the link — not on the team list') + '<div class="cred-right"><span class="av-tag ok">✓ Marked available</span></div>');
-    });
-    h += sect('ALREADY WORKING · ' + working.length);
-    if (!working.length) h += '<p style="color:var(--dim);font-size:13px;margin:2px 2px 8px">Nobody is scheduled that day.</p>';
-    working.forEach(function (u) {
-      var list = typeFilter ? onDay[u.id].filter(function (s) { return s.shiftTypeName === typeFilter; }) : onDay[u.id];
-      if (!list.length) list = onDay[u.id];
-      var chips = list.map(function (s) { return '<span class="av-chip"><i style="background:' + esc(s.shiftTypeColor || '#999') + '"></i>' + esc(s.shiftTypeName) + '</span>'; }).join(' ');
-      var warn = saidByUser[u.id] === false ? ' <span class="av-tag bad">⚠ Marked unavailable on the link</span>' : '';
-      h += row(who(u) + '<div class="cred-right">' + chips + warn + '</div>');
-    });
-    if (unavail.length || extrasUnavail.length) {
-      h += sect('SAID UNAVAILABLE · ' + (unavail.length + extrasUnavail.length));
-      unavail.forEach(function (u) { h += row(who(u) + '<div class="cred-right"><span class="av-tag dim">Marked unavailable</span></div>'); });
-      extrasUnavail.forEach(function (name) { h += row(who({ name: name }, 'Answered on the link — not on the team list') + '<div class="cred-right"><span class="av-tag dim">Marked unavailable</span></div>'); });
-    }
-    if (noResp.length) {
-      h += sect('NO RESPONSE YET · ' + noResp.length);
-      noResp.forEach(function (u) { h += row(who(u, (u.role ? u.role + ' · ' : '') + 'hasn\u2019t filled the availability link') + '<div class="cred-right"><span class="av-tag dim">No response</span></div>'); });
-    }
+    h += '</div>';
+    h += '<div class="av-legend"><span><b class="ok">✓</b> Available</span><span><b class="no">✕</b> Unavailable</span><span><b class="na">—</b> No response</span></div>';
     h += '<p style="color:var(--dim);font-size:12px;margin:12px 2px">Availability comes from the link responses. People who haven\u2019t responded are never counted as available.</p>';
     body.innerHTML = h;
   })).catch(function () {});
 }
-
 // ---------------------------------------------------------------------
 // PRINT tool (#print) — a clean schedule sheet for the wall, the
 // binder, or a PDF (Deepika 2026-11-04). People × days grid from the
@@ -11444,8 +11533,10 @@ window.qsNpOfferSend = function (btn) {
           </div>
           <div id="av2-list" style="margin-top:12px"><p style="color:var(--dim)">Loading…</p></div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-          <input type="date" id="av-date" class="av-inp" onchange="window.qsAvDayChange()" aria-label="Day">
+        <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:6px;flex-wrap:wrap">
+          <label style="font-size:12.5px;font-weight:700;color:var(--dim)">From<br><input type="date" id="av-from" class="av-inp" aria-label="From date"></label>
+          <label style="font-size:12.5px;font-weight:700;color:var(--dim)">To<br><input type="date" id="av-to" class="av-inp" aria-label="To date"></label>
+          <button type="button" class="btn" style="padding:7px 14px" onclick="window.qsAvApplyRange()">Apply</button>
           <select id="av-type" class="av-inp" onchange="window.qsAvDayChange()" aria-label="Shift type"><option value="">All shift types</option></select>
           <button type="button" class="btn-secondary" onclick="window.qsLoadAvailability()">↻ Refresh</button>
         </div>
