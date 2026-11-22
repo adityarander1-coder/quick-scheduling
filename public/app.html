@@ -2210,6 +2210,22 @@
         #tab-myschedule .sbw-open { color: #c62828; font-weight: 800; }
         @media (min-width: 900px) {
           body:has(#tab-schedule.active) .app-content { max-width: none; padding: 1.5rem 2rem; }
+          /* Tools-rail overlap at 1440px (Deepika, 2026-11-21): the fixed
+             Tools rail (58px, 172px when expanded) overlays the schedule
+             view's far right — the rightmost filled-shift chevron
+             (.shift-menu-btn) in the week grid sat under it at 1440px,
+             its centre covered by the rail so it was visible in the
+             layout but not reachable; the same overlap reproduces at
+             1280px and 1600px, narrow rail and wide. The tidies
+             (75a1d13) and the run-rail fix (37c51a8) reserved the rail's
+             width on .bulk-band, then .ba-panel-col; the schedule view
+             had no equivalent reservation — .app-content only pads 2rem
+             (32px) on the right. Reserve the rail's width here, scoped
+             to the schedule tab only — the rail itself, and every other
+             tab, are untouched. Only while the rail is actually shown:
+             hiding it lifts the reservation. */
+          body.qs-tools-on:not(.qs-tools-hidden):has(#tab-schedule.active) .app-content { padding-right: calc(2rem + 66px); }
+          body.qs-tools-on:not(.qs-tools-hidden).qs-tools-wide:has(#tab-schedule.active) .app-content { padding-right: calc(2rem + 180px); }
           #tab-schedule .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1px; align-items: stretch; }
           /* stretch (not start): adjacent day boxes in a row are EQUAL IN
              SIZE — the card's bottom border aligns across the row so the
