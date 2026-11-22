@@ -21817,7 +21817,18 @@ window.qsNpOfferSend = function (btn) {
           }
           api(endpoint, { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
             if (r.ok) {
-              var n = r.data.published || r.data.unpublished || r.data.deleted || r.data.updated || dates.length;
+              // A 0 is a real count, not a missing one: `updated: 0`
+              // must NOT fall through to dates.length (Deepika,
+              // 2026-11-22 — a 0-move unpublish said "Done" for the
+              // whole range). A 0-move unpublish says plainly that
+              // nothing moved instead of "Done".
+              var n = (r.data && r.data.updated !== undefined && r.data.updated !== null)
+                ? r.data.updated
+                : (r.data.published || r.data.unpublished || r.data.deleted || dates.length);
+              if (action === 'unpublish' && n === 0) {
+                showResult('Nothing moved — no published shifts or open slots in that range.', true);
+                return;
+              }
               var extra = r.data.paused ? ' (' + r.data.paused + ' rotation skip(s) added)' : '';
               // Delete undo (Deepika, 2026-11-17): one entry for the
               // whole bulk delete — Ctrl+Z on the Schedule tab brings

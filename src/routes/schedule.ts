@@ -34,7 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -4390,6 +4390,13 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
     const companyId = req.session.companyId!;
     const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
     let userIds = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
+    // Whether the caller named members: a per-member unpublish
+    // touches only their shifts, never the type's opens (the opens
+    // belong to the type, not the members). A type-wide call — no
+    // members named, shiftTypeId picked — unpublishes the opens
+    // with the shifts (Deepika, 2026-11-22, same rule as the Task
+    // door). Captured before userIds is resolved to everyone below.
+    const hadExplicitUserIds = userIds.length > 0;
     const published = req.body?.published !== false;
     // Optional shift-type filter (Bulk Actions tab): limits the action to
     // one shift type. Must belong to this company.
@@ -4447,11 +4454,44 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
     // Publishing the day publishes the opens with it (Deepika,
     // 2026-11-20): collect the (date, type) pairs this publish
     // actually flips, so their draft opens + closures can go with
-    // them. Unpublish leaves the opens alone — the draft is what
-    // marks opens draft, and a re-draft re-derives them.
+    // them. A per-member unpublish leaves the opens alone — the
+    // opens belong to the type, not the members; a type-wide
+    // unpublish moves them (the block below, Deepika 2026-11-22).
     const publishPairs = new Set<string>();
     if (published) {
       for (const r of flipRows) publishPairs.add(`${r.date}|${r.shiftTypeId}`);
+      // Draft opens with no shifts flipping (Deepika, 2026-11-22 —
+      // same rule as the Task door): a date unpublished to draft
+      // has draft opens but no draft shifts, so the shifts-only
+      // read would strand them. Only types this publish already
+      // touches (the filter, or the flipped shifts' types).
+      const draftTypeIds = shiftTypeId
+        ? [shiftTypeId]
+        : [...new Set(flipRows.map((r: any) => r.shiftTypeId).filter(Boolean))];
+      if (draftTypeIds.length) {
+        // draft_open_slots.shift_type_id is TEXT (migration 111),
+        // not UUID — the ANY() cast must match the column.
+        const { rows: draftRows } = await query(
+          `SELECT DISTINCT date::text AS date, shift_type_id AS "shiftTypeId" FROM draft_open_slots
+           WHERE company_id = $1 AND date = ANY($2::date[]) AND shift_type_id = ANY($3::text[])`,
+          [companyId, dates, draftTypeIds]
+        );
+        for (const r of draftRows) publishPairs.add(`${r.date}|${r.shiftTypeId}`);
+      }
+    }
+    // Unpublishing a whole type unpublishes its opens with it
+    // (Deepika, 2026-11-22 — same rule as the Task door): the Dec
+    // 12–17 live case moved 0 shifts and left 3 published extras
+    // per date standing. Type-wide only (no members named);
+    // per-member unpublish never touches the type's opens.
+    let opensMoved = 0;
+    if (!published && shiftTypeId && !hadExplicitUserIds) {
+      const generated = await getGeneratedTypeIds(query, companyId);
+      ({ opensMoved } = await unpublishOpenSlotsForPairs(
+        query, companyId,
+        dates.map((d: string) => ({ date: d, shiftTypeId })),
+        generated, req.session.userId!
+      ));
     }
     // Rotation shifts: generate instances and upsert publish overrides
     let rotCount = 0;
@@ -4524,18 +4564,26 @@ router.post('/shifts/bulk-publish-state', requireRole('owner', 'scheduler'), asy
       );
     }
     // History snapshot (Deepika, 2026-11-17) — a bulk publish flip.
-    if ((rowCount || 0) + rotCount > 0) {
+    // The count is the true moved total: shifts flipped plus open
+    // slots moved to draft by a type-wide unpublish. With no opens
+    // moved the wording is byte-identical to before.
+    const shiftsMoved = (rowCount || 0) + rotCount;
+    const totalMoved = shiftsMoved + opensMoved;
+    if (totalMoved > 0) {
       const sortedDates = [...dates].sort();
+      const movedParts: string[] = [];
+      if (shiftsMoved > 0) movedParts.push(`${shiftsMoved} shift${shiftsMoved === 1 ? '' : 's'}`);
+      if (opensMoved > 0) movedParts.push(`${opensMoved} open slot${opensMoved === 1 ? '' : 's'}`);
       await recordHistorySnapshot({
         companyId, actorId: req.session.userId!,
         trigger: published ? 'publish' : 'published-change',
-        summary: `${published ? 'Published' : 'Unpublished'} ${(rowCount || 0) + rotCount} shift${((rowCount || 0) + rotCount) === 1 ? '' : 's'} for ${userIds.length} team member${userIds.length === 1 ? '' : 's'}, ${sortedDates[0]}${sortedDates.length > 1 ? ' – ' + sortedDates[sortedDates.length - 1] : ''}`,
+        summary: `${published ? 'Published' : 'Unpublished'} ${movedParts.join(' and ')} for ${userIds.length} team member${userIds.length === 1 ? '' : 's'}, ${sortedDates[0]}${sortedDates.length > 1 ? ' – ' + sortedDates[sortedDates.length - 1] : ''}`,
         from: sortedDates[0], to: sortedDates[sortedDates.length - 1],
         shiftTypeIds: shiftTypeId ? [shiftTypeId] : [...new Set(flipRows.map((r: any) => r.shiftTypeId).filter(Boolean))],
         userIds,
       });
     }
-    res.json({ ok: true, updated: (rowCount || 0) + rotCount });
+    res.json({ ok: true, updated: totalMoved, openSlotsMoved: opensMoved });
     // Notify per person about the flips (manual + rotation combined).
     {
       const perUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();

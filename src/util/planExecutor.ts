@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, storedTotals, suppressedTotal } from './openSlots.js';
+import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal } from './openSlots.js';
 import { getGeneratedTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
@@ -2081,8 +2081,8 @@ export async function executePlan(
         // Publishing the day publishes the opens with it (Deepika,
         // 2026-11-20): remember which (date, type) pairs actually
         // flip from draft, so their draft opens + closures can go
-        // with them. Unpublish leaves the opens alone — the draft is
-        // what marks opens draft, and a re-draft re-derives them.
+        // with them. Unpublishing moves the opens the other way —
+        // see the !publish branch below (Deepika, 2026-11-22).
         let flipPairs: Array<{ date: string; shiftTypeId: string }> = [];
         if (publish) {
           const { rows: fr } = await query(
@@ -2094,6 +2094,25 @@ export async function executePlan(
               : [companyId, change.fromDate, change.toDate]
           );
           flipPairs = fr.map((r: any) => ({ date: r.date, shiftTypeId: r.shiftTypeId }));
+          // Draft opens with no draft shifts behind them (Deepika,
+          // 2026-11-22 — the unpublish fix's other half): a date
+          // whose opens were unpublished to draft has no shifts to
+          // flip, so the shifts-only read would strand its opens
+          // in draft forever. A later publish must bring them back
+          // as published.
+          const { rows: dr } = await query(
+            `SELECT DISTINCT date::text AS date, shift_type_id AS "shiftTypeId" FROM draft_open_slots
+             WHERE company_id = $1 AND date >= $2 AND date <= $3
+             ${shiftTypeId ? 'AND shift_type_id = $4' : ''}`,
+            shiftTypeId
+              ? [companyId, change.fromDate, change.toDate, shiftTypeId]
+              : [companyId, change.fromDate, change.toDate]
+          );
+          for (const r of dr) {
+            if (!flipPairs.some((p) => p.date === r.date && p.shiftTypeId === r.shiftTypeId)) {
+              flipPairs.push({ date: r.date, shiftTypeId: r.shiftTypeId });
+            }
+          }
         }
         const updated = await query(q, params);
         const count = updated.rowCount || 0;
@@ -2101,10 +2120,61 @@ export async function executePlan(
           const generated = await getGeneratedTypeIds(query as any, companyId);
           await publishOpenSlotsForPairs(query as any, companyId, flipPairs, generated);
         }
-        results.push({
-          action: change.action, success: true,
-          message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
-        });
+        if (!publish) {
+          // Unpublishing the day unpublishes the opens with it
+          // (Deepika, 2026-11-22 — "Unpublish could have moved the
+          // current open slots"): the Dec 12–17 live case had NO
+          // shifts at all, only 3 stored published extras per date,
+          // and the old shifts-only read moved 0 and still said
+          // applied. The pairs are EVERY date in the range for the
+          // type — not only dates with shifts that flipped — and
+          // the helper counts stored extras (an extra has no
+          // published flag; published means no draft count covers
+          // it) plus the computed shortfall, for generated types.
+          // With no type filter, every generated type's opens in
+          // the range move, mirroring the publish side (which
+          // publishes every flipped pair's opens).
+          const dates: string[] = [];
+          {
+            let cur = String(change.fromDate);
+            const last = String(change.toDate);
+            while (cur <= last) {
+              dates.push(cur);
+              const dd = new Date(cur + 'T00:00:00Z');
+              dd.setUTCDate(dd.getUTCDate() + 1);
+              cur = dd.toISOString().slice(0, 10);
+            }
+          }
+          const unpubTypeIds = shiftTypeId
+            ? [shiftTypeId]
+            : [...(await getGeneratedTypeIds(query as any, companyId))];
+          const pairs: Array<{ date: string; shiftTypeId: string }> = [];
+          for (const d of dates) for (const tid of unpubTypeIds) pairs.push({ date: d, shiftTypeId: tid });
+          const generated = await getGeneratedTypeIds(query as any, companyId);
+          const { opensMoved } = await unpublishOpenSlotsForPairs(query as any, companyId, pairs, generated, createdBy);
+          const total = count + opensMoved;
+          if (total === 0) {
+            // A 0-move is a no-op report, not a success (same rule
+            // as the Day NP close fix): say plainly that nothing
+            // was moved, so the plan reads partial and no History
+            // line claims "Moved to draft 0 shift(s)". The shifts
+            // UPDATE above touched 0 rows, so nothing needs undoing.
+            throw new Error(`Nothing to move to draft — no published ${change.shiftType || 'shifts'} or open slots from ${change.fromDate} to ${change.toDate}.`);
+          }
+          results.push({
+            action: change.action, success: true,
+            message: count > 0 && opensMoved > 0
+              ? `Moved to draft ${count} shift(s) and ${opensMoved} open slot(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
+              : opensMoved > 0
+                ? `Moved to draft ${opensMoved} open slot(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
+                : `Moved to draft ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
+          });
+        } else {
+          results.push({
+            action: change.action, success: true,
+            message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
+          });
+        }
       } else if (change.action === 'close_open_slots' && change.shiftType && (change.date || (change.fromDate && change.toDate))) {
         // Close open slots (Deepika, 2026-11-19 — walkthrough item 1):
         // the AI's first way to touch open slots. Only ever closes
