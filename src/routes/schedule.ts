@@ -16778,7 +16778,10 @@ async function loadDecidableAccessRequest(req: Request, res: Response): Promise<
   const companyId = req.session.companyId!;
   const r = await accessRequestById(companyId, req.params.id);
   if (!r) { res.status(404).json({ error: 'Request not found.' }); return null; }
-  if (r.status !== 'pending') { res.status(409).json({ error: 'This request has already been decided.' }); return null; }
+  if (r.status !== 'pending') {
+    if (r.status === 'cancelled') { res.status(409).json({ error: 'This request was withdrawn by the requester.' }); return null; }
+    res.status(409).json({ error: 'This request has already been decided.' }); return null;
+  }
   if (r.requested_by === req.session.userId) {
     res.status(403).json({ error: "You can't decide your own access request — another admin has to." });
     return null;
@@ -16873,6 +16876,55 @@ router.post('/department-access/requests/:id/reject', requireRole('owner', 'sche
     res.json({ ok: true, rejected: true });
   } catch (err) {
     console.error('[schedule] department-access reject failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/department-access/requests/:id/cancel — the
+// requester takes back their OWN pending request. No role gate: the
+// requester may be a pure employee. A cancelled request can no longer
+// be approved or denied (loadDecidableAccessRequest 409s on anything
+// not pending), the one-pending slot frees up so the department is
+// requestable again, and the department admins get a bell. The
+// requester is never notified of their own cancel.
+router.post('/department-access/requests/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const me = req.session.userId!;
+    const r = await accessRequestById(companyId, req.params.id);
+    if (!r) { res.status(404).json({ error: 'Request not found.' }); return; }
+    if (r.requested_by !== me) {
+      res.status(403).json({ error: 'You can only withdraw your own access request.' });
+      return;
+    }
+    if (r.status !== 'pending') {
+      res.status(409).json({ error: 'This request is no longer pending.' });
+      return;
+    }
+    await query(
+      `UPDATE department_access_requests SET status = 'cancelled', decided_at = now() WHERE id = $1`,
+      [r.id]);
+    const requesterName = await userDisplayName(me);
+    const approvers = (await departmentAccessApproverIds(companyId, r.department_id))
+      .filter((id: string) => id !== me);
+    if (approvers.length) {
+      notify({
+        companyId, userIds: approvers, category: 'approvals', type: 'department_access_decided',
+        title: `${requesterName} withdrew their request for ${r.level === 'edit' ? 'admin' : 'view-only'} access to ${r.department_name}`,
+        body: `${requesterName} withdrew their request for ${r.level === 'edit' ? 'admin' : 'view-only'} access to ${r.department_name} — no action needed.`,
+        link: 'tools/access',
+        excludeUserId: me,
+      });
+    }
+    await auditLog({
+      companyId, date: todayStr(), action: 'access_cancelled', category: 'settings',
+      source: 'manual', changedBy: me,
+      description: `Withdrew the request for ${r.level === 'edit' ? 'admin' : 'view-only'} access to ${r.department_name}`,
+      departmentId: r.department_id,
+    });
+    res.json({ ok: true, cancelled: true });
+  } catch (err) {
+    console.error('[schedule] department-access cancel failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });

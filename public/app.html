@@ -9480,15 +9480,16 @@
         // --- Tools rail ------------------------------------------------------
         // The rail + arrow are available on EVERY page of the admin
         // shell (Deepika 2026-11-04: "keep the tool bar available in
-        // any page"): body.qs-tools-on is set whenever any admin panel
-        // is active. Pure employees get the shared My Schedule view,
-        // whose rows the tools cannot paint — no rail there instead of
-        // dead buttons.
+        // any page"): body.qs-tools-on is set whenever any panel is
+        // active, for every role. Pure employees see the rail too,
+        // but with only the Access button in it (2026-11-21: an
+        // employee must reach their own access requests) — the other
+        // tools paint the manager grid, whose rows the shared My
+        // Schedule view cannot paint, so they stay hidden there
+        // instead of dead buttons (qsGateEmployeeRail).
         function qsSyncToolsScope() {
           var a = document.querySelector('.tab-panel.active');
-          var empNav = $('employee-tabs');
-          var isEmp = empNav && !empNav.classList.contains('hidden');
-          var on = !!a && !isEmp;
+          var on = !!a;
           if (document.body.classList.contains('qs-tools-on') !== on) document.body.classList.toggle('qs-tools-on', on);
         }
         window.qsSyncToolsScope = qsSyncToolsScope;
@@ -9496,8 +9497,8 @@
         // Boot order varies (employee nav and the default tab settle
         // after data loads), so keep the rail's scope + the Short-cover
         // gate in sync on a light ticker and on tab/hash changes.
-        setInterval(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); }, 1500);
-        window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); }, 120); });
+        setInterval(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); qsGateEmployeeRail(); }, 1500);
+        window.addEventListener('hashchange', function () { setTimeout(function () { qsSyncToolsScope(); qsGateShortcoverBtn(); qsGateGroupsBtn(); qsGateEmployeeRail(); }, 120); });
         window.qsToolsOpen = function (tool) {
           if (tool === 'highlight') {
             // Highlight paints the schedule — from any other page, go
@@ -9557,16 +9558,21 @@
           btn.style.display = isEmp ? 'none' : '';
         }
         setTimeout(qsGateHistoryBtn, 2600);
-        // Access is a manager tool in the rail (owner/schedulers):
-        // hide the rail entry in the employee view, like History.
-        function qsGateAccessBtn() {
-          var btn = $('qtr-access');
-          if (!btn) return;
+        // Employees get the rail with ONLY the Access button in it:
+        // every other rail tool is manager-only (the Access button
+        // used to be hidden for employees too, so a pure employee
+        // could never reach their own requests — 2026-11-21, fixed
+        // here). Managers see the whole rail.
+        function qsGateEmployeeRail() {
           var empNav = $('employee-tabs');
           var isEmp = (empNav && !empNav.classList.contains('hidden')) || window.currentRole === 'employee';
-          btn.style.display = isEmp ? 'none' : '';
+          document.querySelectorAll('#qs-tools-rail .qtr-btn').forEach(function (b) {
+            b.style.display = (isEmp && b.id !== 'qtr-access') ? 'none' : '';
+          });
+          var soon = document.querySelector('#qs-tools-rail .qtr-soon');
+          if (soon) soon.style.display = isEmp ? 'none' : '';
         }
-        setTimeout(qsGateAccessBtn, 2600);
+        setTimeout(qsGateEmployeeRail, 2600);
         // Communication groups are a manager tool (owner/schedulers —
         // the same gating the Settings section had): hide the rail
         // entry in the employee view.
@@ -9686,6 +9692,7 @@
         function qsAccessStatusPill(status) {
           if (status === 'approved') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#d9f0f2;color:#0a6270">APPROVED</span>';
           if (status === 'rejected') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#fee2e2;color:#991b1b">REJECTED</span>';
+          if (status === 'cancelled') return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#e5e7eb;color:#4b5563">CANCELLED</span>';
           return '<span style="font-size:10px;font-weight:800;letter-spacing:.03em;border-radius:999px;padding:2px 8px;white-space:nowrap;background:#fef3c7;color:#92400e">PENDING</span>';
         }
         window.qsAccessRequest = function (deptId, level) {
@@ -9701,6 +9708,17 @@
             pageSuccess(decision === 'approve' ? 'Access granted.' : 'Request rejected — nothing changed.');
             qsRenderAccessPanel();
           }).catch(function () { pageError('Could not decide that request. Please try again.'); });
+        };
+        // Cancel/withdraw (2026-11-21): the requester takes back
+        // their OWN pending request. The server 403s anyone else and
+        // 409s anything no longer pending; a cancelled request can
+        // never be approved or denied after that.
+        window.qsAccessCancel = function (reqId) {
+          api('/api/schedule/department-access/requests/' + reqId + '/cancel', { method: 'POST' }).then(function (r) {
+            if (!r.ok) { pageError((r.data && r.data.error) || 'Could not withdraw that request. Please try again.'); return; }
+            pageSuccess('Request withdrawn — the department admins have been told.');
+            qsRenderAccessPanel();
+          }).catch(function () { pageError('Could not withdraw that request. Please try again.'); });
         };
         function qsRenderAccessPanel() {
           var body = $('qtp-body');
@@ -9718,7 +9736,10 @@
             var d = r.data || {};
             var html = '';
             var toDecide = d.toDecide || [];
-            if (toDecide.length) {
+            // Employees never decide: the server 403s them on
+            // approve/reject, so showing Approve buttons to one
+            // would be dead buttons. Managers see the section.
+            if (toDecide.length && window.currentRole !== 'employee') {
               html += '<div style="font-size:12px;font-weight:800;color:#0a6270;letter-spacing:.02em;padding:4px 4px 8px">REQUESTS TO DECIDE (' + toDecide.length + ')</div>';
               toDecide.forEach(function (req) {
                 html += '<div data-acc-decide data-acc-req-id="' + esc(req.id) + '" style="padding:12px 4px;border-bottom:1px solid #eef0f0">' +
@@ -9739,7 +9760,8 @@
                 html += '<div data-acc-dept="' + esc(x.id) + '" style="padding:12px 4px;border-bottom:1px solid #eef0f0">' +
                   '<div style="font-size:13px;font-weight:700;color:#083f4d">' + esc(x.name) + '</div>';
                 if (x.pending) {
-                  html += '<div style="font-size:12px;color:#92400e;margin-top:4px">Requested — pending (' + qsAccessLevelLabel(x.pending.level) + ')</div>';
+                  html += '<div style="font-size:12px;color:#92400e;margin-top:4px">Requested — pending (' + qsAccessLevelLabel(x.pending.level) + ')</div>' +
+                    '<div style="margin-top:8px"><button type="button" data-acc-cancel onclick="window.qsAccessCancel(\'' + esc(x.pending.id) + '\')" style="border:1px solid #c9d6d8;background:#fff;color:#083f4d;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer">Cancel request</button></div>';
                 } else {
                   if (x.myAccess === 'view') html += '<div style="font-size:12px;color:#64748b;margin-top:2px">You have view-only access.</div>';
                   html += '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">';
@@ -9755,7 +9777,8 @@
               mine.forEach(function (req) {
                 html += '<div style="padding:10px 4px;border-bottom:1px solid #eef0f0">' +
                   '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:13px;font-weight:700;color:#083f4d">' + esc(req.departmentName || '') + '</span>' + qsAccessStatusPill(req.status) + '</div>' +
-                  '<div style="font-size:12px;color:#64748b;margin-top:2px">' + qsAccessLevelLabel(req.level) + ' access · asked ' + esc(qsHistoryWhen(req.createdAt)) + (req.decidedByName ? ' · decided by ' + esc(req.decidedByName) : '') + '</div></div>';
+                  '<div style="font-size:12px;color:#64748b;margin-top:2px">' + qsAccessLevelLabel(req.level) + ' access · asked ' + esc(qsHistoryWhen(req.createdAt)) + (req.decidedByName ? ' · decided by ' + esc(req.decidedByName) : '') + '</div>' +
+                  (req.status === 'pending' ? '<div style="margin-top:8px"><button type="button" data-acc-cancel onclick="window.qsAccessCancel(\'' + esc(req.id) + '\')" style="border:1px solid #c9d6d8;background:#fff;color:#083f4d;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:700;cursor:pointer">Cancel request</button></div>' : '') + '</div>';
               });
             }
             list.innerHTML = html;
@@ -30620,9 +30643,15 @@ window.qsNpOfferSend = function (btn) {
       window.location.hash = 'schedule';
     } else if (link === 'tools/access') {
       // Bell link from a department-access request: land on the
-      // Schedule tab and open the Access tool.
-      if (window.qsSetAppView) window.qsSetAppView('admin');
-      window.location.hash = 'schedule';
+      // Schedule tab and open the Access tool. Employees stay in
+      // My Schedule — the rail + panel are there too now — instead
+      // of being flipped into the admin view.
+      if (window.currentRole === 'employee') {
+        if (window.qsSetAppView) window.qsSetAppView('myschedule');
+      } else {
+        if (window.qsSetAppView) window.qsSetAppView('admin');
+        window.location.hash = 'schedule';
+      }
       setTimeout(function () { if (window.qsToolsOpen) window.qsToolsOpen('access'); }, 350);
     } else if (link.charAt(0) === '/') {
       // Absolute-path links (clarification answer page, cross-branch
