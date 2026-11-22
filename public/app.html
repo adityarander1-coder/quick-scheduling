@@ -4296,13 +4296,12 @@
             var doSwap = function (payload) {
               api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
                 if (!r.ok && r.data && r.data.roleIncompatible) {
-                  showRolePopup(r.data.roleDetail, 'Swap anyway', function () { doSwap(Object.assign({}, payload, { overrideRole: true })); });
+                  showRolePopup(r.data.roleDetail, function () { refreshShifts(); });
                   return;
                 }
                 if (!r.ok) { pageError((r.data && r.data.error) || 'Could not swap those shifts.'); refreshShifts(); return; }
                 var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'swap', aId: shift.id, bId: other.id };
                 entry.redo = { kind: 'swap', aId: shift.id, bId: other.id };
-                if (payload.overrideRole) entry.redo.overrideRole = true;
                 qsUndoStack.push(qsStampUndo(entry));
                 qsRedoStack.length = 0;
                 qsUndoCap();
@@ -4318,13 +4317,12 @@
             var doMove = function (payload) {
               api('/api/schedule/shifts/' + shift.id + '/drag-move', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) {
                 if (!r.ok && r.data && r.data.roleIncompatible) {
-                  showRolePopup(r.data.roleDetail, 'Move anyway', function () { doMove(Object.assign({}, payload, { overrideRole: true })); });
+                  showRolePopup(r.data.roleDetail, function () { refreshShifts(); });
                   return;
                 }
                 if (!r.ok) { pageError((r.data && r.data.error) || 'Could not move that shift.'); refreshShifts(); return; }
                 var entry = (r.data && r.data.undo) ? { kind: 'server', undo: r.data.undo } : { kind: 'move', shiftId: shift.id, fromDate: shift.date, fromType: shift.shiftTypeId };
                 entry.redo = { kind: 'move', shiftId: shift.id, date: date, typeId: typeId };
-                if (payload.overrideRole) entry.redo.overrideRole = true;
                 qsUndoStack.push(qsStampUndo(entry));
                 qsRedoStack.length = 0;
                 qsUndoCap();
@@ -4561,7 +4559,7 @@
           }
           qsRedoStack.pop();
           if (r.kind === 'swap') {
-            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId, windowAt: r.at, overrideRole: r.overrideRole || undefined }) }).then(function (res) {
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: r.aId, bId: r.bId, windowAt: r.at }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that swap.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'swap', aId: r.aId, bId: r.bId };
               e.redo = r;
@@ -4672,7 +4670,7 @@
             }).catch(function () { pageError('Could not redo that import.'); });
           } else {
             var s = shiftById(r.shiftId);
-            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at, overrideRole: r.overrideRole || undefined }) }).then(function (res) {
+            api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at }) }).then(function (res) {
               if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that move.'); refreshShifts(); return; }
               var e = (res.data && res.data.undo) ? { kind: 'server', undo: res.data.undo } : { kind: 'move', shiftId: r.shiftId, fromDate: s ? s.date : r.date, fromType: s ? s.shiftTypeId : r.typeId };
               e.redo = r;
@@ -4754,6 +4752,20 @@
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that import.'); });
+          } else if (u.kind === 'swap') {
+            // Undo a manual drag-swap by swapping the same pair back.
+            // (Pre-existing gap, found 2026-11-21 while proving the
+            // no-override strip-out: a manual swap returns no server
+            // undo payload, so the entry was kind 'swap' and fell into
+            // the move branch with an undefined shiftId — Undo never
+            // worked after a manual drag-swap.) No override: undo
+            // restores the pre-swap state, which was valid when made.
+            api('/api/schedule/shifts/drag-swap', { method: 'POST', body: JSON.stringify({ aId: u.aId, bId: u.bId, windowAt: u.at }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that swap.'); refreshShifts(); return; }
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
+              pageSuccess('Undone — tap Redo in the top bar to redo it.');
+              refreshShifts();
+            }).catch(function () { pageError('Could not undo that swap.'); });
           } else {
             api('/api/schedule/shifts/' + u.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: u.fromDate, shiftTypeId: u.fromType, windowAt: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that move.'); refreshShifts(); return; }
@@ -6048,43 +6060,48 @@
                   hide($('action-dialog'));
                   var newUserId = candidates[idx].id;
                   if (isRot) {
-                    // Rotation shift: exclude old, create manual for new
-                    api('/api/schedule/rotation-shifts/delete', {
-                      method: 'POST',
-                      body: JSON.stringify({
-                        rotationId: s.rotationId,
-                        userId: s.userId,
-                        date: s.date,
-                        shiftTypeId: s.shiftTypeId
-                      })
-                    }).then(function () {
-                      var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+                    // Rotation shift: create the manual shift for the new
+                    // person FIRST, and only then exclude the old
+                    // occurrence. (Deepika, 2026-11-21: the old order
+                    // deleted first, so a blocked replace left the shift
+                    // open and the old person out of their rotation.)
+                    // A blocked (403) or failed create leaves the old
+                    // occurrence exactly as it was.
+                    var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+                    var finishRotReplace = function () {
+                      api('/api/schedule/rotation-shifts/delete', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          rotationId: s.rotationId,
+                          userId: s.userId,
+                          date: s.date,
+                          shiftTypeId: s.shiftTypeId
+                        })
+                      }).then(function (dr) {
+                        if (dr && dr.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
+                        else { pageError('Replacement saved, but the old shift could not be removed. Refreshing.'); refreshShifts(); }
+                      }).catch(function () { pageError('Replacement saved, but the old shift could not be removed. Refreshing.'); refreshShifts(); });
+                    };
+                    var postRotReplace = function (body) {
                       api('/api/schedule/shifts', {
                         method: 'POST',
-                        body: JSON.stringify(repBody)
+                        body: JSON.stringify(body)
                       }).then(function (r) {
-                        if (r && r.ok) { pageSuccess('Shift replaced.'); refreshShifts(); return; }
+                        if (r && r.ok) { finishRotReplace(); return; }
                         if (r.status === 409 && r.data && r.data.conflict) {
                           showConflictDialog(r.data.conflict, function () {
-                            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { confirmConflict: true })) }).then(function (r2) {
-                              if (r2 && r2.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
-                              else pageError('Could not replace shift.');
-                            });
+                            postRotReplace(Object.assign({}, repBody, { confirmConflict: true }));
                           });
                           return;
                         }
                         if (r.status === 403 && r.data && r.data.roleIncompatible) {
-                          showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
-                            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { overrideRole: true })) }).then(function (r2) {
-                              if (r2 && r2.ok) { pageSuccess('Shift replaced.'); refreshShifts(); }
-                              else pageError('Could not replace shift.');
-                            });
-                          });
+                          showRolePopup(r.data.roleDetail, function () { refreshShifts(); });
                           return;
                         }
                         pageError('Could not replace shift.');
-                      });
-                    });
+                      }).catch(function () { pageError('Could not replace shift.'); });
+                    };
+                    postRotReplace(repBody);
                   } else {
                     replaceShift(s, newUserId);
                   }
@@ -6276,28 +6293,43 @@
           if (!s) return;
           var isRot = s.id && s.id.indexOf('rot-') === 0;
           if (isRot && s.rotationId) {
-            api('/api/schedule/rotation-shifts/delete', {
-              method: 'POST',
-              body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
-            }).then(function () {
-              var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+            // Create the manual shift for the new person FIRST, and only
+            // then exclude the old occurrence. (Deepika, 2026-11-21:
+            // the old order deleted first and never showed the role
+            // popup — a blocked replace left the shift open and the old
+            // person out of their rotation. The 403 branch was missing
+            // entirely here.) A blocked or failed create leaves the old
+            // occurrence exactly as it was.
+            var repBody = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
+            var finishRotReplace = function () {
+              api('/api/schedule/rotation-shifts/delete', {
+                method: 'POST',
+                body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
+              }).then(function (dr) {
+                if (dr && dr.ok) { refreshShifts(); }
+                else { showInfo('Replacement saved, but the old shift could not be removed.'); refreshShifts(); }
+              }).catch(function () { showInfo('Replacement saved, but the old shift could not be removed.'); refreshShifts(); });
+            };
+            var postRotReplace = function (body) {
               api('/api/schedule/shifts', {
                 method: 'POST',
-                body: JSON.stringify(repBody)
+                body: JSON.stringify(body)
               }).then(function (r) {
-                if (r && r.ok) { refreshShifts(); return; }
+                if (r && r.ok) { finishRotReplace(); return; }
                 if (r.status === 409 && r.data && r.data.conflict) {
                   showConflictDialog(r.data.conflict, function () {
-                    api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, repBody, { confirmConflict: true })) }).then(function (r2) {
-                      if (r2 && r2.ok) { refreshShifts(); }
-                      else { showInfo('Could not replace shift.'); }
-                    });
+                    postRotReplace(Object.assign({}, repBody, { confirmConflict: true }));
                   });
                   return;
                 }
+                if (r.status === 403 && r.data && r.data.roleIncompatible) {
+                  showRolePopup(r.data.roleDetail, function () { refreshShifts(); });
+                  return;
+                }
                 showInfo('Could not replace shift.');
-              });
-            }).catch(function() { showInfo('Could not replace shift.'); });
+              }).catch(function () { showInfo('Could not replace shift.'); });
+            };
+            postRotReplace(repBody);
           } else {
             replaceShift(s, newUserId);
           }
@@ -7067,19 +7099,18 @@
             { label: 'Add anyway', primary: true, onClick: onAddAnyway }
           ]);
         }
-        // Job-role block (Deepika, 2026-11-17): assigning someone by hand
-        // to a shift type their job role is not eligible for is stopped
-        // with her exact words. The popup IS the notice — the admin can
-        // override from it (Assign/Swap/Move anyway), or cancel.
-        function showRolePopup(detail, overrideLabel, onOverride, onCancel) {
+        // Job-role block (Deepika, 2026-11-17; NO OVERRIDE — Deepika,
+        // 2026-11-21): assigning someone by hand to a shift type their
+        // job role is not eligible for is stopped with her exact words.
+        // The popup IS the notice — Cancel only, the block is absolute.
+        function showRolePopup(detail, onCancel) {
           var d = detail || {};
           var who = (d.personName || 'This person') + (d.personRole ? ' (' + d.personRole + ')' : ' (no job role set)');
           var sub = who + ' → ' + (d.shiftTypeName || 'this shift') + (d.allowedNames ? ' — allows only: ' + d.allowedNames : '');
           showDialog('Job role not compatible',
             '<p>the job role is not compatible so cannot assign it</p>' +
             '<p style="color:var(--dim)">' + esc(sub) + '</p>', [
-            { label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } },
-            { label: overrideLabel || 'Assign anyway', primary: true, onClick: onOverride }
+            { label: 'Cancel', onClick: function () { if (onCancel) onCancel(); } }
           ]);
         }
         // Remove a single open slot — works in every view (delegated).
@@ -7408,55 +7439,47 @@
         }
 
         function replaceShift(s, newUserId) {
-          // No PUT endpoint: DELETE old + POST new with same date/shift type
+          // No PUT endpoint: POST new + DELETE old with same date/shift type.
+          // The new shift is created FIRST — only once it exists is the
+          // old one removed. (Deepika, 2026-11-21: the old order deleted
+          // first, so a blocked replace left the shift open — and the
+          // optimistic swap on screen flashed the new person, then
+          // vanished.) A blocked (403) or failed create leaves the old
+          // shift exactly as it was; Cancel on the popup changes nothing.
           var payload = { date: s.date, userId: newUserId, shiftTypeId: s.shiftTypeId };
           if (s.notes) payload.notes = s.notes;
-          // Optimistic: swap the person on screen instantly.
-          var m = memberById(newUserId);
-          var oldShift = null;
-          for (var i = 0; i < sched.shifts.length; i++) {
-            if (sched.shifts[i].id === s.id) {
-              oldShift = sched.shifts[i];
-              sched.shifts[i] = Object.assign({}, oldShift, {
-                userId: newUserId,
-                firstName: m ? m.firstName : oldShift.firstName,
-                lastName: m ? m.lastName : oldShift.lastName,
-                nickname: m ? m.nickname : oldShift.nickname,
-              });
-              break;
-            }
-          }
           closePersonActions();
-          renderView();
-          api('/api/schedule/shifts/' + s.id, { method: 'DELETE' }).then(function (dr) {
-            if (!dr.ok) { paMessage('Couldn\u2019t replace this team member.'); refreshShifts(); return null; }
-            return api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(payload) });
-          }).then(function (r) {
-            if (!r) return;
-            if (r.ok) { refreshShifts(); return; }
-            if (r.status === 409 && r.data && r.data.conflict) {
-              showConflictDialog(r.data.conflict, function () {
-                api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, payload, { confirmConflict: true })) }).then(function (r2) {
-                  if (r2.ok) refreshShifts();
-                  else { paMessage((r2.data && r2.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
+          var removeOld = function () {
+            api('/api/schedule/shifts/' + s.id, { method: 'DELETE' }).then(function (dr) {
+              if (dr.ok) { refreshShifts(); return; }
+              paMessage('Replacement saved, but the old shift could not be removed.');
+              refreshShifts();
+            }).catch(function () {
+              paMessage('Replacement saved, but the old shift could not be removed.');
+              refreshShifts();
+            });
+          };
+          var postNew = function (body) {
+            api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+              if (r.ok) { removeOld(); return; }
+              if (r.status === 409 && r.data && r.data.conflict) {
+                showConflictDialog(r.data.conflict, function () {
+                  postNew(Object.assign({}, payload, { confirmConflict: true }));
                 });
-              });
-              return;
-            }
-            if (r.status === 403 && r.data && r.data.roleIncompatible) {
-              showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
-                api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, payload, { overrideRole: true })) }).then(function (r2) {
-                  if (r2.ok) refreshShifts();
-                  else { paMessage((r2.data && r2.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts(); }
-                });
-              }, function () { refreshShifts(); });
-              return;
-            }
-            paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.'); refreshShifts();
-          }).catch(function () {
-            paMessage('Couldn\u2019t replace this team member. Try again.');
-            refreshShifts();
-          });
+                return;
+              }
+              if (r.status === 403 && r.data && r.data.roleIncompatible) {
+                showRolePopup(r.data.roleDetail, function () { refreshShifts(); });
+                return;
+              }
+              paMessage((r.data && r.data.error) || 'Couldn\u2019t replace this team member.');
+              refreshShifts();
+            }).catch(function () {
+              paMessage('Couldn\u2019t replace this team member. Try again.');
+              refreshShifts();
+            });
+          };
+          postNew(payload);
         }
 
         function reloadComments() {
@@ -9270,6 +9293,10 @@
               dates: editDates,
             };
             api('/api/schedule/shifts/' + sched.editShiftId + '/apply-range', { method: 'POST', body: JSON.stringify(editBody) }).then(function (r) {
+              if (r.status === 403 && r.data && r.data.roleIncompatible) {
+                showRolePopup(r.data.roleDetail, function () { onDone(); });
+                return;
+              }
               onDone();
               if (r.ok) {
                 hide($('sched-assign-modal'));
@@ -9354,9 +9381,7 @@
             };
             var handleSingle = function (r) {
               if (r.status === 403 && r.data && r.data.roleIncompatible) {
-                showRolePopup(r.data.roleDetail, 'Assign anyway', function () {
-                  api('/api/schedule/shifts', { method: 'POST', body: JSON.stringify(Object.assign({}, body, { overrideRole: true })) }).then(handleSingle);
-                }, function () { onDone(); });
+                showRolePopup(r.data.roleDetail, function () { onDone(); });
                 return;
               }
               if (r.status === 409 && r.data && r.data.conflict) {
