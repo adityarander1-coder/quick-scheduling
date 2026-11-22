@@ -3382,6 +3382,31 @@
           return { from: fmtDate(from), to: fmtDate(to) };
         }
 
+        // Month-grid fetch range (Deepika, 2026-11-21 — Day NP
+        // spillover): the month grid renders spillover days from the
+        // neighbouring months (grey cells), but the shifts fetch used
+        // exactly viewRange() — the month itself. A spillover date
+        // outside the fetched range came back with no notDraftedByType
+        // entry, and openCountFor reads "absent" as drafted — so an
+        // undrafted rotation-backed type showed its full target (+3,
+        // +7 across types) on spillover cells while its own month
+        // showed 0. Same date, different answer, depending on which
+        // month view opened it. The fetch must cover every date the
+        // grid can draw: the 42-cell grid from gridStart (the same
+        // start renderMonthGrid uses). Other views keep viewRange()
+        // exactly — no per-view counting, the shared payload is what
+        // was short.
+        function schedFetchRange() {
+          var r = viewRange();
+          if (sched.view !== 'month') return r;
+          var first = parseDate(r.from);
+          var gridStart = new Date(first);
+          gridStart.setDate(first.getDate() - weekStartOffset(first));
+          var gridEnd = new Date(gridStart);
+          gridEnd.setDate(gridStart.getDate() + 41);
+          return { from: fmtDate(gridStart), to: fmtDate(gridEnd) };
+        }
+
         function schedTitle() {
           var r = viewRange();
           var f = parseDate(r.from), t = parseDate(r.to);
@@ -3424,6 +3449,7 @@
             $('sched-range-from').value = sched.rangeFrom; $('sched-range-to').value = '';
           }
           var r = viewRange();
+          var fr = schedFetchRange();
           $('sched-h1').textContent = schedTitle();
           // Dashboard sessions for the strip/badge: widen by a week each side
           // so month-grid spill-over days are covered too.
@@ -3432,7 +3458,7 @@
           return Promise.all([
             api('/api/schedule/shift-types'),
             api('/api/users'),
-            api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
+            api('/api/schedule/shifts?from=' + fr.from + '&to=' + fr.to),
             api('/api/schedule/days?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/comments?from=' + r.from + '&to=' + r.to),
             api('/api/schedule/staffing-targets'),
@@ -6387,6 +6413,34 @@
                 (sR.data.shifts || []).forEach(function (s) {
                   if (!ids[s.id]) { sched.shifts.push(s); ids[s.id] = true; }
                 });
+                // Merge the WHOLE single-date payload, not just the
+                // shifts (Deepika, 2026-11-21 — Day NP spillover):
+                // the old code merged shifts only, so a dialog opened
+                // from a spillover cell kept the month view's
+                // notDraftedByType — which has no entry for a date
+                // outside its range — and openCountFor read the
+                // undrafted date as drafted (+3 opens) while the same
+                // date in its own month showed 0. Extra / suppressed /
+                // draft / unpublished rows for the date and the
+                // not-drafted list are per-date facts too; replace the
+                // date's rows and union the lists.
+                var d = dateStr;
+                sched.extraSlots = (sched.extraSlots || []).filter(function (e) { return !(e.date === d); }).concat((sR.data.extraSlots || []).filter(function (e) { return e.date === d; }));
+                sched.suppressedOpenSlots = (sched.suppressedOpenSlots || []).filter(function (e) { return !(e.date === d); }).concat((sR.data.suppressedOpenSlots || []).filter(function (e) { return e.date === d; }));
+                sched.draftOpenCounts = sched.draftOpenCounts || {};
+                Object.keys(sR.data.draftOpenCounts || {}).forEach(function (k) { sched.draftOpenCounts[k] = sR.data.draftOpenCounts[k]; });
+                sched.unpublishedCounts = sched.unpublishedCounts || {};
+                Object.keys(sR.data.unpublishedCounts || {}).forEach(function (k) { sched.unpublishedCounts[k] = sR.data.unpublishedCounts[k]; });
+                sched.notDraftedByType = sched.notDraftedByType || {};
+                Object.keys(sR.data.notDraftedByType || {}).forEach(function (tid) {
+                  var have = sched.notDraftedByType[tid] || [];
+                  (sR.data.notDraftedByType[tid] || []).forEach(function (dd) { if (have.indexOf(dd) === -1) have.push(dd); });
+                  sched.notDraftedByType[tid] = have;
+                });
+                (sR.data.generatedTypeIds || []).forEach(function (tid) {
+                  sched.generatedTypeIds = sched.generatedTypeIds || [];
+                  if (sched.generatedTypeIds.indexOf(tid) === -1) sched.generatedTypeIds.push(tid);
+                });
               }
               renderDayModal();
             });
@@ -8965,7 +9019,7 @@
         // It is the shifts-only reload below.
         function loadShifts() { return refreshShifts(); }
         function refreshShifts() {
-          var r = viewRange();
+          var r = schedFetchRange();
           // Always include the day modal / assign date so newly assigned shifts aren't wiped
           // when the main view is on a different range.
           var extra = [sched.dayModalDate, sched.assignDate].filter(Boolean);
@@ -8997,7 +9051,7 @@
           if (!sec || !sec.classList.contains('active') || document.hidden || qsSchedPollBusy) return;
           if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
           qsSchedPollBusy = true;
-          var r = viewRange();
+          var r = schedFetchRange();
           api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
             qsSchedPollBusy = false;
             if (!sR.ok) return;
@@ -22882,6 +22936,23 @@ window.qsNpOfferSend = function (btn) {
           }
           return { from: fmtDate(from), to: fmtDate(to) };
         }
+        // Month-grid fetch range (Deepika, 2026-11-21 — Day NP
+        // spillover): same shared-source fix as the admin Schedule
+        // tab — the My Schedule month grid also draws spillover days
+        // from neighbouring months, and its shifts fetch used exactly
+        // viewRange(), so a spillover date had no notDraftedByType
+        // entry and read as drafted (+3 opens) while its own month
+        // showed 0. Fetch the whole 42-cell grid in month view.
+        function msFetchRange() {
+          var r = viewRange();
+          if (msView !== 'month') return r;
+          var first = parseDate(r.from);
+          var gridStart = new Date(first);
+          gridStart.setDate(first.getDate() - weekStartOffset(first));
+          var gridEnd = new Date(gridStart);
+          gridEnd.setDate(gridStart.getDate() + 41);
+          return { from: fmtDate(gridStart), to: fmtDate(gridEnd) };
+        }
         function msTitle() {
           var r = viewRange();
           var f = parseDate(r.from), t = parseDate(r.to);
@@ -22983,6 +23054,7 @@ window.qsNpOfferSend = function (btn) {
           $('ms-view').innerHTML = '<p style="color:var(--dim)">Loading…</p>';
           var efd = parseDate(r.from); efd.setDate(efd.getDate() - 7);
           var etd = parseDate(r.to); etd.setDate(etd.getDate() + 7);
+          var fr = msFetchRange();
           api('/api/auth/me').then(function (mr) {
             if (!mr.ok) return null;
             me = mr.data.user;
@@ -22995,7 +23067,7 @@ window.qsNpOfferSend = function (btn) {
               api('/api/departments'),
               api('/api/schedule/shift-types'),
               api('/api/users'),
-              api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to),
+              api('/api/schedule/shifts?from=' + fr.from + '&to=' + fr.to),
               api('/api/schedule/staffing-targets').catch(function () { return { ok: false }; }),
               api('/api/schedule/academic-sessions?from=' + fmtDate(efd) + '&to=' + fmtDate(etd)),
               api('/api/schedule/session-kinds'),
@@ -24101,7 +24173,7 @@ window.qsNpOfferSend = function (btn) {
         // a full-page reload that throws her back to the top.
         function msRefreshShifts() {
           var y = window.scrollY || 0;
-          var r = viewRange();
+          var r = msFetchRange();
           return api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
             if (sR.ok) {
               shifts = sR.data.shifts || [];
@@ -24133,7 +24205,7 @@ window.qsNpOfferSend = function (btn) {
           if (!sec || !sec.classList.contains('active') || document.hidden || msPollBusy) return;
           if (document.querySelector('#tab-myschedule .modal-backdrop:not(.hidden)')) return;
           msPollBusy = true;
-          var r = viewRange();
+          var r = msFetchRange();
           api('/api/schedule/shifts?from=' + r.from + '&to=' + r.to).then(function (sR) {
             msPollBusy = false;
             if (!sR.ok) return;
