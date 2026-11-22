@@ -1315,6 +1315,83 @@ export async function executePlan(
   // that are about to be updated or cancelled (the change itself may
   // remove exactly the people who should hear about it).
   const sessionPeopleBefore = new Map<number, string[]>();
+  // Role-change bell pre-pass (Deepika, 2026-11-21 — bell = what
+  // happened): remember each role change's BEFORE state — member,
+  // department, old role name — so the notification block below can
+  // tell the member + the department's admins old → new. Best-effort
+  // only; the executor re-resolves everything at execution time.
+  interface RoleChangeBefore {
+    memberId: string; memberName: string;
+    departmentId: string; departmentName: string;
+    oldRoleId: string | null; oldRoleName: string | null;
+    newRoleId: string; newRoleName: string;
+  }
+  const roleChangesBefore = new Map<number, RoleChangeBefore>();
+  const roleNameById = async (roleId: string | null): Promise<string | null> => {
+    if (!roleId) return null;
+    try {
+      const { rows } = await query('SELECT name FROM job_roles WHERE id = $1 AND company_id = $2', [roleId, companyId]);
+      return rows.length ? rows[0].name : null;
+    } catch { return null; }
+  };
+  for (let i = 0; i < (plan.changes || []).length; i++) {
+    const change = plan.changes[i];
+    try {
+      if (change.action === 'change_member_role_in_department' && change.person && change.department && change.jobRoleName) {
+        const member = await findMember(companyId, change.person);
+        const dept = await findDepartment(companyId, change.department);
+        if (!member || !dept) continue;
+        const { rows: roleRows } = await query(
+          'SELECT id, name FROM job_roles WHERE company_id = $1 AND department_id = $2 AND lower(name) = lower($3)',
+          [companyId, dept.id, change.jobRoleName.trim()]
+        );
+        if (!roleRows.length) continue;
+        const { rows: urows } = await query(
+          'SELECT department_id, job_role_id FROM users WHERE id = $1 AND company_id = $2',
+          [member.id, companyId]
+        );
+        let oldRoleId: string | null = null;
+        if (String(urows[0]?.department_id || '') === dept.id) {
+          oldRoleId = urows[0]?.job_role_id ? String(urows[0].job_role_id) : null;
+        } else {
+          const { rows: mrows } = await query(
+            'SELECT job_role_id FROM user_department_memberships WHERE user_id = $1 AND company_id = $2 AND department_id = $3',
+            [member.id, companyId, dept.id]
+          );
+          oldRoleId = mrows.length && mrows[0].job_role_id ? String(mrows[0].job_role_id) : null;
+        }
+        roleChangesBefore.set(i, {
+          memberId: member.id, memberName: member.display,
+          departmentId: dept.id, departmentName: dept.name,
+          oldRoleId, oldRoleName: await roleNameById(oldRoleId),
+          newRoleId: String(roleRows[0].id), newRoleName: roleRows[0].name,
+        });
+      } else if (change.action === 'update_team_member' && change.person && change.jobRoleName) {
+        const member = await findMember(companyId, change.person);
+        if (!member) continue;
+        const { rows: roleRows } = await query(
+          'SELECT id, name, department_id FROM job_roles WHERE company_id = $1 AND lower(name) = lower($2)',
+          [companyId, change.jobRoleName.trim()]
+        );
+        if (!roleRows.length || !roleRows[0].department_id) continue;
+        const { rows: urows } = await query(
+          'SELECT job_role_id FROM users WHERE id = $1 AND company_id = $2',
+          [member.id, companyId]
+        );
+        const oldRoleId = urows[0]?.job_role_id ? String(urows[0].job_role_id) : null;
+        const { rows: drows } = await query(
+          'SELECT name FROM departments WHERE id = $1 AND company_id = $2',
+          [roleRows[0].department_id, companyId]
+        );
+        roleChangesBefore.set(i, {
+          memberId: member.id, memberName: member.display,
+          departmentId: String(roleRows[0].department_id), departmentName: drows.length ? drows[0].name : 'this department',
+          oldRoleId, oldRoleName: await roleNameById(oldRoleId),
+          newRoleId: String(roleRows[0].id), newRoleName: roleRows[0].name,
+        });
+      }
+    } catch { /* best-effort */ }
+  }
   for (let i = 0; i < (plan.changes || []).length; i++) {
     const change = plan.changes[i];
     if ((change.action === 'update_session' || change.action === 'cancel_session') && change.dashboard && change.sessionTitle) {
@@ -2372,7 +2449,21 @@ export async function executePlan(
   // Notifications (Phase 1): tell people what this approved plan changed
   // for them. Best-effort — a notification failure never fails the plan.
   try {
-    const { notify, fmtDateLong } = await import('./notify.js');
+    const { notify, fmtDateLong, notifyRoleChange } = await import('./notify.js');
+    let actorName: string | null = null;
+    if (createdBy) {
+      try {
+        const { rows: arows } = await query(
+          `SELECT first_name, last_name, name FROM users WHERE id = $1 AND company_id = $2`,
+          [createdBy, companyId]
+        );
+        if (arows.length) {
+          const first = String(arows[0].first_name || '').trim();
+          const last = String(arows[0].last_name || '').trim();
+          actorName = (first || last ? `${first} ${last}`.trim() : String(arows[0].name || '').trim()) || null;
+        }
+      } catch { /* best-effort */ }
+    }
     for (let i = 0; i < (plan.changes || []).length; i++) {
       const change = plan.changes[i];
       const result = results[i];
@@ -2434,6 +2525,19 @@ export async function executePlan(
             body: `A shift swap between ${change.fromPerson} and ${change.toPerson} was applied${d ? ` for ${fmtDateLong(d)}` : ''}.`,
             link: 'my-schedule', bundleKey: `shift_changed:${u.id}`,
             bundleTitle: '{count} of your shifts changed', excludeUserId: createdBy,
+          });
+        }
+      } else if ((change.action === 'change_member_role_in_department' || change.action === 'update_team_member') && change.person) {
+        // Role-change bell (Deepika, 2026-11-21): the member + the
+        // department's admins hear old → new. A no-op (same role) or a
+        // change whose before-state could not be resolved sends nothing.
+        const info = roleChangesBefore.get(i);
+        if (info && info.oldRoleId !== info.newRoleId) {
+          await notifyRoleChange({
+            companyId, memberId: info.memberId, memberName: info.memberName,
+            departmentId: info.departmentId, departmentName: info.departmentName,
+            oldRoleName: info.oldRoleName, newRoleName: info.newRoleName,
+            changedById: createdBy, changedByName: actorName,
           });
         }
       } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate) {

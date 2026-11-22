@@ -218,6 +218,60 @@ export async function deptMemberIds(companyId: string, departmentId: string): Pr
   return rows.map((r: any) => r.id);
 }
 
+export interface RoleChangeNotice {
+  companyId: string;
+  memberId: string;
+  memberName: string;
+  departmentId: string;
+  departmentName: string;
+  oldRoleName: string | null;
+  newRoleName: string | null;
+  /** The user who made the change — never notified of their own action. */
+  changedById: string | null;
+  changedByName?: string | null;
+}
+
+/**
+ * Role-change bell (Deepika, 2026-11-21 — bell = what happened).
+ * A member's job role changing in a department is something that
+ * happened, so the people who should know are told — the same shape as
+ * the closest comparable events (team_pulled tells the pulled person;
+ * department_access_decided tells the requester + the other approvers):
+ *   - the affected member, in their own words;
+ *   - the department's admins (owners + schedulers with edit access to
+ *     that department), in third-person words.
+ * Bell-only via notify() — the dispatcher emails it on the instant
+ * path per each recipient's speed prefs, exactly like team_pulled and
+ * department_access_decided (no separate sendMail). Best-effort: a
+ * failure here must never break the role change that triggered it.
+ * Callers must only call this when the role actually changed (old ≠ new).
+ */
+export async function notifyRoleChange(n: RoleChangeNotice): Promise<void> {
+  try {
+    const oldLabel = n.oldRoleName || 'no role';
+    const newLabel = n.newRoleName || 'no role';
+    await notify({
+      companyId: n.companyId, userIds: [n.memberId], category: 'schedule', type: 'role_changed',
+      title: `Your job role in ${n.departmentName} changed`,
+      body: `Your job role in ${n.departmentName} changed from ${oldLabel} to ${newLabel}.`,
+      link: 'my-schedule',
+      excludeUserId: n.changedById,
+    });
+    const admins = (await deptApproverIds(n.companyId, n.departmentId))
+      .filter((id) => id !== n.memberId && id !== n.changedById);
+    if (admins.length) {
+      await notify({
+        companyId: n.companyId, userIds: admins, category: 'schedule', type: 'role_changed',
+        title: `${n.memberName}'s job role in ${n.departmentName} changed`,
+        body: `${n.memberName}'s job role in ${n.departmentName} changed from ${oldLabel} to ${newLabel}` +
+          (n.changedByName ? ` (changed by ${n.changedByName}).` : '.'),
+        link: 'my-schedule',
+        excludeUserId: n.changedById,
+      });
+    }
+  } catch { /* best-effort */ }
+}
+
 /**
  * Members who could pick up a shift type: members of its departments,
  * filtered by the shift type's eligible job roles when it has any.

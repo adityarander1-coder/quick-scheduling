@@ -19,7 +19,7 @@ import { splitName, joinName } from '../util/names';
 import { issueInvite, unusablePasswordHash, inviteStatusFrom, InviteStatus } from '../util/invites';
 import { isMailConfigured, sendMail, escHtml } from '../util/mailer';
 import { companyTodayStr } from '../util/notifyJobs.js';
-import { notify } from '../util/notify.js';
+import { notify, notifyRoleChange } from '../util/notify.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { membershipsForUsers } from '../util/memberships.js';
 import * as XLSX from 'xlsx';
@@ -493,7 +493,7 @@ router.patch('/:id/membership-roles', requireRole('owner', 'scheduler'), async (
     const editIds = isOwner
       ? null
       : (await getDepartmentAccess(req.session.userId!, companyId)).edit.map(String);
-    const changed: Array<{ departmentId: string; departmentName: string; jobRoleId: string | null; jobRoleName: string | null }> = [];
+    const changed: Array<{ departmentId: string; departmentName: string; jobRoleId: string | null; jobRoleName: string | null; oldRoleName: string | null }> = [];
     for (const entry of roles) {
       const departmentId = entry?.departmentId;
       const jobRoleId = entry?.jobRoleId === '' ? null : (entry?.jobRoleId ?? null);
@@ -541,12 +541,20 @@ router.patch('/:id/membership-roles', requireRole('owner', 'scheduler'), async (
       }
       const currentRoleId = mrows[0].job_role_id ? String(mrows[0].job_role_id) : null;
       if (currentRoleId === (jobRoleId ? String(jobRoleId) : null)) continue; // no-op
+      let oldRoleName: string | null = null;
+      if (currentRoleId) {
+        const { rows: orows } = await query(
+          'SELECT name FROM job_roles WHERE id = $1 AND company_id = $2',
+          [currentRoleId, companyId]
+        );
+        oldRoleName = orows.length ? orows[0].name : null;
+      }
       await query(
         `UPDATE user_department_memberships SET job_role_id = $1
          WHERE user_id = $2 AND company_id = $3 AND department_id = $4`,
         [jobRoleId, targetId, companyId, dept.id]
       );
-      changed.push({ departmentId: dept.id, departmentName: deptName, jobRoleId, jobRoleName: roleName });
+      changed.push({ departmentId: dept.id, departmentName: deptName, jobRoleId, jobRoleName: roleName, oldRoleName });
     }
     if (changed.length) {
       await auditLog({
@@ -555,6 +563,21 @@ router.patch('/:id/membership-roles', requireRole('owner', 'scheduler'), async (
         description: changed.map((c) => `Changed ${displayName}'s job role in ${c.departmentName} to ${c.jobRoleName ?? 'none'}`).join('; '),
         departmentId: changed[0].departmentId,
       });
+      // Bell = what happened: the member + the department's admins are
+      // told (the changer is never notified of their own change).
+      const { rows: arows } = await query(
+        'SELECT first_name, last_name, name FROM users WHERE id = $1 AND company_id = $2',
+        [req.session.userId!, companyId]
+      );
+      const actorName = arows.length ? (joinName(arows[0].first_name, arows[0].last_name) || arows[0].name || null) : null;
+      for (const c of changed) {
+        await notifyRoleChange({
+          companyId, memberId: targetId, memberName: displayName,
+          departmentId: c.departmentId, departmentName: c.departmentName,
+          oldRoleName: c.oldRoleName, newRoleName: c.jobRoleName,
+          changedById: req.session.userId!, changedByName: actorName,
+        });
+      }
     }
     const { rows } = await query(PROFILE_SELECT + ` WHERE u.id = $1`, [targetId]);
     const memberMap = await membershipsForUsers(companyId, [targetId]);
@@ -1647,6 +1670,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
     // Job role: a linked department role wins and syncs the legacy free-text
     // column; otherwise the legacy free-text jobRole still works as before.
     const targetDeptId = body.departmentId !== undefined ? resolvedDept!.id : (target.department_id ?? null);
+    // Home role change (bell = what happened): remember the before-state
+    // now; the bell goes out after the update succeeds, below.
+    let homeRoleChange: { oldRoleName: string | null; newRoleName: string | null; departmentId: string; departmentName: string } | null = null;
     if (body.jobRoleId !== undefined) {
       const jr = await resolveJobRole(body.jobRoleId, targetDeptId, companyId);
       if (!jr.ok) {
@@ -1655,6 +1681,17 @@ router.patch('/:id', async (req: Request, res: Response) => {
       }
       push('job_role_id', jr.id);
       push('job_role', jr.name);
+      // A pure role change in the SAME department (a department move at
+      // the same time is a move, not a role change — no bell for that).
+      const deptUnchanged = body.departmentId === undefined || resolvedDept!.id === (target.department_id ?? null);
+      if (deptUnchanged && targetDeptId && String(jr.id ?? '') !== String(target.job_role_id || '')) {
+        homeRoleChange = {
+          oldRoleName: target.job_role_name ?? target.job_role ?? null,
+          newRoleName: jr.name,
+          departmentId: targetDeptId,
+          departmentName: target.department_name || 'this department',
+        };
+      }
     } else if (body.departmentId !== undefined && targetDeptId !== (target.department_id ?? null)) {
       // Moved departments without a new role: the old department's role no
       // longer applies — unlink it (free-text job_role stays as history).
@@ -1775,6 +1812,21 @@ router.patch('/:id', async (req: Request, res: Response) => {
             ? `Deactivated team member "${targetName}"`
             : `Updated team member "${targetName}" (${fieldNames.join(', ')})`,
     });
+    // Bell for a home role change: the member + the department's admins
+    // are told (the changer is never notified of their own change).
+    if (homeRoleChange) {
+      const { rows: arows } = await query(
+        'SELECT first_name, last_name, name FROM users WHERE id = $1 AND company_id = $2',
+        [callerId, companyId]
+      );
+      const actorName = arows.length ? (joinName(arows[0].first_name, arows[0].last_name) || arows[0].name || null) : null;
+      await notifyRoleChange({
+        companyId, memberId: targetId, memberName: targetName,
+        departmentId: homeRoleChange.departmentId, departmentName: homeRoleChange.departmentName,
+        oldRoleName: homeRoleChange.oldRoleName, newRoleName: homeRoleChange.newRoleName,
+        changedById: callerId, changedByName: actorName,
+      });
+    }
     res.json({ user: publicProfile(rows[0]) });
   } catch (err) {
     console.error('[users] update failed:', err);
