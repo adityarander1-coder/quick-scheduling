@@ -1800,6 +1800,19 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
       res.status(400).json({ error: 'No valid dates provided.' });
       return;
     }
+    // Past-shift delete guard (Deepika, 2026-11-21 — "past shifts
+    // are truth"): a bulk delete that touches ANY past date is
+    // refused as a whole, naming the past dates — the same
+    // whole-range refusal the generate and publish paths use for
+    // past ranges. Re-pick the range without the past dates.
+    {
+      const today = await companyTodayStr(companyId);
+      const pastDates = [...new Set(valid.filter((d) => d < today))].sort();
+      if (pastDates.length) {
+        res.status(400).json({ error: `Those dates include ${pastDates.slice(0, 3).join(', ')}${pastDates.length > 3 ? ` and ${pastDates.length - 3} more` : ''} — past shifts can't be deleted. Re-pick the range without the past dates.` });
+        return;
+      }
+    }
     if (shiftTypeId) {
       const stRows = await query('SELECT id FROM shift_types WHERE id = $1 AND company_id = $2', [shiftTypeId, companyId]);
       if (!stRows.rows.length) {
@@ -2131,6 +2144,15 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
         await assignmentRelevantDepartments(
           [{ userId: srows[0].userId, shiftTypeId: srows[0].shiftTypeId }], companyId)
       ))) return;
+      // Past-shift delete guard (Deepika, 2026-11-21 — "past shifts
+      // are truth"): a fresh delete of a past-date shift is refused,
+      // with the reason. Undo/redo replays that RESTORE a deleted
+      // shift are not deletes and are untouched.
+      const today = await companyTodayStr(companyId);
+      if (srows[0].date < today) {
+        res.status(400).json({ error: `That shift is on ${srows[0].date}, which has already passed — past shifts can't be deleted.` });
+        return;
+      }
     }
     const { rowCount } = await query(
       'DELETE FROM shifts WHERE id = $1 AND company_id = $2',
@@ -2468,6 +2490,21 @@ router.delete('/extra-slots', requireRole('owner', 'scheduler'), async (req: Req
     if (!dates.length || !shiftTypeId) {
       res.status(400).json({ error: 'Dates and shift type are required.' });
       return;
+    }
+    // Past-shift delete guard (Deepika, 2026-11-21 — "past shifts
+    // are truth"): removing stored open slots on a past date is
+    // refused, with the reason. The per-slot close button and the
+    // bulk close go through POST /extra-slots (negative count) and
+    // closeTypeForDate instead — those are the close family's doors
+    // and are NOT covered by this guard (Day NP close fix owns
+    // them); this door is the direct stored-slot delete.
+    {
+      const today = await companyTodayStr(companyId);
+      const pastDates = [...new Set(dates.filter((d: string) => d < today))].sort();
+      if (pastDates.length) {
+        res.status(400).json({ error: `Those open slots are on ${pastDates.slice(0, 3).join(', ')}${pastDates.length > 3 ? ` and ${pastDates.length - 3} more` : ''} — past dates can't be deleted.` });
+        return;
+      }
     }
     // Department scoping: the scheduler's active department must be one of
     // the shift type's departments.
@@ -4137,6 +4174,16 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
     if (!rotationId || !userId || !date) {
       res.status(400).json({ error: 'rotationId, userId, and date are required.' });
       return;
+    }
+    // Past-shift delete guard (Deepika, 2026-11-21 — "past shifts
+    // are truth"): removing a past rotation occurrence is refused,
+    // with the reason — same as deleting a past stored shift.
+    {
+      const today = await companyTodayStr(companyId);
+      if (date < today) {
+        res.status(400).json({ error: `That shift is on ${date}, which has already passed — past shifts can't be deleted.` });
+        return;
+      }
     }
     if (!(await requireActiveDepartment(
       req, res,

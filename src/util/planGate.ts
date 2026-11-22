@@ -34,7 +34,8 @@
 // the clarification reply), never a parallel system.
 
 import { matchName } from './planHelpers.js';
-import { resolveRotationPattern } from './planExecutor.js';
+import { resolveRotationPattern, pastRemovalDates } from './planExecutor.js';
+import { companyTodayStr } from './notifyJobs.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
 import { getGeneratedTypeIds, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
@@ -669,6 +670,34 @@ export async function gatePlanChanges(
   // has a branch for it, so this is the third lock.
   if (list.some((c) => c.action === 'delete_job_role')) {
     return { ok: false, question: `I can't delete job roles — the AI can add a job role but never delete one. An admin can delete it in Settings → Job roles.` };
+  }
+
+  // ---- 1a. past dates (Deepika, 2026-11-21 — "past shifts are truth") ----
+  // A plan that removes someone from a past shift — unassign, or the
+  // from-side of a move/swap — is refused in BOTH doors, with the
+  // reason, before any other check. A swap is also refused when its
+  // to-date is past (it would put someone ON a past shift — the same
+  // truth, changed). The executor re-checks live at approval time,
+  // so a plan that was fine when written but whose date has since
+  // passed still fails honestly instead of deleting a past shift.
+  // Deliberately NOT covered here: assigns onto past dates (finding
+  // A — a create hole, not a delete), closes (the close family,
+  // owned by the Day NP close fix), and rotations starting in the
+  // past (patterns legitimately start in the past).
+  {
+    const today = await companyTodayStr(companyId);
+    for (const c of list) {
+      const past = pastRemovalDates(c).filter((d) => d < today).sort();
+      if (!past.length) continue;
+      const date = past[0];
+      if (c.action === 'unassign') {
+        return { ok: false, question: `I can't remove ${c.person || 'that person'} from a shift on ${date} — that date has already passed, and past shifts can't be changed.` };
+      }
+      if (c.action === 'move') {
+        return { ok: false, question: `I can't move ${c.fromPerson || 'that person'}'s shift on ${date} — that date has already passed, and past shifts can't be changed.` };
+      }
+      return { ok: false, question: `I can't swap shifts on ${date} — that date has already passed, and past shifts can't be changed.` };
+    }
   }
 
   const roster = await loadGateRoster(query, companyId);

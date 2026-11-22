@@ -6188,7 +6188,7 @@
                   }
                   refreshShifts();
                 }
-                else { pageError('Could not delete. Refreshing.'); refreshShifts(); }
+                else { pageError((r.data && r.data.error) || 'Could not delete. Refreshing.'); refreshShifts(); }
               }).catch(function () { pageError('Could not delete. Refreshing.'); refreshShifts(); });
             } }
           ]);

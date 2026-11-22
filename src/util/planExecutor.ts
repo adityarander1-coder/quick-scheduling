@@ -8,6 +8,26 @@ import { getGeneratedTypeIds } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
+import { companyTodayStr } from './notifyJobs.js';
+
+// Past-shift delete guard (Deepika, 2026-11-21 — "past shifts are
+// truth"): the schedule dates a removal change touches. unassign
+// removes the person on `date`; move removes fromPerson on
+// `date`/`fromDate`; swap removes BOTH people on their dates, so
+// both are listed (a swap that puts someone ON a past date changes
+// the past too). Assigns, rotations and closes are NOT listed here
+// — they are separate holes, not removals (finding A and the close
+// family are named in the guard's report, not covered by it).
+export function pastRemovalDates(change: PlanChange): string[] {
+  if (!change || typeof change !== 'object') return [];
+  const pick = (d: any) => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null);
+  if (change.action === 'unassign') return [pick(change.date)].filter(Boolean) as string[];
+  if (change.action === 'move') return [pick(change.date || change.fromDate)].filter(Boolean) as string[];
+  if (change.action === 'swap') {
+    return [pick(change.fromDate || change.date), pick(change.toDate || change.date)].filter(Boolean) as string[];
+  }
+  return [];
+}
 
 interface PlanChange {
   action: 'assign' | 'assign_recurring' | 'unassign' | 'move' | 'swap' | 'add_job_role' | 'rename_job_role' |
@@ -1338,8 +1358,25 @@ export async function executePlan(
       } catch { /* best-effort */ }
     }
   }
+  // Past-shift delete guard (Deepika, 2026-11-21): "today" in the
+  // company's own timezone, read once — the per-change live
+  // re-check inside the loop compares against this.
+  const today = await companyTodayStr(companyId);
   for (const change of plan.changes || []) {
     try {
+      // Past-shift delete guard (Deepika, 2026-11-21): live
+      // re-check — the gate refuses past-date removals at plan
+      // time, but a plan approved while its date was still future
+      // must not delete that shift once the date has passed. The
+      // throw becomes a failed change (plan goes partial, never
+      // executed) — the same shape as the conflict-guard refusal.
+      {
+        const pastDates = pastRemovalDates(change);
+        const past = pastDates.filter((d) => d < today);
+        if (past.length) {
+          throw new Error(`Can't change a shift on ${past.sort()[0]} — that date has already passed, and past shifts can't be changed.`);
+        }
+      }
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
         const user = await findUser(companyId, change.person);
         const st = await findShiftType(companyId, change.shiftType);
