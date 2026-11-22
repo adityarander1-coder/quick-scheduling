@@ -1457,6 +1457,13 @@
     #sched-view.qs-f70 .shift-nm, #ms-view.qs-f70 .shift-nm { font-weight: 900; color: #05080f; }
     .qs-count-pill { display: inline-block; background: #21414c; color: #fff; border-radius: 999px; padding: 0 6px; margin-left: 6px; font-size: 10px; font-weight: 800; line-height: 16px; vertical-align: 1px; font-style: normal; white-space: nowrap; }
     .qs-count-strip { display: flex; gap: 5px; flex-wrap: wrap; padding: 5px 8px; border-bottom: 1px solid #e6e8f2; background: #fbfbfe; }
+    /* Date-page count option (Deepika, 2026-11-21 — fix-list item
+       4): the day popup's Published only / Include drafts switch.
+       Segmented control reusing the schedule view-tabs pattern
+       (.view-tabs buttons, accent = active). */
+    #sched-day-modal .qs-day-count-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; }
+    #sched-day-modal .qs-day-count-tabs button { border: none; background: #fff; color: #102d47; font-weight: 700; font-size: 0.8rem; padding: 0.35rem 0.7rem; cursor: pointer; }
+    #sched-day-modal .qs-day-count-tabs button.active { background: var(--accent); color: #fff; }
     .qs-count-chip { display: inline-flex; gap: 5px; align-items: center; font-size: 10.5px; font-weight: 800; padding: 2.5px 5px 2.5px 8px; border-radius: 999px; color: #10222b; white-space: nowrap; font-style: normal; }
     .qs-count-circle { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; background: #fff; color: #10222b; font-weight: 900; font-size: 10px; box-shadow: inset 0 0 0 1.5px rgba(16,34,43,.25); font-style: normal; vertical-align: middle; }
     #tab-schedule .day-row-head, #tab-myschedule .day-row-head { background: #fff; border-bottom: none; padding: 0.55rem 0.8rem 0.05rem; }
@@ -6371,6 +6378,27 @@
           return true;
         }
 
+        // Date-page count option (Deepika, 2026-11-21 — fix-list
+        // item 4): the day popup's counts can show published only
+        // (default) or include drafts. The choice is remembered
+        // across reloads in localStorage ('qs-day-count-mode'),
+        // the same pattern as the schedule's other remembered
+        // options ('qs-sched-events', 'qs-mode'). It changes ONLY
+        // what this popup's counts show — no schedule data, no
+        // plan math, no other page. "Unpublished" is draft stored
+        // shifts + draft opens, from the real schedule only:
+        // rotation occurrences (pattern) are never counted in
+        // either mode, and the target is never counted either.
+        function dayCountMode() {
+          try { return localStorage.getItem('qs-day-count-mode') === 'all' ? 'all' : 'published'; } catch (e) { return 'published'; }
+        }
+        function setDayCountMode(m) {
+          try { localStorage.setItem('qs-day-count-mode', m === 'all' ? 'all' : 'published'); } catch (e) {}
+          renderDayModal();
+        }
+        window.qsDayCountMode = dayCountMode;
+        window.qsSetDayCountMode = setDayCountMode;
+
         function openDayModal(dateStr) {
           sched.dayModalDate = dateStr;
           $('sched-day-title').textContent = fmtLong(dateStr);
@@ -6404,12 +6432,27 @@
           var comments = commentsFor(ds);
           var html = '';
           if (!shifts.length) html += '<p style="color:#94a3b8">No shifts assigned.</p>';
+          // Date-page count option (Deepika, 2026-11-21): the
+          // filled count per type. Published-only (default) counts
+          // stored published shifts only; "include drafts" adds
+          // stored draft shifts. Rotation occurrences are pattern,
+          // never schedule — never counted, in either mode
+          // (top-up rule: counts come from the real schedule only).
+          var includeDrafts = dayCountMode() === 'all';
           var typeCounts = {}, typeOrder = [], typeSeen = {};
           shifts.forEach(function (s) {
             if (!s.userId) return;
+            if (isOccShift(s)) return;
+            if (!includeDrafts && s.published === false) return;
             typeCounts[s.shiftTypeId] = (typeCounts[s.shiftTypeId] || 0) + 1;
             if (!typeSeen[s.shiftTypeId]) { typeSeen[s.shiftTypeId] = true; typeOrder.push(s.shiftTypeId); }
           });
+          var countToggleHtml = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+            '<span style="font-size:0.8rem;font-weight:700;color:var(--dim)">Counts:</span>' +
+            '<span class="qs-day-count-tabs" id="qs-day-count-toggle" data-count-mode="' + (includeDrafts ? 'all' : 'published') + '" role="group" aria-label="Date counts">' +
+            '<button type="button" data-day-count-mode="published" class="' + (includeDrafts ? '' : 'active') + '" aria-pressed="' + (!includeDrafts) + '" onclick="window.qsSetDayCountMode(\'published\')">Published only</button>' +
+            '<button type="button" data-day-count-mode="all" class="' + (includeDrafts ? 'active' : '') + '" aria-pressed="' + includeDrafts + '" onclick="window.qsSetDayCountMode(\'all\')">Include drafts</button>' +
+            '</span></div>';
           var countStripHtml = '';
           if (window.qsCountChipHtml && typeOrder.length) {
             countStripHtml = '<div class="qs-count-strip" style="border:1px solid #e6e8f2;border-radius:10px;margin-bottom:8px">' + typeOrder.map(function (tid) {
@@ -6439,7 +6482,7 @@
                 '</span>' :
                 (sched.canEdit ? '<span class="read-only-hint" title="Switch active department to edit" style="margin-left:auto;font-size:14px">🔒</span>' : '')) + '</div>';
           });
-          $('sched-day-shifts').innerHTML = countStripHtml + html;
+          $('sched-day-shifts').innerHTML = countToggleHtml + countStripHtml + html;
           // Open slots for unfilled staffing targets.
           // Popup parity (Deepika, 2026-11-14): the popup lists opens
           // for every type the user can VIEW, exactly as the grid does
@@ -6460,7 +6503,17 @@
               // back: re-draft the day, Bulk Actions "Open extra
               // slots", Duplicate, Undo.
               var open = openCountRole(ds, st);
-              for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, i + 1);
+              // Date-page count option (Deepika, 2026-11-21):
+              // published-only shows published opens only — the
+              // computed opens minus the draft opens (the first N
+              // positions render DRAFT — draftCountFor). Included
+              // mode shows every open, as today. Positions keep
+              // their real 1-based number, so the open-slot chevron
+              // (Publish/Unpublish) still addresses the right slot.
+              var draftOpens = draftCountFor(ds, st.id);
+              var firstPos = 1;
+              if (!includeDrafts) { open = Math.max(0, open - draftOpens); firstPos = draftOpens + 1; }
+              for (var i = 0; i < open; i++) openHtml += openSlotHtml(ds, st, firstPos + i);
               // No "N slots removed — Restore" row any more
               // (Deepika, 2026-11-20 — "when it says close slot it
               // goes away permanently"): a closed slot is gone for
