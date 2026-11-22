@@ -881,6 +881,19 @@ export async function gatePlanChanges(
         // and totalOn agree.
         if (!generatedTypes) generatedTypes = await getGeneratedTypeIds(query, companyId);
         const isGeneratedType = generatedTypes.has(type.id);
+        // Undrafted generated dates (Deepika, 2026-11-22 — the
+        // Dec 12–17 close plan stated 17/day while the grid shows
+        // 3/day): the grid counts the target as 0 on a date that
+        // was never drafted, so the close plan must not state the
+        // target shortfall as opens there — the N2 rule, the same
+        // one the add gate got in Fix 2 and the unpublish helper
+        // uses. totalOn / closesOn derive from opensOn, so they
+        // follow automatically.
+        let undraftedDates: Set<string> | null = null;
+        if (isGeneratedType) {
+          const notDrafted = await getNotDraftedByType(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
+          undraftedDates = new Set(notDrafted[type.id] || []);
+        }
         const opensOn = (d: string) => {
           const filled = filledByDate.get(d) || 0;
           const suppressed = inputs.suppressed.get(`${d}|${type.id}`) || 0;
@@ -890,8 +903,11 @@ export async function gatePlanChanges(
             // stored extras are added, minus the suppression — the
             // same count the grid and the executor use. A date
             // whose shortfall was closed has its opens suppressed,
-            // never zeroed by a flag.
-            const shortfall = Math.max(0, targetFor(inputs, type.id, d) - filled);
+            // never zeroed by a flag. On an undrafted date the
+            // target counts as 0 (N2), so only stored extras show,
+            // minus suppression.
+            const effTarget = undraftedDates?.has(d) ? 0 : targetFor(inputs, type.id, d);
+            const shortfall = Math.max(0, effTarget - filled);
             const extra = inputs.extra.get(`${d}|${type.id}`) || 0;
             return { opens: Math.max(0, shortfall + extra - suppressed), capacity: shortfall + extra - suppressed, suppressed };
           }
