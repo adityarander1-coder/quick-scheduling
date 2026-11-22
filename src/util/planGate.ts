@@ -37,7 +37,7 @@ import { matchName } from './planHelpers.js';
 import { resolveRotationPattern } from './planExecutor.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
-import { getGeneratedTypeIds, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType, getTypesWithRotations } from './scheduleMode.js';
 import { shiftTypesDepartmentIds } from './departmentAccess.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -1337,12 +1337,36 @@ export async function gatePlanChanges(
           if (addMode === 'total') {
             const deltas = touched.map((d) => (deltaOn as any)(d));
             const total = deltas.reduce((s: number, n: number) => s + n, 0);
+            // Undrafted generated dates (Deepika, 2026-11-22 — gap
+            // counts from the real schedule): the grid counts the
+            // target as 0 on a date that was never drafted, so the
+            // plan must not state the target shortfall as opens
+            // there — it names the date as not drafted yet and says
+            // only the added slots will show until it is drafted.
+            // Delta math is unchanged (the executor adds the same
+            // stored-model delta); only the stated numbers change.
+            // getNotDraftedByType is the grid's own source of truth
+            // (rotation-less types are never undrafted there).
+            let undrafted: Set<string> | null = null;
+            if (generatedTypes?.has(type.id)) {
+              const notDrafted = await getNotDraftedByType(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
+              undrafted = new Set(notDrafted[type.id] || []);
+            }
+            const undraftedNote = (() => {
+              if (!undrafted || !undrafted.size) return '';
+              const list = [...undrafted].sort();
+              const shown = list.slice(0, 10);
+              return ` — ${list.length} date${list.length === 1 ? '' : 's'} not drafted yet (${shown.join(', ')}${list.length > 10 ? `, …and ${list.length - 10} more` : ''}); only the added slots will show on those dates until they are drafted`;
+            })();
             const body = touched.length <= 7
               ? touched.map((d, i) => {
                   const t = (totalOn as any)(d);
+                  if (undrafted?.has(d)) {
+                    return `${d}: not drafted yet — ${t.filled} filled, target ${targetFor(inputs, type.id, d)}; will add ${deltas[i]}, and only those ${deltas[i]} slot${deltas[i] === 1 ? '' : 's'} will show until it is drafted`;
+                  }
                   return `${d}: ${t.filled} filled + ${t.opens} open = ${t.total} total, will add ${deltas[i]}`;
                 }).join('; ')
-              : `will add ${total} slots over ${touched.length} days to reach ${c.targetTotal} per date`;
+              : `will add ${total} slots over ${touched.length} days to reach ${c.targetTotal} per date${undraftedNote}`;
             c.addDetail = `${label}: ${body} — ${total} slot${total === 1 ? '' : 's'} in total. Only empty slots are added; nobody is assigned to a shift.`;
             gateDetails.push(c.addDetail);
             continue;

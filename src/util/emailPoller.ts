@@ -405,6 +405,28 @@ export async function buildScheduleContext(
       }
     } catch { /* targets are an enhancement, not a requirement */ }
 
+    // Grid opens (Deepika, 2026-11-22 — gap counts from the real
+    // schedule): OPEN markers must match what the grid shows —
+    // stored extras and suppression included, and the target counts
+    // as 0 on an undrafted generated date. Loaded with the
+    // rotation-less block below (same sources the gate uses); when
+    // the load fails the markers fall back to target - filled.
+    let generatedTypeIds = new Set<string>();
+    const extraByKey = new Map<string, number>();
+    const suppressedByKey = new Map<string, number>();
+    let notDraftedByType: Record<string, string[]> = {};
+    const gridOpensFor = (typeId: string, date: string, filled: number): number => {
+      const target = targets.get(typeId) || 0;
+      const extra = extraByKey.get(`${date}|${typeId}`) || 0;
+      const suppressed = suppressedByKey.get(`${date}|${typeId}`) || 0;
+      if (generatedTypeIds.has(typeId)) {
+        const undrafted = (notDraftedByType[typeId] || []).includes(date);
+        const effTarget = undrafted ? 0 : target;
+        return Math.max(0, Math.max(0, effTarget - filled) + extra - suppressed);
+      }
+      return Math.max(0, target + extra - filled - suppressed);
+    };
+
     // Rotation-less generated types (Deepika, 2026-11-16 — the Day NP
     // plan-gate change): their opens come from the target alone — no
     // rotation ever draws holders, so a date with no entries at all
@@ -414,11 +436,12 @@ export async function buildScheduleContext(
     const rotationlessOpen = new Set<string>();
     const typeNames = new Map<string, string>();
     try {
-      const { getGeneratedTypeIds, getTypesWithRotations } = await import('./scheduleMode.js');
+      const { getGeneratedTypeIds, getTypesWithRotations, getNotDraftedByType } = await import('./scheduleMode.js');
       const [generated, withRotations] = await Promise.all([
         getGeneratedTypeIds(query, companyId),
         getTypesWithRotations(query, companyId),
       ]);
+      generatedTypeIds = generated;
       const { rows: nrows } = await query(
         'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
         [companyId]
@@ -427,6 +450,31 @@ export async function buildScheduleContext(
       for (const [typeId, target] of targets) {
         if (target > 0 && generated.has(typeId) && !withRotations.has(typeId)) rotationlessOpen.add(typeId);
       }
+      // Stored extras / suppression and the undrafted map, over the
+      // whole rendered window — the grid-opens inputs.
+      const spanFrom = blocks[0][0];
+      const spanTo = blocks[blocks.length - 1][1];
+      const [{ rows: erows }, { rows: srows }] = await Promise.all([
+        query(
+          'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM extra_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3',
+          [companyId, spanFrom, spanTo]
+        ),
+        query(
+          'SELECT date::text AS date, shift_type_id AS "shiftTypeId", count FROM suppressed_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3',
+          [companyId, spanFrom, spanTo]
+        ),
+      ]);
+      for (const r of erows) {
+        const k = `${r.date}|${r.shiftTypeId}`;
+        extraByKey.set(k, (extraByKey.get(k) || 0) + (r.count || 0));
+      }
+      for (const r of srows) {
+        const k = `${r.date}|${r.shiftTypeId}`;
+        suppressedByKey.set(k, (suppressedByKey.get(k) || 0) + (r.count || 0));
+      }
+      try {
+        notDraftedByType = await getNotDraftedByType(query, companyId, generated, spanFrom, spanTo);
+      } catch { /* undrafted map is an enhancement, not a requirement */ }
     } catch { /* rotation-less opens are an enhancement, not a requirement */ }
 
     // (a) Day-by-day holders.
@@ -486,8 +534,8 @@ export async function buildScheduleContext(
       const parts: string[] = [];
       for (const [typeId, t] of byType) {
         parts.push(`${t.name}: ${t.people.join(', ')}`);
-        const target = targets.get(typeId) || 0;
-        if (target > t.people.length) parts.push(`${t.name} OPEN ×${target - t.people.length}`);
+        const opens = gridOpensFor(typeId, date, t.people.length);
+        if (opens > 0) parts.push(`${t.name} OPEN ×${opens}`);
       }
       for (const [typeId, target] of targets) {
         if (target > 0 && !byType.has(typeId)) {
@@ -497,7 +545,10 @@ export async function buildScheduleContext(
           // anywhere in the window (it never draws holders).
           const name = nameRow?.shiftTypeName
             || (rotationlessOpen.has(typeId) ? typeNames.get(typeId) : undefined);
-          if (name) parts.push(`${name} OPEN ×${target}`);
+          if (name) {
+            const opens = gridOpensFor(typeId, date, 0);
+            if (opens > 0) parts.push(`${name} OPEN ×${opens}`);
+          }
         }
       }
       const dow = DOW[new Date(date + 'T00:00:00Z').getUTCDay()];
