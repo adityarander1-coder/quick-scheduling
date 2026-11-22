@@ -273,6 +273,19 @@ export async function getUndraftedDatesForType(
   from: string,
   to: string
 ): Promise<string[]> {
+  // Requirements and rotations are independent (Deepika, 2026-11-15):
+  // a generated type NO rotation produces can never be drafted, so it
+  // is never "not drafted" — the same exemption getNotDraftedByType
+  // applies to the grid, and it must apply here too. Without it the
+  // two reads disagreed for rotation-less types: the grid showed
+  // their target opens while the close paths (closeTypeForDate,
+  // deleteOneOpenSlot — both read undrafted-ness from here) counted
+  // the target as 0, so a rotation-less type's close found "no open slots" with 3
+  // opens on screen and the Task close-all reported exactly that
+  // (live Nov 21, 8:53 PM). The plan gate is unaffected: it already
+  // exempts rotation-less types before calling this.
+  const withRotations = await getTypesWithRotations(q, companyId);
+  if (!withRotations.has(shiftTypeId)) return [];
   const { rows } = await q(
     `SELECT rg.id, rg.range_start::text AS "rangeStart", rg.range_end::text AS "rangeEnd",
             rg.user_ids AS "userIds"
