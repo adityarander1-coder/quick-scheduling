@@ -20771,6 +20771,19 @@ window.qsNpOfferSend = function (btn) {
         #bulk-draft-panel input[type="checkbox"] { width: auto !important; flex: none; }
         #tab-bulk #bulk-members > label:nth-child(even) { background: #e8edee; border-radius: 4px; }
         #tab-bulk .ba-below { border-radius:20px; box-shadow:0 2px 14px rgba(8,63,77,.08); }
+        /* PUBLISH PICKER (Deepika, 2026-11-22): the What-to-publish
+           choice rows borrow the sidebar's own language — title +
+           sub-label, rounded, teal when picked — so the picker feels
+           like part of the Bulk Actions flow, not a setup screen. */
+        #tab-bulk .bulk-pub-kind { display:flex; align-items:flex-start; gap:10px; padding:11px 12px; border:1px solid #dfe9e9; border-radius:12px; background:#f8fbfb; cursor:pointer; margin-bottom:8px; }
+        #tab-bulk .bulk-pub-kind:hover { background:#e6f0f0; }
+        #tab-bulk .bulk-pub-kind input { position:absolute; opacity:0; pointer-events:none; }
+        #tab-bulk .bulk-pub-kind-tick { flex:none; width:22px; height:22px; border-radius:50%; border:1px solid #b9cfcf; background:#fff; color:transparent; font-size:13px; line-height:21px; text-align:center; margin-top:1px; }
+        #tab-bulk .bulk-pub-kind.on { border-color:#0e7c86; background:#eef7f7; }
+        #tab-bulk .bulk-pub-kind.on .bulk-pub-kind-tick { background:#0e7c86; border-color:#0e7c86; color:#fff; }
+        #tab-bulk .bulk-pub-kind-body { display:flex; flex-direction:column; }
+        #tab-bulk .bulk-pub-kind-title { font-size:14.5px; font-weight:600; color:#2b3f45; }
+        #tab-bulk .bulk-pub-kind .sub { display:block; font-size:11.5px; font-weight:400; color:#5b7a80; opacity:.85; margin-top:2px; }
         @media (max-width: 700px) {
           #tab-bulk .ba-card { flex-direction:column; }
           #tab-bulk .ba-side { width:100%; border-right:none; border-bottom:1px solid #e3ecec; }
@@ -20791,7 +20804,6 @@ window.qsNpOfferSend = function (btn) {
         <select id="bulk-action">
           <option value="publish">Publish shifts</option>
           <option value="unpublish">Move to draft</option>
-          <option value="publish-open-slots">Publish open slots</option>
           <option value="unpublish-open-slots">Move open slots to draft</option>
           <option value="delete-shifts">Delete shifts (manual + rotation)</option>
           <option value="open-slots">Open extra slots</option>
@@ -20802,9 +20814,8 @@ window.qsNpOfferSend = function (btn) {
         <aside class="ba-side" id="bulk-side">
           <h2>Actions</h2>
           <button type="button" data-bulk-action="close-shifts">Close shifts<span class="sub">Remove open slots by type &amp; date</span></button>
-          <button type="button" data-bulk-action="publish" class="active">Publish shifts<span class="sub">Preview &amp; publish drafts</span></button>
+          <button type="button" data-bulk-action="publish" class="active">Publish<span class="sub">Assigned drafts, open drafts, or both</span></button>
           <button type="button" data-bulk-action="unpublish">Move to draft<span class="sub">Unpublish back to draft</span></button>
-          <button type="button" data-bulk-action="publish-open-slots">Publish open slots<span class="sub">Publish draft open slots only</span></button>
           <button type="button" data-bulk-action="unpublish-open-slots">Move open slots to draft<span class="sub">Unpublish open slots only</span></button>
           <button type="button" data-bulk-action="delete-shifts">Delete shifts<span class="sub">Manual + rotation shifts</span></button>
           <button type="button" data-bulk-action="open-slots">Open extra slots<span class="sub">Add open slots per date</span></button>
@@ -20813,8 +20824,28 @@ window.qsNpOfferSend = function (btn) {
         <div class="ba-panel-col">
           <!-- PUBLISH SHIFTS -->
           <div class="ba-action-panel active" id="ba-panel-publish">
-            <h3>Publish shifts</h3>
+            <h3>Publish</h3>
             <p class="lede">Preview what will go live, then publish.</p>
+            <!-- PUBLISH PICKER (Deepika, 2026-11-22): ONE publish
+                 button with a choice — assigned drafts, open drafts,
+                 or both — in one run, no extra step. Sidebar-style
+                 choice rows (title + sub-label, teal when picked),
+                 both on by default, so the picker feels like part of
+                 the Bulk Actions flow, not a separate setup screen. -->
+            <div id="bulk-pub-kinds" style="margin:2px 0 16px">
+              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">What to publish</div>
+              <label class="bulk-pub-kind on" for="bulk-pub-kind-assigned">
+                <input type="checkbox" id="bulk-pub-kind-assigned" checked>
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Assigned draft shifts</span><span class="sub">People's draft shifts only — open slots are never touched</span></span>
+              </label>
+              <label class="bulk-pub-kind on" for="bulk-pub-kind-open">
+                <input type="checkbox" id="bulk-pub-kind-open" checked>
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Open draft slots</span><span class="sub">Draft open slots only — including Day NP and Nephrology</span></span>
+              </label>
+              <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">Both publish in one run — tick one, the other, or both.</p>
+            </div>
             <div class="ba-top-row">
               <div class="bulk-fld">
                 <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Department</label>
@@ -20867,17 +20898,6 @@ window.qsNpOfferSend = function (btn) {
               <div class="ba-run" id="ba-slot-unpublish-run"></div>
             </div>
             <div id="ba-slot-unpublish-members"></div>
-          </div>
-          <!-- PUBLISH OPEN SLOTS -->
-          <div class="ba-action-panel" id="ba-panel-publish-open-slots">
-            <h3>Publish open slots</h3>
-            <p class="lede">Publish draft open slots only — assigned shifts are never touched.</p>
-            <div class="ba-top-row">
-              <div id="ba-slot-publish-open-slots-filter"></div>
-              <div class="ba-dates" id="ba-slot-publish-open-slots-dates"></div>
-              <div class="ba-run" id="ba-slot-publish-open-slots-run"></div>
-            </div>
-            <p style="font-size:12px;color:#7a9499;margin-top:8px;line-height:1.45">Covers every type, including rotation-less types like Day NP and live types like Nephrology — the ones bulk publish of shifts cannot see.</p>
           </div>
           <!-- MOVE OPEN SLOTS TO DRAFT -->
           <div class="ba-action-panel" id="ba-panel-unpublish-open-slots">
@@ -21134,7 +21154,7 @@ window.qsNpOfferSend = function (btn) {
         function updateBulkSlotVisibility() {
           var a = $('bulk-action').value;
           var isSlotAction = (a === 'open-slots');
-          var isOpenSlotBulk = (a === 'publish-open-slots' || a === 'unpublish-open-slots');
+          var isOpenSlotBulk = (a === 'unpublish-open-slots');
           var isClose = (a === 'close-shifts');
           var isPublish = a === 'publish';
           var isDraft = a === 'draft-schedule';
@@ -21204,13 +21224,13 @@ window.qsNpOfferSend = function (btn) {
             var d = slot(destId);
             if (el && d && el.parentNode !== d) d.appendChild(el);
           }
-          var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'publish-open-slots': 'ba-slot-publish-open-slots-dates', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
+          var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
           if (datesSlot) { move($('bulk-from-wrap'), datesSlot); move($('bulk-to-wrap'), datesSlot); }
-          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'publish-open-slots': 'ba-slot-publish-open-slots-run', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
+          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
           if (runSlot) move($('bulk-run'), runSlot);
           var memSlot = { publish: 'ba-slot-publish-members', unpublish: 'ba-slot-unpublish-members', 'delete-shifts': 'ba-slot-delete-members' }[a];
           if (memSlot) move($('bulk-members-wrap'), memSlot);
-          var filtSlot = { unpublish: 'ba-slot-unpublish-filter', 'publish-open-slots': 'ba-slot-publish-open-slots-filter', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-filter', 'delete-shifts': 'ba-slot-delete-filter' }[a];
+          var filtSlot = { unpublish: 'ba-slot-unpublish-filter', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-filter', 'delete-shifts': 'ba-slot-delete-filter' }[a];
           if (filtSlot) move($('bulk-shifttype-filter-wrap'), filtSlot);
           document.querySelectorAll('.ba-action-panel').forEach(function (p) {
             p.classList.toggle('active', p.id === 'ba-panel-' + a);
@@ -21836,11 +21856,23 @@ window.qsNpOfferSend = function (btn) {
           var pv = $('bulk-pub-preview'); if (pv) pv.innerHTML = '';
           var cf = $('bulk-pub-confirm'); if (cf) cf.classList.add('hidden');
         }
+        // PUBLISH PICKER (Deepika, 2026-11-22): ONE publish button
+        // with a choice — assigned drafts, open drafts, or both —
+        // in one run. Both rows are on by default; the preview shows
+        // the two counts SEPARATELY and the result reports how many
+        // of EACH it published, so one kind can never silently skip
+        // the other again.
+        function bulkPubKinds() {
+          var a = $('bulk-pub-kind-assigned'), o = $('bulk-pub-kind-open');
+          return { assigned: !!(a && a.checked), open: !!(o && o.checked) };
+        }
         function bulkPubPreview() {
           var from = $('bulk-from').value, to = $('bulk-to').value;
           if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
           var typeIds = bulkPubTypeIds();
           if (!typeIds.length) { showResult('Tick at least one shift type to publish.', true); return; }
+          var kinds = bulkPubKinds();
+          if (!kinds.assigned && !kinds.open) { showResult('Tick at least one thing to publish — assigned drafts or open drafts.', true); return; }
           var deptId = bulkPubDeptId();
           var body = {
             from: from, to: to,
@@ -21850,15 +21882,27 @@ window.qsNpOfferSend = function (btn) {
           };
           showResult('Checking…', false);
           resetBulkPublishPreview();
-          api('/api/schedule/publish/preview', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not check that range.', true); return; }
-            var d = r.data;
-            bulkPubPlan = { from: d.from, to: d.to, departmentIds: body.departmentIds, shiftTypeIds: body.shiftTypeIds, userIds: body.userIds, plan: d.plan };
-            var nothing = !d.totalAdds && !d.totalFlips && !d.changes.length && !d.opensTotal && !d.closesTotal;
+          var assignedP = kinds.assigned
+            ? api('/api/schedule/publish/preview', { method: 'POST', body: JSON.stringify(body) })
+            : Promise.resolve(null);
+          var openP = kinds.open
+            ? api('/api/schedule/open-slots/bulk-publish-preview', { method: 'POST', body: JSON.stringify({ dates: datesInRange(from, to), shiftTypeIds: typeIds }) })
+            : Promise.resolve(null);
+          Promise.all([assignedP, openP]).then(function (rs) {
+            var ar = rs[0], orr = rs[1];
+            if (ar && !ar.ok) { showResult((ar.data && ar.data.error) || 'Could not check that range.', true); return; }
+            if (orr && !orr.ok) { showResult((orr.data && orr.data.error) || 'Could not check the open slots.', true); return; }
+            var d = ar ? ar.data : null;
+            var od = orr ? orr.data : null;
+            bulkPubPlan = { from: from, to: to, departmentIds: body.departmentIds, shiftTypeIds: body.shiftTypeIds, userIds: body.userIds, plan: d ? d.plan : null, kinds: kinds, openDraftOpens: od ? od.draftOpens : 0 };
+            var assignedNothing = !kinds.assigned || !d || (!d.totalAdds && !d.totalFlips && !d.changes.length && !d.opensTotal && !d.closesTotal);
+            var openNothing = !kinds.open || !od || !od.draftOpens;
+            var nothing = assignedNothing && openNothing;
             var h = '';
             if (nothing) {
               h = '<p style="font-size:0.92rem;margin:6px 0">Everything in this scope is already published — nothing new to publish.</p>';
             } else {
+              if (d) {
               if (d.freshAdds) {
                 h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + d.freshAdds + ' new shift' + (d.freshAdds === 1 ? '' : 's') + ' to stamp from patterns</b>';
                 d.departments.forEach(function (dp) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(dp.name) + ': ' + dp.count + '</div>'; });
@@ -21882,6 +21926,17 @@ window.qsNpOfferSend = function (btn) {
                 h += '<div style="font-size:0.9rem;margin:4px 0">🩹 <b>' + p.newCount + ' shift' + (p.newCount === 1 ? '' : 's') + ' open for cover</b> after ' + esc(p.name) + '\'s last day (' + bulkPubFmtDay(p.endDate) + ')' + (p.count > p.newCount ? ' <span style="color:var(--dim)">(' + (p.count - p.newCount) + ' already open)</span>' : '') + '</div>';
               });
               if (d.closesTotal) h += '<div style="font-size:0.9rem;margin:4px 0">' + d.closesTotal + ' previously opened cover slot' + (d.closesTotal === 1 ? '' : 's') + ' close (pattern changed).</div>';
+              } // end if (d) — assigned half
+              // Open half: its own count, separately, even when it is 0.
+              if (kinds.open) {
+                if (od && od.draftOpens) {
+                  h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + od.draftOpens + ' draft open slot' + (od.draftOpens === 1 ? '' : 's') + ' to publish</b>';
+                  (od.byType || []).forEach(function (t) { h += '<div style="color:var(--dim);font-size:0.87rem">' + esc(t.name) + ': ' + t.count + '</div>'; });
+                  h += '</div>';
+                } else {
+                  h += '<div style="font-size:0.92rem;margin:6px 0">0 draft open slots to publish.</div>';
+                }
+              }
               h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">Past shifts are never changed. People get a notification when their shifts publish or are removed.</p>';
             }
             $('bulk-pub-preview').innerHTML = h;
@@ -21894,17 +21949,45 @@ window.qsNpOfferSend = function (btn) {
           var btn = $('bulk-pub-confirm');
           btn.disabled = true;
           showResult('Publishing…', false);
-          api('/api/schedule/publish', { method: 'POST', body: JSON.stringify({ from: bulkPubPlan.from, to: bulkPubPlan.to, departmentIds: bulkPubPlan.departmentIds, shiftTypeIds: bulkPubPlan.shiftTypeIds, userIds: bulkPubPlan.userIds, plan: bulkPubPlan.plan }) }).then(function (r) {
+          // The picker runs both kinds in ONE run, each through its
+          // own function, and reports how many of EACH it published.
+          // Assigned goes first with publishOpens: false, so the
+          // engine never touches the opens — the open-slot function
+          // owns those. If the assigned half fails, the open half
+          // does not run; if the open half fails after assigned
+          // succeeded, the result says so plainly.
+          var kinds = bulkPubPlan.kinds || { assigned: true, open: false };
+          var assignedBits = [];
+          var openCount = null;
+          var openFailed = null;
+          function finishPublish() {
             btn.disabled = false;
-            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not publish.', true); return; }
-            var bits = [];
-            if (r.data.added) bits.push(r.data.added + ' shift(s) stamped');
-            if (r.data.flipped) bits.push(r.data.flipped + ' draft(s) published');
-            if (r.data.removed) bits.push(r.data.removed + ' replaced away');
-            if (r.data.opened) bits.push(r.data.opened + ' opened for cover');
-            showResult('✓ Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + '.', false);
+            var bits = assignedBits.slice();
+            if (kinds.open && !openFailed) bits.push(openCount + ' open slot' + (openCount === 1 ? '' : 's'));
+            if (openFailed) {
+              showResult('Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + ' — but the open slots failed: ' + openFailed, true);
+            } else {
+              showResult('✓ Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + '.', false);
+            }
             resetBulkPublishPreview();
             if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
+          }
+          function runOpenPublish() {
+            if (!kinds.open) { finishPublish(); return; }
+            api('/api/schedule/open-slots/bulk-publish', { method: 'POST', body: JSON.stringify({ dates: datesInRange(bulkPubPlan.from, bulkPubPlan.to), shiftTypeIds: bulkPubPlan.shiftTypeIds }) }).then(function (r) {
+              if (!r.ok) { openFailed = (r.data && r.data.error) || 'Could not publish the open slots.'; }
+              else { openCount = r.data.opensPublished || 0; }
+              finishPublish();
+            }).catch(function () { openFailed = 'Network error.'; finishPublish(); });
+          }
+          if (!kinds.assigned) { runOpenPublish(); return; }
+          api('/api/schedule/publish', { method: 'POST', body: JSON.stringify({ from: bulkPubPlan.from, to: bulkPubPlan.to, departmentIds: bulkPubPlan.departmentIds, shiftTypeIds: bulkPubPlan.shiftTypeIds, userIds: bulkPubPlan.userIds, plan: bulkPubPlan.plan, publishOpens: false }) }).then(function (r) {
+            if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not publish.', true); return; }
+            var n = (r.data.added || 0) + (r.data.flipped || 0);
+            assignedBits.push(n + ' assigned draft shift' + (n === 1 ? '' : 's'));
+            if (r.data.opened) assignedBits.push(r.data.opened + ' opened for cover');
+            if (r.data.removed) assignedBits.push(r.data.removed + ' replaced away');
+            runOpenPublish();
           }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
         }
         function datesInRange(from, to) {
@@ -21955,32 +22038,28 @@ window.qsNpOfferSend = function (btn) {
             }).catch(function () { showResult('Network error.', true); });
             return;
           }
-          // Open-slot bulk actions (Deepika, 2026-11-22 — separate
-          // functions for open slots, so one can never silently
-          // skip the other): publish open slots publishes only the
-          // draft open slots; move open slots to draft unpublishes
-          // only the published open slots. Assigned shifts are
-          // never touched by either.
-          if (action === 'publish-open-slots' || action === 'unpublish-open-slots') {
+          // Move open slots to draft (Deepika, 2026-11-22 — its own
+          // bulk function, so one can never silently skip the other):
+          // unpublishes only the published open slots. Assigned
+          // shifts are never touched. (Publish open slots lives in
+          // the Publish picker's open half now — one button, both
+          // kinds, no extra step.)
+          if (action === 'unpublish-open-slots') {
             var osFilter = $('bulk-shifttype-filter') ? $('bulk-shifttype-filter').value : '';
             var osFilterName = osFilter && $('bulk-shifttype-filter').selectedOptions[0] ? $('bulk-shifttype-filter').selectedOptions[0].textContent : '';
-            var osLabel = action === 'publish-open-slots' ? 'publish open slots' : 'move open slots to draft';
             var osScope = osFilter ? ' (' + osFilterName + ' only)' : ' (all shift types)';
-            if (!confirm('Are you sure you want to ' + osLabel + osScope + ' on ' + dates.length + ' date(s)?')) return;
+            if (!confirm('Are you sure you want to move open slots to draft' + osScope + ' on ' + dates.length + ' date(s)?')) return;
             showResult('Working…', false);
-            var osEndpoint = action === 'publish-open-slots' ? '/api/schedule/open-slots/bulk-publish' : '/api/schedule/open-slots/bulk-unpublish';
             var osBody = { dates: dates };
             if (osFilter) osBody.shiftTypeIds = [osFilter];
-            api(osEndpoint, { method: 'POST', body: JSON.stringify(osBody) }).then(function (r) {
+            api('/api/schedule/open-slots/bulk-unpublish', { method: 'POST', body: JSON.stringify(osBody) }).then(function (r) {
               if (r.ok) {
-                var n = action === 'publish-open-slots' ? (r.data.opensPublished || 0) : (r.data.opensMoved || 0);
+                var n = r.data.opensMoved || 0;
                 if (n === 0) {
-                  showResult(action === 'publish-open-slots'
-                    ? 'Nothing to publish — no draft open slots in that range.'
-                    : 'Nothing moved — no published open slots in that range.', true);
+                  showResult('Nothing moved — no published open slots in that range.', true);
                   return;
                 }
-                showResult('Done — ' + n + ' open slot(s) ' + (action === 'publish-open-slots' ? 'published.' : 'moved to draft.'), false);
+                showResult('Done — ' + n + ' open slot(s) moved to draft.', false);
               } else {
                 showResult((r.data && r.data.error) || 'Could not complete.', true);
               }
@@ -22118,6 +22197,10 @@ window.qsNpOfferSend = function (btn) {
         });
         $('bulk-draft-run').addEventListener('click', runDraftSchedule);
         $('bulk-pub-confirm').addEventListener('click', bulkPubConfirm);
+        // PUBLISH PICKER rows: the row's teal state follows its checkbox.
+        document.querySelectorAll('.bulk-pub-kind input[type="checkbox"]').forEach(function (cb) {
+          cb.addEventListener('change', function () { cb.closest('.bulk-pub-kind').classList.toggle('on', cb.checked); });
+        });
         $('bulk-pub-dept').addEventListener('change', function () { renderBulkPubTypes(); resetBulkPublishPreview(); });
         $('bulk-pub-types').addEventListener('change', resetBulkPublishPreview);
         $('bulk-from').addEventListener('change', resetBulkPublishPreview);

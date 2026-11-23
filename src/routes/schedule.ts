@@ -4551,6 +4551,64 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
 // live type moved to draft can always be published back (never
 // stranded) — the two directions are symmetric by construction.
 
+// POST /api/schedule/open-slots/bulk-publish-preview — the publish
+// picker's open half (Deepika, 2026-11-22): count the draft open
+// slots the bulk publish would move, WITHOUT writing anything, so
+// the preview can show the open count separately from the assigned
+// count. Same enumeration and department scoping as bulk-publish
+// below, so preview and action can never disagree.
+router.post('/open-slots/bulk-publish-preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const typeIds = Array.isArray(req.body?.shiftTypeIds) ? req.body.shiftTypeIds.filter((x: any) => typeof x === 'string' && x) : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'At least one valid date is required.' });
+      return;
+    }
+    if (typeIds.length) {
+      const deptCheck = await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeIds, companyId));
+      if (!deptCheck) return;
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE id = ANY($1::uuid[]) AND company_id = $2', [typeIds, companyId]);
+      if (stRows.length !== typeIds.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return;
+      }
+    }
+    // Pairs = every (date, type) with a draft-open count in range —
+    // the exact query bulk-publish sums before it moves them.
+    const typeFilter = typeIds.length ? ' AND shift_type_id = ANY($3::text[])' : '';
+    const typeParams: any[] = typeIds.length ? [typeIds] : [];
+    const { rows: draftRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+       FROM draft_open_slots WHERE company_id = $1 AND date = ANY($2::date[])${typeFilter}
+       GROUP BY date, shift_type_id`,
+      [companyId, dates, ...typeParams]
+    );
+    let draftOpens = 0;
+    const byTypeMap = new Map<string, number>();
+    for (const r of draftRows) {
+      draftOpens += Number(r.n || 0);
+      byTypeMap.set(r.shiftTypeId, (byTypeMap.get(r.shiftTypeId) || 0) + Number(r.n || 0));
+    }
+    const byType: any[] = [];
+    if (byTypeMap.size) {
+      const { rows: nameRows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+        [companyId, [...byTypeMap.keys()]]
+      );
+      const names = new Map<string, string>(nameRows.map((r: any) => [r.id, r.name]));
+      for (const [id, n] of [...byTypeMap.entries()].sort((a, b) => (names.get(a[0]) || '').localeCompare(names.get(b[0]) || ''))) {
+        byType.push({ shiftTypeId: id, name: names.get(id) || 'Shift type', count: n });
+      }
+    }
+    res.json({ ok: true, draftOpens, pairsTouched: draftRows.length, byType });
+  } catch (err) {
+    console.error('[schedule] bulk-publish-preview open slots failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
 // POST /api/schedule/open-slots/bulk-publish — function 2: bulk
 // publish OPEN slots (owner/scheduler; department-scoped).
 // Body: { dates:[...], shiftTypeIds?:[...] }. Publishes every draft
@@ -6847,6 +6905,14 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     const from = String(req.body?.from || '');
     const to = String(req.body?.to || '');
     const planIn = req.body?.plan || {};
+    // Publish picker (Deepika, 2026-11-22): the picker publishes
+    // assigned drafts and open drafts as SEPARATE kinds in one run.
+    // When publishOpens is false, this endpoint flips/stamps shifts
+    // ONLY and never touches the opens — the open-slot bulk publish
+    // owns those. Default true: every existing caller (the day
+    // publish, the Task door) keeps the Nov 20 rule that publishing
+    // a day publishes its opens with it.
+    const publishOpens = req.body?.publishOpens !== false;
     if (!isValidDate(from) || !isValidDate(to) || from > to) {
       res.status(400).json({ error: 'Pick a valid date range to publish.' });
       return;
@@ -7048,8 +7114,11 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // 2026-11-20): the pairs this publish touched have their
       // draft opens go published and any closures cleared — the
       // rotation pulls its opens back. Generated types only;
-      // live-mode types have no draft opens to clear.
-      if (publishPairs.size) {
+      // live-mode types have no draft opens to clear. Skipped when
+      // the publish picker asked for assigned drafts only
+      // (publishOpens: false) — the open-slot function owns the
+      // opens, so each kind touches only its own.
+      if (publishOpens && publishPairs.size) {
         await publishOpenSlotsForPairs(
           tx.query,
           companyId,
