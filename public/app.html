@@ -11996,7 +11996,7 @@ window.qsNpOfferSend = function (btn) {
             case 'rename_shift_type': return 'Rename shift "' + c.shiftType + '" → "' + c.newShiftType + '"';
             case 'set_staffing_target': return 'Set staffing target for "' + c.shiftType + '" to ' + c.targetCount;
             case 'bulk_publish': return 'Publish shifts ' + c.fromDate + ' → ' + c.toDate;
-            case 'bulk_unpublish': return 'Unpublish shifts ' + c.fromDate + ' → ' + c.toDate;
+            case 'bulk_unpublish': return (c.openOnly ? 'Unpublish OPEN slots only ' : 'Unpublish shifts ') + c.fromDate + ' → ' + c.toDate + (c.shiftType ? ' (' + c.shiftType + ')' : '');
             case 'add_session': return 'Add session "' + c.title + '" on ' + c.dashboard + ' (' + c.date + ')' + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.recurRule && c.recurRule !== 'none' ? ', repeating ' + c.recurRule : '');
             case 'update_session': return 'Change session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '') + (c.newDate ? ' → move to ' + c.newDate : '') + (c.presenter ? ' — speaker ' + c.presenter : '') + (c.location ? ' — in ' + c.location : '');
             case 'cancel_session': return 'Cancel session "' + c.sessionTitle + '" on ' + c.dashboard + (c.scope === 'date' && c.date ? ' (just ' + c.date + ')' : '');

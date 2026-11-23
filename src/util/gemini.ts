@@ -197,8 +197,14 @@ interface PlanChange {
   keepCount?: number;       // for close_open_slots — open slots to KEEP per date
   closeAll?: boolean;       // for close_open_slots — close the whole type for the date(s)
   keepTotal?: number;       // for close_open_slots — TOTAL (filled + open) to keep per date
-  // Open-slot add fields (add_open_slots, Deepika 2026-11-19):
-  addCount?: number;        // for add_open_slots — slots to add PER date
+  // Open-only unpublish field (bulk_unpublish, Deepika
+  // 2026-11-22 — "unpublish OPEN ... shifts"): when the request
+  // names only the OPEN slots, the executor must leave the
+  // assigned shifts published and move only the opens to draft.
+  // Set it whenever the user says "open" (open slots, open
+  // only, open shifts) — and keep the word "open" in the plan
+  // title, so the approver can see the scope before tapping.
+  openOnly?: boolean;   // for bulk_unpublish — open slots only, never assigned shifts
   // Open-slot top-up field (add_open_slots, Deepika 2026-11-20 —
   // "make it total 14"): the TOTAL (filled + open) to reach per
   // date. Exactly one of addCount / targetTotal on an add change.
@@ -400,7 +406,7 @@ Rules:
   - "add_rotation": a per-person rotation — one person, one shift type, one repeating pattern, a start date. Needs person + shiftType + startDate + a pattern: weekdays + cycleWeeks (1 = every week, 2 = every other week), OR days + cycleDays. Weekdays are numbers 0=Sun..6=Sat. Example: "Give Gaj a Night Hospitalist rotation, Monday Wednesday Friday every week starting Dec 1" → person "Gaj Cha", shiftType "Night Hospitalist", startDate "2026-12-01", weekdays [1,3,5], cycleWeeks 1. "7 on / 7 off starting Dec 1" → days [1,2,3,4,5,6,7], cycleDays 14. If the pattern (which days) or the start date is missing, do NOT emit the change — set needsClarification to ask for it, and confidence to "low". Group rotations and pairing are NOT supported — never plan them. Optional: endDate (the rotation's last day) and rotationName.
   - NEVER delete a job role: there is no delete action for job roles — the AI can add a job role but can NEVER delete one. If the request asks to delete a job role, do NOT emit any change — set needsClarification to "I can't delete job roles — the AI can add a job role but never delete one. An admin can delete it in Settings → Job roles." and confidence to "low".
   Match department/shift type names against the lists above; if none matches, ask in needsClarification. If critical info is missing, set needsClarification.
-- For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today.
+- For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today. OPEN-ONLY (Deepika, 2026-11-22): when the request names only the OPEN slots ("unpublish open ... slots", "open slots to be unpublished", "only the open slots"), set openOnly: true on the bulk_unpublish change — the executor then leaves every assigned shift published and moves only the open slots to draft — and keep the word "open" in the plan title, so the approver sees the scope before tapping. Without openOnly, bulk_unpublish moves assigned shifts AND open slots together.
 - Calendar sessions live on dashboards (see the dashboard / session lists above). Use these actions, classified as "change_request":
   - "add_session": needs dashboard + title + date. Optional: startTime/endTime (convert "8am" to "08:00", "12:30pm" to "12:30"), presenter, supervisor, location (a room name or any location text), sessionType (one of that dashboard's session types), department (pick from that dashboard's departments when the sender names one), notes. If it repeats, set recurRule ("weekly" for weekly, etc.), recurInterval for every-N (e.g. "every other week" = weekly + 2), recurUntil when an end date is given.
   - "update_session": needs dashboard + sessionTitle (the session's current title — match it against the calendar session list). Set ONLY the fields being changed: title (a rename), presenter, supervisor, location, startTime, endTime, sessionType, notes, newDate (to move it). For a repeating session: if the sender names one date and doesn't say "all/every", set date to that date and scope to "date" (just that date changes); use scope "series" to change every occurrence.

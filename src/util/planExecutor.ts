@@ -42,6 +42,13 @@ interface PlanChange {
   email?: string;
   newShiftType?: string;
   targetCount?: number;
+  // Open-only unpublish field (bulk_unpublish, Deepika
+  // 2026-11-22 — "unpublish OPEN ... shifts"): when the request
+  // names only the OPEN slots, the executor leaves the assigned
+  // shifts published and moves only the opens to draft. Mirrors
+  // the same field on the planner's PlanChange (gemini.ts); the
+  // gate passes it through untouched.
+  openOnly?: boolean; // bulk_unpublish — open slots only, never assigned shifts
   // Close-open-slots fields (close_open_slots, Deepika 2026-11-19):
   // exactly one of these three says HOW MUCH to close. The
   // `department` field (above) says WHICH department the close is
@@ -1347,16 +1354,35 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
 
 /**
  * Open-slot totals for one type+date, mirroring the manual route's
- * openSlotTotals (schedule.ts:8892) — the formula the grid itself
- * uses: max(0, target + extra − filled). Rotation occurrences are
- * NOT counted in `filled` (same as the manual close): a close only
- * ever suppresses computed opens, never a stored shift row, so it
- * can never remove a person. Used by close_open_slots (gate
- * re-checks at execution). There is no closed flag any more
- * (Deepika, 2026-11-21): a close suppresses the shortfall with
- * stored rows instead, and the suppression already subtracts here.
+ * The ONE shared open-slot count (Deepika, 2026-11-22 — "no
+ * connection to rotations or targets once drafted"): this is the
+ * count the GRID shows, so every path that reads or writes opens
+ * through it agrees with the screen. Undrafted generated dates
+ * count the target as 0 (the N2 rule, read from the grid's own
+ * getNotDraftedByType map) — only stored extras show there — so a
+ * caller can never count a target shortfall the grid does not
+ * show. Generated types use the grid's stored model
+ * (max(0, max(0, effTarget − filled) + extra − suppressed)); live
+ * types keep the unclamped formula the grid uses for them
+ * (max(0, effTarget + extra − filled − suppressed), effTarget =
+ * target — live types are never undrafted). `total` is the
+ * grid-visible opens; `raw` is the same count unclamped.
+ * `filled` counts stored shifts PLUS rotation-drawn holders
+ * (Deepika, 2026-11-19 — audit B sharpening, same as the gate:
+ * the grid shows stored + drawn holders, so the approval-time
+ * re-check must count both, or a closeCount larger than the real
+ * opens would over-close into the extra pool). For generated
+ * types getShiftsForRange draws nothing — stored rows are the
+ * whole truth — so `filled` matches the grid there too. Falls
+ * back to the stored-only count when the drawn read fails.
+ * The strict stored-only rule (no target shortfall on drafted
+ * dates either) is the detach rebuild, NOT this function: the
+ * grid still shows the shortfall on drafted dates, so a count
+ * that ignored it would disagree with the screen. This function
+ * is the delete/unassign/open-slot paths' counting rule — one
+ * path, no per-type exceptions.
  */
-async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; filled: number; raw: number }> {
+async function openTotals(companyId: string, date: string, shiftTypeId: string): Promise<{ total: number; filled: number; raw: number; extra: number; suppressed: number; effTarget: number; isGenerated: boolean }> {
   const { rows: trows } = await query(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date
      FROM staffing_targets WHERE company_id = $1 AND shift_type_id = $2`,
@@ -1383,6 +1409,21 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
   // closed — they subtract from the visible total until the next
   // draft/publish of this date+type pulls them back.
   const suppressed = await suppressedTotal(query as any, companyId, date, shiftTypeId);
+  // N2 (Deepika, 2026-11-22): an undrafted generated date counts
+  // the target as 0 — the grid shows no shortfall there. The
+  // generated set + the not-drafted map are the grid's own reads.
+  let isGenerated = false;
+  let effTarget = target;
+  try {
+    const generatedTypes = await getGeneratedTypeIds(query as any, companyId);
+    isGenerated = generatedTypes.has(shiftTypeId);
+    if (isGenerated) {
+      const notDrafted = await getNotDraftedByType(query as any, companyId, generatedTypes, date, date);
+      if ((notDrafted[shiftTypeId] || []).includes(date)) effTarget = 0;
+    }
+  } catch (ndErr: any) {
+    console.error('[plan-executor] not-drafted read failed, using raw target:', ndErr?.message);
+  }
   // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
   // 2026-11-19 — audit B sharpening, same as the gate: the grid
   // shows stored + drawn holders, so the approval-time re-check
@@ -1402,7 +1443,25 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  return { total: Math.max(0, target + extra - filled - suppressed), filled, raw: target + extra - filled - suppressed };
+  // The grid's own per-type formula (stored model for generated
+  // types since the top-up fix, unclamped for live types).
+  const raw = isGenerated
+    ? Math.max(0, effTarget - filled) + extra - suppressed
+    : effTarget + extra - filled - suppressed;
+  return { total: Math.max(0, raw), filled, raw, extra, suppressed, effTarget, isGenerated };
+}
+
+/**
+ * The grid-visible opens for one (date, type) at a given filled
+ * count — the same formula openTotals uses, so a caller holding
+ * an openTotals result can re-count it with a different filled
+ * (e.g. the count BEFORE a delete removed `count` holders).
+ */
+function gridOpensAt(t: { extra: number; suppressed: number; effTarget: number; isGenerated: boolean }, filled: number): number {
+  const raw = t.isGenerated
+    ? Math.max(0, t.effTarget - filled) + t.extra - t.suppressed
+    : t.effTarget + t.extra - filled - t.suppressed;
+  return Math.max(0, raw);
 }
 
 /**
@@ -1446,26 +1505,38 @@ async function adjustExtraOpenSlots(companyId: string, date: string, shiftTypeId
  * open empty slot"). Generalises the old group-only grant
  * (ensureOpenSlotForGroupDelete, 2026-11-13 — Bul/Swing): deleting
  * a person's shift must leave it as an empty open slot so someone
- * else can pick it up, not delete the whole shift.
+ * else can pick it up, not delete the whole shift. ONE shared path
+ * — the manual delete button, the bulk delete, the rotation-
+ * occurrence delete and the AI unassign all call this function.
  *
- * Called POST-delete, pre-grant. s = target + extra − filled (the
- * unclamped `raw` from openTotals). Grant g = max(0, count − s):
- * the visible opens after the grant are max(count, s) — exactly
- * `count` more than the opens the delete alone would leave
- * (s clamped at 0). Standard cases match the old group grant
- * exactly (s === 0 → grant count; s ≥ count → grant 0); absorption
- * cases (no-target multi-filled days, over-target days) grant more
- * so the deleted shift actually SHOWS. Recomputing after the
- * delete makes it idempotent:
- * a second delete on the same date/type sees the first grant and
- * adds nothing more than its own count. Returns the number granted.
+ * Called POST-delete, pre-grant. The grant is the DELTA: count the
+ * grid-visible opens BEFORE the delete (filled was `count` higher)
+ * and AFTER the delete but before this grant, both from the shared
+ * openTotals (grid-visible, N2-aware — an undrafted generated date
+ * counts the target as 0, so only stored extras show there). The
+ * grant is max(0, count − (after − before)): one deleted shift
+ * leaves exactly one MORE visible open than the delete alone
+ * left. The old floor formula (grant = max(0, count − raw)) only
+ * topped the total UP to `count` — it granted 0 whenever opens
+ * already existed, so deleting a shift on a date that already had
+ * an open left no new slot (and on undrafted dates the raw target
+ * phantom-covered the grant entirely, so nothing showed at all —
+ * Deepika, 2026-11-22: Night Hospitalist Dec 2/4, Night NP Dec
+ * 2/6). The delta also stops the old over-grant: absorption cases
+ * (no-target multi-filled days, over-target days) used to grant
+ * more than the shifts deleted; now one deletion is one open.
+ * Recomputing after the delete makes it idempotent: a second
+ * delete on the same date/type sees the first grant and adds
+ * nothing more than its own count. Returns the number granted.
  */
 export async function ensureOpenSlotForDelete(
   companyId: string, date: string, shiftTypeId: string, createdBy: string | null, count = 1
 ): Promise<number> {
   try {
     const totals = await openTotals(companyId, date, shiftTypeId);
-    const grant = Math.max(0, count - totals.raw);
+    const before = gridOpensAt(totals, totals.filled + count);
+    const after = totals.total;
+    const grant = Math.max(0, count - (after - before));
     if (grant <= 0) return 0;
     await adjustExtraOpenSlots(companyId, date, shiftTypeId, grant, createdBy);
     return grant;
@@ -2114,7 +2185,15 @@ export async function executePlan(
             }
           }
         }
-        const updated = await query(q, params);
+        // Open-only (Deepika, 2026-11-22 — "unpublish OPEN ...
+        // shifts"): when the request names only the open slots,
+        // the assigned shifts stay published — the shifts UPDATE
+        // is skipped entirely and only the opens move to draft.
+        // Without this, "unpublish open Day Hospitalist / Night
+        // NP / Speciality slots" unpublished the assigned shifts
+        // too. The gate passes the flag through untouched.
+        const openOnly = change.openOnly === true;
+        const updated = openOnly ? { rowCount: 0 } : await query(q, params);
         const count = updated.rowCount || 0;
         if (publish && flipPairs.length) {
           const generated = await getGeneratedTypeIds(query as any, companyId);
@@ -2159,7 +2238,10 @@ export async function executePlan(
             // was moved, so the plan reads partial and no History
             // line claims "Moved to draft 0 shift(s)". The shifts
             // UPDATE above touched 0 rows, so nothing needs undoing.
-            throw new Error(`Nothing to move to draft — no published ${change.shiftType || 'shifts'} or open slots from ${change.fromDate} to ${change.toDate}.`);
+            // Open-only asks about open slots alone, so say so.
+            throw new Error(openOnly
+              ? `Nothing to move to draft — no open ${change.shiftType || 'slots'} from ${change.fromDate} to ${change.toDate}.`
+              : `Nothing to move to draft — no published ${change.shiftType || 'shifts'} or open slots from ${change.fromDate} to ${change.toDate}.`);
           }
           results.push({
             action: change.action, success: true,
@@ -2755,7 +2837,11 @@ export async function executePlan(
             bundleTitle: '{count} of your shifts changed', excludeUserId: createdBy,
           });
         }
-      } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate) {
+      } else if ((change.action === 'bulk_publish' || change.action === 'bulk_unpublish') && change.fromDate && change.toDate && !(change.action === 'bulk_unpublish' && change.openOnly)) {
+        // Open-only unpublish moves NO assigned shifts (Deepika,
+        // 2026-11-22), so there is nobody whose shift was moved
+        // to draft — the notify below is skipped entirely rather
+        // than telling draft-shift holders their shifts moved.
         const publish = change.action === 'bulk_publish';
         let q = `SELECT DISTINCT user_id FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3 AND published = $4`;
         const params: any[] = [companyId, change.fromDate, change.toDate, publish];
