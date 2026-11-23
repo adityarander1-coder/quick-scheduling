@@ -6238,40 +6238,47 @@
           var s = shiftById(sid);
           if (s && !shiftEditable(s)) { pageError('You do not have permission to delete this shift.'); return; }
           var isRot = sid && sid.indexOf('rot-') === 0;
-          showDialog('Delete shift', '<p>Delete this shift?</p>', [
+          // Two delete options (Deepika, 2026-11-22): "Delete shift"
+          // removes the person and leaves the open slot;
+          // "Delete shift and close slot" takes BOTH away — the
+          // vacated slot is closed, chosen explicitly, so it is
+          // clear what is going away.
+          showDialog('Delete shift', '<p>Delete this shift?</p><p class="muted">Delete shift leaves the open slot for someone else to pick up. Delete shift and close slot takes the open slot away too.</p>', [
             { label: 'Cancel' },
-            { label: 'Delete', danger: true, onClick: function () {
-              // Optimistic: remove from screen instantly.
-              sched.shifts = sched.shifts.filter(function (x) { return x.id !== sid; });
-              renderView();
-              if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
-              pageSuccess('Shift deleted.');
-              var p;
-              if (isRot && s && s.rotationId) {
-                p = api('/api/schedule/rotation-shifts/delete', {
-                  method: 'POST',
-                  body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId })
-                });
-              } else {
-                p = api('/api/schedule/shifts/' + sid, { method: 'DELETE' });
-              }
-              p.then(function (r) {
-                if (r.ok) {
-                  // Delete undo (Deepika, 2026-11-17): push the payload
-                  // the server returned so Ctrl+Z brings this shift back.
-                  if (r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
-                    var redoCall = (isRot && s && s.rotationId)
-                      ? { ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId } }
-                      : { ep: '/api/schedule/shifts/' + sid, method: 'DELETE', body: null };
-                    window.qsPushDeleteUndo(r.data.undo, [redoCall]);
-                  }
-                  refreshShifts();
-                }
-                else { pageError('Could not delete. Refreshing.'); refreshShifts(); }
-              }).catch(function () { pageError('Could not delete. Refreshing.'); refreshShifts(); });
-            } }
+            { label: 'Delete shift', danger: true, onClick: function () { qsDoDeleteShift(sid, s, isRot, false); } },
+            { label: 'Delete shift and close slot', danger: true, onClick: function () { qsDoDeleteShift(sid, s, isRot, true); } }
           ]);
         };
+        function qsDoDeleteShift(sid, s, isRot, closeSlot) {
+          // Optimistic: remove from screen instantly.
+          sched.shifts = sched.shifts.filter(function (x) { return x.id !== sid; });
+          renderView();
+          if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
+          pageSuccess(closeSlot ? 'Shift deleted and open slot closed.' : 'Shift deleted.');
+          var p;
+          if (isRot && s && s.rotationId) {
+            p = api('/api/schedule/rotation-shifts/delete', {
+              method: 'POST',
+              body: JSON.stringify({ rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, closeSlot: closeSlot })
+            });
+          } else {
+            p = api('/api/schedule/shifts/' + sid, { method: 'DELETE', body: JSON.stringify({ closeSlot: closeSlot }) });
+          }
+          p.then(function (r) {
+            if (r.ok) {
+              // Delete undo (Deepika, 2026-11-17): push the payload
+              // the server returned so Ctrl+Z brings this shift back.
+              if (r.data && r.data.undo && typeof window.qsPushDeleteUndo === 'function') {
+                var redoCall = (isRot && s && s.rotationId)
+                  ? { ep: '/api/schedule/rotation-shifts/delete', method: 'POST', body: { rotationId: s.rotationId, userId: s.userId, date: s.date, shiftTypeId: s.shiftTypeId, closeSlot: closeSlot } }
+                  : { ep: '/api/schedule/shifts/' + sid, method: 'DELETE', body: { closeSlot: closeSlot } };
+                window.qsPushDeleteUndo(r.data.undo, [redoCall]);
+              }
+              refreshShifts();
+            }
+            else { pageError('Could not delete. Refreshing.'); refreshShifts(); }
+          }).catch(function () { pageError('Could not delete. Refreshing.'); refreshShifts(); });
+        }
         window.qsToggleShiftPublish = function(sid) {
           var s = shiftById(sid);
           if (!s || !shiftEditable(s)) return;
@@ -20784,6 +20791,8 @@ window.qsNpOfferSend = function (btn) {
         <select id="bulk-action">
           <option value="publish">Publish shifts</option>
           <option value="unpublish">Move to draft</option>
+          <option value="publish-open-slots">Publish open slots</option>
+          <option value="unpublish-open-slots">Move open slots to draft</option>
           <option value="delete-shifts">Delete shifts (manual + rotation)</option>
           <option value="open-slots">Open extra slots</option>
           <option value="close-shifts">Close shifts</option>
@@ -20795,6 +20804,8 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" data-bulk-action="close-shifts">Close shifts<span class="sub">Remove open slots by type &amp; date</span></button>
           <button type="button" data-bulk-action="publish" class="active">Publish shifts<span class="sub">Preview &amp; publish drafts</span></button>
           <button type="button" data-bulk-action="unpublish">Move to draft<span class="sub">Unpublish back to draft</span></button>
+          <button type="button" data-bulk-action="publish-open-slots">Publish open slots<span class="sub">Publish draft open slots only</span></button>
+          <button type="button" data-bulk-action="unpublish-open-slots">Move open slots to draft<span class="sub">Unpublish open slots only</span></button>
           <button type="button" data-bulk-action="delete-shifts">Delete shifts<span class="sub">Manual + rotation shifts</span></button>
           <button type="button" data-bulk-action="open-slots">Open extra slots<span class="sub">Add open slots per date</span></button>
           <button type="button" data-bulk-action="draft-schedule">Draft schedule from rotation<span class="sub">Generate from rotations</span></button>
@@ -20856,6 +20867,28 @@ window.qsNpOfferSend = function (btn) {
               <div class="ba-run" id="ba-slot-unpublish-run"></div>
             </div>
             <div id="ba-slot-unpublish-members"></div>
+          </div>
+          <!-- PUBLISH OPEN SLOTS -->
+          <div class="ba-action-panel" id="ba-panel-publish-open-slots">
+            <h3>Publish open slots</h3>
+            <p class="lede">Publish draft open slots only — assigned shifts are never touched.</p>
+            <div class="ba-top-row">
+              <div id="ba-slot-publish-open-slots-filter"></div>
+              <div class="ba-dates" id="ba-slot-publish-open-slots-dates"></div>
+              <div class="ba-run" id="ba-slot-publish-open-slots-run"></div>
+            </div>
+            <p style="font-size:12px;color:#7a9499;margin-top:8px;line-height:1.45">Covers every type, including rotation-less types like Day NP and live types like Nephrology — the ones bulk publish of shifts cannot see.</p>
+          </div>
+          <!-- MOVE OPEN SLOTS TO DRAFT -->
+          <div class="ba-action-panel" id="ba-panel-unpublish-open-slots">
+            <h3>Move open slots to draft</h3>
+            <p class="lede">Move published open slots back to draft — assigned shifts are never touched.</p>
+            <div class="ba-top-row">
+              <div id="ba-slot-unpublish-open-slots-filter"></div>
+              <div class="ba-dates" id="ba-slot-unpublish-open-slots-dates"></div>
+              <div class="ba-run" id="ba-slot-unpublish-open-slots-run"></div>
+            </div>
+            <p style="font-size:12px;color:#7a9499;margin-top:8px;line-height:1.45">Covers every type, including rotation-backed types like Day Hospitalist — bulk move to draft of shifts never touches open slots.</p>
           </div>
           <!-- DELETE SHIFTS -->
           <div class="ba-action-panel" id="ba-panel-delete-shifts">
@@ -21101,13 +21134,14 @@ window.qsNpOfferSend = function (btn) {
         function updateBulkSlotVisibility() {
           var a = $('bulk-action').value;
           var isSlotAction = (a === 'open-slots');
+          var isOpenSlotBulk = (a === 'publish-open-slots' || a === 'unpublish-open-slots');
           var isClose = (a === 'close-shifts');
           var isPublish = a === 'publish';
           var isDraft = a === 'draft-schedule';
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
-          if (mw) mw.style.display = (isSlotAction || isClose || isDraft) ? 'none' : '';
+          if (mw) mw.style.display = (isSlotAction || isOpenSlotBulk || isClose || isDraft) ? 'none' : '';
           var fw = $('bulk-shifttype-filter-wrap');
           if (fw) fw.style.display = (isSlotAction || isClose || isPublish || isDraft) ? 'none' : '';
           // Close shifts uses its own pickers (departments + types +
@@ -21170,13 +21204,13 @@ window.qsNpOfferSend = function (btn) {
             var d = slot(destId);
             if (el && d && el.parentNode !== d) d.appendChild(el);
           }
-          var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
+          var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'publish-open-slots': 'ba-slot-publish-open-slots-dates', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
           if (datesSlot) { move($('bulk-from-wrap'), datesSlot); move($('bulk-to-wrap'), datesSlot); }
-          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
+          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'publish-open-slots': 'ba-slot-publish-open-slots-run', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
           if (runSlot) move($('bulk-run'), runSlot);
           var memSlot = { publish: 'ba-slot-publish-members', unpublish: 'ba-slot-unpublish-members', 'delete-shifts': 'ba-slot-delete-members' }[a];
           if (memSlot) move($('bulk-members-wrap'), memSlot);
-          var filtSlot = { unpublish: 'ba-slot-unpublish-filter', 'delete-shifts': 'ba-slot-delete-filter' }[a];
+          var filtSlot = { unpublish: 'ba-slot-unpublish-filter', 'publish-open-slots': 'ba-slot-publish-open-slots-filter', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-filter', 'delete-shifts': 'ba-slot-delete-filter' }[a];
           if (filtSlot) move($('bulk-shifttype-filter-wrap'), filtSlot);
           document.querySelectorAll('.ba-action-panel').forEach(function (p) {
             p.classList.toggle('active', p.id === 'ba-panel-' + a);
@@ -21918,6 +21952,38 @@ window.qsNpOfferSend = function (btn) {
             showResult('Working…', false);
             api('/api/schedule/extra-slots', { method: 'POST', body: JSON.stringify({ dates: dates, shiftTypeId: stId, count: count }) }).then(function (r) {
               showResult(r.ok ? 'Done — extra slots opened on ' + dates.length + ' date(s).' : ((r.data && r.data.error) || 'Could not complete.'), !r.ok);
+            }).catch(function () { showResult('Network error.', true); });
+            return;
+          }
+          // Open-slot bulk actions (Deepika, 2026-11-22 — separate
+          // functions for open slots, so one can never silently
+          // skip the other): publish open slots publishes only the
+          // draft open slots; move open slots to draft unpublishes
+          // only the published open slots. Assigned shifts are
+          // never touched by either.
+          if (action === 'publish-open-slots' || action === 'unpublish-open-slots') {
+            var osFilter = $('bulk-shifttype-filter') ? $('bulk-shifttype-filter').value : '';
+            var osFilterName = osFilter && $('bulk-shifttype-filter').selectedOptions[0] ? $('bulk-shifttype-filter').selectedOptions[0].textContent : '';
+            var osLabel = action === 'publish-open-slots' ? 'publish open slots' : 'move open slots to draft';
+            var osScope = osFilter ? ' (' + osFilterName + ' only)' : ' (all shift types)';
+            if (!confirm('Are you sure you want to ' + osLabel + osScope + ' on ' + dates.length + ' date(s)?')) return;
+            showResult('Working…', false);
+            var osEndpoint = action === 'publish-open-slots' ? '/api/schedule/open-slots/bulk-publish' : '/api/schedule/open-slots/bulk-unpublish';
+            var osBody = { dates: dates };
+            if (osFilter) osBody.shiftTypeIds = [osFilter];
+            api(osEndpoint, { method: 'POST', body: JSON.stringify(osBody) }).then(function (r) {
+              if (r.ok) {
+                var n = action === 'publish-open-slots' ? (r.data.opensPublished || 0) : (r.data.opensMoved || 0);
+                if (n === 0) {
+                  showResult(action === 'publish-open-slots'
+                    ? 'Nothing to publish — no draft open slots in that range.'
+                    : 'Nothing moved — no published open slots in that range.', true);
+                  return;
+                }
+                showResult('Done — ' + n + ' open slot(s) ' + (action === 'publish-open-slots' ? 'published.' : 'moved to draft.'), false);
+              } else {
+                showResult((r.data && r.data.error) || 'Could not complete.', true);
+              }
             }).catch(function () { showResult('Network error.', true); });
             return;
           }

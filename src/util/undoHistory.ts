@@ -130,8 +130,13 @@ function cleanDeleteUndo(u: any): any | null {
   const sweepExclusions = Array.isArray(u.sweepExclusions) ? u.sweepExclusions : null;
   const grants = Array.isArray(u.grants) ? u.grants : null;
   const pauses = Array.isArray(u.pauses) ? u.pauses : null;
+  // Closed slots (Deepika, 2026-11-22 — "Delete shift and close
+  // slot"): optional so payloads written before the option existed
+  // still validate; a closed entry records the split so undo can
+  // reverse each part exactly.
+  const closed = Array.isArray(u.closed) ? u.closed : [];
   if (!units || !sweepExclusions || !grants || !pauses) return null;
-  const total = units.length + sweepExclusions.length + grants.length + pauses.length;
+  const total = units.length + sweepExclusions.length + grants.length + closed.length + pauses.length;
   if (!total || total > 1000) return null;
   const badUnit = (x: any): boolean => {
     if (!isPlainObject(x)) return true;
@@ -145,9 +150,11 @@ function cleanDeleteUndo(u: any): any | null {
   if (sweepExclusions.some((e: any) => !isPlainObject(e) || !isNonEmptyString(e.rotationId)
     || !isNonEmptyString(e.userId) || !isValidDate(e.date))) return null;
   if (grants.some((g: any) => !isPlainObject(g) || !isValidDate(g.date) || !isNonEmptyString(g.shiftTypeId))) return null;
+  if (closed.some((c: any) => !isPlainObject(c) || !isValidDate(c.date) || !isNonEmptyString(c.shiftTypeId)
+    || typeof c.fromExtra !== 'boolean' || typeof c.fromDraft !== 'boolean' || typeof c.suppressed !== 'boolean')) return null;
   if (pauses.some((p: any) => !isPlainObject(p) || !isNonEmptyString(p.rotationId)
     || !isValidDate(p.startDate) || !isValidDate(p.endDate))) return null;
-  return { deletedAt: u.deletedAt, units, sweepExclusions, grants, pauses };
+  return { deletedAt: u.deletedAt, units, sweepExclusions, grants, closed, pauses };
 }
 
 function cleanDeleteRedo(r: any): any | null {

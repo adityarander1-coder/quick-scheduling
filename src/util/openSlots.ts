@@ -6,16 +6,19 @@
  * The open count for a date+type is:
  *   max(0, target + extra - filled - suppressed)
  * where `extra` is extra_open_slots (never negative from a close
- * anymore), `filled` is stored shifts, and `suppressed` is
- * suppressed_open_slots — computed opens a manager closed, which
- * stay closed until the next draft/publish of that date+type pulls
- * them back from the rotation (target - filled). There is NO closed
- * flag any more (Deepika, 2026-11-21 — "why is it hanging on to
- * not letting us add"): a whole-type close deletes the slots and
- * suppresses exactly the visible shortfall with stored rows, so a
- * later add lands on the date and shows. Live-mode types never go
- * through the draft/publish clearing here: the draft panel refuses
- * live rotations, and the publish paths filter to generated types
+ * anymore), `filled` is the GRID's filled count — stored shifts
+ * plus the rotation occurrences the grid draws for live types
+ * (a generated type never draws, so its filled is stored-only) —
+ * and `suppressed` is suppressed_open_slots — computed opens a
+ * manager closed, which stay closed until the next draft/publish
+ * of that date+type pulls them back from the rotation
+ * (target - filled). There is NO closed flag any more (Deepika,
+ * 2026-11-21 — "why is it hanging on to not letting us add"): a
+ * whole-type close deletes the slots and suppresses exactly the
+ * visible shortfall with stored rows, so a later add lands on the
+ * date and shows. Live-mode types never go through the
+ * draft/publish clearing here: the draft panel refuses live
+ * rotations, and the publish paths filter to generated types
  * before calling publishOpenSlotsForPairs.
  *
  * The stored-model count (Deepika, 2026-11-20/21 — "the
@@ -46,6 +49,7 @@
  */
 
 import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType } from './scheduleMode.js';
+import { getShiftsForRange } from './shiftRange.js';
 
 export type OpenSlotQuery = (
   text: string,
@@ -455,14 +459,18 @@ export async function clearDraftOpenSlots(
  * available"): for every GENERATED (date, type) pair the publish
  * touched, the draft-open rows go (the opens become published) and
  * the closures go (a suppressed or closed day is pulled back). Live
- * types are filtered out by the caller — their opens were never
- * draft and their closures are not this rule's business.
+ * types are filtered out by default — their opens were never
+ * draft and their closures are not this rule's business. The bulk
+ * publish-open-slots function (Deepika, 2026-11-22) passes
+ * includeLive: a live type's opens CAN be draft — a per-slot
+ * unpublish writes the draft rows — and once draft they must be
+ * republishable in bulk, or they strand (Nephrology, Nov 22).
  */
 export async function publishOpenSlotsForPairs(
   q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
-  generatedTypeIds: Set<string>
+  generatedTypeIds: Set<string>, includeLive = false
 ): Promise<void> {
-  const list = dedupePairs(pairs).filter((p) => generatedTypeIds.has(p.shiftTypeId));
+  const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
   if (!list.length) return;
   await clearDraftOpenSlots(q, companyId, list);
   await clearOpenSlotClosures(q, companyId, list);
@@ -476,9 +484,14 @@ export async function publishOpenSlotsForPairs(
  * open — the stored draft-open count is raised to the visible
  * total, so the opens render as draft and a later publish (which
  * clears the draft rows, above) brings them back as published.
- * Live types are filtered out by the caller — the same rule as the
+ * Live types are filtered out by default — the same rule as the
  * publish mirror: their opens were never draft and their closures
- * are not this rule's business.
+ * are not this rule's business. The bulk move-open-slots-to-draft
+ * function (Deepika, 2026-11-22) passes includeLive: move-to-draft
+ * covers NO open slots at all today, rotation or not, and a live
+ * type's opens must move with the rest — the publish mirror above
+ * takes includeLive too, so a live type moved to draft can always
+ * be published back (never stranded).
  *
  * A stored extra has no published flag of its own (extra_open_
  * slots is just a count), so a published extra IS an extra no
@@ -498,9 +511,9 @@ export async function publishOpenSlotsForPairs(
  */
 export async function unpublishOpenSlotsForPairs(
   q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
-  generatedTypeIds: Set<string>, createdBy: string | null
+  generatedTypeIds: Set<string>, createdBy: string | null, includeLive = false
 ): Promise<{ opensMoved: number; pairsTouched: number }> {
-  const list = dedupePairs(pairs).filter((p) => generatedTypeIds.has(p.shiftTypeId));
+  const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
   if (!list.length) return { opensMoved: 0, pairsTouched: 0 };
   // One batched read per table for the whole range, then the grid's
   // own per-pair math in memory.
@@ -535,14 +548,24 @@ export async function unpublishOpenSlotsForPairs(
   const extras = await sumBy('extra_open_slots', 'uuid');
   const suppressed = await sumBy('suppressed_open_slots', 'text');
   const drafts = await sumBy('draft_open_slots', 'text');
-  const { rows: frows } = await q(
-    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*)::int AS n
-     FROM shifts WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::uuid[])
-     GROUP BY date, shift_type_id`,
-    [companyId, from, to, typeIds]
-  );
+  // Filled is the GRID's filled count — stored shifts PLUS the
+  // rotation occurrences the grid draws. The old read counted the
+  // shifts table only, which is identical for generated types
+  // (they never draw) but WRONG for live types: a drawn occurrence
+  // fills the slot in the grid, so a live type with a rotation
+  // holding the target shows 0 opens while the stored-only math
+  // sees the whole target as open — and this helper would draft
+  // that phantom open (Live Ward, Nov 22: 1 drawn filled, target
+  // 1, no extras — stored math said 1 visible open, the grid said
+  // 0). getShiftsForRange IS the grid's count (stored rows for
+  // generated types, stored + drawn for live ones, a stored row
+  // suppressing its own occurrence, so nobody is double-counted).
   const filled = new Map<string, number>();
-  for (const r of frows) filled.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
+  for (const s of await getShiftsForRange(q, companyId, from, to)) {
+    if (!s.shiftTypeId) continue;
+    const k = `${s.date}|${s.shiftTypeId}`;
+    filled.set(k, (filled.get(k) || 0) + 1);
+  }
   let opensMoved = 0;
   let pairsTouched = 0;
   for (const p of list) {

@@ -34,7 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -1795,17 +1795,23 @@ type DeleteUndoRow = {
 };
 type DeleteUndoExclusion = { rotationId: string; userId: string; date: string; shiftTypeId: string | null };
 type DeleteUndoGrant = { date: string; shiftTypeId: string };
+// A slot the "Delete shift and close slot" option closed (Deepika,
+// 2026-11-22): the split deleteOneOpenSlot returns, so undo can
+// reverse each part exactly — an extra comes back, a draft open
+// comes back, a suppression is lifted.
+type DeleteUndoClosed = { date: string; shiftTypeId: string; fromExtra: boolean; fromDraft: boolean; suppressed: boolean };
 type DeleteUndoPause = { id: string; rotationId: string; startDate: string; endDate: string };
 type DeleteUndoPayload = {
   deletedAt: string;
   units: Array<{ row: DeleteUndoRow | null; primaryExclusion: DeleteUndoExclusion | null }>;
   sweepExclusions: DeleteUndoExclusion[];
   grants: DeleteUndoGrant[];
+  closed: DeleteUndoClosed[];
   pauses: DeleteUndoPause[];
 };
 
 function emptyDeleteUndo(): DeleteUndoPayload {
-  return { deletedAt: new Date().toISOString(), units: [], sweepExclusions: [], grants: [], pauses: [] };
+  return { deletedAt: new Date().toISOString(), units: [], sweepExclusions: [], grants: [], closed: [], pauses: [] };
 }
 
 // POST /api/schedule/shifts/bulk-delete — delete shifts in a date list (owner/scheduler; department-scoped).
@@ -2141,6 +2147,11 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
       return;
     }
+    // Two delete options (Deepika, 2026-11-22): "Delete shift"
+    // removes the person and leaves the open slot; "Delete shift
+    // and close slot" takes BOTH away — the vacated slot is closed,
+    // chosen explicitly, so it is clear what is going away.
+    const closeSlot = req.body?.closeSlot === true;
     // A malformed id is a missing shift, not a server error (the
     // uuid comparison below throws on non-uuid text otherwise).
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) {
@@ -2185,6 +2196,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
     // exclusions, and any open-slot grant — so Ctrl+Z restores
     // exactly what was there.
     const undo = emptyDeleteUndo();
+    let closedSlot = false;
     if (srows.length) {
       const s = srows[0];
       undo.units.push({
@@ -2207,8 +2219,18 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       // so a second delete on the same date/type adds nothing more
       // than its own count; the undo payload carries one entry per
       // granted slot so Ctrl+Z takes the slot back with the person.
-      const granted = await ensureOpenSlotForDelete(companyId, s.date, s.shiftTypeId, req.session.userId!, 1);
-      for (let i = 0; i < granted; i++) undo.grants.push({ date: s.date, shiftTypeId: s.shiftTypeId });
+      // "Delete shift and close slot" (Deepika, 2026-11-22) is the
+      // explicit opposite: NO grant, and the vacated slot is closed
+      // with the shared per-slot close — the undo payload carries
+      // the split so Ctrl+Z brings the slot back with the person.
+      if (closeSlot) {
+        const res1 = await deleteOneOpenSlot(query, companyId, s.date, s.shiftTypeId, req.session.userId!);
+        closedSlot = res1.fromExtra || res1.fromDraft || res1.suppressed;
+        if (closedSlot) undo.closed.push({ date: s.date, shiftTypeId: s.shiftTypeId, fromExtra: res1.fromExtra, fromDraft: res1.fromDraft, suppressed: res1.suppressed });
+      } else {
+        const granted = await ensureOpenSlotForDelete(companyId, s.date, s.shiftTypeId, req.session.userId!, 1);
+        for (let i = 0; i < granted; i++) undo.grants.push({ date: s.date, shiftTypeId: s.shiftTypeId });
+      }
     }
     // History snapshot (Deepika, 2026-11-17) — after a delete.
     if (srows.length) {
@@ -2217,7 +2239,7 @@ router.delete('/shifts/:id', requireRole('owner', 'scheduler'), async (req: Requ
       await recordHistorySnapshot({
         companyId, actorId: req.session.userId!,
         trigger: s.published !== false ? 'published-change' : 'draft-change',
-        summary: `Deleted ${delNames.personName || 'a team member'} — ${delNames.shiftTypeName || 'shift'} on ${s.date}`,
+        summary: `Deleted ${delNames.personName || 'a team member'} — ${delNames.shiftTypeName || 'shift'} on ${s.date}${closedSlot ? ' and closed the open slot' : ''}`,
         from: s.date, to: s.date, shiftTypeIds: [s.shiftTypeId], userIds: [s.userId],
       });
     }
@@ -3468,8 +3490,9 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
     const units = Array.isArray(undo.units) ? undo.units : [];
     const sweepExclusions = Array.isArray(undo.sweepExclusions) ? undo.sweepExclusions : [];
     const grants = Array.isArray(undo.grants) ? undo.grants : [];
+    const closed = Array.isArray(undo.closed) ? undo.closed : [];
     const pauses = Array.isArray(undo.pauses) ? undo.pauses : [];
-    const total = units.length + sweepExclusions.length + grants.length + pauses.length;
+    const total = units.length + sweepExclusions.length + grants.length + closed.length + pauses.length;
     const badUnit = (u: any): boolean => {
       if (!u || typeof u !== 'object') return true;
       if (u.row) return !u.row.id || !u.row.userId || !u.row.shiftTypeId || !isValidDate(u.row.date);
@@ -3480,6 +3503,8 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
       || units.some(badUnit)
       || sweepExclusions.some((e: any) => !e || typeof e !== 'object' || !e.rotationId || !e.userId || !isValidDate(e.date))
       || grants.some((g: any) => !g || typeof g !== 'object' || !isValidDate(g.date) || !g.shiftTypeId)
+      || closed.some((c: any) => !c || typeof c !== 'object' || !isValidDate(c.date) || !c.shiftTypeId
+        || typeof c.fromExtra !== 'boolean' || typeof c.fromDraft !== 'boolean' || typeof c.suppressed !== 'boolean')
       || pauses.some((p: any) => !p || typeof p !== 'object' || !p.id || !p.rotationId || !isValidDate(p.startDate) || !isValidDate(p.endDate))) {
       res.status(400).json({ error: 'Nothing to undo.' });
       return;
@@ -3493,6 +3518,7 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
     }
     for (const e of sweepExclusions) scopePairs.push({ userId: e.userId, shiftTypeId: e.shiftTypeId });
     for (const g of grants) scopePairs.push({ userId: null, shiftTypeId: g.shiftTypeId });
+    for (const c of closed) scopePairs.push({ userId: null, shiftTypeId: c.shiftTypeId });
     if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
     // 60-second window (Deepika, 2026-11-20): `at` is the entry's
     // time; a delete payload's deletedAt (stamped by the server when
@@ -3648,6 +3674,51 @@ router.post('/shifts/delete-undo', requireRole('owner', 'scheduler'), async (req
           'DELETE FROM rotation_pauses WHERE id = $1 AND company_id = $2 AND rotation_id = $3',
           [p.id, companyId, p.rotationId]
         );
+      }
+      // Closed slots (Deepika, 2026-11-22 — "Delete shift and close
+      // slot"): reversed part by part — an extra comes back, a draft
+      // open comes back, a suppression is lifted. Each part is
+      // guarded the way the grant reversal is: a count already
+      // netted out by a later close is never pushed past the truth.
+      for (const c of closed) {
+        if (c.fromExtra) {
+          await tx.query(
+            `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+             VALUES ($1, $2, $3, 1, $4)
+             ON CONFLICT (company_id, date, shift_type_id)
+             DO UPDATE SET count = extra_open_slots.count + 1`,
+            [companyId, c.date, c.shiftTypeId, req.session.userId!]
+          );
+        }
+        if (c.fromDraft) {
+          await tx.query(
+            `INSERT INTO draft_open_slots (company_id, date, shift_type_id, count, created_by)
+             VALUES ($1, $2, $3, 1, $4)
+             ON CONFLICT (company_id, date, shift_type_id)
+             DO UPDATE SET count = draft_open_slots.count + 1`,
+            [companyId, c.date, c.shiftTypeId, req.session.userId!]
+          );
+        }
+        if (c.suppressed) {
+          const { rows: cur } = await tx.query(
+            'SELECT count FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+            [companyId, c.date, c.shiftTypeId]
+          );
+          if (cur.length && Number(cur[0].count) > 0) {
+            const next = Number(cur[0].count) - 1;
+            if (next === 0) {
+              await tx.query(
+                'DELETE FROM suppressed_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+                [companyId, c.date, c.shiftTypeId]
+              );
+            } else {
+              await tx.query(
+                'UPDATE suppressed_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
+                [next, companyId, c.date, c.shiftTypeId]
+              );
+            }
+          }
+        }
       }
     });
     // History snapshot (Deepika, 2026-11-17) — undoing a delete puts
@@ -4257,6 +4328,10 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       res.status(400).json({ error: 'rotationId, userId, and date are required.' });
       return;
     }
+    // Two delete options (Deepika, 2026-11-22) — same as the stored
+    // shift delete: "Delete shift" leaves the open slot;
+    // "Delete shift and close slot" closes the vacated slot.
+    const closeSlot = req.body?.closeSlot === true;
     if (!(await requireActiveDepartment(
       req, res,
       await assignmentRelevantDepartments([{ userId, shiftTypeId }], companyId)
@@ -4294,6 +4369,10 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
     // 2026-11-13 Bul/Swing, is now the general rule). The type
     // falls back to the rotation's group type when the caller did
     // not name one; with no type at all no slot can be granted.
+    // "Delete shift and close slot" (Deepika, 2026-11-22): NO
+    // grant, and the vacated slot is closed with the shared
+    // per-slot close — the undo payload carries the split.
+    let closedSlot = false;
     {
       const { rows: grRows } = await query(
         `SELECT group_shift_type_id AS "groupShiftTypeId" FROM rotations
@@ -4302,8 +4381,14 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       );
       const typeId = shiftTypeId || (grRows.length ? grRows[0].groupShiftTypeId : null);
       if (typeId) {
-        const granted = await ensureOpenSlotForDelete(companyId, date, typeId, req.session.userId!, 1);
-        for (let i = 0; i < granted; i++) undo.grants.push({ date, shiftTypeId: typeId });
+        if (closeSlot) {
+          const res1 = await deleteOneOpenSlot(query, companyId, date, typeId, req.session.userId!);
+          closedSlot = res1.fromExtra || res1.fromDraft || res1.suppressed;
+          if (closedSlot) undo.closed.push({ date, shiftTypeId: typeId, fromExtra: res1.fromExtra, fromDraft: res1.fromDraft, suppressed: res1.suppressed });
+        } else {
+          const granted = await ensureOpenSlotForDelete(companyId, date, typeId, req.session.userId!, 1);
+          for (let i = 0; i < granted; i++) undo.grants.push({ date, shiftTypeId: typeId });
+        }
       }
     }
     // History snapshot (Deepika, 2026-11-17) — a drawn occurrence
@@ -4312,7 +4397,7 @@ router.post('/rotation-shifts/delete', requireRole('owner', 'scheduler'), async 
       const rdNames = shiftTypeId ? await shiftDisplayNames(companyId, userId, shiftTypeId) : { personName: null, shiftTypeName: null };
       await recordHistorySnapshot({
         companyId, actorId: req.session.userId!, trigger: 'draft-change',
-        summary: `Removed ${rdNames.personName || 'a team member'} — ${rdNames.shiftTypeName || 'rotation shift'} on ${date}`,
+        summary: `Removed ${rdNames.personName || 'a team member'} — ${rdNames.shiftTypeName || 'rotation shift'} on ${date}${closedSlot ? ' and closed the open slot' : ''}`,
         from: date, to: date, shiftTypeIds: shiftTypeId ? [shiftTypeId] : [], userIds: [userId],
       });
     }
@@ -4450,6 +4535,147 @@ router.post('/days/unpublish', requireRole('owner', 'scheduler'), async (req: Re
     res.json({ ok: true, unpublished: dates.length });
   } catch (err) {
     console.error('[schedule] unpublish failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ---- The four bulk functions (Deepika, 2026-11-22): assigned shifts
+// and open slots each get their OWN bulk function, so one can never
+// silently skip the other. Functions 1 and 3 (assigned shifts) are
+// the existing /publish and bulk-publish-state / days-unpublish
+// paths, unchanged. Functions 2 and 4 (open slots) are these two
+// endpoints — they enumerate (date, type) pairs from the open-slot
+// tables themselves, never from shifts or rotations, so a type with
+// no stored shifts and no rotation (Day NP, Nephrology) is covered
+// exactly like a rotation-backed one. Both take includeLive, so a
+// live type moved to draft can always be published back (never
+// stranded) — the two directions are symmetric by construction.
+
+// POST /api/schedule/open-slots/bulk-publish — function 2: bulk
+// publish OPEN slots (owner/scheduler; department-scoped).
+// Body: { dates:[...], shiftTypeIds?:[...] }. Publishes every draft
+// open slot on those dates/types (generated AND live). Assigned
+// shifts are untouched — this function only moves opens.
+router.post('/open-slots/bulk-publish', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const typeIds = Array.isArray(req.body?.shiftTypeIds) ? req.body.shiftTypeIds.filter((x: any) => typeof x === 'string' && x) : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'At least one valid date is required.' });
+      return;
+    }
+    // Department scoping: the requested types' departments (a
+    // scheduler is restricted to their own department).
+    if (typeIds.length) {
+      const deptCheck = await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeIds, companyId));
+      if (!deptCheck) return;
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE id = ANY($1::uuid[]) AND company_id = $2', [typeIds, companyId]);
+      if (stRows.length !== typeIds.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return;
+      }
+    }
+    const generated = await getGeneratedTypeIds(query, companyId);
+    // Pairs = every (date, type) with a draft-open count in range.
+    // A type filter narrows it; without one, every type with draft
+    // opens in the range is covered — including types with no stored
+    // shifts and no rotation (their draft opens live only here).
+    const typeFilter = typeIds.length ? ' AND shift_type_id = ANY($3::text[])' : '';
+    const typeParams: any[] = typeIds.length ? [typeIds] : [];
+    const { rows: draftRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+       FROM draft_open_slots WHERE company_id = $1 AND date = ANY($2::date[])${typeFilter}
+       GROUP BY date, shift_type_id`,
+      [companyId, dates, ...typeParams]
+    );
+    const pairs = draftRows.map((r: any) => ({ date: r.date, shiftTypeId: r.shiftTypeId }));
+    let opensPublished = 0;
+    for (const r of draftRows) opensPublished += Number(r.n || 0);
+    if (pairs.length) {
+      await publishOpenSlotsForPairs(query, companyId, pairs, generated, true);
+    }
+    const sorted = [...dates].sort();
+    const typeNames = pairs.length ? [...new Set(pairs.map((p: any) => p.shiftTypeId))] : [];
+    await recordHistorySnapshot({
+      companyId, actorId: req.session.userId!, trigger: 'published-change',
+      summary: opensPublished
+        ? `Published ${opensPublished} open slot${opensPublished === 1 ? '' : 's'} — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}${typeNames.length ? ' (' + typeNames.length + ' type' + (typeNames.length === 1 ? '' : 's') + ')' : ''}`
+        : `Published open slots — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''} (no draft open slots in that range)`,
+      from: sorted[0], to: sorted[sorted.length - 1],
+    });
+    res.json({ ok: true, opensPublished, pairsTouched: pairs.length });
+  } catch (err) {
+    console.error('[schedule] bulk-publish open slots failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/open-slots/bulk-unpublish — function 4: bulk
+// move OPEN slots to draft (owner/scheduler; department-scoped).
+// Body: { dates:[...], shiftTypeIds?:[...] }. Moves every
+// currently-visible published open slot on those dates/types to
+// draft (generated AND live, rotation or not). Assigned shifts are
+// untouched — this function only moves opens. Reports a 0-move
+// plainly instead of "Done".
+router.post('/open-slots/bulk-unpublish', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates = Array.isArray(req.body?.dates) ? req.body.dates.filter(isValidDate) : [];
+    const typeIds = Array.isArray(req.body?.shiftTypeIds) ? req.body.shiftTypeIds.filter((x: any) => typeof x === 'string' && x) : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'At least one valid date is required.' });
+      return;
+    }
+    if (typeIds.length) {
+      const deptCheck = await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeIds, companyId));
+      if (!deptCheck) return;
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE id = ANY($1::uuid[]) AND company_id = $2', [typeIds, companyId]);
+      if (stRows.length !== typeIds.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return;
+      }
+    }
+    const generated = await getGeneratedTypeIds(query, companyId);
+    // Pairs = every (date, type) that can hold a published open in
+    // the range: a stored extra exists, or the type has a staffing
+    // target covering the date (a computed shortfall can show).
+    // The helper re-counts each pair from the grid's own numbers
+    // and moves only what is actually visible — a pair with no
+    // opens is a no-op, never an error.
+    const typeFilter = typeIds.length ? ' AND shift_type_id = ANY($3::uuid[])' : '';
+    const typeParams: any[] = typeIds.length ? [typeIds] : [];
+    const { rows: extraRows } = await query(
+      `SELECT DISTINCT date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[])${typeFilter}`,
+      [companyId, dates, ...typeParams]
+    );
+    const pairSet = new Map<string, { date: string; shiftTypeId: string }>();
+    for (const r of extraRows) pairSet.set(`${r.date}|${r.shiftTypeId}`, { date: r.date, shiftTypeId: r.shiftTypeId });
+    const targetTypeFilter = typeIds.length ? ' AND shift_type_id = ANY($2::uuid[])' : '';
+    const targetParams: any[] = typeIds.length ? [typeIds] : [];
+    const { rows: targetRows } = await query(
+      `SELECT DISTINCT shift_type_id AS "shiftTypeId" FROM staffing_targets WHERE company_id = $1${targetTypeFilter}`,
+      [companyId, ...targetParams]
+    );
+    for (const t of targetRows) {
+      for (const d of dates) pairSet.set(`${d}|${t.shiftTypeId}`, { date: d, shiftTypeId: t.shiftTypeId });
+    }
+    const pairs = [...pairSet.values()];
+    const { opensMoved, pairsTouched } = pairs.length
+      ? await unpublishOpenSlotsForPairs(query, companyId, pairs, generated, req.session.userId!, true)
+      : { opensMoved: 0, pairsTouched: 0 };
+    const sorted = [...dates].sort();
+    await recordHistorySnapshot({
+      companyId, actorId: req.session.userId!, trigger: 'published-change',
+      summary: opensMoved
+        ? `Moved to draft ${opensMoved} open slot${opensMoved === 1 ? '' : 's'} — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''}`
+        : `Moved open slots to draft — ${sorted[0]}${sorted.length > 1 ? ' – ' + sorted[sorted.length - 1] : ''} (no published open slots in that range)`,
+      from: sorted[0], to: sorted[sorted.length - 1],
+    });
+    res.json({ ok: true, opensMoved, pairsTouched });
+  } catch (err) {
+    console.error('[schedule] bulk-unpublish open slots failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
