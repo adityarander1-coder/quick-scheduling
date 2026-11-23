@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
 import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal } from './openSlots.js';
-import { getGeneratedTypeIds } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -2270,8 +2270,20 @@ export async function executePlan(
         }
         // Generated types count from the stored schedule at approval
         // time for keepTotal (the top-up fix); live types keep the
-        // computed count.
-        const generatedTypes = mode === 'total' ? await getGeneratedTypeIds(query as any, companyId) : null;
+        // computed count. Keep modes (total / keep / count) all need
+        // the generated set: on an undrafted generated date the grid
+        // counts the target as 0 (the N2 rule, planGate.ts), so the
+        // want must come from grid opens (extra - suppressed), not
+        // the stored/computed model that still counts the target
+        // shortfall — a keep-total-14 plan stated "will close
+        // 1/date" but approving closed 3/date (Deepika, 2026-11-22).
+        // Close-all is untouched: it closes the visible total.
+        const generatedTypes = mode === 'all' ? null : await getGeneratedTypeIds(query as any, companyId);
+        let undraftedDates: Set<string> | null = null;
+        if (generatedTypes?.has(st.id)) {
+          const notDrafted = await getNotDraftedByType(query as any, companyId, generatedTypes, first, last);
+          undraftedDates = new Set(notDrafted[st.id] || []);
+        }
         let slotsClosed = 0;
         let daysClosed = 0;
         const skipped: string[] = [];
@@ -2315,7 +2327,18 @@ export async function executePlan(
             let filled: number;
             if (generatedTypes!.has(st.id)) {
               const stt = await storedTotals(query as any, companyId, d, st.id);
-              opens = stt.opens; total = stt.total; filled = stt.filled;
+              if (undraftedDates?.has(d)) {
+                // N2: the grid counts the target as 0 here, so only
+                // stored extras show, minus suppression — the same
+                // grid opens the gate states. Filled is the
+                // drawn-aware count (openTotals), as in the gate's
+                // totalOn, so stated total and executed total agree.
+                opens = Math.max(0, stt.extra - stt.suppressed);
+                filled = t.filled;
+                total = filled + opens;
+              } else {
+                opens = stt.opens; total = stt.total; filled = stt.filled;
+              }
             } else {
               opens = t.total; total = t.filled + t.total; filled = t.filled;
             }
@@ -2353,9 +2376,19 @@ export async function executePlan(
               stillAbove.push(`${d} (still ${filled} filled after closing ${totalActual} open slot${totalActual === 1 ? '' : 's'})`);
             }
           } else {
+            // N2 (generated + undrafted): the want comes from grid
+            // opens, not the computed total that still counts the
+            // target shortfall — keep-1 closed all 3 visible opens
+            // instead of 2 (Deepika, 2026-11-22). Drafted dates
+            // and live types keep the computed total, unchanged.
+            let visible = t.total;
+            if (generatedTypes?.has(st.id) && undraftedDates?.has(d)) {
+              const stt = await storedTotals(query as any, companyId, d, st.id);
+              visible = Math.max(0, stt.extra - stt.suppressed);
+            }
             const want = mode === 'count'
-              ? Math.min(change.closeCount as number, t.total)
-              : Math.max(0, t.total - (change.keepCount as number));
+              ? Math.min(change.closeCount as number, visible)
+              : Math.max(0, visible - (change.keepCount as number));
             if (want <= 0) {
               skipped.push(`${d} (no open slots${mode === 'keep' ? ` over ${change.keepCount}` : ''})`);
               continue;
