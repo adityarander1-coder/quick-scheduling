@@ -1220,16 +1220,22 @@ export async function generateRotations(
     // computed after the simulation and under-reported by exactly
     // the placements: 14 instead of 21 for target 3 + 1 holder).
     let targetsStored = 0;
+    let dryAdditions: Map<string, number> | null = null;
     if (publishMode === 'draft') {
       const typeIds = await step1TypeSet(tx, companyId, ctx, rots, rotationIds, onlyShiftTypeIds, onlyUserIds, rotationless, storedRows, from, to);
       if (typeIds.size) {
         const inputs = await loadShortfallInputs(tx, companyId, from, to);
         const state = await loadOpenSlotState(tx, companyId, from, to);
         const additions = computeTargetStoreAdditions(inputs, storedRows, state, from, to, typeIds, today);
+        dryAdditions = additions;
         for (const v of additions.values()) targetsStored += v;
       }
     }
-    const openedShortfall = targetsStored;
+    // Net, like the real run: the simulated placements take stored
+    // draft opens, so the preview's shortfall is what step 1 stored
+    // minus what step 2 would fill.
+    let openedShortfall = targetsStored;
+    const dryPlaced = new Map<string, number>();
     for (const id of ordered) {
       const rot = byId.get(id);
       const comp = computeRotationOccurrences(ctx, rot, from, to, storedRows, compOpts);
@@ -1242,6 +1248,8 @@ export async function generateRotations(
       // Simulate: later rotations see these rows as stored (D4).
       for (const o of comp.occurrences) {
         storedRows.push({ userId: o.userId, date: o.date, shiftTypeId: o.shiftTypeId });
+        const k = `${o.date}|${o.shiftTypeId}`;
+        dryPlaced.set(k, (dryPlaced.get(k) || 0) + 1);
       }
       perRotation.push({
         rotationId: id, rotationName: rot.name, generationId: null,
@@ -1252,6 +1260,13 @@ export async function generateRotations(
         // here.
         openedSlots: 0, skipped: comp.skipped,
       });
+    }
+    if (dryAdditions) {
+      let remaining = 0;
+      for (const [k, add] of dryAdditions) {
+        remaining += Math.max(0, add - (dryPlaced.get(k) || 0));
+      }
+      openedShortfall = remaining;
     }
     return {
       generationIds: [], created: 0, replacedDrafts: 0, keptDrafts: 0, openedSlots: 0,
@@ -1285,12 +1300,15 @@ export async function generateRotations(
   // opens were stored), plus — on a FULL draft (every active
   // rotation, no user/type picks) — every generated type with a
   // target, so a rotation-less type like Day NP gets its slots too.
+  // step1Additions is kept for the net openedShortfall below.
+  let step1Additions: Map<string, number> | null = null;
   if (publishMode === 'draft') {
     const step1Types = await step1TypeSet(tx, companyId, ctx, rots, rotationIds, onlyShiftTypeIds, onlyUserIds, rotationless, storedRows, from, to);
     if (step1Types.size) {
       const inputs = await loadShortfallInputs(tx, companyId, from, to);
       const state = await loadOpenSlotState(tx, companyId, from, to);
       const additions = computeTargetStoreAdditions(inputs, storedRows, state, from, to, step1Types, today);
+      step1Additions = additions;
       const res = await storeTargetSlots(tx, companyId, opts.createdBy, from, to, mode, additions, step1Types);
       summary.targetsStored = res.stored;
       summary.openedShortfall = res.stored;
@@ -1429,6 +1447,18 @@ export async function generateRotations(
       const cur = await draftOpenTotal(tx, companyId, date, shiftTypeId);
       await setDraftOpenCount(tx, companyId, date, shiftTypeId, Math.max(0, cur - take), opts.createdBy);
     }
+  }
+  // openedShortfall is NET (the user-facing "Opened N open
+  // positions still needed" — the step-1 opens still standing
+  // after step 2 placed people into them), not the gross step-1
+  // store: each placement takes one stored draft open for its
+  // date+type, so a pair keeps max(0, stored − placed) opens.
+  if (publishMode === 'draft' && step1Additions) {
+    let remaining = 0;
+    for (const [k, add] of step1Additions) {
+      remaining += Math.max(0, add - (consumedStep2.get(k) || 0));
+    }
+    summary.openedShortfall = remaining;
   }
   return summary;
 }

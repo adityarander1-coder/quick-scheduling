@@ -50,7 +50,7 @@
  * for both the per-slot X and the type-close" (Deepika, 2026-11-21).
  */
 
-import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelDates, getUndraftedDatesForType } from './scheduleMode.js';
 import { getShiftsForRange } from './shiftRange.js';
 export type OpenSlotQuery = (
   text: string,
@@ -592,6 +592,24 @@ export async function publishOpenSlotsForPairs(
   opts?: { batchId?: string | null; stampedByPair?: Map<string, number> }): Promise<{ moved: number }> {
   const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
   if (!list.length) return { moved: 0 };
+  // Stored vs computed dates (Nov 23): the move must only ADD
+  // draft opens to the published count where the date reads STORED
+  // (extra + draft − suppressed). On a COMPUTED date the grid
+  // already counts shortfall + extra − suppressed, so the draft
+  // opens sit inside that count already — moving them would
+  // double-count the same positions (publish-picker: rotation-free
+  // Picker Ward stood extra 2 + draft 2 for the same 2 positions,
+  // and the move made extra 4). On a computed date only the draft
+  // opens BEYOND the already-published count move, so hand-added
+  // opens on an undrafted date still publish instead of stranding.
+  const storedKeys = new Set<string>();
+  {
+    const dates = list.map((p) => p.date).sort();
+    const storedByType = await getStoredModelDates(q, companyId, generatedTypeIds, dates[0], dates[dates.length - 1]);
+    for (const [typeId, ds] of Object.entries(storedByType)) {
+      for (const d of ds) storedKeys.add(`${d}|${typeId}`);
+    }
+  }
   // The move covers every GENERATED pair in the list (rotation-backed
   // and rotation-less alike — step 1 stores both); live pairs (only
   // present when includeLive) never move.
@@ -610,7 +628,19 @@ export async function publishOpenSlotsForPairs(
       // touches the draft count — deleteOneOpenSlot's rule — so the
       // suppressed opens are still sitting in `draft` here.)
       const suppressed = await suppressedTotal(q, companyId, p.date, p.shiftTypeId);
-      const move = Math.max(0, draft - suppressed - stamped);
+      let move: number;
+      if (storedKeys.has(pairKey(p))) {
+        move = Math.max(0, draft - suppressed - stamped);
+      } else {
+        // Computed date: the published count already includes
+        // shortfall + extra − suppressed — read after this
+        // publish's adds, so the shortfall is post-add and the
+        // stamped subtraction must NOT be repeated inside it.
+        const shortfall = await shortfallFor(q, companyId, p.date, p.shiftTypeId);
+        const extra = (await storedOpenSlots(q, companyId, p.date, p.shiftTypeId)).extra;
+        const alreadyPublished = Math.max(0, shortfall + extra - suppressed);
+        move = Math.max(0, draft - suppressed - stamped - alreadyPublished);
+      }
       if (move > 0) {
         moved += move;
         await q(
