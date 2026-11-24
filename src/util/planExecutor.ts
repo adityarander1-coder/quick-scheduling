@@ -2654,17 +2654,16 @@ export async function executePlan(
         // time (the top-up fix); live types keep the computed count.
         const generatedTypes = addMode === 'total' ? await getGeneratedTypeIds(query as any, companyId) : null;
         // Stored-model types (Deepika, 2026-11-20 — detached open
-        // slots): a DRAFTED date counts the stored opens only (no
-        // target — a target change after drafting must not move the
-        // delta, the same rule the gate uses). An UNDRAFTED date
-        // counts the target, because the draft will supply it
-        // (Fix 2) — the stored count there is just the extras.
+        // slots): while DRAFT opens stand on a date, the stored
+        // opens are the truth (no target — a target change after
+        // drafting must not move the delta, the same rule the gate
+        // uses). Once published the draft opens are gone and the
+        // shortfall is the visible opens again (publish re-derives
+        // it — B1), so the computed count is the truth there, and
+        // on undrafted dates too (Fix 2 — the draft will supply
+        // the target). The per-date draft read below is what
+        // decides which.
         const storedModelTypes = addMode === 'total' ? await getStoredModelTypeIds(query as any, companyId) : null;
-        let undraftedAddExec: Set<string> | null = null;
-        if (addMode === 'total' && generatedTypes!.has(st.id) && storedModelTypes!.has(st.id)) {
-          const notDrafted = await getNotDraftedByType(query as any, companyId, generatedTypes!, first, last);
-          undraftedAddExec = new Set(notDrafted[st.id] || []);
-        }
         let slotsAdded = 0;
         const skipped: string[] = [];
         for (const d of dates) {
@@ -2683,14 +2682,21 @@ export async function executePlan(
             // re-counts to 14, not 13. Live types keep the
             // computed formula (openTotals).
             let delta: number;
-            if (generatedTypes!.has(st.id) && storedModelTypes!.has(st.id) && !undraftedAddExec?.has(d)) {
-              // Drafted stored-model date: the stored opens only
+            if (generatedTypes!.has(st.id) && storedModelTypes!.has(st.id)) {
+              // Draft opens stand here: the stored opens only
               // (openTotals' stored branch — extra + draft −
               // suppressed, no target). The gate states the same
               // delta, so the plan never promises what the executor
-              // will not add.
-              const t = await openTotals(companyId, d, st.id);
-              delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+              // will not add. Draft 0 (undrafted, or published)
+              // falls through to the computed count below.
+              const draft = await draftOpenTotal(query as any, companyId, d, st.id);
+              if (draft > 0) {
+                const t = await openTotals(companyId, d, st.id);
+                delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+              } else {
+                const stt = await storedTotals(query as any, companyId, d, st.id);
+                delta = Math.max(0, (change.targetTotal as number) - stt.total);
+              }
             } else if (generatedTypes!.has(st.id)) {
               const stt = await storedTotals(query as any, companyId, d, st.id);
               delta = Math.max(0, (change.targetTotal as number) - stt.total);
