@@ -32,8 +32,29 @@
         // in the picked department's context); otherwise use the top switcher.
         if (!opts.headers['X-Active-Department']) opts.headers['X-Active-Department'] = window.qsActiveDeptId;
       }
+      // Optional timeout (Deepika, 2026-11-24 — the dry-run check hung
+      // forever on Jan 1–10, 2027: a request that never answers must
+      // fail so the caller can show a plain error and let her retry,
+      // instead of spinning with no way out. No timeout = old
+      // behaviour, exactly as before. The abort surfaces as an
+      // AbortError, so the caller can tell a timeout from a network
+      // error. The dry-run check passes 90 seconds — a healthy check
+      // answers in seconds, and a cold start on the free tier can
+      // take up to about a minute.)
+      var timeoutMs = opts.timeoutMs || 0;
+      delete opts.timeoutMs;
+      var abortTimer = null;
+      if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+        var controller = new AbortController();
+        if (!opts.signal) opts.signal = controller.signal;
+        abortTimer = setTimeout(function () { controller.abort(); }, timeoutMs);
+      }
       return fetch(path, opts).then(function (res) {
+        if (abortTimer) clearTimeout(abortTimer);
         return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+      }).catch(function (err) {
+        if (abortTimer) clearTimeout(abortTimer);
+        throw err;
       });
     }
     function pageError(m) { var e = $('page-error'); if (e) { e.textContent = m; show(e); } }
@@ -21777,7 +21798,14 @@ window.qsNpOfferSend = function (btn) {
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Checking what would change…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, dryRun: true }) }).then(function (r) {
+          // 90-second timeout (Deepika, 2026-11-24 — the dry-run check hung
+          // forever on Jan 1–10, 2027, on her computer AND her phone, even
+          // after a reload: the request never answered and the screen gave
+          // no error and no way to retry. A healthy check answers in
+          // seconds; a cold start can take about a minute. When the
+          // timeout fires the catch below shows a plain error and
+          // re-enables the button, so she can retry without reloading.
+          api('/api/schedule/generate', { method: 'POST', timeoutMs: 90000, body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, dryRun: true }) }).then(function (r) {
             if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             var existing = (r.data && r.data.existingDrafts) || 0;
             var deleted = (r.data && r.data.deletedCount) || 0;
@@ -21808,6 +21836,7 @@ window.qsNpOfferSend = function (btn) {
             // everything from the rotations as they are now.
             btn.disabled = false;
             if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
+            hideResult();
             window.qsShowDialog('Draft again for these dates?',
               '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted' + (bulkDeleted ? ', and ' + bulkDeleted + ' shift' + (bulkDeleted === 1 ? '' : 's') + ' you cleared with a bulk delete' : '') + (fresh.closed ? ', and ' + fresh.closed + ' closed open position' + (fresh.closed === 1 ? '' : 's') : '') + '.</p>' +
               '<p><strong>Keep the changes I made and redraft</strong><br>Your hand fixes stay, and anyone you deleted one by one stays deleted. Everything else refreshes from the rotation as it is now.' + (bulkDeleted ? ' Shifts you cleared with a bulk delete come back in this draft.' : '') + '</p>' +
@@ -21815,9 +21844,13 @@ window.qsNpOfferSend = function (btn) {
               [
                 { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep'); } },
                 { label: 'Re-draft from the rotations', onClick: function () { showFreshConfirm(fresh); } },
-                { label: 'Cancel' }
+                { label: 'Cancel', onClick: function () { hideResult(); } }
               ]);
-          }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+          }).catch(function (err) {
+            btn.disabled = false;
+            if (err && err.name === 'AbortError') { showResult('The check did not answer — try again.', true); return; }
+            showResult('Network error.', true);
+          });
         }
         // Fresh confirmation (Deepika, 2026-11-24): the counts
         // first — what will come back — before she commits to
@@ -21836,7 +21869,7 @@ window.qsNpOfferSend = function (btn) {
             '<p>' + what + 'Your hand fixes go away. Published shifts and hand-added shifts are never touched.</p>',
             [
               { label: 'Yes, re-draft from the rotations', primary: true, onClick: function () { doGenerate('fresh'); } },
-              { label: 'Cancel' }
+              { label: 'Cancel', onClick: function () { hideResult(); } }
             ]);
         }
         function doGenerate(mode) {
@@ -22094,6 +22127,20 @@ window.qsNpOfferSend = function (btn) {
           el.classList.remove('hidden');
           el.classList.toggle('alert-error', !!isError);
           el.classList.toggle('alert-success', !isError);
+        }
+        // Hide the result bar entirely (Deepika, 2026-11-24 — the dry-run
+        // hang): "Checking what would change…" stayed visible behind
+        // the re-draft dialog and after Cancel, so the screen looked
+        // stuck even when the check had answered. The bar is cleared
+        // whenever the dialog opens or is dismissed, and on any error
+        // showResult replaces it with the error text instead.
+        function hideResult() {
+          var el = $('bulk-result');
+          if (!el) return;
+          el.textContent = '';
+          el.classList.add('hidden');
+          el.classList.remove('alert-error');
+          el.classList.remove('alert-success');
         }
         $('bulk-run').addEventListener('click', function () {
           var action = $('bulk-action').value;
