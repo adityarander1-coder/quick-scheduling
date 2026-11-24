@@ -595,7 +595,16 @@ export async function publishOpenSlotsForPairs(
     const draft = await draftOpenTotal(q, companyId, p.date, p.shiftTypeId);
     if (draft > 0) {
       const stamped = opts?.stampedByPair?.get(pairKey(p)) || 0;
-      const move = Math.max(0, draft - stamped);
+      // Only the VISIBLE draft opens move to published extras: a
+      // draft open a close suppressed is gone for good (Deepika,
+      // 2026-11-20 — "when it says close slot it goes away
+      // permanently") — moving the raw draft count would resurrect
+      // it as a published extra. The suppression is cleared below,
+      // so the closed position never comes back. (A close never
+      // touches the draft count — deleteOneOpenSlot's rule — so the
+      // suppressed opens are still sitting in `draft` here.)
+      const suppressed = await suppressedTotal(q, companyId, p.date, p.shiftTypeId);
+      const move = Math.max(0, draft - suppressed - stamped);
       if (move > 0) {
         await q(
           `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
