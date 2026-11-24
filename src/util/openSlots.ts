@@ -672,9 +672,15 @@ export async function publishOpenSlotsForPairs(
  * 2026-11-22 — "Unpublish could have moved the current open
  * slots"): for every GENERATED (date, type) pair the unpublish
  * touches, every currently-visible published open becomes a draft
- * open — the stored draft-open count is raised to the visible
- * total, so the opens render as draft and a later publish (which
- * clears the draft rows, above) brings them back as published.
+ * open — the published extras MOVE into the draft count and the
+ * extra rows are deleted, so the visible total is UNCHANGED by the
+ * move (Deepika, 2026-11-23 — move fix: draft_new = draft_old +
+ * extra, extra_new = 0). The old code SET the draft count to the
+ * visible total and never deleted the extras, so publish → move
+ * compounded (extra 2 → draft 4 → extra 6 → draft 8) and the move
+ * no-op'd whenever drafts already stood there ("Nothing moved"
+ * with published extras standing — the masking bug). The move acts
+ * whenever extra > 0, regardless of existing draft opens.
  * Live types are filtered out by default — the same rule as the
  * publish mirror: their opens were never draft and their closures
  * are not this rule's business. The bulk move-open-slots-to-draft
@@ -684,16 +690,24 @@ export async function publishOpenSlotsForPairs(
  * takes includeLive too, so a live type moved to draft can always
  * be published back (never stranded).
  *
- * A stored extra has no published flag of its own (extra_open_
- * slots is just a count), so a published extra IS an extra no
- * draft count covers yet; the computed shortfall moves with it,
- * because the grid shows one open count, not two. The pairs are
- * EVERY date in the unpublish range for the type — not only pairs
- * with shifts that flipped: the Dec 12–17 live case had no shifts
- * at all, only 3 stored published extras per date, and the old
- * flip-only read found nothing to move. The visible count is the
- * grid's own count (stored model, target 0 on undrafted generated
- * dates — getNotDraftedByType, the same map the grid reads, so a
+ * Stored vs computed dates — the same map the grid reads
+ * (getStoredModelDates, plus the client's draft > 0 rule): on a
+ * STORED date the shortfall is already inside the draft count, so
+ * the move only carries the published extras across (draft_new =
+ * draft_old + extra). On a COMPUTED date the draft count is empty
+ * and the grid counts shortfall + extra − suppressed, so the move
+ * materialises the whole visible count as draft opens (visible +
+ * suppressed cover) — the shortfall positions become stored draft
+ * opens instead of vanishing when the extras go. A close stays
+ * closed either way: suppressions are never cleared here, and the
+ * visible count after the move equals the visible count before it,
+ * so a suppressed date still shows 0. Pairs are EVERY date in the
+ * unpublish range for the type — not only pairs with shifts that
+ * flipped: the Dec 12–17 live case had no shifts at all, only 3
+ * stored published extras per date, and the old flip-only read
+ * found nothing to move. The visible count is the grid's own count
+ * (stored model, target 0 on undrafted generated dates —
+ * getNotDraftedByType, the same map the grid reads, so a
  * rotation-less generated type is never "not drafted").
  *
  * Returns how many opens newly became draft, so the caller can
@@ -713,6 +727,20 @@ export async function unpublishOpenSlotsForPairs(
   const from = dates[0];
   const to = dates[dates.length - 1];
   const notDrafted = await getNotDraftedByType(q, companyId, generatedTypeIds, from, to);
+  // The grid's per-date stored determination (getStoredModelDates):
+  // a drafted date reads stored opens for ALL generated types, and
+  // the client ALSO flips to stored when draft opens stand for the
+  // pair — the move must use the same test, or it would SET a
+  // stored date's draft count from the computed formula (the old
+  // bug) or strand a computed date's extras in draft rows the grid
+  // never counts.
+  const storedKeys = new Set<string>();
+  {
+    const storedByType = await getStoredModelDates(q, companyId, generatedTypeIds, from, to);
+    for (const [typeId, ds] of Object.entries(storedByType)) {
+      for (const d of ds) storedKeys.add(`${d}|${typeId}`);
+    }
+  }
   const { rows: trows } = await q(
     `SELECT shift_type_id AS "shiftTypeId", target_count, weekdays,
             start_date::text AS start_date, end_date::text AS end_date
@@ -777,11 +805,47 @@ export async function unpublishOpenSlotsForPairs(
     const undrafted = (notDrafted[p.shiftTypeId] || []).includes(p.date);
     const effTarget = undrafted ? 0 : target;
     const f = filled.get(k) || 0;
-    const visible = Math.max(0, Math.max(0, effTarget - f) + (extras.get(k) || 0) - (suppressed.get(k) || 0));
+    const extra = Math.max(0, extras.get(k) || 0);
     const draftBefore = drafts.get(k) || 0;
-    if (visible > draftBefore) {
-      await setDraftOpenCount(q, companyId, p.date, p.shiftTypeId, visible, createdBy);
-      opensMoved += visible - draftBefore;
+    const supp = suppressed.get(k) || 0;
+    // MOVE, not SET (Deepika, 2026-11-23): the published extras
+    // cross into the draft count and the extra rows are deleted, so
+    // the visible total does not change. On a STORED date the
+    // shortfall already sits inside the draft count, so the move
+    // only adds the extras (draft_new = draft_old + extra). On a
+    // COMPUTED date the draft count is empty and the grid counts
+    // shortfall + extra − suppressed, so the move materialises the
+    // whole visible count as draft opens (visible + suppressed
+    // cover) — the shortfall positions become stored draft opens
+    // instead of vanishing when the extras go. Suppressions are
+    // never cleared: a suppressed date still shows 0 after the
+    // move, and a pair with nothing visible and no extras to move
+    // is left alone (no draft rows written onto a closed date).
+    const stored = storedKeys.has(k) || draftBefore > 0;
+    let draftNew: number;
+    let visible: number;
+    let moved: number;
+    if (stored) {
+      visible = Math.max(0, extra + draftBefore - supp);
+      draftNew = draftBefore + extra;
+      moved = extra;
+    } else {
+      const shortfall = Math.max(0, effTarget - f);
+      visible = Math.max(0, shortfall + extra - supp);
+      draftNew = visible + supp;
+      moved = visible;
+    }
+    if (extra > 0 || (visible > 0 && draftNew > draftBefore)) {
+      if (extra > 0) {
+        // Delete the extra row entirely — never update count to 0
+        // (migration 020 CHECK count <> 0).
+        await q(
+          'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+          [companyId, p.date, p.shiftTypeId]
+        );
+      }
+      await setDraftOpenCount(q, companyId, p.date, p.shiftTypeId, draftNew, createdBy);
+      opensMoved += moved;
       pairsTouched++;
     }
   }
