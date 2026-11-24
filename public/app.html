@@ -18779,6 +18779,7 @@ window.qsNpOfferSend = function (btn) {
                       '<div style="display:flex;gap:0.8rem;align-items:center;flex-wrap:wrap">' +
                         '<label style="font-size:0.9rem">From <input type="date" id="staff-start-' + i + '" value="' + esc(t.startDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"' + (editable ? '' : ' disabled') + '></label>' +
                         '<label style="font-size:0.9rem">To <input type="date" id="staff-end-' + i + '" value="' + esc(t.endDate || '') + '" style="padding:0.3rem;border:1px solid var(--border);border-radius:6px"' + (editable ? '' : ' disabled') + '></label>' +
+                        (editable ? '<button type="button" class="btn-secondary staff-clear-end" data-ti="' + i + '" style="padding:0.3rem 0.7rem;font-size:0.85rem" title="Remove the end date — the target stays open-ended">Clear</button>' : '') +
                       '</div>' +
                     '</div>' +
                     '</div>';
@@ -18811,6 +18812,17 @@ window.qsNpOfferSend = function (btn) {
                     wd.sort();
                     shownTargets[ti].weekdays = wd;
                     renderTargets();
+                  });
+                });
+                // Clear end date: mobile date inputs offer no way to delete the
+                // value, so an explicit button empties the field (and the model,
+                // so a later re-render keeps it cleared). Save sends null.
+                $('staff-targets-list').querySelectorAll('.staff-clear-end').forEach(function (b) {
+                  b.addEventListener('click', function () {
+                    var ti = parseInt(b.getAttribute('data-ti'));
+                    var endEl = $('staff-end-' + ti);
+                    if (endEl) endEl.value = '';
+                    if (shownTargets[ti]) shownTargets[ti].endDate = null;
                   });
                 });
               }
