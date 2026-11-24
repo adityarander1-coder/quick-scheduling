@@ -7118,8 +7118,19 @@
         window._dlgFire = function(id) {
           hide($('action-dialog'));
           var cb = window._dlgCallbacks[id];
-          if (cb) { try { cb(); } catch(e) { console.error(e); } }
+          // Clear BEFORE invoking the callback (Deepika, 2026-11-24
+          // — the fresh re-draft never started: a dialog button whose
+          // callback opens ANOTHER dialog (the D1 "Re-draft from the
+          // rotations" button opens the fresh confirm) had its new
+          // callbacks wiped by the old reset-after-call below, so the
+          // confirm's "Yes" button closed the dialog and did nothing
+          // — no request, no result, no History entry. Clearing first
+          // keeps a nested dialog's callbacks alive; a callback that
+          // opens no dialog leaves the map empty, exactly as before.
+          // A double-click is still safe: the first click clears the
+          // map, so the second finds no callback.
           window._dlgCallbacks = {};
+          if (cb) { try { cb(); } catch(e) { console.error(e); } }
         };
         function showDialog(title, bodyHtml, buttons) {
           $('ad-title').textContent = title;
@@ -21878,13 +21889,32 @@ window.qsNpOfferSend = function (btn) {
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Drafting…', false);
-          api('/api/schedule/generate', { method: 'POST', body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode }) }).then(function (r) {
+          // 180-second timeout (Deepika, 2026-11-24 — the draft step
+          // hung the same way as the check before it: a fresh re-draft
+          // for Jan 1–10, 2027 was clicked and the app never answered
+          // (no result, no counts, no History entry) for 9+ minutes.
+          // The draft WRITES, so it may legitimately take longer than
+          // the 90-second dry-run check: a healthy draft answers in
+          // seconds, a cold start on the free tier can take about a
+          // minute. 180 seconds covers a cold start plus the write
+          // path while still bounding a genuinely stuck draft. When
+          // the timeout fires the catch below shows a plain error and
+          // re-enables the button, so she can retry without reloading.
+          // A retry is safe: step 2 inserts ON CONFLICT DO NOTHING
+          // and a fresh re-run deletes the first run's draft rows and
+          // re-creates them, so a timed-out draft that finished on
+          // the server anyway is never duplicated.
+          api('/api/schedule/generate', { method: 'POST', timeoutMs: 180000, body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode }) }).then(function (r) {
             btn.disabled = false;
             if (!r.ok) { showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             showDraftResult(r.data || {});
             loadDraftData();
             if (window.qsReloadScheduleGrid) { try { window.qsReloadScheduleGrid(); } catch (e) {} }
-          }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+          }).catch(function (err) {
+            btn.disabled = false;
+            if (err && err.name === 'AbortError') { showResult('The draft did not answer — try again.', true); return; }
+            showResult('Network error.', true);
+          });
         }
         function showDraftResult(d) {
           var sk = d.skipped || {};
