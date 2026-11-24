@@ -162,7 +162,8 @@ function personDisplay(a: any): string {
  */
 export async function loadGenerationContext(
   q: QueryFn, companyId: string, from: string, to: string,
-  rotationIds: string[]
+  rotationIds: string[],
+  opts?: { ignoreBulkExclusions?: boolean }
 ): Promise<GenerationContext> {
   const { rows: vacRows } = await q(
     `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
@@ -191,7 +192,7 @@ export async function loadGenerationContext(
     `SELECT rotation_id AS "rotationId", user_id AS "userId",
             date::text AS "date", shift_type_id AS "shiftTypeId"
      FROM rotation_shift_exclusions
-     WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+     WHERE company_id = $1 AND date >= $2 AND date <= $3${opts?.ignoreBulkExclusions ? ` AND origin <> 'bulk'` : ''}`,
     [companyId, from, to]
   );
   const exclSet = new Set(exclRows.map((e: any) =>
@@ -619,6 +620,13 @@ export interface GenerateSummary {
   existingDrafts?: number;
   /** Dry run only: exclusions (previously deleted instances) in range. */
   deletedCount?: number;
+  /**
+   * Dry run only: bulk-delete exclusions in range — the ones this
+   * draft would clear so the range re-drafts. Real run only: how
+   * many bulk-delete exclusions the draft actually cleared.
+   */
+  bulkDeletedCount?: number;
+  clearedBulkExclusions?: number;
   /** Dry run only: occurrences that would be created. */
   wouldCreate?: number;
   /**
@@ -902,6 +910,18 @@ async function step1TypeSet(
     const { generated: gen, withTarget: wt } = await loadTargetedGenerated();
     for (const t of footprint) if (gen.has(t) && wt.has(t)) step1Types.add(t);
   }
+  // Picked types (Deepika, 2026-11-23 — draft fix): the draft's
+  // picks ARE its scope. A picked generated type with a target gets
+  // its shortfall stored even when no rotation in the call produces
+  // it — its rotation wasn't picked, its members weren't picked, or
+  // its group days fall outside the range (live March 2027: Day
+  // Hospitalist stood 0 draft opens on two ranges although its
+  // target is 14/day). Live types stay out: their target already
+  // counts on the grid, so there is nothing to store for them.
+  if (onlyShiftTypeIds?.size) {
+    const { generated: gen, withTarget: wt } = await loadTargetedGenerated();
+    for (const t of onlyShiftTypeIds) if (gen.has(t) && wt.has(t)) step1Types.add(t);
+  }
   if (!onlyShiftTypeIds && !onlyUserIds) {
     const { rows: allRots } = await tx(
       'SELECT id FROM rotations WHERE company_id = $1 AND is_active = true',
@@ -1171,7 +1191,6 @@ export async function generateRotations(
     ...rotationIds.filter((id) => byId.get(id)?.groupId && byId.get(id)?.groupShiftTypeId),
     ...rotationIds.filter((id) => !(byId.get(id)?.groupId && byId.get(id)?.groupShiftTypeId)),
   ];
-  const ctx = await loadGenerationContext(tx, companyId, from, to, rotationIds);
 
   // Partial draft (Deepika, 2026-11-14 — pick by shift + employees):
   // the compute and the dry-run counts below are all scoped to the
@@ -1179,6 +1198,41 @@ export async function generateRotations(
   // before.
   const onlyUserIds = opts.userIds?.length ? new Set(opts.userIds) : undefined;
   const onlyShiftTypeIds = opts.shiftTypeIds?.length ? new Set(opts.shiftTypeIds) : undefined;
+
+  // Bulk-deleted ranges re-draft (Deepika, 2026-11-23 — draft fix):
+  // a bulk delete clears a range so it can be re-drafted, and its
+  // exclusions are range-clear markers. The draft clears them in
+  // its own scope (rotations, picked types/users, range) BEFORE
+  // computing occurrences, so the people come back. One-by-one
+  // deletes (origin 'single') stay — a re-draft must not bring
+  // those people back. Draft mode only; the migration stamps live
+  // truth and must not clear anything. The dry run never writes:
+  // it computes with bulk exclusions ignored instead (below).
+  let clearedBulkExclusions = 0;
+  if (publishMode === 'draft' && !opts.dryRun) {
+    const clearParams: any[] = [companyId, rotationIds, from, to];
+    let clearScope = '';
+    if (onlyShiftTypeIds) {
+      clearScope += ` AND shift_type_id = ANY($${clearParams.length + 1}::uuid[])`;
+      clearParams.push([...onlyShiftTypeIds]);
+    }
+    if (onlyUserIds) {
+      clearScope += ` AND user_id = ANY($${clearParams.length + 1}::uuid[])`;
+      clearParams.push([...onlyUserIds]);
+    }
+    const cleared = await tx(
+      `DELETE FROM rotation_shift_exclusions
+       WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
+         AND date >= $3 AND date <= $4 AND origin = 'bulk'${clearScope}`,
+      clearParams
+    );
+    clearedBulkExclusions = cleared.rowCount || 0;
+  }
+  // The dry run previews the real run, so it computes as if the
+  // bulk exclusions were already cleared; the real run above
+  // deleted them, so it reads the plain context.
+  const ctx = await loadGenerationContext(tx, companyId, from, to, rotationIds,
+    opts.dryRun ? { ignoreBulkExclusions: true } : undefined);
   const compOpts = { publishMode, collectDeparted: true, today, onlyUserIds, onlyShiftTypeIds };
   // Rotation-less types (Deepika, 2026-11-15): picked generated types
   // no active rotation produces. A call with no rotations at all is
@@ -1205,7 +1259,17 @@ export async function generateRotations(
     const { rows: exclRows } = await tx(
       `SELECT COUNT(*)::int AS n FROM rotation_shift_exclusions
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
-         AND date >= $3 AND date <= $4${userScope}`,
+         AND date >= $3 AND date <= $4 AND origin = 'single'${userScope}`,
+      [companyId, rotationIds, from, to, ...userParams]
+    );
+    // Bulk-delete exclusions in scope: the draft clears these, so
+    // the people come back — they are NOT "people you deleted" for
+    // the dialog's promise, and wouldCreate above already counts
+    // them as placeable.
+    const { rows: bulkRows } = await tx(
+      `SELECT COUNT(*)::int AS n FROM rotation_shift_exclusions
+       WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
+         AND date >= $3 AND date <= $4 AND origin = 'bulk'${userScope}`,
       [companyId, rotationIds, from, to, ...userParams]
     );
     const skipped = emptySkipped();
@@ -1273,14 +1337,15 @@ export async function generateRotations(
       targetsStored,
       openedShortfall,
       skipped, skippedDetail, perRotation,
-      existingDrafts: draftRows[0]?.n || 0, deletedCount: exclRows[0]?.n || 0, wouldCreate, createdRows,
+      existingDrafts: draftRows[0]?.n || 0, deletedCount: exclRows[0]?.n || 0,
+      bulkDeletedCount: bulkRows[0]?.n || 0, wouldCreate, createdRows,
     };
   }
 
   // ---- Real generation.
   const summary: GenerateSummary = {
     generationIds: [], created: 0, replacedDrafts: 0, keptDrafts: 0, openedSlots: 0,
-    targetsStored: 0,
+    targetsStored: 0, clearedBulkExclusions,
     openedShortfall: 0,
     skipped: emptySkipped(), skippedDetail: [], perRotation: [], auditEntries: [], createdRows: [],
   };

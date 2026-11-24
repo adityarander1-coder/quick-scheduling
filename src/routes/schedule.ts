@@ -1960,8 +1960,8 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
           if (Array.isArray(userIds) && userIds.length && !userIds.includes(s.userId)) continue;
           if (shiftTypeId && s.shiftTypeId !== shiftTypeId) continue;
           const gIns = await query(
-            `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id, origin)
+             VALUES ($1, $2, $3, $4, $5, 'bulk')
              ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING
              RETURNING rotation_id`,
             [companyId, s.rotationId, s.userId, s.date, s.shiftTypeId]
@@ -2056,7 +2056,7 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
         const key = `${d.userId}|${d.date}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        undo.sweepExclusions.push(...await excludeRotationInstances(companyId, d.userId, d.date));
+        undo.sweepExclusions.push(...await excludeRotationInstances(companyId, d.userId, d.date, query, 'bulk'));
       }
     }
     // Delete opens a slot (Deepika, 2026-11-20): every deleted
@@ -6474,9 +6474,28 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     if (summary.created > 0 || summary.replacedDrafts > 0 || (summary.targetsStored || 0) > 0) {
       const rotNames = [...new Set((summary.perRotation || []).map((p: any) => p.rotationName).filter(Boolean))];
       const what = rotNames.length ? rotNames.join(', ') : `${shiftTypeIds.length} shift type${shiftTypeIds.length === 1 ? '' : 's'}`;
+      // Truthful History (Deepika, 2026-11-23 — draft fix): a "0
+      // draft shifts" entry must say WHY. The March 1–14 entry read
+      // "0 draft shifts" with no reason, although every occurrence
+      // had been skipped as previously deleted.
+      let historySummary = `Drafted ${what}, ${from} – ${to} — ${summary.created} draft shift${summary.created === 1 ? '' : 's'}`;
+      const sk = summary.skipped || {};
+      const skParts = [
+        sk.vacation ? `${sk.vacation} on vacation` : '',
+        sk.alreadyHasShift ? `${sk.alreadyHasShift} already had a shift` : '',
+        sk.ended ? `${sk.ended} ended` : '',
+        sk.excluded ? `${sk.excluded} previously deleted` : '',
+        sk.past ? `${sk.past} in the past` : '',
+      ].filter(Boolean);
+      if ((summary.clearedBulkExclusions || 0) > 0) {
+        historySummary += ` — brought back ${summary.clearedBulkExclusions} shift${summary.clearedBulkExclusions === 1 ? '' : 's'} cleared by an earlier bulk delete`;
+      }
+      if (summary.created === 0 && skParts.length) {
+        historySummary += ` (skipped ${skParts.join(', ')})`;
+      }
       await recordHistorySnapshot({
         companyId, actorId: req.session.userId!, trigger: 'draft-change',
-        summary: `Drafted ${what}, ${from} – ${to} — ${summary.created} draft shift${summary.created === 1 ? '' : 's'}`,
+        summary: historySummary,
         from, to, departmentIds: deptUnion,
         shiftTypeIds, userIds,
       });

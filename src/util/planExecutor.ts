@@ -509,16 +509,21 @@ export async function excludeRotationInstances(
   companyId: string,
   userId: string,
   date: string,
-  queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query
+  queryFn: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number }> = query,
+  // 'single': one person taken off one shift (a delete, a swap, a
+  // replace) — the exclusion stays and a re-draft must not bring
+  // them back. 'bulk': a bulk delete clearing a range — the draft
+  // clears these in the range it drafts, so the range re-drafts.
+  origin: 'single' | 'bulk' = 'single'
 ): Promise<Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }>> {
   const occ = await findRotationOccurrences(companyId, userId, date, null, queryFn);
   const excluded: Array<{ rotationId: string; userId: string; date: string; shiftTypeId: string }> = [];
   for (const o of occ) {
     const ins = await queryFn(
-      `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO rotation_shift_exclusions (company_id, rotation_id, user_id, date, shift_type_id, origin)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (rotation_id, user_id, date, shift_type_id) DO NOTHING`,
-      [companyId, o.rotationId, userId, date, o.shiftTypeId]
+      [companyId, o.rotationId, userId, date, o.shiftTypeId, origin]
     );
     if (ins.rowCount && ins.rowCount > 0) excluded.push({ rotationId: o.rotationId, userId, date, shiftTypeId: o.shiftTypeId });
   }

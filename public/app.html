@@ -21769,18 +21769,24 @@ window.qsNpOfferSend = function (btn) {
             if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             var existing = (r.data && r.data.existingDrafts) || 0;
             var deleted = (r.data && r.data.deletedCount) || 0;
-            if (!existing && !deleted) { doGenerate('keep'); return; }
+            // Bulk-deleted shifts (Deepika, 2026-11-23 — draft fix):
+            // a bulk delete clears a range so it can be re-drafted,
+            // so those shifts come BACK in this draft — they are not
+            // "people you deleted" for the promise below.
+            var bulkDeleted = (r.data && r.data.bulkDeletedCount) || 0;
+            if (!existing && !deleted && !bulkDeleted) { doGenerate('keep'); return; }
             // D1 (Deepika, 2026-11-13; keep-only since 2026-11-23):
             // re-drafting asks at the moment, ONE prompt with the
             // plain notice, BEFORE she taps. A draft never replaces
             // anything already on the schedule — hand fixes stay,
-            // deleted people stay deleted — it only adds what is
-            // still missing, targets first, then the rotations.
+            // people deleted one by one stay deleted — it only adds
+            // what is still missing, targets first, then the
+            // rotations. Shifts cleared with a bulk delete come back.
             btn.disabled = false;
             if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
             window.qsShowDialog('Draft again for these dates?',
-              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted.</p>' +
-              '<p><strong>Draft again, keeping what is already there</strong><br>Your hand fixes stay, and anyone you deleted stays deleted. The draft only adds what is still missing — first the open positions still needed, then the people from the rotations.</p>',
+              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted' + (bulkDeleted ? ', and ' + bulkDeleted + ' shift' + (bulkDeleted === 1 ? '' : 's') + ' you cleared with a bulk delete' : '') + '.</p>' +
+              '<p><strong>Draft again, keeping what is already there</strong><br>Your hand fixes stay, and anyone you deleted one by one stays deleted' + (bulkDeleted ? '. Shifts you cleared with a bulk delete come back in this draft' : '') + '. The draft only adds what is still missing — first the open positions still needed, then the people from the rotations.</p>',
               [
                 { label: 'Draft again, keeping what is already there', primary: true, onClick: function () { doGenerate('keep'); } },
                 { label: 'Cancel' }
@@ -21821,6 +21827,7 @@ window.qsNpOfferSend = function (btn) {
           // created" in the header above.
           if (d.targetsStored) html += '<br>Step 1 — targets stored: ' + d.targetsStored + ' open position' + (d.targetsStored === 1 ? '' : 's') + ' from the staffing targets.';
           else if (d.openedShortfall) html += '<br>Opened ' + d.openedShortfall + ' open position' + (d.openedShortfall === 1 ? '' : 's') + ' still needed.';
+          if (d.clearedBulkExclusions) html += '<br>Brought back ' + d.clearedBulkExclusions + ' shift' + (d.clearedBulkExclusions === 1 ? '' : 's') + ' cleared by an earlier bulk delete.';
           var el = $('bulk-result');
           el.innerHTML = html;
           el.classList.remove('hidden');
