@@ -175,11 +175,13 @@ export async function consumeExtraOpenSlot(
  * standing beside them — the day showed the person working AND the
  * open still there to be claimed again (double-fill), and the
  * top-up total (filled + open) grew with every assign instead of
- * staying put. A published assign takes a published extra; a draft
- * assign takes a draft open first (same state), falling back to a
- * published extra. When neither pool has one, the assign just adds
- * headcount — a manager may always staff above the stored opens.
- * Returns true when a slot was consumed.
+ * staying put. A published assign takes a published extra, falling
+ * back to a draft open when there is no published extra (the date's
+ * opens are draft — drafted, not yet published — so the assign fills
+ * one of them); a draft assign takes a draft open first (same state),
+ * falling back to a published extra. When neither pool has one, the
+ * assign just adds headcount — a manager may always staff above the
+ * stored opens. Returns true when a slot was consumed.
  */
 export async function consumeOpenSlotForAssign(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
@@ -191,8 +193,21 @@ export async function consumeOpenSlotForAssign(
       await setDraftOpenCount(q, companyId, date, shiftTypeId, draft - 1, createdBy);
       return true;
     }
+    return consumeExtraOpenSlot(q, companyId, date, shiftTypeId);
   }
-  return consumeExtraOpenSlot(q, companyId, date, shiftTypeId);
+  // A published assign takes a published extra first. When there is
+  // no published extra, it takes a draft open if one stands there:
+  // the date's opens are draft (drafted, not yet published), so the
+  // assign fills one of them — leaving the draft count untouched
+  // would strand it beside the filled shift, the stored total would
+  // over-count, and the same open could be claimed again.
+  if (await consumeExtraOpenSlot(q, companyId, date, shiftTypeId)) return true;
+  const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
+  if (draft > 0) {
+    await setDraftOpenCount(q, companyId, date, shiftTypeId, draft - 1, createdBy);
+    return true;
+  }
+  return false;
 }
 
 export interface DeleteOneOpenSlotResult {
@@ -211,17 +226,18 @@ export interface DeleteOneOpenSlotResult {
  * extra goes first: it is really deleted (delete at 0, never a
  * negative row). Otherwise the slot is a computed shortfall open,
  * so it is suppressed until the next draft/publish of that
- * date+type pulls it back — and when that open was a draft open,
- * the stored draft count loses one too, so the draft badge never
- * sits one too high (the old X left it there and the UI clamped).
- * The two are NOT double-counting: the manager count is
- * target + extra − suppressed − filled (openCountFor) — the draft
- * count never enters it, it only decides how many of the visible
- * positions render with the DRAFT badge. Returns the split, so
- * callers can reverse each part exactly. Safety (Deepika,
- * 2026-11-21): when no visible open is left the primitive refuses
- * (no-op, no suppression row) — a raw count past the visible total
- * can never store a phantom suppression. */
+ * date+type pulls it back. The draft count itself is never touched
+ * by a close (Deepika, 2026-11-20 — detached open slots): the
+ * suppression alone removes the position, and the remaining
+ * positions keep their draft/published split (the UI renders
+ * min(draft, total) positions as draft). Decrementing the draft
+ * AND suppressing would double-count against the stored total
+ * (extra + draft − suppressed) — one closed slot would drop it by
+ * two, and the next close would find nothing left to close.
+ * Returns the split, so callers can reverse each part exactly.
+ * Safety (Deepika, 2026-11-21): when no visible open is left the
+ * primitive refuses (no-op, no suppression row) — a raw count past
+ * the visible total can never store a phantom suppression. */
 export async function deleteOneOpenSlot(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
   createdBy: string | null
@@ -265,24 +281,10 @@ export async function deleteOneOpenSlot(
     }
   }
   if (visible <= 0) return { fromExtra: false, fromDraft: false, suppressed: false };
-  const { rows: drows } = await q(
-    'SELECT count FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
-    [companyId, date, shiftTypeId]
-  );
-  const draft = drows.length ? Math.max(0, Number(drows[0].count) || 0) : 0;
-  if (draft > 0) {
-    if (draft === 1) {
-      await q(
-        'DELETE FROM draft_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
-        [companyId, date, shiftTypeId]
-      );
-    } else {
-      await q(
-        'UPDATE draft_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
-        [draft - 1, companyId, date, shiftTypeId]
-      );
-    }
-  }
+  // The draft count is never touched by a close (see the header):
+  // the suppression below removes the position, and the draft count
+  // keeps counting the positions the draft created, so the stored
+  // total (extra + draft − suppressed) drops by exactly one.
   await q(
     `INSERT INTO suppressed_open_slots (company_id, date, shift_type_id, count, created_by)
      VALUES ($1, $2, $3, 1, $4)
@@ -290,7 +292,7 @@ export async function deleteOneOpenSlot(
      DO UPDATE SET count = suppressed_open_slots.count + 1`,
     [companyId, date, shiftTypeId, createdBy]
   );
-  return { fromExtra: false, fromDraft: draft > 0, suppressed: true };
+  return { fromExtra: false, fromDraft: false, suppressed: true };
 }
 
 /**
@@ -299,11 +301,14 @@ export async function deleteOneOpenSlot(
  * permanently"). It is the shared single-slot delete above, applied
  * `count` times: stored extras go first (really deleted, never a
  * negative row), then computed shortfall opens are suppressed until
- * the next draft/publish pulls them back — and a draft open that is
- * closed loses its stored draft count too. Returns the split, so
- * the undo payload can reverse each part exactly. A count past the
- * visible total stops at the last visible open: the primitive
- * refuses the extra turns, so nothing phantom is stored.
+ * the next draft/publish pulls them back. The draft count is never
+ * touched by a close (the single-slot delete's rule) — draftDeleted
+ * is always 0 here, kept in the split so the undo payload shape is
+ * unchanged; the whole-type close below is the one that sweeps draft
+ * rows. Returns the split, so the undo payload can reverse each
+ * part exactly. A count past the visible total stops at the last
+ * visible open: the primitive refuses the extra turns, so nothing
+ * phantom is stored.
  *
  * Whole-type closes go through closeTypeForDate below: the same
  * single-slot delete, applied to every visible open for the
@@ -353,8 +358,9 @@ export interface CloseTypeResult {
  * add"): in one transaction, for that (company, date, type):
  *   1. Applies deleteOneOpenSlot once per visible open — the SAME
  *      delete the per-slot X uses (stored extras really deleted,
- *      shortfall opens suppressed, draft counts decremented). The
- *      visible count is the clamped stored-model count
+ *      shortfall opens suppressed; the draft count is never touched
+ *      by the loop — the sweep below is what clears draft rows).
+ *      The visible count is the clamped stored-model count
  *      max(0, max(0, target - filled) + extra - suppressed), so
  *      over-target filled never eats stored extras.
  *   2. Sweeps any stored row the loop cannot reach: extras hidden

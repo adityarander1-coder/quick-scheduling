@@ -1362,6 +1362,10 @@ export async function gatePlanChanges(
         // keep the computed formula above (capacity - filled).
         let deltaOn: ((d: string) => number) | null = null;
         let totalOn: ((d: string) => { filled: number; opens: number; total: number }) | null = null;
+        // Undrafted dates for this add (loaded with totalOn, reused
+        // by the plan-detail text below) — the grid's own source of
+        // truth via getNotDraftedByType.
+        let undraftedAdd: Set<string> | null = null;
         if (addMode === 'total') {
           if (!generatedTypes) generatedTypes = await getGeneratedTypeIds(query, companyId);
           const isGenerated = generatedTypes.has(type.id);
@@ -1383,17 +1387,27 @@ export async function gatePlanChanges(
             );
             filledByDate = new Map(frows.map((r: any) => [r.date, r.n]));
           }
+          // Undrafted dates for this add (Fix 2 — see totalOn): the
+          // draft has not run yet, so the delta counts the target.
+          if (isGenerated) {
+            const notDrafted = await getNotDraftedByType(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
+            undraftedAdd = new Set(notDrafted[type.id] || []);
+          }
           totalOn = (d: string) => {
             const filled = filledByDate.get(d) || 0;
             // Detached open slots (Deepika, 2026-11-20): the opens
-            // are the STORED opens for a stored-model type — the
-            // target never enters the total — and the computed opens
-            // for a computed-model type. A top-up still counts
+            // are the STORED opens for a DRAFTED stored-model type
+            // — the target never enters the total — and the computed
+            // opens for a computed-model type. A top-up still counts
             // filled + opens as they actually are, so "make it total
             // 17" adds only the difference; a stored shortfall never
             // appearing (it was never stored) stays absent, not
-            // topped up into being.
-            if (inputs.storedModel.has(type.id)) {
+            // topped up into being. An UNDRAFTED stored-model date
+            // is the exception (Deepika, 2026-11-22 — Fix 2): the
+            // draft has not run yet, so the target's slots are not
+            // stored — but the draft WILL supply them, so the delta
+            // counts the target, exactly as the executor does.
+            if (inputs.storedModel.has(type.id) && !undraftedAdd?.has(d)) {
               const opens = openSlotOpens(inputs, type.id, d, filled);
               return { filled, opens, total: filled + opens };
             }
@@ -1435,15 +1449,12 @@ export async function gatePlanChanges(
             // plan must not state the target shortfall as opens
             // there — it names the date as not drafted yet and says
             // only the added slots will show until it is drafted.
-            // Delta math is unchanged (the executor adds the same
-            // stored-model delta); only the stated numbers change.
-            // getNotDraftedByType is the grid's own source of truth
-            // (rotation-less types are never undrafted there).
-            let undrafted: Set<string> | null = null;
-            if (generatedTypes?.has(type.id)) {
-              const notDrafted = await getNotDraftedByType(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
-              undrafted = new Set(notDrafted[type.id] || []);
-            }
+            // Delta math is the same count totalOn used (the
+            // executor adds the same delta); only the stated
+            // numbers change.
+            // Reuses the undrafted set totalOn already loaded (same
+            // dates, same source of truth) — no second read.
+            const undrafted = undraftedAdd;
             const undraftedNote = (() => {
               if (!undrafted || !undrafted.size) return '';
               const list = [...undrafted].sort();
