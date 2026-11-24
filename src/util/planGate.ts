@@ -1398,24 +1398,31 @@ export async function gatePlanChanges(
           totalOn = (d: string) => {
             const filled = filledByDate.get(d) || 0;
             // Detached open slots (Deepika, 2026-11-20): the opens
-            // are the STORED opens while DRAFT opens stand on the
-            // date — the target never enters the total — and the
-            // computed opens otherwise. A top-up still counts
+            // are the STORED opens on any DRAFTED date — the target
+            // never enters the total. A top-up still counts
             // filled + opens as they actually are, so "make it total
             // 17" adds only the difference; a stored shortfall never
             // appearing (it was never stored) stays absent, not
-            // topped up into being. An UNDRAFTED stored-model date
-            // has no draft opens, so it falls through to the
-            // computed count below (Deepika, 2026-11-22 — Fix 2):
-            // the draft has not run yet, so the target's slots are
-            // not stored — but the draft WILL supply them, so the
-            // delta counts the target, exactly as the executor does.
-            // A PUBLISHED date likewise has no draft opens left, so
-            // the shortfall is the visible opens again (publish
-            // re-derives it — B1) and the computed count is the
-            // truth there too. The executor uses the same draft
-            // test, so the stated and executed deltas agree.
-            if (inputs.storedModel.has(type.id) && (inputs.draft.get(`${d}|${type.id}`) || 0) > 0) {
+            // topped up into being. "Drafted" is the
+            // notDraftedByType set the grid reads (undraftedAdd,
+            // loaded above), NOT "draft opens stand": a PUBLISHED
+            // date has draft 0 but IS drafted — publish moved its
+            // draft opens into extra, so the shortfall is already
+            // inside extra and the computed count below would add
+            // it a second time (Nov 23 — a published date with
+            // filled < target overstated the total by target -
+            // filled and the top-up under-added). An UNDRAFTED
+            // stored-model date falls through to the computed count
+            // below (Deepika, 2026-11-22 — Fix 2): the draft has
+            // not run yet, so the target's slots are not stored —
+            // but the draft WILL supply them, so the delta counts
+            // the target, exactly as the executor does. The executor
+            // uses the same drafted test, so the stated and executed
+            // deltas agree.
+            const draftedAdd = undraftedAdd
+              ? !undraftedAdd.has(d)
+              : (inputs.draft.get(`${d}|${type.id}`) || 0) > 0;
+            if (inputs.storedModel.has(type.id) && draftedAdd) {
               const opens = openSlotOpens(inputs, type.id, d, filled);
               return { filled, opens, total: filled + opens };
             }
