@@ -21774,24 +21774,58 @@ window.qsNpOfferSend = function (btn) {
             // so those shifts come BACK in this draft — they are not
             // "people you deleted" for the promise below.
             var bulkDeleted = (r.data && r.data.bulkDeletedCount) || 0;
-            if (!existing && !deleted && !bulkDeleted) { doGenerate('keep'); return; }
-            // D1 (Deepika, 2026-11-13; keep-only since 2026-11-23):
-            // re-drafting asks at the moment, ONE prompt with the
-            // plain notice, BEFORE she taps. A draft never replaces
-            // anything already on the schedule — hand fixes stay,
-            // people deleted one by one stay deleted — it only adds
-            // what is still missing, targets first, then the
-            // rotations. Shifts cleared with a bulk delete come back.
+            // Fresh counts (Deepika, 2026-11-24 — "Bring back
+            // everything I deleted"): what "Re-draft from the
+            // rotations" would bring back on this same call.
+            var fresh = {
+              people: (r.data && r.data.freshExclusions) || 0,
+              single: (r.data && r.data.freshExclusionsSingle) || 0,
+              bulk: (r.data && r.data.freshExclusionsBulk) || 0,
+              closed: (r.data && r.data.freshSuppressions) || 0,
+              drafts: (r.data && r.data.freshDraftShifts) || 0,
+              opens: (r.data && r.data.freshDraftOpens) || 0
+            };
+            var freshWouldChange = fresh.people + fresh.closed + fresh.drafts;
+            if (!existing && !deleted && !bulkDeleted && !freshWouldChange) { doGenerate('keep'); return; }
+            // D1 (Deepika, 2026-11-13; two buttons again since
+            // 2026-11-24): re-drafting asks at the moment, ONE
+            // prompt with the plain notice, BEFORE she taps. Keep
+            // only adds what is still missing — hand fixes stay,
+            // people deleted one by one stay deleted; shifts
+            // cleared with a bulk delete come back. Fresh replaces
+            // everything from the rotations as they are now.
             btn.disabled = false;
             if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
             window.qsShowDialog('Draft again for these dates?',
-              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted' + (bulkDeleted ? ', and ' + bulkDeleted + ' shift' + (bulkDeleted === 1 ? '' : 's') + ' you cleared with a bulk delete' : '') + '.</p>' +
-              '<p><strong>Draft again, keeping what is already there</strong><br>Your hand fixes stay, and anyone you deleted one by one stays deleted' + (bulkDeleted ? '. Shifts you cleared with a bulk delete come back in this draft' : '') + '. The draft only adds what is still missing — first the open positions still needed, then the people from the rotations.</p>',
+              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted' + (bulkDeleted ? ', and ' + bulkDeleted + ' shift' + (bulkDeleted === 1 ? '' : 's') + ' you cleared with a bulk delete' : '') + (fresh.closed ? ', and ' + fresh.closed + ' closed open position' + (fresh.closed === 1 ? '' : 's') : '') + '.</p>' +
+              '<p><strong>Keep the changes I made and redraft</strong><br>Your hand fixes stay, and anyone you deleted one by one stays deleted. Everything else refreshes from the rotation as it is now.' + (bulkDeleted ? ' Shifts you cleared with a bulk delete come back in this draft.' : '') + '</p>' +
+              '<p><strong>Re-draft from the rotations</strong><br>Everything is replaced from the rotation as it is now. Your hand fixes go away, and anyone you deleted comes back. Closed open positions come back too.</p>',
               [
-                { label: 'Draft again, keeping what is already there', primary: true, onClick: function () { doGenerate('keep'); } },
+                { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep'); } },
+                { label: 'Re-draft from the rotations', onClick: function () { showFreshConfirm(fresh); } },
                 { label: 'Cancel' }
               ]);
           }).catch(function () { btn.disabled = false; showResult('Network error.', true); });
+        }
+        // Fresh confirmation (Deepika, 2026-11-24): the counts
+        // first — what will come back — before she commits to
+        // replacing everything. Published shifts and hand-added
+        // shifts are never touched.
+        function showFreshConfirm(fresh) {
+          var parts = [];
+          if (fresh.people) parts.push('bring back ' + fresh.people + ' ' + (fresh.people === 1 ? 'person' : 'people') + ' you deleted' + (fresh.single && fresh.bulk ? ' (' + fresh.single + ' one by one, ' + fresh.bulk + ' with a bulk delete)' : fresh.single ? ' (one by one)' : fresh.bulk ? ' (with a bulk delete)' : ''));
+          if (fresh.closed) parts.push('reopen ' + fresh.closed + ' closed open position' + (fresh.closed === 1 ? '' : 's'));
+          if (fresh.drafts) parts.push('replace ' + fresh.drafts + ' draft shift' + (fresh.drafts === 1 ? '' : 's'));
+          var what = parts.length
+            ? 'This will ' + parts.join(', ') + '. '
+            : 'Nothing you deleted or closed is in this range — this will rebuild the draft shifts from the rotations as they are now. ';
+          if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
+          window.qsShowDialog('Re-draft from the rotations?',
+            '<p>' + what + 'Your hand fixes go away. Published shifts and hand-added shifts are never touched.</p>',
+            [
+              { label: 'Yes, re-draft from the rotations', primary: true, onClick: function () { doGenerate('fresh'); } },
+              { label: 'Cancel' }
+            ]);
         }
         function doGenerate(mode) {
           var picks = draftLastPicks || resolveDraftPicks();
@@ -21828,6 +21862,10 @@ window.qsNpOfferSend = function (btn) {
           if (d.targetsStored) html += '<br>Step 1 — targets stored: ' + d.targetsStored + ' open position' + (d.targetsStored === 1 ? '' : 's') + ' from the staffing targets.';
           else if (d.openedShortfall) html += '<br>Opened ' + d.openedShortfall + ' open position' + (d.openedShortfall === 1 ? '' : 's') + ' still needed.';
           if (d.clearedBulkExclusions) html += '<br>Brought back ' + d.clearedBulkExclusions + ' shift' + (d.clearedBulkExclusions === 1 ? '' : 's') + ' cleared by an earlier bulk delete.';
+          if (d.clearedExclusionsSingle) html += '<br>Brought back ' + d.clearedExclusionsSingle + ' shift' + (d.clearedExclusionsSingle === 1 ? '' : 's') + ' deleted one by one.';
+          if (d.clearedSuppressions) html += '<br>Reopened ' + d.clearedSuppressions + ' closed open position' + (d.clearedSuppressions === 1 ? '' : 's') + '.';
+          if (d.clearedDraftOpens) html += '<br>Cleared ' + d.clearedDraftOpens + ' stored draft open position' + (d.clearedDraftOpens === 1 ? '' : 's') + ' and rebuilt them from the targets.';
+          if (d.clearedStaleExtras) html += '<br>Removed ' + d.clearedStaleExtras + ' extra open position' + (d.clearedStaleExtras === 1 ? '' : 's') + ' left over from the deleted shifts.';
           var el = $('bulk-result');
           el.innerHTML = html;
           el.classList.remove('hidden');

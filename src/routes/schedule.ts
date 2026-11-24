@@ -6353,13 +6353,20 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 //   turns produce no rows. Absent = the whole rotation, as before.
 //   Both are validated against the company (unknown ids 400).
 //   dryRun: compute only, write nothing — the client calls it first;
-//     when existingDrafts > 0 or deletedCount > 0 it shows the D1
-//     choice dialog (keep-only, with the clear notice) and re-calls
-//     with mode 'keep'. A clean range generates directly (mode 'keep').
-//   mode 'keep' (and 'fresh', accepted for compat): hand fixes +
-//     deletions stay; the draft only adds what is still missing —
-//     targets first, then the rotations. Since 2026-11-23 a draft
-//     NEVER replaces anything already on the schedule.
+//     when existingDrafts > 0, deletedCount > 0, or a fresh re-draft
+//     would bring something back, it shows the D1 choice dialog
+//     (keep vs re-draft from the rotations, with the plain notice
+//     and the fresh counts) and re-calls with the mode she picked.
+//     A clean range generates directly (mode 'keep').
+//   mode 'keep': hand fixes + deletions stay; the draft only adds
+//     what is still missing — targets first, then the rotations.
+//   mode 'fresh' (Deepika, 2026-11-24 — "Bring back everything I
+//     deleted"): everything in the draft's scope is replaced from
+//     the rotations as they are now — still-draft rows are deleted
+//     and re-placed, exclusions of every origin are cleared so
+//     deleted people come back, and closed-open suppressions are
+//     cleared so closed days come back as opens. Published rows
+//     and hand-added rows are never touched, in either mode.
 //   Both modes NEVER touch published rows, and NEVER touch hand-added
 //   rows (rotation_id NULL) — a re-draft only adds rotation-origin
 //   rows, because there is no rotation to replace a hand-added shift
@@ -6489,6 +6496,20 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
       ].filter(Boolean);
       if ((summary.clearedBulkExclusions || 0) > 0) {
         historySummary += ` — brought back ${summary.clearedBulkExclusions} shift${summary.clearedBulkExclusions === 1 ? '' : 's'} cleared by an earlier bulk delete`;
+      }
+      if (genMode === 'fresh') {
+        if ((summary.clearedExclusionsSingle || 0) > 0) {
+          historySummary += ` — brought back ${summary.clearedExclusionsSingle} shift${summary.clearedExclusionsSingle === 1 ? '' : 's'} deleted one by one`;
+        }
+        if ((summary.clearedSuppressions || 0) > 0) {
+          historySummary += ` — reopened ${summary.clearedSuppressions} closed open position${summary.clearedSuppressions === 1 ? '' : 's'}`;
+        }
+        if ((summary.replacedDrafts || 0) > 0) {
+          historySummary += ` — replaced ${summary.replacedDrafts} draft shift${summary.replacedDrafts === 1 ? '' : 's'}`;
+        }
+        if ((summary.clearedStaleExtras || 0) > 0) {
+          historySummary += ` — removed ${summary.clearedStaleExtras} extra open position${summary.clearedStaleExtras === 1 ? '' : 's'} left over from the deleted shifts`;
+        }
       }
       if (summary.created === 0 && skParts.length) {
         historySummary += ` (skipped ${skParts.join(', ')})`;

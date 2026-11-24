@@ -63,7 +63,7 @@
 import { withTransaction } from '../db.js';
 import { getShiftTypeTimes, makeTimedShift, findShiftConflict } from './shiftConflicts.js';
 import { getGeneratedTypeIds, getTypesWithRotations } from './scheduleMode.js';
-import { setDraftOpenCount, draftOpenTotal } from './openSlots.js';
+import { setDraftOpenCount, draftOpenTotal, clearOpenSlotClosures, clearDraftOpenSlots } from './openSlots.js';
 import type { AuditEntry } from './audit.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number }>;
@@ -560,9 +560,14 @@ export interface GenerateOpts {
   rotationIds: string[];
   from: string;
   to: string;
-  /** Accepted for API compat — both behave like 'keep' now
-   *  (Deepika, 2026-11-23: a draft never replaces anything already
-   *  on the schedule). */
+  /** 'keep' = hand fixes + deletions stay, the rest refreshes;
+   *  'fresh' = replace every still-draft row of the rotation in
+   *  range, clear every exclusion in scope (one-by-one AND bulk)
+   *  and every closed-open suppression for the draft's types, so
+   *  deleted people and closed opens come back (Deepika,
+   *  2026-11-24: "Bring back everything I deleted"). Published
+   *  rows and hand-added rows (rotation_id NULL) are never
+   *  touched, in either mode. */
   mode: 'keep' | 'fresh';
   /** Dry run: compute only, write nothing (the D1 choice dialog). */
   dryRun?: boolean;
@@ -627,6 +632,43 @@ export interface GenerateSummary {
    */
   bulkDeletedCount?: number;
   clearedBulkExclusions?: number;
+  /**
+   * Fresh only, real run: how many exclusions of ANY origin the
+   * fresh reset cleared in scope (one-by-one AND bulk), split
+   * below. Keep mode clears bulk only, so clearedExclusions
+   * equals clearedBulkExclusions there.
+   */
+  clearedExclusions?: number;
+  clearedExclusionsSingle?: number;
+  /** Fresh only, real run: suppressed opens cleared in scope. */
+  clearedSuppressions?: number;
+  /** Fresh only, real run: draft-open rows cleared in scope. */
+  clearedDraftOpens?: number;
+  /**
+   * Fresh only, real run: extra opens removed as stale delete
+   * grants — deleting a shift grants one extra open for the
+   * vacated position, and fresh refills it from the rotation, so
+   * the grant would stand beside the returning person as a
+   * phantom open. Capped per date+type by the exclusions cleared,
+   * so a hand-added extra survives whenever the deletes don't
+   * cover it.
+   */
+  clearedStaleExtras?: number;
+  /**
+   * Dry run only: what a fresh re-draft of this same call would
+   * clear — the confirmation counts for the "Re-draft from the
+   * rotations" button. Exclusions in scope, split by origin;
+   * suppressed opens for the step-1 types; still-draft rows of
+   * the rotations in scope; draft-open rows for the step-1 types;
+   * stale delete-granted extras (see clearedStaleExtras).
+   */
+  freshExclusions?: number;
+  freshExclusionsSingle?: number;
+  freshExclusionsBulk?: number;
+  freshSuppressions?: number;
+  freshDraftShifts?: number;
+  freshDraftOpens?: number;
+  freshStaleExtras?: number;
   /** Dry run only: occurrences that would be created. */
   wouldCreate?: number;
   /**
@@ -1203,12 +1245,23 @@ export async function generateRotations(
   // a bulk delete clears a range so it can be re-drafted, and its
   // exclusions are range-clear markers. The draft clears them in
   // its own scope (rotations, picked types/users, range) BEFORE
-  // computing occurrences, so the people come back. One-by-one
-  // deletes (origin 'single') stay — a re-draft must not bring
-  // those people back. Draft mode only; the migration stamps live
-  // truth and must not clear anything. The dry run never writes:
-  // it computes with bulk exclusions ignored instead (below).
+  // computing occurrences, so the people come back. Fresh mode
+  // (Deepika, 2026-11-24 — "Bring back everything I deleted")
+  // clears exclusions of EVERY origin in the same scope — the
+  // one-by-one deletes come back too. Keep mode still clears bulk
+  // only: one-by-one deletes stay. Draft mode only; the migration
+  // stamps live truth and must not clear anything. The dry run
+  // never writes: it computes with bulk exclusions ignored instead
+  // (below); the fresh dry-run counts below preview the full
+  // clear.
   let clearedBulkExclusions = 0;
+  let clearedExclusions = 0;
+  let clearedExclusionsSingle = 0;
+  // Fresh only: exclusions cleared per date+type — the cap for the
+  // stale-extra removal in the fresh reset below (one extra per
+  // cleared exclusion, so a hand-added extra survives whenever
+  // the deletes don't cover it).
+  const clearedExclusionsByPair = new Map<string, number>();
   if (publishMode === 'draft' && !opts.dryRun) {
     const clearParams: any[] = [companyId, rotationIds, from, to];
     let clearScope = '';
@@ -1220,13 +1273,21 @@ export async function generateRotations(
       clearScope += ` AND user_id = ANY($${clearParams.length + 1}::uuid[])`;
       clearParams.push([...onlyUserIds]);
     }
+    const originFilter = mode === 'fresh' ? '' : ` AND origin = 'bulk'`;
     const cleared = await tx(
       `DELETE FROM rotation_shift_exclusions
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
-         AND date >= $3 AND date <= $4 AND origin = 'bulk'${clearScope}`,
+         AND date >= $3 AND date <= $4${originFilter}${clearScope}
+       RETURNING origin, date::text AS date, shift_type_id AS "shiftTypeId"`,
       clearParams
     );
-    clearedBulkExclusions = cleared.rowCount || 0;
+    clearedExclusions = cleared.rowCount || 0;
+    for (const r of cleared.rows || []) {
+      if (r.origin === 'bulk') clearedBulkExclusions++;
+      else clearedExclusionsSingle++;
+      const k = `${r.date}|${r.shiftTypeId}`;
+      clearedExclusionsByPair.set(k, (clearedExclusionsByPair.get(k) || 0) + 1);
+    }
   }
   // The dry run previews the real run, so it computes as if the
   // bulk exclusions were already cleared; the real run above
@@ -1272,6 +1333,57 @@ export async function generateRotations(
          AND date >= $3 AND date <= $4 AND origin = 'bulk'${userScope}`,
       [companyId, rotationIds, from, to, ...userParams]
     );
+    // Fresh preview (Deepika, 2026-11-24): what "Re-draft from the
+    // rotations" would clear on this same call — the confirmation
+    // counts. Scoped exactly like the real fresh reset below
+    // (rotations, picked types/users, range). The exclusion and
+    // draft-shift counts are type-scoped, unlike the keep dialog's
+    // counts above: fresh must never report a row outside its
+    // scope as coming back.
+    let freshExclusions = 0, freshExclusionsSingle = 0, freshExclusionsBulk = 0;
+    let freshSuppressions = 0, freshDraftShifts = 0, freshDraftOpens = 0;
+    let freshStaleExtras = 0;
+    const freshExclByPair = new Map<string, number>();
+    {
+      const fParams: any[] = [companyId, rotationIds, from, to];
+      let fScope = '';
+      if (onlyShiftTypeIds) {
+        fScope += ` AND shift_type_id = ANY($${fParams.length + 1}::uuid[])`;
+        fParams.push([...onlyShiftTypeIds]);
+      }
+      if (onlyUserIds) {
+        fScope += ` AND user_id = ANY($${fParams.length + 1}::uuid[])`;
+        fParams.push([...onlyUserIds]);
+      }
+      const { rows: fExcl } = await tx(
+        `SELECT origin, COUNT(*)::int AS n FROM rotation_shift_exclusions
+         WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
+           AND date >= $3 AND date <= $4${fScope}
+         GROUP BY origin`,
+        fParams
+      );
+      for (const r of fExcl) {
+        freshExclusions += r.n;
+        if (r.origin === 'bulk') freshExclusionsBulk += r.n;
+        else freshExclusionsSingle += r.n;
+      }
+      const { rows: fShifts } = await tx(
+        `SELECT COUNT(*)::int AS n FROM shifts
+         WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
+           AND published = false AND date >= $3 AND date <= $4${fScope}`,
+        fParams
+      );
+      freshDraftShifts = fShifts[0]?.n || 0;
+      const { rows: fExclPairs } = await tx(
+        `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COUNT(*)::int AS n
+         FROM rotation_shift_exclusions
+         WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
+           AND date >= $3 AND date <= $4${fScope}
+         GROUP BY date, shift_type_id`,
+        fParams
+      );
+      for (const r of fExclPairs) freshExclByPair.set(`${r.date}|${r.shiftTypeId}`, r.n);
+    }
     const skipped = emptySkipped();
     const skippedDetail: SkipDetail[] = [];
     const perRotation: PerRotationSummary[] = [];
@@ -1293,6 +1405,37 @@ export async function generateRotations(
         const additions = computeTargetStoreAdditions(inputs, storedRows, state, from, to, typeIds, today);
         dryAdditions = additions;
         for (const v of additions.values()) targetsStored += v;
+        // Fresh preview, continued: suppressed opens and draft
+        // opens for the step-1 types — the closed positions a
+        // fresh re-draft would reopen, and the draft opens it
+        // would rebuild from the target.
+        const typeList = [...typeIds];
+        const { rows: fSupp } = await tx(
+          `SELECT COALESCE(SUM(count), 0)::int AS n FROM suppressed_open_slots
+           WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::text[])`,
+          [companyId, from, to, typeList]
+        );
+        freshSuppressions = fSupp[0]?.n || 0;
+        const { rows: fDraft } = await tx(
+          `SELECT COALESCE(SUM(count), 0)::int AS n FROM draft_open_slots
+           WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::text[])`,
+          [companyId, from, to, typeList]
+        );
+        freshDraftOpens = fDraft[0]?.n || 0;
+        // Stale delete-granted extras, as the real reset would
+        // remove them: up to one extra per exclusion cleared on
+        // the date+type.
+        const { rows: fExtra } = await tx(
+          `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+           FROM extra_open_slots
+           WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::uuid[])
+           GROUP BY date, shift_type_id`,
+          [companyId, from, to, typeList]
+        );
+        for (const r of fExtra) {
+          const cap = freshExclByPair.get(`${r.date}|${r.shiftTypeId}`) || 0;
+          freshStaleExtras += Math.min(r.n, cap);
+        }
       }
     }
     // Net, like the real run: the simulated placements take stored
@@ -1339,19 +1482,181 @@ export async function generateRotations(
       skipped, skippedDetail, perRotation,
       existingDrafts: draftRows[0]?.n || 0, deletedCount: exclRows[0]?.n || 0,
       bulkDeletedCount: bulkRows[0]?.n || 0, wouldCreate, createdRows,
+      freshExclusions, freshExclusionsSingle, freshExclusionsBulk,
+      freshSuppressions, freshDraftShifts, freshDraftOpens, freshStaleExtras,
     };
   }
 
   // ---- Real generation.
   const summary: GenerateSummary = {
     generationIds: [], created: 0, replacedDrafts: 0, keptDrafts: 0, openedSlots: 0,
-    targetsStored: 0, clearedBulkExclusions,
+    targetsStored: 0, clearedBulkExclusions, clearedExclusions, clearedExclusionsSingle,
+    clearedSuppressions: 0, clearedDraftOpens: 0, clearedStaleExtras: 0,
     openedShortfall: 0,
     skipped: emptySkipped(), skippedDetail: [], perRotation: [], auditEntries: [], createdRows: [],
   };
   const auditEntries: AuditEntry[] = summary.auditEntries!;
   let storedRows = await loadStoredRows(tx, companyId, from, to);
   const crypto = await import('node:crypto');
+  // One generation id per rotation, fixed up front: the fresh
+  // reset below audits the drafts it replaces, and the loop
+  // stamps the same id on the rows it creates.
+  const generationIdByRotation = new Map<string, string>(
+    ordered.map((rid) => [rid, crypto.randomUUID()])
+  );
+
+  // Step 1's type set is computed BEFORE any fresh reset: the
+  // footprint reads the stored shifts, and fresh deletes the
+  // call's draft shifts below — computing after the reset would
+  // risk dropping a type whose only footprint was a draft the
+  // reset just removed.
+  const step1Types = publishMode === 'draft'
+    ? await step1TypeSet(tx, companyId, ctx, rots, rotationIds, onlyShiftTypeIds, onlyUserIds, rotationless, storedRows, from, to)
+    : new Set<string>();
+
+  // ---- Fresh reset (Deepika, 2026-11-24 — "Bring back everything
+  // I deleted"). Runs BEFORE step 1, in draft mode only, and only
+  // when mode is 'fresh'. Order matters: step 1's math reads the
+  // stored shifts and the open-slot state, so the reset runs
+  // BEFORE step 1 computes — otherwise step 1 would store against
+  // the old drafts and step 2 would consume opens that were never
+  // re-stored. Exclusions were already cleared above (before the
+  // context load) — all origins in fresh, bulk only in keep.
+  // The reset clears, in the draft's scope (rotations, picked
+  // types/users, range; step-1 types for the open slots):
+  //   - every still-draft row of the call's rotations (hand-added
+  //     rows have rotation_id NULL and are never touched;
+  //     published rows are never touched);
+  //   - every closed-open suppression for the step-1 types, so
+  //     closed days come back as opens;
+  //   - every draft-open row for the step-1 types, so step 1
+  //     rebuilds the shortfall from the target as it is now (the
+  //     additive store would otherwise keep a stale count).
+  // Positive extra rows are real added slots and are never
+  // touched. Past dates are never reopened.
+  const freshReplacedByRotation = new Map<string, number>();
+  if (publishMode === 'draft' && mode === 'fresh') {
+    // 1. Still-draft rows of the call's rotations in scope.
+    {
+      const delParams: any[] = [companyId, rotationIds, from, to];
+      let delScope = '';
+      if (onlyShiftTypeIds) {
+        delScope += ` AND shift_type_id = ANY($${delParams.length + 1}::uuid[])`;
+        delParams.push([...onlyShiftTypeIds]);
+      }
+      if (onlyUserIds) {
+        delScope += ` AND user_id = ANY($${delParams.length + 1}::uuid[])`;
+        delParams.push([...onlyUserIds]);
+      }
+      const { rows: del } = await tx(
+        `DELETE FROM shifts
+         WHERE company_id = $1 AND rotation_id = ANY($2::uuid[]) AND published = false
+           AND date >= $3 AND date <= $4${delScope}
+         RETURNING rotation_id AS "rotationId", user_id AS "userId",
+                   date::text AS date, shift_type_id AS "shiftTypeId"`,
+        delParams
+      );
+      for (const r of del) {
+        freshReplacedByRotation.set(r.rotationId, (freshReplacedByRotation.get(r.rotationId) || 0) + 1);
+      }
+      // The deleted rows leave the in-memory stored set too, or
+      // step 1 below would count them as filled.
+      const delKeys = new Set(del.map((r: any) => `${r.userId}|${r.date}|${r.shiftTypeId}`));
+      storedRows = storedRows.filter((s) => !delKeys.has(`${s.userId}|${s.date}|${s.shiftTypeId}`));
+      // Audit the replaced drafts, one row per person (mirrors the
+      // publish flow's per-person rows). Entries are RETURNED, not
+      // written here: auditLog uses the global query, so writing
+      // inside this transaction would leave phantom rows on a
+      // rollback — the caller writes them after the commit.
+      const byUser = new Map<string, { n: number; rotationId: string }>();
+      for (const r of del) {
+        const e = byUser.get(r.userId) || { n: 0, rotationId: r.rotationId };
+        e.n++;
+        byUser.set(r.userId, e);
+      }
+      for (const [uid, e] of byUser) {
+        const { rows: nm } = await tx(
+          'SELECT nickname, first_name, last_name FROM users WHERE id = $1', [uid]
+        );
+        const personName = nm.length
+          ? (nm[0].nickname || `${nm[0].first_name || ''} ${nm[0].last_name || ''}`.trim() || null) : null;
+        auditEntries.push({
+          companyId, date: today, action: 'deleted', category: 'schedule',
+          personName, source: 'rotation', changedBy: opts.createdBy,
+          affectedUserId: uid, scheduleDate: from, scheduleDateEnd: to,
+          rotationName: byId.get(e.rotationId)?.name,
+          description: `Re-drafted from the rotation — ${e.n} draft shift(s) replaced (${from} – ${to})`,
+          details: { generationId: generationIdByRotation.get(e.rotationId), rotationId: e.rotationId, count: e.n, from, to, mode: 'fresh' },
+        });
+      }
+    }
+    // 2. Closed-open suppressions + draft opens for the step-1
+    // types, so closed days come back and the shortfall rebuilds.
+    if (step1Types.size) {
+      const pairs: Array<{ date: string; shiftTypeId: string }> = [];
+      for (let n = dayNum(from); n <= dayNum(to); n++) {
+        const date = dateOfDayNum(n);
+        if (date < today) continue; // past is truth — never reopen the past
+        for (const typeId of step1Types) pairs.push({ date, shiftTypeId: typeId });
+      }
+      const typeList = [...step1Types];
+      const { rows: suppRows } = await tx(
+        `SELECT COALESCE(SUM(count), 0)::int AS n FROM suppressed_open_slots
+         WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::text[])`,
+        [companyId, from, to, typeList]
+      );
+      summary.clearedSuppressions = suppRows[0]?.n || 0;
+      const { rows: draftRows2 } = await tx(
+        `SELECT COALESCE(SUM(count), 0)::int AS n FROM draft_open_slots
+         WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::text[])`,
+        [companyId, from, to, typeList]
+      );
+      summary.clearedDraftOpens = draftRows2[0]?.n || 0;
+      await clearOpenSlotClosures(tx, companyId, pairs);
+      await clearDraftOpenSlots(tx, companyId, pairs);
+    }
+    // 3. Stale delete-granted extras: deleting a shift grants one
+    // extra open for the vacated position (ensureOpenSlotForDelete),
+    // and fresh refills those positions from the rotation — the
+    // granted extras would otherwise stand beside the returning
+    // people as phantom opens, and step 1 would under-store
+    // against them. Remove up to one extra per cleared exclusion
+    // on the date+type — never more than the deletes, so a
+    // hand-added extra survives whenever the deletes don't cover
+    // it. Step 1 below then rebuilds the shortfall from the target
+    // against the genuine extras only.
+    if (step1Types.size && clearedExclusionsByPair.size) {
+      let staleExtras = 0;
+      for (let n = dayNum(from); n <= dayNum(to); n++) {
+        const date = dateOfDayNum(n);
+        if (date < today) continue; // past is truth — never reopen the past
+        for (const typeId of step1Types) {
+          const cap = clearedExclusionsByPair.get(`${date}|${typeId}`) || 0;
+          if (!cap) continue;
+          const { rows: exRows } = await tx(
+            'SELECT count FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3 FOR UPDATE',
+            [companyId, date, typeId]
+          );
+          const cur = exRows.length ? Number(exRows[0].count) || 0 : 0;
+          const take = Math.min(cur, cap);
+          if (!take) continue;
+          staleExtras += take;
+          if (take >= cur) {
+            await tx(
+              'DELETE FROM extra_open_slots WHERE company_id = $1 AND date = $2 AND shift_type_id = $3',
+              [companyId, date, typeId]
+            );
+          } else {
+            await tx(
+              'UPDATE extra_open_slots SET count = $1 WHERE company_id = $2 AND date = $3 AND shift_type_id = $4',
+              [cur - take, companyId, date, typeId]
+            );
+          }
+        }
+      }
+      summary.clearedStaleExtras = staleExtras;
+    }
+  }
 
   // ---- Step 1 — targets first (Deepika, 2026-11-23). Pull the
   // staffing targets and store them as draft open slots, BEFORE
@@ -1368,7 +1673,6 @@ export async function generateRotations(
   // step1Additions is kept for the net openedShortfall below.
   let step1Additions: Map<string, number> | null = null;
   if (publishMode === 'draft') {
-    const step1Types = await step1TypeSet(tx, companyId, ctx, rots, rotationIds, onlyShiftTypeIds, onlyUserIds, rotationless, storedRows, from, to);
     if (step1Types.size) {
       const inputs = await loadShortfallInputs(tx, companyId, from, to);
       const state = await loadOpenSlotState(tx, companyId, from, to);
@@ -1386,7 +1690,7 @@ export async function generateRotations(
   const consumedStep2 = new Map<string, number>();
   for (const id of ordered) {
     const rot = byId.get(id);
-    const generationId = crypto.randomUUID();
+    const generationId = generationIdByRotation.get(id)!;
     await tx(
       `INSERT INTO rotation_generations
          (id, company_id, rotation_id, rotation_name, range_start, range_end, mode, created_by, user_ids)
@@ -1396,12 +1700,14 @@ export async function generateRotations(
     );
     summary.generationIds.push(generationId);
 
-    // Keep current changes (Deepika, 2026-11-23): a draft NEVER
-    // deletes draft shifts or clears exclusions — the old fresh-mode
-    // replacement is gone. `mode` is accepted for API compat but
-    // behaves like 'keep' now. Count the still-draft rows that stay
-    // in place (picked members only, on a partial draft).
-    const replacedDrafts = 0;
+    // Keep current changes (Deepika, 2026-11-23): in keep mode a
+    // draft never deletes draft shifts — count the still-draft
+    // rows that stay in place (picked members only, on a partial
+    // draft). In fresh mode the reset above already replaced the
+    // in-scope drafts, so replacedDrafts comes from the reset and
+    // this counts only what fresh left alone (unpicked types).
+    const replacedDrafts = freshReplacedByRotation.get(id) || 0;
+    summary.replacedDrafts += replacedDrafts;
     let keptDrafts = 0;
     {
       const { rows: kept } = await tx(
@@ -1504,8 +1810,8 @@ export async function generateRotations(
   // rotation people still got their draft shift, so the count
   // never goes negative). The old post-loop shortfall pass is gone:
   // step 1 already stored the targets before the rotations placed,
-  // and this draft never clears suppressions (keep current changes
-  // — the Nov 20 "draft pulls closed days back" rule is superseded).
+  // and keep mode never clears suppressions (keep current changes).
+  // Fresh mode cleared them in the reset above, before step 1.
   if (publishMode === 'draft') {
     for (const [k, take] of consumedStep2) {
       const [date, shiftTypeId] = k.split('|');
