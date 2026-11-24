@@ -32,7 +32,7 @@ import { sendSessionOfferNotifications } from '../util/sessionOfferEmails.js';
 import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
-import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
+import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getStoredModelDates, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
 import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
@@ -1081,7 +1081,11 @@ router.get('/shifts', async (req: Request, res: Response) => {
     // while stored-model types (generated AND rotation-backed) show
     // their stored opens and the draft mark gates nothing for them.
     // `storedModelTypeIds` tells the client which types those are.
-    // `notDraftedDates` is the day-level version (any generation
+    // `storedByType` (draft design, Deepika 2026-11-23) is the
+    // per-date version of that determination: the dates whose opens
+    // read from STORED rows, for ALL generated types — a drafted
+    // date reads stored opens, an undrafted date keeps the computed
+    // target count. `notDraftedDates` is the day-level version (any generation
     // covering the date = drafted) for the "Not drafted yet" day
     // header; `scheduleMode` is the company summary:
     // 'live' | 'generated' | 'mixed'.
@@ -1090,6 +1094,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
     const rotationShifts: any[] = [];
     let notDraftedDates: string[] = [];
     let notDraftedByType: Record<string, string[]> = {};
+    let storedByType: Record<string, string[]> = {};
     const drawn = await drawRotationOccurrences(query, companyId, from, to, rows, { skipShiftTypeIds: generatedTypes });
     rotationShifts.push(...drawn.occurrences);
     if (!employeeView && generatedTypes.size) {
@@ -1097,6 +1102,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       // "Not drafted yet" header; per-type for the OPEN suppression.
       notDraftedDates = await getUndraftedDates(query, companyId, from, to);
       notDraftedByType = await getNotDraftedByType(query, companyId, generatedTypes, from, to);
+      storedByType = await getStoredModelDates(query, companyId, generatedTypes, from, to);
     }
 
     // Merge and sort.
@@ -1216,6 +1222,7 @@ router.get('/shifts', async (req: Request, res: Response) => {
       scheduleMode: await getCompanyModeSummary(query, companyId),
       generatedTypeIds: [...generatedTypes],
       storedModelTypeIds: [...storedModelTypes],
+      storedByType,
       notDraftedDates, notDraftedByType,
     });
   } catch (err) {
@@ -1979,7 +1986,8 @@ router.post('/shifts/bulk-delete', requireRole('owner', 'scheduler'), async (req
     // shift types are all generated — a 'Bulk delete' pause would
     // suppress FUTURE generations of those dates, and the D1
     // deletion markers are the exclusions the widened sweep below
-    // writes (keep-changes reads them; fresh clears them). Rotations
+    // writes (a draft never clears them — keep current changes,
+    // Deepika 2026-11-23). Rotations
     // with any live type are paused as before. (Group rotations
     // have no assignments, so they never appear in this query —
     // the group-exclusion pass above covers them.)
@@ -6346,15 +6354,14 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 //   Both are validated against the company (unknown ids 400).
 //   dryRun: compute only, write nothing — the client calls it first;
 //     when existingDrafts > 0 or deletedCount > 0 it shows the D1
-//     choice dialog (with the clear notice) and re-calls with the
-//     picked mode. A clean range generates directly (mode 'fresh').
-//   mode 'keep': hand fixes + deletions stay; the rest refreshes.
-//   mode 'fresh': replace every still-draft row of the rotation in
-//     range, clear its exclusions there (deleted people return).
-//     A partial fresh re-draft replaces only the picked members'
-//     rows — an unpicked member's drafts stay exactly as they are.
+//     choice dialog (keep-only, with the clear notice) and re-calls
+//     with mode 'keep'. A clean range generates directly (mode 'keep').
+//   mode 'keep' (and 'fresh', accepted for compat): hand fixes +
+//     deletions stay; the draft only adds what is still missing —
+//     targets first, then the rotations. Since 2026-11-23 a draft
+//     NEVER replaces anything already on the schedule.
 //   Both modes NEVER touch published rows, and NEVER touch hand-added
-//   rows (rotation_id NULL) — a re-draft only replaces rotation-origin
+//   rows (rotation_id NULL) — a re-draft only adds rotation-origin
 //   rows, because there is no rotation to replace a hand-added shift
 //   from (Nov 13, 11:59 PM).
 // ---------------------------------------------------------------------------
@@ -6373,7 +6380,7 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     const from = String(req.body?.from || '');
     const to = String(req.body?.to || '');
     const dryRun = req.body?.dryRun === true;
-    const genMode = req.body?.mode === 'keep' ? 'keep' : 'fresh';
+    const genMode = req.body?.mode === 'fresh' ? 'fresh' : 'keep';
     if (!rotationIds.length && !shiftTypeIds.length) {
       res.status(400).json({ error: 'Pick at least one rotation.' });
       return;
@@ -6461,8 +6468,10 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     for (const e of summary.auditEntries || []) await auditLog(e);
     // History snapshot (Deepika, 2026-11-17): a frozen copy after
     // every draft change — but only when the draft actually changed
-    // something (a no-op re-draft saves no copy).
-    if (summary.created > 0 || summary.replacedDrafts > 0) {
+    // something (a no-op re-draft saves no copy). Step 1 storing
+    // targets counts as a change: a rotation-less draft stores
+    // opens and creates no shifts.
+    if (summary.created > 0 || summary.replacedDrafts > 0 || (summary.targetsStored || 0) > 0) {
       const rotNames = [...new Set((summary.perRotation || []).map((p: any) => p.rotationName).filter(Boolean))];
       const what = rotNames.length ? rotNames.join(', ') : `${shiftTypeIds.length} shift type${shiftTypeIds.length === 1 ? '' : 's'}`;
       await recordHistorySnapshot({
@@ -6962,10 +6971,6 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       res.status(400).json({ error: 'That publish is too large — narrow the range.' });
       return;
     }
-    if (!addsIn.length && !removesIn.length && !opensIn.length && !closesIn.length && !flipsIn.length) {
-      res.status(400).json({ error: 'There is nothing to publish in that range.' });
-      return;
-    }
     const scope = await resolvePublishScope(req, res, req.body?.departmentIds);
     if (!scope.ok) return;
     const filters = await parsePublishFilters(req, res, companyId);
@@ -6977,6 +6982,24 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
     const today = await companyTodayStr(companyId);
     const generatedTypes = await getGeneratedTypeIds(query, companyId);
     const batchId = crypto.randomUUID();
+    // Draft-open-only publish (Deepika, 2026-11-23 — draft
+    // redesign): a range whose only drafts are stored open slots
+    // (a rotation-less type like Day NP, drafted from its target)
+    // still has something to publish — the opens move to extra.
+    // Without this the gate below 400s ("nothing to publish") and
+    // the opens strand as draft forever.
+    const { rows: draftOpenRows } = await query(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId"
+       FROM draft_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3 AND count > 0`,
+      [companyId, from, to]
+    );
+    const draftOpenPairs = draftOpenRows
+      .filter((r: any) => generatedTypes.has(r.shiftTypeId) && inScope(r.shiftTypeId))
+      .map((r: any) => `${r.date}|${r.shiftTypeId}`);
+    if (!addsIn.length && !removesIn.length && !opensIn.length && !closesIn.length && !flipsIn.length && !draftOpenPairs.length) {
+      res.status(400).json({ error: 'There is nothing to publish in that range.' });
+      return;
+    }
     const addedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
     const removedByUser = new Map<string, { count: number; firstDate: string; lastDate: string; types: Set<string> }>();
     const bump = (m: Map<string, any>, uid: string, date: string, shiftTypeId?: string) => {
@@ -6987,13 +7010,17 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       if (date > t.lastDate) t.lastDate = date;
       m.set(uid, t);
     };
-    let added = 0, removed = 0, opened = 0, closed = 0, flipped = 0;
+    let added = 0, removed = 0, opened = 0, closed = 0, flipped = 0, opensPublished = 0;
     // Publishing the day publishes the opens with it (Deepika,
     // 2026-11-20): the (date, type) pairs this publish actually
     // touches — a flip, an add, or a rule-7 open — have their draft
     // opens go published and any closures cleared. Closes are
     // excluded: they take opens away, they don't restore them.
     const publishPairs = new Set<string>();
+    // Draft-open pairs seed the publish even when no shift flip or
+    // add touches them (rotation-less types) — their draft opens
+    // move to extra below.
+    for (const k of draftOpenPairs) publishPairs.add(k);
     // Stamped positions per pair (detached open slots, 2026-11-20):
     // each add this publish stamps fills one open position, so the
     // draft shortfall that moves to published opens shrinks by
@@ -7165,7 +7192,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       // filled positions — and the moves are ledgered under this
       // batch so undoing it can put them back to draft exactly.
       if (publishOpens && publishPairs.size) {
-        await publishOpenSlotsForPairs(
+        const movedRes = await publishOpenSlotsForPairs(
           tx.query,
           companyId,
           [...publishPairs].map((k) => {
@@ -7176,6 +7203,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
           false,
           { batchId, stampedByPair }
         );
+        opensPublished = movedRes.moved;
       }
     });
 
@@ -7236,6 +7264,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
       if (removed) bits.push(`${removed} removed`);
       if (opened) bits.push(`${opened} open slot${opened === 1 ? '' : 's'} added`);
       if (closed) bits.push(`${closed} open slot${closed === 1 ? '' : 's'} closed`);
+      if (opensPublished) bits.push(`${opensPublished} draft open${opensPublished === 1 ? '' : 's'} published`);
       const pubUserIds = [...new Set([
         ...addsIn.map((a: any) => a.userId).filter(Boolean),
         ...addedByUser.keys(), ...removedByUser.keys(),
@@ -7254,7 +7283,7 @@ router.post('/publish', requireRole('owner', 'scheduler'), async (req: Request, 
         shiftTypeIds: pubTypeIds, userIds: pubUserIds,
       });
     }
-    res.json({ ok: true, batchId, added, removed, opened, closed, flipped });
+    res.json({ ok: true, batchId, added, removed, opened, closed, flipped, opensPublished });
 
     // Notify affected people (never the acting admin about their own
     // action) — same shapes as bulk publish/unpublish.
@@ -9662,12 +9691,14 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
 // the same eligibility + conflict guards as an open-slot claim.
 // Per-slot open publish state (Deepika, 2026-11-17): how many of a
 // date+type's opens are draft, and how many are published.
-// Detached open slots (Deepika, 2026-11-20): for a STORED-MODEL type
+// Draft design (Deepika, 2026-11-23): for a DRAFTED generated date
 // the total is extra + draft − suppressed — never the target minus
 // filled. `draft` is the raw stored count (the endpoint decrements
 // it); the UI renders min(draft, total) positions as draft, so a
 // stale row left behind when opens disappear can never over-claim.
-// For other types the total is the same formula the grid uses
+// Rotation-less generated types join the stored read once a draft
+// has stored their target (their ledger rows mark the date).
+// For other dates the total is the same formula the grid uses
 // (target + extra - filled), with a closed date counting 0 — but
 // WITHOUT the undrafted-date suppression: the claim endpoint never
 // applied that rule, and this helper must not change what it allows
@@ -9679,10 +9710,13 @@ router.post('/availability/public/respond', async (req: Request, res: Response) 
 // types have no stored shortfall, so the computed formula is the
 // one place it survives, for types with no draft to detach from.
 async function openSlotTotals(q: any, companyId: string, date: string, shiftTypeId: string, useStored = false) {
-  const storedModel = await getStoredModelTypeIds(q, companyId);
-  if (storedModel.has(shiftTypeId)) {
-    const stored = await storedOpenSlots(q, companyId, date, shiftTypeId);
-    return { total: stored.total, draft: stored.draft, published: stored.published, closed: stored.closed };
+  const generated = await getGeneratedTypeIds(q, companyId);
+  if (generated.has(shiftTypeId)) {
+    const storedByType = await getStoredModelDates(q, companyId, generated, date, date);
+    if ((storedByType[shiftTypeId] || []).includes(date)) {
+      const stored = await storedOpenSlots(q, companyId, date, shiftTypeId);
+      return { total: stored.total, draft: stored.draft, published: stored.published, closed: stored.closed };
+    }
   }
   const { rows: trows } = await q(
     `SELECT target_count, weekdays, start_date::text AS start_date, end_date::text AS end_date

@@ -50,7 +50,7 @@
  * for both the per-slot X and the type-close" (Deepika, 2026-11-21).
  */
 
-import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType, getStoredModelTypeIds } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getUndraftedDatesForType } from './scheduleMode.js';
 import { getShiftsForRange } from './shiftRange.js';
 export type OpenSlotQuery = (
   text: string,
@@ -559,10 +559,13 @@ export async function clearDraftOpenSlots(
  * available"): for every GENERATED (date, type) pair the publish
  * touched, the draft-open rows go (the opens become published) and
  * the closures go (a suppressed or closed day is pulled back).
- * For STORED-MODEL pairs (generated AND rotation-backed) the
+ * For GENERATED pairs (rotation-backed AND rotation-less) the
  * draft's stored shortfall MOVES into extra_open_slots — the
  * published store — so the opens stay visible after the draft row
- * goes, with no live link back to the target. The move is the
+ * goes, with no live link back to the target. Since the redesign
+ * (Deepika, 2026-11-23) step 1 stores EVERY generated type's
+ * target as draft opens — Day NP included — the move covers every
+ * generated pair, not only rotation-backed ones. The move is the
  * draft's count minus what this publish itself stamped into filled
  * positions (opts.stampedByPair, per "date|type"): a publish that
  * stamps people into the open positions fills them, so they stop
@@ -573,9 +576,9 @@ export async function clearDraftOpenSlots(
  * publish), each move is ledgered in publish_batch_draft_moves so
  * undoing the batch can put the opens back to draft exactly; the
  * flip path and AI publish pass no batch and record nothing.
- * Rotation-less generated pairs keep the base behavior — clear the
- * draft rows and the closures, no move, no ledger (their opens are
- * computed from the target, so there is nothing stored to move).
+ * Live types never move: their opens are computed from the target,
+ * so there is nothing stored to move (they keep the base behavior
+ * — clear the draft rows and the closures, no move, no ledger).
  * Live types are filtered out by default — their opens were never
  * draft and their closures are not this rule's business. The bulk
  * publish-open-slots function (Deepika, 2026-11-22) passes
@@ -586,11 +589,14 @@ export async function clearDraftOpenSlots(
 export async function publishOpenSlotsForPairs(
   q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
   generatedTypeIds: Set<string>, includeLive = false,
-  opts?: { batchId?: string | null; stampedByPair?: Map<string, number> }): Promise<void> {
+  opts?: { batchId?: string | null; stampedByPair?: Map<string, number> }): Promise<{ moved: number }> {
   const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
-  if (!list.length) return;
-  const storedModel = await getStoredModelTypeIds(q, companyId);
-  const storedList = list.filter((p) => storedModel.has(p.shiftTypeId));
+  if (!list.length) return { moved: 0 };
+  // The move covers every GENERATED pair in the list (rotation-backed
+  // and rotation-less alike — step 1 stores both); live pairs (only
+  // present when includeLive) never move.
+  const storedList = list.filter((p) => generatedTypeIds.has(p.shiftTypeId));
+  let moved = 0;
   for (const p of storedList) {
     const draft = await draftOpenTotal(q, companyId, p.date, p.shiftTypeId);
     if (draft > 0) {
@@ -606,6 +612,7 @@ export async function publishOpenSlotsForPairs(
       const suppressed = await suppressedTotal(q, companyId, p.date, p.shiftTypeId);
       const move = Math.max(0, draft - suppressed - stamped);
       if (move > 0) {
+        moved += move;
         await q(
           `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
            VALUES ($1, $2, $3, $4, NULL)
@@ -627,6 +634,7 @@ export async function publishOpenSlotsForPairs(
   }
   await clearDraftOpenSlots(q, companyId, list);
   await clearOpenSlotClosures(q, companyId, list);
+  return { moved };
 }
 
 /**

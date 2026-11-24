@@ -416,6 +416,70 @@ export async function getNotDraftedByType(
 }
 
 /**
+ * Per generated type, the dates in [from, to] whose opens read from
+ * STORED rows (draft design, Deepika 2026-11-23): a drafted date
+ * reads stored opens for ALL generated types; the computed target
+ * count survives only on undrafted dates.
+ *
+ * A date is stored for a type when either:
+ *  (a) a rotation producing the type generated over it (the
+ *      complement of getNotDraftedByType), or
+ *  (b) a rotation-less shortfall ledger row covers it (step 1 of a
+ *      draft stored that type's target there, under a NULL-rotation
+ *      generation — count 0 included, the row is the marker).
+ *
+ * The rotation-less exemption in getNotDraftedByType is deliberately
+ * NOT reproduced here: for a type with no rotation, (a) is empty and
+ * only (b) marks dates stored — an undrafted rotation-less date
+ * keeps its computed target count until a draft actually stores it.
+ * That exemption stays load-bearing for the gate's undrafted
+ * target-zeroing and for the close paths; this map is ONLY for the
+ * grid's stored-vs-computed determination.
+ */
+export async function getStoredModelDates(
+  q: QueryFn,
+  companyId: string,
+  generatedTypeIds: Set<string>,
+  from: string,
+  to: string
+): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  if (!generatedTypeIds.size) return out;
+  const [notDrafted, withRotations] = await Promise.all([
+    getNotDraftedByType(q, companyId, generatedTypeIds, from, to),
+    getTypesWithRotations(q, companyId),
+  ]);
+  const fromN = dayNum(from);
+  const toN = dayNum(to);
+  const allDates: string[] = [];
+  for (let n = fromN; n <= toN; n++) allDates.push(dateOfDayNum(n));
+  for (const typeId of generatedTypeIds) {
+    if (!withRotations.has(typeId)) { out[typeId] = []; continue; }
+    const undrafted = new Set(notDrafted[typeId] || []);
+    out[typeId] = allDates.filter((d) => !undrafted.has(d));
+  }
+  // (b) step-1 ledger coverage: shortfall rows under
+  // NULL-rotation generations (step 1's target store) — every
+  // step-1 type, not just rotation-less ones, so a footprint type
+  // with no rotation in the draft still reads stored after publish
+  // instead of the computed count double-counting shortfall + extra.
+  const { rows } = await q(
+    `SELECT DISTINCT gos.date::text AS date, gos.shift_type_id AS "shiftTypeId"
+     FROM generation_open_slots gos
+     JOIN rotation_generations rg ON rg.id = gos.generation_id
+     WHERE gos.company_id = $1 AND gos.kind = 'shortfall'
+       AND rg.rotation_id IS NULL AND gos.date >= $2 AND gos.date <= $3`,
+    [companyId, from, to]
+  );
+  for (const r of rows) {
+    if (!generatedTypeIds.has(r.shiftTypeId)) continue;
+    if (!out[r.shiftTypeId].includes(r.date)) out[r.shiftTypeId].push(r.date);
+  }
+  for (const typeId of Object.keys(out)) out[typeId].sort();
+  return out;
+}
+
+/**
  * Gate check for POST /generate: every named rotation must produce
  * only generated-type shifts. Returns the names of the live-mode
  * departments blocking the draft (empty when all generatable).
