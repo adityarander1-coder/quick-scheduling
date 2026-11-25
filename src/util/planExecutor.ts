@@ -3,8 +3,8 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
-import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal, draftOpenTotal, consumeExtraOpenSlot } from './openSlots.js';
-import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds } from './scheduleMode.js';
+import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal, draftOpenTotal, consumeOpenSlotForAssign } from './openSlots.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds, getStoredModelDates } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
 import { deleteExternalMeetingQuiet } from './meetingProviders.js';
 import { unusablePasswordHash } from './invites.js';
@@ -1372,10 +1372,13 @@ export async function getShiftTypeRules(companyId: string): Promise<string[]> {
  * stored-row swap), and a stale suppressed row can never push a
  * grant above `count` (the phantom over-grant: raw −1 → grant 2
  * for one delete).
- * Computed-model types (live types and rotation-less generated
- * types) keep the grid's formula: undrafted generated dates count
- * the target as 0 (the N2 rule, read from the grid's own
- * getNotDraftedByType map) — only stored extras show there.
+ * Computed-model types keep the grid's formula: undrafted
+ * generated dates count the target as 0 (the N2 rule, read from
+ * the grid's own getNotDraftedByType map) — only stored extras
+ * show there. A rotation-less generated type on a STORED date
+ * (Deepika, 2026-11-24 — Day NP add fix) reads the stored shape
+ * above instead — the grid reads stored there, so the shortfall
+ * must not be added on top of the extras a second time.
  * Generated types use max(0, max(0, effTarget − filled) + extra −
  * suppressed); live types keep the unclamped formula
  * (max(0, effTarget + extra − filled − suppressed), effTarget =
@@ -1422,22 +1425,29 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
   // closed — they subtract from the visible total until the next
   // draft/publish of this date+type pulls them back.
   const suppressed = await suppressedTotal(query as any, companyId, date, shiftTypeId);
-  const draft = isStored ? await draftOpenTotal(query as any, companyId, date, shiftTypeId) : 0;
   // N2 (Deepika, 2026-11-22): an undrafted generated date counts
   // the target as 0 — the grid shows no shortfall there. The
   // generated set + the not-drafted map are the grid's own reads.
+  // Stored dates (Deepika, 2026-11-24 — Day NP add fix): the
+  // grid's stored-vs-computed determination (getStoredModelDates)
+  // — a generated date with a step-1 ledger row or rotation
+  // coverage reads stored opens, rotation-less included.
   let isGenerated = false;
   let effTarget = target;
+  let storedDate = false;
   try {
     const generatedTypes = await getGeneratedTypeIds(query as any, companyId);
     isGenerated = generatedTypes.has(shiftTypeId);
     if (isGenerated) {
       const notDrafted = await getNotDraftedByType(query as any, companyId, generatedTypes, date, date);
       if ((notDrafted[shiftTypeId] || []).includes(date)) effTarget = 0;
+      const storedDates = await getStoredModelDates(query as any, companyId, generatedTypes, date, date);
+      storedDate = (storedDates[shiftTypeId] || []).includes(date);
     }
   } catch (ndErr: any) {
     console.error('[plan-executor] not-drafted read failed, using raw target:', ndErr?.message);
   }
+  const draft = (isStored || storedDate) ? await draftOpenTotal(query as any, companyId, date, shiftTypeId) : 0;
   // Filled = stored shifts PLUS rotation-drawn holders (Deepika,
   // 2026-11-19 — audit B sharpening, same as the gate: the grid
   // shows stored + drawn holders, so the approval-time re-check
@@ -1457,12 +1467,14 @@ async function openTotals(companyId: string, date: string, shiftTypeId: string):
     );
     filled = frows[0]?.n || 0;
   }
-  if (isStored) {
-    // Stored-model: opens are the stored slots only. `raw` is
-    // CLAMPED at 0 — a stale suppressed row (left behind by an
-    // earlier close on a date whose stored opens have since gone)
-    // must never push a delete-grant above `count` (the phantom
-    // over-grant: raw −1 → grant 2 for one delete).
+  if (isStored || storedDate) {
+    // Stored-model, or a rotation-less generated type on a stored
+    // date (Deepika, 2026-11-24 — Day NP add fix): opens are the
+    // stored slots only. `raw` is CLAMPED at 0 — a stale suppressed
+    // row (left behind by an earlier close on a date whose stored
+    // opens have since gone) must never push a delete-grant above
+    // `count` (the phantom over-grant: raw −1 → grant 2 for one
+    // delete).
     const raw = Math.max(0, extra + draft - suppressed);
     return { total: raw, filled, raw, extra: extra + draft, suppressed, effTarget: 0, isGenerated: true };
   }
@@ -1615,14 +1627,16 @@ export async function executePlan(
       } catch { /* best-effort */ }
     }
   }
-  // Stored-model types (detached open slots): only these consume a
-  // stored open when an AI assign fills one. Computed-model types
-  // are headcount only. Lazily loaded once per plan execution.
-  let storedModel: Set<string> | null = null;
-  const isStoredModel = async (typeId: string): Promise<boolean> => {
-    if (!storedModel) storedModel = await getStoredModelTypeIds(query as any, companyId);
-    return storedModel.has(typeId);
-  };
+  // Filling a stored open slot (Deepika, 2026-11-24 — Day NP add
+  // fix): an AI assign works like assigning a shift by hand — the
+  // person takes one stored open when one exists (a published
+  // extra first, then a draft open), and otherwise just adds
+  // headcount: a manager may always staff above the stored opens.
+  // Every type consumes now, not stored-model types only — the old
+  // stored-model-only consume left a rotation-less type's draft
+  // opens standing beside the assigned person (Day NP, Mar 15:
+  // Lin Jara assigned + 3 draft opens = total 4 against a target
+  // of 3). The manual assign doors already consume this way.
   for (const change of plan.changes || []) {
     try {
       if (change.action === 'assign' && change.person && change.date && change.shiftType) {
@@ -1640,17 +1654,14 @@ export async function executePlan(
         if (inserted.rowCount === 0) {
           results.push({ action: 'assign', success: true, message: `Already on ${st.name} on ${change.date} — no change needed` });
         } else {
-          // Filling a stored open slot (Deepika, 2026-11-20 —
-          // detached open slots): the person takes one stored
-          // published extra if one exists — otherwise the day shows
-          // the person working AND the open still standing beside
-          // them (double-fill). Stored-model types only.
-          // Best-effort: a consume failure never fails the assign
-          // itself.
+          // Filling a stored open slot (Deepika, 2026-11-24 — Day NP
+          // add fix): the person takes one stored open when one
+          // exists — a published extra first, then a draft open —
+          // otherwise the assign just adds headcount (no opens to
+          // fill is never a failure). Best-effort: a consume
+          // failure never fails the assign itself.
           try {
-            if (await isStoredModel(st.id)) {
-              await consumeExtraOpenSlot(query as any, companyId, change.date, st.id);
-            }
+            await consumeOpenSlotForAssign(query as any, companyId, change.date, st.id, true, createdBy);
           } catch (consumeErr: any) {
             console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
           }
@@ -1676,14 +1687,13 @@ export async function executePlan(
           );
           if ((inserted as any).rowCount) {
             added++;
-            // Filling a stored open slot (Deepika, 2026-11-20): the
-            // person takes one stored published extra if one exists
-            // on that date. Stored-model types only.
-            // Best-effort, never fails the assign.
+            // Filling a stored open slot (Deepika, 2026-11-24 — Day
+            // NP add fix): every type consumes now (see the assign
+            // branch above), published extra first, then a draft
+            // open; no opens is headcount only. Best-effort, never
+            // fails the assign.
             try {
-              if (await isStoredModel(st.id)) {
-                await consumeExtraOpenSlot(query as any, companyId, d, st.id);
-              }
+              await consumeOpenSlotForAssign(query as any, companyId, d, st.id, true, createdBy);
             } catch (consumeErr: any) {
               console.error('[plan-executor] open-slot consume after assign failed:', consumeErr?.message);
             }
@@ -2675,6 +2685,15 @@ export async function executePlan(
           const nd = await getNotDraftedByType(query as any, companyId, generatedTypes!, first, last);
           notDraftedAdd = new Set(nd[st.id] || []);
         }
+        // Stored dates for a rotation-less generated type (Deepika,
+        // 2026-11-24 — Day NP add fix): the grid's stored
+        // determination — a stored date re-counts from the stored
+        // opens, a non-stored date keeps the computed count (Fix 2).
+        // Stored-model types keep the not-drafted test above.
+        let storedAddExec: Record<string, string[]> | null = null;
+        if (addMode === 'total' && generatedTypes!.has(st.id) && !storedModelTypes!.has(st.id)) {
+          storedAddExec = await getStoredModelDates(query as any, companyId, generatedTypes!, first, last);
+        }
         let slotsAdded = 0;
         const skipped: string[] = [];
         for (const d of dates) {
@@ -2712,8 +2731,21 @@ export async function executePlan(
                 delta = Math.max(0, (change.targetTotal as number) - stt.total);
               }
             } else if (generatedTypes!.has(st.id)) {
-              const stt = await storedTotals(query as any, companyId, d, st.id);
-              delta = Math.max(0, (change.targetTotal as number) - stt.total);
+              // Rotation-less generated type (Deepika, 2026-11-24
+              // — Day NP add fix): a STORED date re-counts from
+              // the stored opens (openTotals' stored branch), the
+              // same count the gate states — the old storedTotals
+              // read added the target shortfall on top of the
+              // extras (filled 1 + extra 2 read total 5, grid 3).
+              // A non-stored date keeps the computed count below
+              // (Fix 2 — the draft will supply the target).
+              if ((storedAddExec?.[st.id] || []).includes(d)) {
+                const t = await openTotals(companyId, d, st.id);
+                delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));
+              } else {
+                const stt = await storedTotals(query as any, companyId, d, st.id);
+                delta = Math.max(0, (change.targetTotal as number) - stt.total);
+              }
             } else {
               const t = await openTotals(companyId, d, st.id);
               delta = Math.max(0, (change.targetTotal as number) - (t.filled + t.total));

@@ -135,10 +135,14 @@ export async function getTypesWithRotations(
 /**
  * Stored-model types (detached open slots, Deepika 2026-11-20):
  * generated AND produced by an active rotation. Only these types
- * store their open slots at draft time and stop counting from the
- * target afterwards. Live types and rotation-less generated types
- * (e.g. Day NP — Nov 15 rule: its target always counts) keep the
- * computed model: opens = target + extra − suppressed − filled.
+ * are rotation-backed. Rotation-less generated types (e.g. Day
+ * NP) also store their opens at draft time (step 1 stores their
+ * target there, under a NULL-rotation generation) and read the
+ * STORED opens on any date the grid marks stored (Deepika,
+ * 2026-11-24 — Day NP add fix); the computed model (opens =
+ * target + extra − suppressed − filled) survives only on dates
+ * with no stored determination. Live types keep the computed
+ * model everywhere.
  */
 export async function getStoredModelTypeIds(
   q: QueryFn,

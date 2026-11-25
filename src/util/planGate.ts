@@ -37,7 +37,7 @@ import { matchName } from './planHelpers.js';
 import { resolveRotationPattern } from './planExecutor.js';
 import { getShiftsForRange } from './shiftRange.js';
 import { checkShiftConflict, checkSwapConflicts } from './shiftConflicts.js';
-import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds } from './scheduleMode.js';
+import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds, getStoredModelDates } from './scheduleMode.js';
 import { shiftTypesDepartmentIds } from './departmentAccess.js';
 
 type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[] }>;
@@ -1366,6 +1366,12 @@ export async function gatePlanChanges(
         // by the plan-detail text below) — the grid's own source of
         // truth via getNotDraftedByType.
         let undraftedAdd: Set<string> | null = null;
+        // Stored dates for this add (Deepika, 2026-11-24 — Day NP
+        // add fix): the grid's own stored-vs-computed determination
+        // via getStoredModelDates — a drafted date reads stored
+        // opens for ALL generated types, rotation-less included.
+        // Loaded here so totalOn below reuses the same map.
+        let storedAdd: Record<string, string[]> | null = null;
         if (addMode === 'total') {
           if (!generatedTypes) generatedTypes = await getGeneratedTypeIds(query, companyId);
           const isGenerated = generatedTypes.has(type.id);
@@ -1394,6 +1400,7 @@ export async function gatePlanChanges(
           if (isGenerated) {
             const notDrafted = await getNotDraftedByType(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
             undraftedAdd = new Set(notDrafted[type.id] || []);
+            storedAdd = await getStoredModelDates(query, companyId, generatedTypes, touched[0], touched[touched.length - 1]);
           }
           totalOn = (d: string) => {
             const filled = filledByDate.get(d) || 0;
@@ -1424,6 +1431,22 @@ export async function gatePlanChanges(
               : (inputs.draft.get(`${d}|${type.id}`) || 0) > 0;
             if (inputs.storedModel.has(type.id) && draftedAdd) {
               const opens = openSlotOpens(inputs, type.id, d, filled);
+              return { filled, opens, total: filled + opens };
+            }
+            if (isGenerated && !inputs.storedModel.has(type.id) && (storedAdd?.[type.id] || []).includes(d)) {
+              // Rotation-less generated type on a STORED date
+              // (Deepika, 2026-11-24 — Day NP add fix): the grid
+              // reads stored opens here (extra + draft −
+              // suppressed), never the target shortfall — the
+              // double-count (filled 1 + extra 2 reading 4 opens,
+              // total 5, while the grid shows 2 opens, total 3).
+              // A non-stored date falls through to the computed
+              // count below (Fix 2 — the draft will supply the
+              // target), exactly as the executor does.
+              const opens = Math.max(0,
+                (inputs.extra.get(`${d}|${type.id}`) || 0) +
+                (inputs.draft.get(`${d}|${type.id}`) || 0) -
+                (inputs.suppressed.get(`${d}|${type.id}`) || 0));
               return { filled, opens, total: filled + opens };
             }
             if (isGenerated) {
@@ -1627,66 +1650,19 @@ export async function gatePlanChanges(
   const holdersOf = (date: string, typeId: string): string[] =>
     [...new Set(entries.filter((e) => e.date === date && e.shiftTypeId === typeId).map((e) => e.personName))];
 
-  // N1 — detached open slots (Deepika, 2026-11-20): for a generated
-  // shift type an assign needs an OPEN slot on every touched date —
-  // a stored open for stored-model types, a computed open (target −
-  // filled) for rotation-less generated types. The old "that date
-  // hasn't been drafted" refusal is gone: a drafted date is detached
-  // from its rotation and target, so whether it was drafted says
-  // nothing about its opens. A date with no opens refuses with one
-  // clarification ("no open slots are stored for that day" for a
-  // stored-model type, "no staffing target is set" for a computed
-  // one), same as a full date. Live types skip this — their holders
-  // draw from the rotation as always.
+  // N1 — REMOVED (Deepika, 2026-11-24 — Day NP add fix): an assign
+  // used to need an OPEN slot on every touched date and refused
+  // with "no open slots ... add an extra open slot for that day
+  // first" when none stood. Her rule now: an add works like
+  // assigning a shift by hand — pick the person, date and type,
+  // and they are on it. The executor fills a stored open when one
+  // exists and otherwise creates the spot, so there is nothing
+  // left for the gate to refuse here. The conflict checks in the
+  // workability loop below still govern (overlap / <8h rest), and
+  // the job-role warning still rides on the plan at creation.
   //
-  // Moves/swaps don't consume a slot, so they skip N1 and the
-  // holder checks below govern.
-  {
-    const generatedTypes = await getGeneratedTypeIds(query, companyId);
-    let openInputs: OpenSlotInputs | null = null;
-    for (const c of dated) {
-      const type = resolveType(c.shiftType);
-      if (!type || !generatedTypes.has(type.id)) continue;
-      if (c.action !== 'assign' && c.action !== 'assign_recurring') continue;
-      const touched: string[] = [];
-      for (const d of [c.date, c.fromDate, c.toDate, c.startDate]) if (d) touched.push(String(d));
-      // A range change touches every date in its span.
-      if (c.action === 'assign_recurring' && c.fromDate && c.toDate) {
-        let cur = String(c.fromDate);
-        while (cur <= String(c.toDate) && touched.length < 400) {
-          touched.push(cur);
-          const dd = new Date(cur + 'T00:00:00Z');
-          dd.setUTCDate(dd.getUTCDate() + 1);
-          cur = dd.toISOString().slice(0, 10);
-        }
-      }
-      if (!touched.length) continue;
-      touched.sort();
-      if (!openInputs) openInputs = await loadOpenSlotInputs(query, companyId, dates[0], dates[dates.length - 1]);
-      const per = resolved.get(c)!;
-      const person = per.get('person');
-      const bad = touched.find((d) => {
-        // Already on it — the workability loop no-ops, no slot needed.
-        if (person && heldBy(person.id, d, type.id).length) return false;
-        const filled = new Set(
-          entries.filter((e) => e.date === d && e.shiftTypeId === type.id).map((e) => e.userId)
-        ).size;
-        return openSlotOpens(openInputs!, type.id, d, filled) <= 0;
-      });
-      if (bad) {
-        const filled = new Set(
-          entries.filter((e) => e.date === bad && e.shiftTypeId === type.id).map((e) => e.userId)
-        ).size;
-        const positions = filled + openSlotOpens(openInputs, type.id, bad, filled);
-        const why = positions > 0
-          ? `all ${positions} are already filled`
-          : openInputs.storedModel.has(type.id)
-            ? `no open slots are stored for that day`
-            : `no staffing target is set for ${type.name} that day`;
-        return { ok: false, question: `There are no open ${type.name} slots on ${bad} — ${why}. Pick a date with an open slot, or add an extra open slot for that day first.` };
-      }
-    }
-  }
+  // Moves/swaps don't consume a slot; the holder checks below
+  // govern them as before.
 
   // Shift-choice options for a holder mismatch (Deepika, 2026-11-11
   // — the one-email fix): the holders of the requested type that
