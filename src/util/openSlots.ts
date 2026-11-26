@@ -181,19 +181,24 @@ export async function consumeExtraOpenSlot(
  * one of them); a draft assign takes a draft open first (same state),
  * falling back to a published extra. When neither pool has one, the
  * assign just adds headcount — a manager may always staff above the
- * stored opens. Returns true when a slot was consumed.
+ * stored opens.
+ *
+ * Which pool the slot came from, for callers that must give it back
+ * (the import-undo returns the open to the pool the import took it
+ * from, or the draft/published split comes back wrong).
  */
-export async function consumeOpenSlotForAssign(
+export type ConsumedOpenPool = 'extra' | 'draft';
+export async function consumeOpenSlotForAssignDetailed(
   q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
   published: boolean, createdBy: string | null
-): Promise<boolean> {
+): Promise<ConsumedOpenPool | null> {
   if (!published) {
     const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
     if (draft > 0) {
       await setDraftOpenCount(q, companyId, date, shiftTypeId, draft - 1, createdBy);
-      return true;
+      return 'draft';
     }
-    return consumeExtraOpenSlot(q, companyId, date, shiftTypeId);
+    return (await consumeExtraOpenSlot(q, companyId, date, shiftTypeId)) ? 'extra' : null;
   }
   // A published assign takes a published extra first. When there is
   // no published extra, it takes a draft open if one stands there:
@@ -201,13 +206,46 @@ export async function consumeOpenSlotForAssign(
   // assign fills one of them — leaving the draft count untouched
   // would strand it beside the filled shift, the stored total would
   // over-count, and the same open could be claimed again.
-  if (await consumeExtraOpenSlot(q, companyId, date, shiftTypeId)) return true;
+  if (await consumeExtraOpenSlot(q, companyId, date, shiftTypeId)) return 'extra';
   const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
   if (draft > 0) {
     await setDraftOpenCount(q, companyId, date, shiftTypeId, draft - 1, createdBy);
-    return true;
+    return 'draft';
   }
-  return false;
+  return null;
+}
+export async function consumeOpenSlotForAssign(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  published: boolean, createdBy: string | null
+): Promise<boolean> {
+  return (await consumeOpenSlotForAssignDetailed(q, companyId, date, shiftTypeId, published, createdBy)) !== null;
+}
+
+/**
+ * Mirror of the consume above (Deepika, 2026-11-25 — upload
+ * consumes opens): return one stored open to the pool it was taken
+ * from. Used by the import-undo — undoing an import must give back
+ * exactly the opens the import consumed, to the same pool, or the
+ * draft/published split comes back wrong and the total drifts. The
+ * caller only calls this for rows whose import recorded a pool; a
+ * row whose import consumed nothing returns nothing here.
+ */
+export async function returnConsumedOpenSlot(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  from: ConsumedOpenPool, createdBy: string | null
+): Promise<void> {
+  if (from === 'draft') {
+    const draft = await draftOpenTotal(q, companyId, date, shiftTypeId);
+    await setDraftOpenCount(q, companyId, date, shiftTypeId, draft + 1, createdBy);
+    return;
+  }
+  await q(
+    `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+     VALUES ($1, $2, $3, 1, $4)
+     ON CONFLICT (company_id, date, shift_type_id)
+     DO UPDATE SET count = extra_open_slots.count + 1`,
+    [companyId, date, shiftTypeId, createdBy]
+  );
 }
 
 export interface DeleteOneOpenSlotResult {

@@ -34,7 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getStoredModelDates, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -20690,6 +20690,42 @@ router.post('/shift-import/check-row', requireRole('owner', 'scheduler'), async 
   }
 });
 
+// Stored-vs-computed test for the import family (Deepika,
+// 2026-11-25 — upload consumes opens): an imported person fills a
+// stored open ONLY when the date+type reads stored opens — the
+// grid's own test (getStoredModelDates: a rotation generated over
+// the date, or a step-1 shortfall ledger row covers it), plus the
+// client's draft > 0 rule (draft opens standing for the pair flip
+// it to stored, e.g. after Move open slots to draft on a computed
+// date). On a COMPUTED date the opens come from the target formula
+// (target + extra − filled − suppressed), so the insert itself
+// absorbs one open — consuming a stored extra there as well would
+// drop the visible total by two for one person (double-count).
+// The test is computed ONCE, before the import runs, from the
+// pre-import state — the rows themselves must not flip it.
+async function shImpStoredTest(
+  companyId: string, dates: string[], typeIds: string[]
+): Promise<(date: string, shiftTypeId: string) => boolean> {
+  const sorted = [...new Set(dates)].sort();
+  const types = [...new Set(typeIds)].filter(Boolean);
+  if (!sorted.length || !types.length) return () => false;
+  const generated = await getGeneratedTypeIds(query, companyId);
+  const storedByType = await getStoredModelDates(query, companyId, generated, sorted[0], sorted[sorted.length - 1]);
+  // Draft opens standing for a pair (draft_open_slots carries
+  // shift_type_id as TEXT, extra_open_slots as UUID — the ANY()
+  // cast must match the column).
+  const { rows: drows } = await query(
+    `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+     FROM draft_open_slots WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::text[])
+     GROUP BY date, shift_type_id`,
+    [companyId, sorted[0], sorted[sorted.length - 1], types]
+  );
+  const draftByPair = new Map<string, number>();
+  for (const r of drows) draftByPair.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
+  return (date: string, shiftTypeId: string) =>
+    ((storedByType[shiftTypeId] || []).includes(date)) || ((draftByPair.get(`${date}|${shiftTypeId}`) || 0) > 0);
+}
+
 // POST /api/schedule/shift-import — create the confirmed rows as
 // ordinary stored shifts. Every row is re-validated here (member,
 // type, department scope for schedulers, job-role eligibility,
@@ -20724,8 +20760,15 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
     // Rows this import created (Deepika, 2026-11-20 — the upload-undo
     // gap): the import pushes ONE undo entry, so undoing it removes
     // exactly these rows — the ids and full rows are the undo payload.
-    const importedRows: Array<{ id: string; userId: string; shiftTypeId: string; date: string; published: boolean; createdBy: string }> = [];
+    // `consumed` records which stored open pool (if any) the row
+    // filled, so the undo can return it to the same pool.
+    const importedRows: Array<{ id: string; userId: string; shiftTypeId: string; date: string; published: boolean; createdBy: string; consumed: 'extra' | 'draft' | null }> = [];
     let imported = 0;
+    // Stored-vs-computed, once, from the pre-import state (see
+    // shImpStoredTest above) — the rows themselves must not flip it.
+    const importStored = await shImpStoredTest(
+      companyId, validDates, rowsIn.map((r: any) => String(r?.shiftTypeId || ''))
+    );
     const typeDepts = await shiftTypeDeptMap(companyId);
     for (const r of rowsIn) {
       const rowNo = Number(r?.row) || 0;
@@ -20772,7 +20815,27 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [newId, companyId, userId, shiftTypeId, date, null, publish, req.session.userId!]
         );
-        importedRows.push({ id: newId, userId, shiftTypeId, date, published: publish, createdBy: req.session.userId! });
+        // Filling a stored open slot (Deepika, 2026-11-25 — upload
+        // consumes opens): an imported person takes one stored open
+        // when the date reads stored — the same rule the draft step
+        // and the AI add already follow ("fill an open if one
+        // exists, else create the spot"). A draft import takes a
+        // draft open first, falling back to a published extra; a
+        // published import takes the extra first, then a draft
+        // open — consumeOpenSlotForAssignDetailed decides, and
+        // reports which pool it took so the undo can give it back.
+        // On a computed date the insert itself absorbs the open
+        // (the formula), so nothing is consumed here. Best-effort:
+        // a consume failure never fails the row itself.
+        let consumed: 'extra' | 'draft' | null = null;
+        if (importStored(date, shiftTypeId)) {
+          try {
+            consumed = await consumeOpenSlotForAssignDetailed(query, companyId, date, shiftTypeId, publish, req.session.userId!);
+          } catch (consumeErr: any) {
+            console.error('[schedule] open-slot consume after import failed:', consumeErr?.message);
+          }
+        }
+        importedRows.push({ id: newId, userId, shiftTypeId, date, published: publish, createdBy: req.session.userId!, consumed });
       } catch (err: any) {
         if (err?.code === '23505') { fail(`${personName} already has ${typeName} on this date.`); continue; }
         throw err;
@@ -20840,14 +20903,23 @@ router.post('/shift-import', requireRole('owner', 'scheduler'), async (req: Requ
 // (Deepika, 2026-11-20 — the upload-undo gap: Undo after an upload
 // undid an OLDER change instead, because the import pushed no undo
 // entry). The import pushes ONE undo entry; undoing it removes
-// exactly the rows the import added, nothing else. The rows are
-// deleted DIRECTLY — the delete-opens-a-slot grant
-// (ensureOpenSlotForDelete) must NOT fire: the import filled opens
-// via the formula, so deleting its rows brings the opens back via the
-// formula alone; a grant on top would inflate them. Each row is
+// exactly the rows the import added, nothing else. Each row is
 // verified against the imported (user, type, date) before it is
 // deleted, so a shift that was moved or changed since the import is
 // skipped, never deleted blindly.
+// The opens the import consumed come back with the rows (Deepika,
+// 2026-11-25 — upload consumes opens): each removed row returns
+// exactly the open its import recorded (`consumed`: 'extra' or
+// 'draft'), to the same pool it came from — the delete-opens-a-slot
+// grant (ensureOpenSlotForDelete) must NOT fire on top, it would
+// inflate them. A row whose import consumed nothing (a computed
+// date, or no stored open stood there) returns nothing: deleting
+// its shift brings the open back via the formula alone. Rows from
+// imports made before this build carry no `consumed` field and
+// return nothing, which is right — those imports consumed nothing.
+// (The old comment here claimed the import filled opens via the
+// formula — false on stored dates, where the import filled nothing
+// at all; the fix made the import consume, so the undo must return.)
 router.post('/shift-import/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
@@ -20890,6 +20962,12 @@ router.post('/shift-import/undo', requireRole('owner', 'scheduler'), async (req:
           continue;
         }
         await tx.query('DELETE FROM shifts WHERE id = $1 AND company_id = $2', [id, companyId]);
+        // Return the open this row's import consumed, to the pool
+        // it came from (see the header comment). Inside the same
+        // transaction as the delete, so the two never half-apply.
+        if (want.consumed === 'extra' || want.consumed === 'draft') {
+          await returnConsumedOpenSlot(tx.query, companyId, want.date, want.shiftTypeId, want.consumed, req.session.userId!);
+        }
         removed.push({ userId: want.userId, date: want.date, shiftTypeId: want.shiftTypeId, published: want.published });
       }
     });
@@ -20952,7 +21030,7 @@ router.post('/shift-import/redo', requireRole('owner', 'scheduler'), async (req:
     const scopePairs = rows.map((r: any) => ({ userId: r.userId, shiftTypeId: r.shiftTypeId }));
     if (!(await requireActiveDepartment(req, res, await assignmentRelevantDepartments(scopePairs, companyId)))) return;
     const skipped: Array<{ userId: string; date: string; shiftTypeId: string; reason: string; message: string }> = [];
-    const restored: Array<{ userId: string; date: string; shiftTypeId: string }> = [];
+    const restored: Array<{ userId: string; date: string; shiftTypeId: string; published: boolean }> = [];
     const skipMsg: Record<string, string> = {
       'person-gone': 'that person is no longer on the team',
       'person-inactive': 'that person is no longer active',
@@ -20984,9 +21062,28 @@ router.post('/shift-import/redo', requireRole('owner', 'scheduler'), async (req:
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [r.id, companyId, r.userId, r.shiftTypeId, r.date, r.published, null, r.createdBy || req.session.userId!]
         );
-        restored.push({ userId: r.userId, date: r.date, shiftTypeId: r.shiftTypeId });
+        restored.push({ userId: r.userId, date: r.date, shiftTypeId: r.shiftTypeId, published: r.published });
       }
     });
+    // Redo restores the import's effect (Deepika, 2026-11-25 —
+    // upload consumes opens): a re-inserted row fills a stored
+    // open again, exactly like the import did — without this, an
+    // import → undo → redo would leave the returned opens standing
+    // beside the restored shifts. Same stored test, same helper,
+    // best-effort (a consume failure never fails the redo itself).
+    if (restored.length) {
+      const redoStored = await shImpStoredTest(
+        companyId, restored.map((r) => r.date), restored.map((r) => r.shiftTypeId)
+      );
+      for (const r of restored) {
+        if (!redoStored(r.date, r.shiftTypeId)) continue;
+        try {
+          await consumeOpenSlotForAssignDetailed(query, companyId, r.date, r.shiftTypeId, r.published, req.session.userId!);
+        } catch (consumeErr: any) {
+          console.error('[schedule] open-slot consume after import redo failed:', consumeErr?.message);
+        }
+      }
+    }
     if (restored.length) {
       const dates = restored.map((r) => r.date).sort();
       await recordHistorySnapshot({

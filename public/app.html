@@ -4781,8 +4781,9 @@
             }).catch(function () { pageError('Could not undo that close.'); });
           } else if (u.kind === 'import') {
             // Undo a schedule import: remove exactly the rows the
-            // import added (no delete-opens-a-slot grant — the opens
-            // come back via the formula alone).
+            // import added, and return the opens the import
+            // consumed (to the pool they came from); rows that
+            // consumed nothing come back via the formula alone.
             api('/api/schedule/shift-import/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
               if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that import.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
