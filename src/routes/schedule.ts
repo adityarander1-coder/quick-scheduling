@@ -19,7 +19,7 @@ import { setSession, loginLimiter } from './auth.js';
 import { escHtml } from '../util/mailer';
 import { auditLog, auditPlanChanges, auditDraftIfAppeared, auditDraftsForResults, resolvePersonId, todayStr } from '../util/audit.js';
 import { recordHistorySnapshot, snapshotPlanExecution, listHistorySnapshots, getHistorySnapshot } from '../util/history.js';
-import { loadUndoHistory, saveUndoHistory, undoWindowExpired, UNDO_WINDOW_EXPIRED_MSG, REDO_WINDOW_EXPIRED_MSG } from '../util/undoHistory.js';
+import { loadUndoHistory, saveUndoHistory, undoWindowExpired, UNDO_WINDOW_EXPIRED_MSG, REDO_WINDOW_EXPIRED_MSG, cleanResetUndoSnapshot } from '../util/undoHistory.js';
 import { ensureInboundAddress, fullInboundAddress, inboundDomain } from '../util/inboundAddresses.js';
 import * as XLSX from 'xlsx';
 import { parseScheduleDocument, parseSessionSchedulePdf, parseShiftSchedulePdf, parseContractDocument, isGeminiConfigured } from '../util/gemini';
@@ -33,7 +33,7 @@ import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getStoredModelDates, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
-import { generateRotations, touchRotation, touchRotationsForGroup } from '../util/rotationEngine.js';
+import { generateRotations, touchRotation, touchRotationsForGroup, resetToAutoRotation, undoResetToAutoRotation, RESET_MODES } from '../util/rotationEngine.js';
 import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
@@ -6525,6 +6525,148 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     res.json({ ok: true, ...rest2 });
   } catch (err: any) {
     console.error('[schedule] generate failed:', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/reset — auto-rotation reset (Deepika, 2026-11-25:
+// "reset options for those dates back to your rotation settings").
+// Where Settings chooses auto-rotation, if a schedule is deleted or
+// removed — even open shifts — this puts the picked dates back to the
+// rotation settings. Four modes, all scoped to the picked dates ONLY:
+//   opens — open slots back to what the settings say (staff untouched)
+//   rotations — rotation people back, fresh (opens untouched)
+//   everything — opens AND rotations for the picked dates, all shifts
+//   keep-staff — missing rotation people back around current staff
+// UI only — a manual function, not an AI plan function. One undo
+// entry for the whole reset (the endpoint returns the snapshot; the
+// client pushes it via qsPushResetUndo). A History entry names the
+// mode, dates, and shifts.
+router.post('/reset', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const mode = String(req.body?.mode || '');
+    if (!(RESET_MODES as string[]).includes(mode)) {
+      res.status(400).json({ error: 'Pick one of the four reset modes.' });
+      return;
+    }
+    // A redo replay carries the redo window time, so the server
+    // refuses a replay after the window (ordinary calls never send
+    // windowAt).
+    if (undoWindowExpired(req.body?.windowAt)) {
+      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
+    const dates = Array.isArray(req.body?.dates)
+      ? [...new Set(req.body.dates.filter((x: any) => typeof x === 'string'))].sort() as string[]
+      : [];
+    if (!dates.length || dates.length > 366 || dates.some((d) => !isValidDate(d))) {
+      res.status(400).json({ error: 'Pick at least one date (at most a year at a time).' });
+      return;
+    }
+    let shiftTypeIds = Array.isArray(req.body?.shiftTypeIds)
+      ? [...new Set(req.body.shiftTypeIds.filter((x: any) => typeof x === 'string'))] as string[]
+      : [];
+    // Mode 3 (everything) takes all shift types on the picked dates
+    // — no multiselect was stated for it. The other modes need an
+    // explicit pick.
+    if (mode === 'everything' && !shiftTypeIds.length) {
+      const { rows } = await query(
+        'SELECT id FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      shiftTypeIds = rows.map((r: any) => r.id);
+    }
+    if (!shiftTypeIds.length) {
+      res.status(400).json({ error: 'Pick at least one shift type.' });
+      return;
+    }
+    const { rows: found } = await query(
+      'SELECT id FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+      [companyId, shiftTypeIds]
+    );
+    if (found.length !== shiftTypeIds.length) {
+      res.status(400).json({ error: 'Unknown shift type in the reset.' });
+      return;
+    }
+    // Department scoping: the scheduler's active department must be
+    // one of the picked types' departments (same rule as the
+    // rotation-less draft).
+    const deptIds = await shiftTypesDepartmentIds(shiftTypeIds, companyId);
+    if (!(await requireActiveDepartment(req, res, deptIds))) return;
+    const summary = await withTransaction(async (tx) => {
+      const q: any = (text: string, params?: any[]) => tx.query(text, params);
+      return resetToAutoRotation(q, companyId, {
+        mode: mode as any, dates, shiftTypeIds, createdBy: req.session.userId!,
+      });
+    });
+    // Audit entries are written AFTER the commit (auditLog uses the
+    // global query — writing inside the transaction would leave
+    // phantom rows on a rollback).
+    for (const e of summary.auditEntries || []) await auditLog(e);
+    const changed = summary.restoredShifts > 0 || summary.reopenedOpens > 0
+      || summary.replacedDrafts > 0 || summary.clearedExclusions > 0
+      || summary.clearedSuppressions > 0;
+    if (changed) {
+      const modeLabel: Record<string, string> = {
+        opens: 'opens only', rotations: 'rotations', everything: 'everything',
+        'keep-staff': 'keep current staff',
+      };
+      const typeNames = summary.perType.map((p) => p.typeName).join(', ');
+      const historySummary = `Reset to auto-rotation (${modeLabel[mode] || mode}), ${summary.from} – ${summary.to} — ${typeNames}: restored ${summary.restoredShifts} shift${summary.restoredShifts === 1 ? '' : 's'}, reopened ${summary.reopenedOpens} open slot${summary.reopenedOpens === 1 ? '' : 's'}`;
+      await recordHistorySnapshot({
+        companyId, actorId: req.session.userId!, trigger: 'draft-change',
+        summary: historySummary,
+        from: summary.from, to: summary.to, departmentIds: deptIds,
+        shiftTypeIds, userIds: [],
+      });
+    }
+    const { auditEntries: _ae2, ...rest } = summary;
+    res.json({ ok: true, ...rest });
+  } catch (err: any) {
+    console.error('[schedule] reset failed:', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/reset/undo — undo an auto-rotation reset
+// (Deepika, 2026-11-25). Reverses the reset's snapshot exactly:
+// the restored shifts go, the replaced drafts and cleared markers
+// come back, the added opens come off, the consumed opens go back
+// on. 60-second window, like other bulk actions. Department-scoped
+// to the types the reset touched.
+router.post('/reset/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const undo = cleanResetUndoSnapshot(req.body?.undo);
+    if (!undo) {
+      res.status(400).json({ error: 'Nothing to undo.' });
+      return;
+    }
+    // 60-second window (Deepika, 2026-11-20): the entry carries the
+    // reset's time (`at`, stamped by the client when the reset
+    // happened); an undo after the window is refused server-side.
+    if (undoWindowExpired(req.body?.at)) {
+      res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
+      return;
+    }
+    const typeIds: string[] = [];
+    for (const arr of [undo.addedExtras, undo.addedDraftOpens, undo.consumedExtras,
+      undo.consumedDraftOpens, undo.clearedSuppressions, undo.replacedRows, undo.clearedExclusions]) {
+      for (const x of arr || []) {
+        if (x.shiftTypeId && !typeIds.includes(x.shiftTypeId)) typeIds.push(x.shiftTypeId);
+      }
+    }
+    if (typeIds.length) {
+      if (!(await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeIds, companyId)))) return;
+    }
+    const result = await withTransaction(async (tx) => {
+      const q: any = (text: string, params?: any[]) => tx.query(text, params);
+      return undoResetToAutoRotation(q, companyId, undo, req.session.userId!);
+    });
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    console.error('[schedule] reset undo failed:', err);
     res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
   }
 });

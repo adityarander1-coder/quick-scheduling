@@ -4496,6 +4496,30 @@
           return true;
         };
 
+        // Auto-rotation reset undo (Deepika, 2026-11-25): one entry
+        // for the whole reset — Undo reverses the snapshot exactly
+        // (restored shifts go, replaced drafts and cleared markers
+        // come back, added opens come off, consumed opens go back
+        // on), Redo replays the reset call and collects a fresh
+        // snapshot, so undo/redo can alternate.
+        window.qsPushResetUndo = function (undoPayload, redoBody) {
+          if (!undoPayload) return false;
+          var has = (undoPayload.restoredShiftIds && undoPayload.restoredShiftIds.length)
+            || (undoPayload.replacedRows && undoPayload.replacedRows.length)
+            || (undoPayload.clearedExclusions && undoPayload.clearedExclusions.length)
+            || (undoPayload.clearedSuppressions && undoPayload.clearedSuppressions.length)
+            || (undoPayload.addedExtras && undoPayload.addedExtras.length)
+            || (undoPayload.addedDraftOpens && undoPayload.addedDraftOpens.length)
+            || (undoPayload.consumedExtras && undoPayload.consumedExtras.length)
+            || (undoPayload.consumedDraftOpens && undoPayload.consumedDraftOpens.length);
+          if (!has) return false;
+          qsUndoStack.push(qsStampUndo({ kind: 'reset', undo: undoPayload, redo: { kind: 'reset', body: redoBody || {} } }));
+          qsRedoStack.length = 0;
+          qsUndoCap();
+          qsUndoBtnSync();
+          return true;
+        };
+
         // Schedule-import undo (Deepika, 2026-11-20 — the upload-undo
         // gap): the import returns the rows it created; Undo removes
         // exactly those rows (no delete-opens-a-slot grant), Redo puts
@@ -4712,6 +4736,24 @@
               pageSuccess('Redone.');
               refreshShifts();
             }).catch(function () { pageError('Could not redo that import.'); });
+          } else if (r.kind === 'reset') {
+            // Redo an undone reset: replay the original reset call;
+            // it returns a fresh undo payload, pushed back as one
+            // entry (like the openslot redo). The replay carries the
+            // redo window time, so the server refuses a replay after
+            // the window (ordinary calls never send windowAt).
+            var resetBody = Object.assign({}, r.body || {}, { windowAt: r.at });
+            api('/api/schedule/reset', { method: 'POST', body: JSON.stringify(resetBody) }).then(function (res) {
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that reset.'); refreshShifts(); return; }
+              if (res.data && res.data.undo) {
+                qsUndoStack.push(qsStampUndo({ kind: 'reset', undo: res.data.undo, redo: r }));
+                qsUndoCap();
+                qsUndoBtnSync();
+              }
+              pageSuccess('Redone.');
+              refreshShifts();
+              if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+            }).catch(function () { pageError('Could not redo that reset.'); });
           } else {
             var s = shiftById(r.shiftId);
             api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at }) }).then(function (res) {
@@ -4797,6 +4839,22 @@
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that import.'); });
+          } else if (u.kind === 'reset') {
+            // Undo an auto-rotation reset: reverse the snapshot
+            // exactly (Deepika, 2026-11-25).
+            api('/api/schedule/reset/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that reset.'); refreshShifts(); return; }
+              if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
+              var removed = (r.data && r.data.restoredShiftsRemoved) || 0;
+              var skipped = (r.data && r.data.skipped) || [];
+              if (skipped.length) {
+                pageError('Reset undone — ' + removed + ' shift(s) removed. ' + skipped.length + ' part(s) could not be put back: ' + skipped.map(function (s) { return s.message || 'could not be put back'; }).join('; ') + '.');
+              } else {
+                pageSuccess('Reset undone — the schedule is back as it was. Tap Redo in the top bar to redo it.');
+              }
+              refreshShifts();
+              if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
+            }).catch(function () { pageError('Could not undo that reset.'); });
           } else if (u.kind === 'swap') {
             // Undo a manual drag-swap by swapping the same pair back.
             // (Pre-existing gap, found 2026-11-21 while proving the
@@ -20852,6 +20910,7 @@ window.qsNpOfferSend = function (btn) {
           <option value="delete-shifts">Delete shifts (manual + rotation)</option>
           <option value="open-slots">Open extra slots</option>
           <option value="close-shifts">Close shifts</option>
+          <option value="reset-autorotation">Reset to auto-rotation</option>
         </select>
       </div>
       <div class="ba-card">
@@ -20864,6 +20923,7 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" data-bulk-action="delete-shifts">Delete shifts<span class="sub">Manual + rotation shifts</span></button>
           <button type="button" data-bulk-action="open-slots">Open extra slots<span class="sub">Add open slots per date</span></button>
           <button type="button" data-bulk-action="draft-schedule">Draft schedule from rotation<span class="sub">Generate from rotations</span></button>
+          <button type="button" data-bulk-action="reset-autorotation">Reset to auto-rotation<span class="sub">Bring back deleted shifts and closed opens</span></button>
         </aside>
         <div class="ba-panel-col">
           <!-- PUBLISH SHIFTS -->
@@ -21061,6 +21121,58 @@ window.qsNpOfferSend = function (btn) {
               </div>
             </div>
           </div>
+          <!-- RESET TO AUTO-ROTATION -->
+          <div class="ba-action-panel" id="ba-panel-reset-autorotation">
+            <h3>Reset to auto-rotation</h3>
+            <p class="lede">If a schedule was deleted or removed — even open shifts — put the picked dates back to the rotation settings.</p>
+            <div style="margin:2px 0 16px">
+              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">What to reset</div>
+              <div class="bulk-pub-kind bulk-reset-mode on" data-mode="opens">
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset opens only</span><span class="sub">Bring back the open slots to what the settings say. Assigned staff stay exactly as they are.</span></span>
+              </div>
+              <div class="bulk-pub-kind bulk-reset-mode" data-mode="rotations">
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset rotations</span><span class="sub">Bring back the rotation people for those shifts. Opens are not touched.</span></span>
+              </div>
+              <div class="bulk-pub-kind bulk-reset-mode" data-mode="everything">
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset everything</span><span class="sub">Opens AND rotations for the picked dates — all shifts on those dates.</span></span>
+              </div>
+              <div class="bulk-pub-kind bulk-reset-mode" data-mode="keep-staff">
+                <span class="bulk-pub-kind-tick">✓</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Keep current staff and reset rotations</span><span class="sub">Everyone assigned stays where they are. The missing rotation people come back.</span></span>
+              </div>
+            </div>
+            <div id="bulk-reset-panel" style="display:grid;grid-template-columns:1fr 1.25fr;gap:22px">
+              <div>
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Departments</label>
+                <div id="bulk-reset-depts" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:120px;overflow-y:auto"></div>
+                <p style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Tick departments to narrow the shift types. None ticked means all departments.</p>
+              </div>
+              <div id="bulk-reset-types-wrap">
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shift types</label>
+                <div id="bulk-reset-types" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:140px;overflow-y:auto"></div>
+                <p id="bulk-reset-all-types-note" class="hidden" style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Reset everything covers all shift types on the picked dates — no need to pick them.</p>
+              </div>
+              <div style="grid-column:1 / -1">
+                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Dates</label>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                  <input type="date" id="bulk-reset-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <button type="button" id="bulk-reset-add-date" class="btn-secondary" style="padding:8px 12px">Add date</button>
+                </div>
+                <div id="bulk-reset-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+                  <input type="date" id="bulk-reset-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <span style="color:#7a9499;font-size:13px">to</span>
+                  <input type="date" id="bulk-reset-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                  <button type="button" id="bulk-reset-add-span" class="btn-secondary" style="padding:8px 12px">Add range</button>
+                </div>
+                <p id="bulk-reset-hint" class="hidden" style="font-size:13px;color:#b7791f;background:#fdf6e3;border-radius:10px;padding:9px 12px;margin:14px 0 0">Pick at least one shift type and one date</p>
+              </div>
+            </div>
+            <div class="ba-run-row" id="ba-slot-reset-run"></div>
+          </div>
         </div>
       </div>
       <div class="card ba-below">
@@ -21177,6 +21289,7 @@ window.qsNpOfferSend = function (btn) {
             bulkAllShiftTypes = r.data.shiftTypes || [];
             renderBulkPubTypes();
             renderBulkCloseTypes();
+            renderResetTypes();
             if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
             var sel = $('bulk-shifttype');
             var fsel = $('bulk-shifttype-filter');
@@ -21202,18 +21315,20 @@ window.qsNpOfferSend = function (btn) {
           var isClose = (a === 'close-shifts');
           var isPublish = a === 'publish';
           var isDraft = a === 'draft-schedule';
+          var isReset = a === 'reset-autorotation';
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
-          if (mw) mw.style.display = (isSlotAction || isOpenSlotBulk || isClose || isDraft) ? 'none' : '';
+          if (mw) mw.style.display = (isSlotAction || isOpenSlotBulk || isClose || isDraft || isReset) ? 'none' : '';
           var fw = $('bulk-shifttype-filter-wrap');
-          if (fw) fw.style.display = (isSlotAction || isClose || isPublish || isDraft) ? 'none' : '';
+          if (fw) fw.style.display = (isSlotAction || isClose || isPublish || isDraft || isReset) ? 'none' : '';
           // Close shifts uses its own pickers (departments + types +
-          // dates) instead of the From / To range.
+          // dates) instead of the From / To range. Reset to
+          // auto-rotation does too.
           var cp = $('bulk-close-panel');
           if (cp) cp.classList.toggle('hidden', !isClose);
-          var frw = $('bulk-from-wrap'); if (frw) frw.style.display = isClose ? 'none' : '';
-          var tow = $('bulk-to-wrap'); if (tow) tow.style.display = isClose ? 'none' : '';
+          var frw = $('bulk-from-wrap'); if (frw) frw.style.display = (isClose || isReset) ? 'none' : '';
+          var tow = $('bulk-to-wrap'); if (tow) tow.style.display = (isClose || isReset) ? 'none' : '';
           var po = $('bulk-pub-opts');
           if (po) po.style.display = isPublish ? 'flex' : 'none';
           var run = $('bulk-run');
@@ -21223,6 +21338,8 @@ window.qsNpOfferSend = function (btn) {
             run.style.display = isDraft ? 'none' : '';
           }
           syncBulkCloseRun();
+          syncResetRun();
+          if (isReset) { loadResetDepts(); renderResetTypes(); renderResetChips(); syncResetModeRows(); }
           var dp = $('bulk-draft-panel');
           if (dp) {
             dp.classList.toggle('hidden', !isDraft);
@@ -21270,7 +21387,7 @@ window.qsNpOfferSend = function (btn) {
           }
           var datesSlot = { publish: 'ba-slot-publish-dates', unpublish: 'ba-slot-unpublish-dates', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-dates', 'delete-shifts': 'ba-slot-delete-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
           if (datesSlot) { move($('bulk-from-wrap'), datesSlot); move($('bulk-to-wrap'), datesSlot); }
-          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run' }[a];
+          var runSlot = { 'close-shifts': 'ba-slot-close-run', publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', 'unpublish-open-slots': 'ba-slot-unpublish-open-slots-run', 'delete-shifts': 'ba-slot-delete-run', 'open-slots': 'ba-slot-open-run', 'reset-autorotation': 'ba-slot-reset-run' }[a];
           if (runSlot) move($('bulk-run'), runSlot);
           var memSlot = { publish: 'ba-slot-publish-members', unpublish: 'ba-slot-unpublish-members', 'delete-shifts': 'ba-slot-delete-members' }[a];
           if (memSlot) move($('bulk-members-wrap'), memSlot);
@@ -22151,6 +22268,9 @@ window.qsNpOfferSend = function (btn) {
           // dates) and its own in-app confirm — it never reads the
           // From / To range or the shared shift-type select.
           if (action === 'close-shifts') { runBulkClose(); return; }
+          // Reset to auto-rotation has its own pickers (mode + types
+          // + dates) and its own in-app confirm, too.
+          if (action === 'reset-autorotation') { runReset(); return; }
           if (action === 'draft-schedule') return; // the draft panel has its own button.
           var from = $('bulk-from').value;
           var to = $('bulk-to').value;
@@ -22330,6 +22450,249 @@ window.qsNpOfferSend = function (btn) {
             renderBulkCloseChips();
           });
         })();
+
+        // ---- Bulk Actions "Reset to auto-rotation" (Deepika,
+        // 2026-11-25): put picked dates back to the rotation
+        // settings. Four modes (her words): opens only, rotations,
+        // everything, keep current staff. Own pickers (mode +
+        // departments + types + dates, mirroring Close shifts), own
+        // in-app confirm naming mode/types/date count, ONE undo
+        // entry for the whole reset.
+        var resetMode = 'opens'; // 'opens' | 'rotations' | 'everything' | 'keep-staff'
+        var resetDepts = []; // department ids (empty = all)
+        var resetTypeIds = []; // shift type ids
+        var resetDates = []; // ISO dates, sorted
+        var RESET_MODE_LABELS = {
+          opens: 'Reset opens only', rotations: 'Reset rotations',
+          everything: 'Reset everything', 'keep-staff': 'Keep current staff and reset rotations',
+        };
+        function syncResetModeRows() {
+          document.querySelectorAll('.bulk-reset-mode').forEach(function (row) {
+            row.classList.toggle('on', row.getAttribute('data-mode') === resetMode);
+          });
+          var note = $('bulk-reset-all-types-note');
+          if (note) note.classList.toggle('hidden', resetMode !== 'everything');
+          var typesBox = $('bulk-reset-types');
+          if (typesBox) typesBox.style.opacity = resetMode === 'everything' ? '0.45' : '';
+          var deptsBox = $('bulk-reset-depts');
+          if (deptsBox) deptsBox.style.opacity = resetMode === 'everything' ? '0.45' : '';
+        }
+        function resetOfferedTypes() {
+          return bulkCloseOfferedTypes();
+        }
+        function loadResetDepts() {
+          var box = $('bulk-reset-depts');
+          if (!box) return;
+          var known = bulkCloseAllDepts();
+          if (known) { renderResetDepts(known); return; }
+          api('/api/departments').then(function (r) {
+            renderResetDepts(r.ok && r.data.departments ? r.data.departments : []);
+          }).catch(function () { renderResetDepts([]); });
+        }
+        function renderResetDepts(allDepts) {
+          var box = $('bulk-reset-depts');
+          if (!box) return;
+          var depts = (allDepts || []).filter(function (d) {
+            return !window.qsCanViewDept || window.qsCanViewDept(d.id);
+          });
+          box.innerHTML = depts.length ? depts.map(function (d) {
+            var checked = resetDepts.indexOf(String(d.id)) !== -1 ? ' checked' : '';
+            return '<label style="display:block;font-size:0.9rem;padding:2px 4px;cursor:pointer;color:#222">' +
+              '<input type="checkbox" class="bulk-reset-dept-cb" value="' + d.id + '"' + checked + ' style="margin-right:6px">' + esc(d.name) + '</label>';
+          }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No departments.</p>';
+          renderResetTypes();
+        }
+        function renderResetTypes() {
+          var box = $('bulk-reset-types');
+          if (!box) return;
+          var types = resetOfferedTypes();
+          var depts = bulkCloseAllDepts();
+          var selDepts = resetDepts.slice();
+          function deptName(id) {
+            var d = (depts || []).find(function (x) { return String(x.id) === String(id); });
+            return d ? d.name : null;
+          }
+          var order = [];
+          (depts || []).forEach(function (d) { order.push(String(d.id)); });
+          var groups = {};
+          types.forEach(function (st) {
+            var ids = bulkCloseDeptIdsOf(st);
+            if (!ids.length) {
+              (groups[''] = groups[''] || []).push(st);
+              return;
+            }
+            ids.forEach(function (id) {
+              if (selDepts.length && selDepts.indexOf(String(id)) === -1) return;
+              (groups[String(id)] = groups[String(id)] || []).push(st);
+            });
+          });
+          var keys = order.filter(function (id) { return groups[id] && groups[id].length; });
+          if (groups[''] && groups[''].length && !selDepts.length) keys.push('');
+          var html = keys.map(function (key) {
+            var name = key === '' ? 'No department' : (deptName(key) || 'Department');
+            var rows = groups[key].map(function (st) {
+              var checked = resetTypeIds.indexOf(String(st.id)) !== -1 ? ' checked' : '';
+              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
+                '<input type="checkbox" class="bulk-reset-type-cb" value="' + st.id + '"' + checked + ' style="margin-right:6px">' + esc(st.name) + '</label>';
+            }).join('');
+            return '<div class="bulk-reset-type-group" data-dept="' + esc(name) + '"><div class="bulk-reset-type-group-h" style="font-size:0.88rem;font-weight:700;padding:4px 4px 0;color:#222">' + esc(name) + '</div>' + rows + '</div>';
+          }).join('');
+          box.innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shift types for these departments.</p>';
+        }
+        function resetSyncTypeBoxes() {
+          document.querySelectorAll('.bulk-reset-type-cb').forEach(function (cb) {
+            cb.checked = resetTypeIds.indexOf(String(cb.value)) !== -1;
+          });
+        }
+        function renderResetChips() {
+          var box = $('bulk-reset-chips');
+          if (!box) return;
+          resetDates = resetDates.slice().sort();
+          box.innerHTML = resetDates.map(function (d) {
+            var label = bulkPubFmtDay(d);
+            return '<span class="bulk-reset-chip" data-date="' + d + '" style="display:inline-flex;align-items:center;gap:4px;background:#fff;color:#222;border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;font-size:0.85rem">' + esc(label) +
+              '<button type="button" data-remove-date="' + d + '" aria-label="Remove ' + esc(label) + '" style="border:none;background:none;cursor:pointer;font-size:1rem;line-height:1;padding:0 2px;color:#6b7280">×</button></span>';
+          }).join('');
+          syncResetRun();
+        }
+        function resetAddDate(d) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d || '')) return false;
+          if (resetDates.indexOf(d) === -1) resetDates.push(d);
+          renderResetChips();
+          return true;
+        }
+        function syncResetRun() {
+          var run = $('bulk-run');
+          var hint = $('bulk-reset-hint');
+          if (!$('bulk-action')) return;
+          var isReset = $('bulk-action').value === 'reset-autorotation';
+          var needsTypes = resetMode !== 'everything';
+          var ok = resetDates.length > 0 && (!needsTypes || resetTypeIds.length > 0);
+          if (run) run.disabled = isReset && !ok;
+          if (hint) hint.classList.toggle('hidden', !isReset || ok);
+        }
+        // The confirm is the in-app dialog (same pattern as the
+        // bulk-close upgrade): it names the mode, the selected
+        // types, and the number of dates before anything is written.
+        function runReset() {
+          var dates = resetDates.slice().sort();
+          var mode = resetMode;
+          if (!dates.length) { showResult('Pick at least one date.', true); return; }
+          var types = [];
+          if (mode !== 'everything') {
+            types = resetTypeIds.map(function (id) {
+              return (bulkAllShiftTypes || []).find(function (st) { return String(st.id) === String(id); });
+            }).filter(Boolean);
+            if (!types.length) { showResult('Pick at least one shift type.', true); return; }
+          }
+          var typeNames = mode === 'everything' ? 'all shift types' : types.map(function (st) { return st.name; }).join(', ');
+          var dateWord = dates.length + ' date' + (dates.length === 1 ? '' : 's');
+          var what = RESET_MODE_LABELS[mode] || mode;
+          var msg = what + ' for ' + typeNames + ' on ' + dateWord + ' (' + dates.map(bulkPubFmtDay).join(', ') + ')? '
+            + (mode === 'opens' ? 'Closed opens come back to what the settings say. Assigned staff are not touched.'
+              : mode === 'rotations' ? 'Deleted rotation people come back. Opens are not touched.'
+              : mode === 'everything' ? 'Opens AND rotation people come back for every shift on those dates.'
+              : 'Everyone assigned stays where they are. The missing rotation people come back.');
+          var go = function () { doReset(mode, types, dates); };
+          if (window.qsShowDialog) {
+            window.qsShowDialog('Reset to auto-rotation?', '<p>' + esc(msg) + '</p>', [
+              { label: 'Cancel' },
+              { label: 'Reset', primary: true, onClick: go }
+            ]);
+          } else if (confirm(msg)) go();
+        }
+        function doReset(mode, types, dates) {
+          showResult('Working…', false);
+          var body = { mode: mode, dates: dates };
+          if (mode !== 'everything') body.shiftTypeIds = types.map(function (st) { return st.id; });
+          var typeNames = mode === 'everything' ? 'all shift types' : types.map(function (st) { return st.name; }).join(', ');
+          api('/api/schedule/reset', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not reset.', true); return; }
+            var d = r.data || {};
+            var parts = [];
+            if (d.restoredShifts) parts.push('brought back ' + d.restoredShifts + ' shift' + (d.restoredShifts === 1 ? '' : 's'));
+            if (d.reopenedOpens) parts.push('reopened ' + d.reopenedOpens + ' open slot' + (d.reopenedOpens === 1 ? '' : 's'));
+            if (d.clearedSuppressions && !d.reopenedOpens) parts.push('reopened ' + d.clearedSuppressions + ' closed open position' + (d.clearedSuppressions === 1 ? '' : 's'));
+            if (d.replacedDrafts) parts.push('replaced ' + d.replacedDrafts + ' draft shift' + (d.replacedDrafts === 1 ? '' : 's'));
+            var notes = [];
+            (d.noRotationTypes || []).forEach(function (n) { notes.push(n + ' has no rotation — rotations not restored for it'); });
+            (d.noTargetTypes || []).forEach(function (n) { notes.push(n + ' has no staffing target — opens not restored for it'); });
+            (d.liveSkippedRotations || []).forEach(function (n) { notes.push('rotation ' + n + ' is in a department that still fills in automatically — skipped'); });
+            var sk = d.skipped || {};
+            var skTotal = (sk.vacation || 0) + (sk.alreadyHasShift || 0) + (sk.ended || 0) + (sk.excluded || 0) + (sk.past || 0);
+            if (d.skippedFull) notes.push(d.skippedFull + ' rotation ' + (d.skippedFull === 1 ? 'person' : 'people') + ' skipped — those dates are already full');
+            var dateNames = dates.map(bulkPubFmtDay).join(', ');
+            var msg = parts.length
+              ? 'Done — ' + (RESET_MODE_LABELS[mode] || mode) + ' for ' + typeNames + ' on ' + dates.length + ' date(s): ' + parts.join(', ') + '.'
+              : 'Nothing changed — no deleted shifts or closed opens for ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.';
+            if (skTotal) msg += ' Skipped ' + skTotal + ' (vacation ' + (sk.vacation || 0) + ', already has a shift ' + (sk.alreadyHasShift || 0) + ', ended ' + (sk.ended || 0) + ', previously deleted ' + (sk.excluded || 0) + ', past ' + (sk.past || 0) + ').';
+            if (notes.length) msg += ' ' + notes.join('; ') + '.';
+            if (d.undo && typeof window.qsPushResetUndo === 'function') {
+              window.qsPushResetUndo(d.undo, body);
+              msg += ' Tap Undo in the top bar to undo this reset (within 60 seconds).';
+            }
+            showResult(msg, false);
+            // A finished run clears the picks, so the next run
+            // starts fresh and can never silently re-reset the last
+            // run's types and dates.
+            resetTypeIds = [];
+            resetDates = [];
+            renderResetTypes();
+            renderResetChips();
+            if (window.qsReloadScheduleGrid) { try { window.qsReloadScheduleGrid(); } catch (e) {} }
+          }).catch(function () { showResult('Network error.', true); });
+        }
+        (function initResetPanel() {
+          document.querySelectorAll('.bulk-reset-mode').forEach(function (row) {
+            row.addEventListener('click', function () {
+              resetMode = row.getAttribute('data-mode') || 'opens';
+              syncResetModeRows();
+              syncResetRun();
+            });
+          });
+          var deptBox = document.getElementById('bulk-reset-depts');
+          if (deptBox) deptBox.addEventListener('change', function (e) {
+            var t = e.target;
+            if (!t.classList.contains('bulk-reset-dept-cb')) return;
+            resetDepts = [];
+            document.querySelectorAll('.bulk-reset-dept-cb:checked').forEach(function (cb) { resetDepts.push(String(cb.value)); });
+            renderResetTypes();
+          });
+          var typeBox = document.getElementById('bulk-reset-types');
+          if (typeBox) typeBox.addEventListener('change', function (e) {
+            var t = e.target;
+            if (!t.classList.contains('bulk-reset-type-cb')) return;
+            resetTypeIds = [];
+            document.querySelectorAll('.bulk-reset-type-cb:checked').forEach(function (cb) {
+              if (resetTypeIds.indexOf(String(cb.value)) === -1) resetTypeIds.push(String(cb.value));
+            });
+            resetSyncTypeBoxes();
+            syncResetRun();
+          });
+          var addBtn = document.getElementById('bulk-reset-add-date');
+          if (addBtn) addBtn.addEventListener('click', function () {
+            var inp = $('bulk-reset-date');
+            if (!inp || !resetAddDate(inp.value)) { showResult('Pick a date first.', true); return; }
+            inp.value = '';
+          });
+          var spanBtn = document.getElementById('bulk-reset-add-span');
+          if (spanBtn) spanBtn.addEventListener('click', function () {
+            var f = $('bulk-reset-span-from').value, t = $('bulk-reset-span-to').value;
+            if (!f || !t || f > t) { showResult('Pick a valid date range for the span.', true); return; }
+            datesInRange(f, t).forEach(resetAddDate);
+            $('bulk-reset-span-from').value = '';
+            $('bulk-reset-span-to').value = '';
+          });
+          var chips = document.getElementById('bulk-reset-chips');
+          if (chips) chips.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('[data-remove-date]') : null;
+            if (!b) return;
+            var d = b.getAttribute('data-remove-date');
+            resetDates = resetDates.filter(function (x) { return x !== d; });
+            renderResetChips();
+          });
+        })();
+
         document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
           b.addEventListener('click', function () { setDraftPreset(b.getAttribute('data-preset')); });
         });

@@ -26,6 +26,13 @@
  *   - { kind: 'import', undo: { shiftIds, rows }, redo: { kind: 'import', rows } }
  *     (a schedule upload — Deepika, 2026-11-20; undo removes exactly
  *     the rows the import added, redo puts them back)
+ *   - { kind: 'reset', undo: { restoredShiftIds, replacedRows,
+ *       clearedExclusions, clearedSuppressions, addedExtras,
+ *       addedDraftOpens, consumedExtras, consumedDraftOpens,
+ *       coverageGenerationId },
+ *       redo: { kind: 'reset', body: { mode, dates, shiftTypeIds } } }
+ *     (an auto-rotation reset — Deepika, 2026-11-25; undo reverses
+ *     the snapshot exactly, redo replays the reset call)
  * Task undo is NOT stored here — it is already server-side
  * (src/util/planUndo.ts) and is untouched.
  *
@@ -256,6 +263,89 @@ function cleanImportRedo(r: any): any | null {
   return { kind: 'import', rows };
 }
 
+/** A reset undo payload: the full snapshot the reset endpoint
+ *  returns (Deepika, 2026-11-25 — auto-rotation reset). Every part
+ *  is optional except that the snapshot as a whole must record at
+ *  least one changed unit; the total is capped at 1000 units like
+ *  the delete/openslot kinds. */
+export function cleanResetUndoSnapshot(u: any): any | null {
+  if (!isPlainObject(u)) return null;
+  const cleanPairCount = (x: any): any | null => {
+    if (!isPlainObject(x) || !isValidDate(x.date) || !isNonEmptyString(x.shiftTypeId)) return null;
+    if (!Number.isInteger(x.count) || x.count <= 0 || x.count > 1000) return null;
+    return { date: x.date, shiftTypeId: x.shiftTypeId, count: x.count };
+  };
+  const cleanList = (arr: any, fn: (x: any) => any | null): any[] | null => {
+    if (arr === undefined) return [];
+    if (!Array.isArray(arr) || arr.length > 1000) return null;
+    const out = arr.map(fn);
+    if (out.some((x) => !x)) return null;
+    return out;
+  };
+  const restoredShiftIds = cleanList(u.restoredShiftIds, (x) => (isUuid(x) ? x : null));
+  const replacedRows = cleanList(u.replacedRows, (x) => {
+    if (!isPlainObject(x)) return null;
+    if (!isUuid(x.id) || !isUuid(x.userId) || !isNonEmptyString(x.shiftTypeId) || !isValidDate(x.date)) return null;
+    if (typeof x.published !== 'boolean') return null;
+    return {
+      id: x.id, userId: x.userId, shiftTypeId: x.shiftTypeId, date: x.date, published: x.published,
+      rotationId: isUuid(x.rotationId) ? x.rotationId : null,
+      generationId: isUuid(x.generationId) ? x.generationId : null,
+      createdBy: isUuid(x.createdBy) ? x.createdBy : null,
+    };
+  });
+  const clearedExclusions = cleanList(u.clearedExclusions, (x) => {
+    if (!isPlainObject(x)) return null;
+    if (!isUuid(x.rotationId) || !isUuid(x.userId) || !isValidDate(x.date) || !isNonEmptyString(x.shiftTypeId)) return null;
+    if (x.origin !== undefined && x.origin !== 'single' && x.origin !== 'bulk') return null;
+    return { rotationId: x.rotationId, userId: x.userId, date: x.date, shiftTypeId: x.shiftTypeId, origin: x.origin || 'single' };
+  });
+  const clearedSuppressions = cleanList(u.clearedSuppressions, (x) => {
+    if (!isPlainObject(x) || !isValidDate(x.date) || !isNonEmptyString(x.shiftTypeId)) return null;
+    if (!Number.isInteger(x.count) || x.count <= 0 || x.count > 1000) return null;
+    return { date: x.date, shiftTypeId: x.shiftTypeId, count: x.count, createdBy: isNonEmptyString(x.createdBy) ? x.createdBy : null };
+  });
+  const addedExtras = cleanList(u.addedExtras, cleanPairCount);
+  const addedDraftOpens = cleanList(u.addedDraftOpens, cleanPairCount);
+  const consumedExtras = cleanList(u.consumedExtras, cleanPairCount);
+  const consumedDraftOpens = cleanList(u.consumedDraftOpens, cleanPairCount);
+  if (!restoredShiftIds || !replacedRows || !clearedExclusions || !clearedSuppressions
+    || !addedExtras || !addedDraftOpens || !consumedExtras || !consumedDraftOpens) return null;
+  const total = restoredShiftIds.length + replacedRows.length + clearedExclusions.length + clearedSuppressions.length
+    + addedExtras.length + addedDraftOpens.length + consumedExtras.length + consumedDraftOpens.length;
+  if (!total || total > 1000) return null;
+  let coverageGenerationId: string | null = null;
+  if (u.coverageGenerationId !== undefined && u.coverageGenerationId !== null) {
+    if (!isUuid(u.coverageGenerationId)) return null;
+    coverageGenerationId = u.coverageGenerationId;
+  }
+  return {
+    restoredShiftIds, replacedRows, clearedExclusions, clearedSuppressions,
+    addedExtras, addedDraftOpens, consumedExtras, consumedDraftOpens, coverageGenerationId,
+  };
+}
+
+function cleanResetUndo(u: any): any | null {
+  return cleanResetUndoSnapshot(u);
+}
+
+/** A reset redo: replay the original reset call with the same body
+ *  (mirrors the openslot redo pattern). The body carries the
+ *  RESOLVED type list — for 'everything' that is every type in
+ *  scope, so an empty list is only valid for that mode. */
+function cleanResetRedo(r: any): any | null {
+  if (!isPlainObject(r) || r.kind !== 'reset') return null;
+  if (!isPlainObject(r.body)) return null;
+  const b = r.body;
+  if (['opens', 'rotations', 'everything', 'keep-staff'].indexOf(b.mode) === -1) return null;
+  if (!Array.isArray(b.dates) || !b.dates.length || b.dates.length > 366) return null;
+  if (b.dates.some((d: any) => !isValidDate(d))) return null;
+  if (!Array.isArray(b.shiftTypeIds) || b.shiftTypeIds.length > 1000) return null;
+  if (b.shiftTypeIds.some((t: any) => !isNonEmptyString(t))) return null;
+  if (!b.shiftTypeIds.length && b.mode !== 'everything') return null;
+  return { kind: 'reset', body: { mode: b.mode, dates: b.dates, shiftTypeIds: b.shiftTypeIds } };
+}
+
 /** Keep an entry's action time (`at`, stamped by the client when the
  * action happened — or when it was undone, for redo entries) through
  * the sanitizer, so the pinned Undo/Redo pair can tell which action
@@ -313,6 +403,13 @@ export function cleanUndoEntry(e: any): any | null {
     if (!redo) return null;
     return withAt({ kind: 'import', undo, redo }, e);
   }
+  if (e.kind === 'reset') {
+    const undo = cleanResetUndo(e.undo);
+    if (!undo) return null;
+    const redo = cleanResetRedo(e.redo);
+    if (!redo) return null;
+    return withAt({ kind: 'reset', undo, redo }, e);
+  }
   return null;
 }
 
@@ -324,6 +421,7 @@ export function cleanRedoEntry(e: any): any | null {
   if (e.kind === 'delete') { const r = cleanDeleteRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'openslot') { const r = cleanOpenSlotRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'import') { const r = cleanImportRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'reset') { const r = cleanResetRedo(e); return r ? withAt(r, e) : null; }
   return null;
 }
 

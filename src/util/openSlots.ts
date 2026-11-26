@@ -576,6 +576,26 @@ export async function setDraftOpenCount(
   );
 }
 
+/**
+ * Add stored extra open slots (Deepika, 2026-11-25 — auto-rotation
+ * reset): the reset restores a published pair's shortfall as
+ * published opens, so they render published. Additive upsert — the
+ * same statement the /extra-slots endpoint uses.
+ */
+export async function addExtraOpenSlots(
+  q: OpenSlotQuery, companyId: string, date: string, shiftTypeId: string,
+  count: number, createdBy: string | null
+): Promise<void> {
+  if (!Number.isInteger(count) || count <= 0) return;
+  await q(
+    `INSERT INTO extra_open_slots (company_id, date, shift_type_id, count, created_by)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (company_id, date, shift_type_id)
+     DO UPDATE SET count = extra_open_slots.count + EXCLUDED.count`,
+    [companyId, date, shiftTypeId, count, createdBy]
+  );
+}
+
 /** Delete every draft-open row for the given (date, type) pairs. */
 export async function clearDraftOpenSlots(
   q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[]
