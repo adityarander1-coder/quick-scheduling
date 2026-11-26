@@ -22568,7 +22568,10 @@ window.qsNpOfferSend = function (btn) {
           var isReset = $('bulk-action').value === 'reset-autorotation';
           var needsTypes = resetMode !== 'everything';
           var ok = resetDates.length > 0 && (!needsTypes || resetTypeIds.length > 0);
-          if (run) run.disabled = isReset && !ok;
+          // Only touch the shared Run button while the reset panel is
+          // active: writing disabled=false here would undo the Close
+          // panel's gating (syncBulkCloseRun runs just before us).
+          if (run && isReset) run.disabled = !ok;
           if (hint) hint.classList.toggle('hidden', !isReset || ok);
         }
         // The confirm is the in-app dialog (same pattern as the
