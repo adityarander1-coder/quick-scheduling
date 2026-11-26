@@ -2861,7 +2861,7 @@
           </div>
           <button type="button" id="sched-block-make" class="btn-secondary" style="display:none" title="Make the schedule right here: select blocks and assign team members or shifts">✏️ Make schedule</button>
           <button type="button" id="sched-upload-btn" class="btn-secondary" title="Add many shifts at once from a spreadsheet or a PDF rota — you check every row before anything is saved">⬆ Upload schedule</button>
-          <!-- Publish moved into Bulk Actions (Deepika, 2026-11-10: one publish button — "I will use the publish button in bulk action"). The coverage strip below still nudges and links there via qsOpenPublish. -->
+          <!-- Publish moved into Bulk Actions (Deepika, 2026-11-10: one publish button — "I will use the publish button in bulk action"). The publish-status strip that used to sit below was removed at her request 2026-11-25. -->
         </div>
 
       </div>
@@ -2869,8 +2869,6 @@
       <div class="legend hidden" id="sched-legend"></div>
 
       <!-- publish bar removed per Deepika 2026-10-08 -->
-
-      <div id="sched-publish-strip" class="hidden" style="background:#fff7e6;border:1px solid #f0d9a8;border-radius:12px;padding:0.6rem 0.9rem;margin-bottom:0.8rem;font-size:0.9rem"></div>
 
       <div id="sched-block-panel" class="hidden" style="background:#f5f3ff;border:1.5px solid #7c3aed;border-radius:12px;padding:12px 14px;margin:0 0 14px">
         <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
@@ -3536,7 +3534,6 @@
             }
             renderView();
             renderPublishBar();
-            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
           }).catch(function () { pageError('Could not load the schedule.'); });
         }
 
@@ -6403,35 +6400,11 @@
 
         // --- Publish (Step 2 of Pattern != Schedule, Deepika
         // 2026-11-09; unified door 2026-11-10): publishing itself
-        // lives in Bulk Actions now — one publish button. What stays
-        // here is the coverage strip: it nudges when a department in
-        // view is running out of published coverage, and its button
-        // takes the manager to the Bulk Actions publish panel.
-        function pubTodayStr() { return fmtDate(new Date()); }
-        function pubAddDays(dateStr, n) { var d = parseDate(dateStr); d.setDate(d.getDate() + n); return fmtDate(d); }
-        function pubFmtDay(dateStr) { return parseDate(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
-        window.qsRenderPublishStrip = function () {
-          var strip = $('sched-publish-strip');
-          if (!strip || !sched.canEdit) return;
-          api('/api/schedule/publish/coverage').then(function (r) {
-            if (!r.ok || !r.data || !r.data.coverage) { hide(strip); return; }
-            var horizon = pubAddDays(pubTodayStr(), 14);
-            var inView = {};
-            (sched.departments || []).forEach(function (d) { inView[d.id] = true; });
-            var lines = [];
-            r.data.coverage.forEach(function (c) {
-              if (!c.hasActivePatterns) return;
-              if (!inView[c.departmentId]) return;
-              if (sched.deptFilters.length && sched.deptFilters.indexOf(c.departmentId) === -1) return;
-              if (c.publishedThrough && c.publishedThrough >= horizon) return;
-              if (c.publishedThrough) lines.push('<div style="margin:2px 0">📣 <b>' + esc(c.name) + '</b> is published through <b>' + pubFmtDay(c.publishedThrough) + '</b> — <button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.85rem" onclick="window.qsOpenPublish()">Publish more</button></div>');
-              else lines.push('<div style="margin:2px 0">📣 <b>' + esc(c.name) + '</b> has rotations but nothing published yet — <button type="button" class="btn-secondary" style="padding:2px 10px;font-size:0.85rem" onclick="window.qsOpenPublish()">Publish</button></div>');
-            });
-            if (!lines.length) { hide(strip); strip.innerHTML = ''; return; }
-            strip.innerHTML = lines.join('');
-            show(strip);
-          }).catch(function () { /* the nudge is decoration — never break the page */ });
-        };
+        // lives in Bulk Actions now — one publish button, reached
+        // from the Bulk Actions tab. The publish-status strip that
+        // used to sit on the Schedule page (qsRenderPublishStrip,
+        // #sched-publish-strip) was removed at Deepika's request
+        // 2026-11-25 — she asked for the banner to go.
         window.qsOpenPublish = function () {
           window.location.hash = '#bulk';
         };
@@ -22121,7 +22094,6 @@ window.qsNpOfferSend = function (btn) {
               showResult('✓ Published — ' + (bits.length ? bits.join(', ') : 'nothing new') + '.', false);
             }
             resetBulkPublishPreview();
-            if (window.qsRenderPublishStrip) window.qsRenderPublishStrip();
           }
           function runOpenPublish() {
             if (!kinds.open) { finishPublish(); return; }
