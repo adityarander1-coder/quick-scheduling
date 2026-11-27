@@ -3096,7 +3096,7 @@
           days: {},
           comments: [],
           staffingTargets: [],
-          scheduleMode: 'live',
+          scheduleMode: 'generated',
           generatedTypeIds: [],
           storedModelTypeIds: [],
           notDraftedDates: [],
@@ -3492,7 +3492,7 @@
             var stR = results[0], uR = results[1], sR = results[2], dR = results[3], cR = results[4], tR = results[5], deptR = results[6], evR = results[7], meR = results[8];
             if (stR.ok) sched.shiftTypes = stR.data.shiftTypes || [];
             if (uR.ok) sched.members = (uR.data.users || []).filter(function (u) { return u.isActive; });
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; sched.storedByType = sR.data.storedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'generated'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; sched.storedByType = sR.data.storedByType || {}; }
             if (dR.ok) sched.days = dR.data.days || {};
             if (cR.ok) sched.comments = cR.data.comments || [];
             if (tR.ok) sched.staffingTargets = tR.data.targets || [];
@@ -9229,7 +9229,7 @@
             if (d > to) to = d;
           });
           return api('/api/schedule/shifts?from=' + from + '&to=' + to).then(function (sR) {
-            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'live'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; sched.storedByType = sR.data.storedByType || {}; }
+            if (sR.ok) { sched.shifts = sR.data.shifts || []; sched.closedShifts = sR.data.closedShifts || []; sched.extraSlots = sR.data.extraSlots || []; sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || []; sched.unpublishedCounts = sR.data.unpublishedCounts || {}; sched.draftOpenCounts = sR.data.draftOpenCounts || {}; sched.includesDrafts = sR.data.includesDrafts !== false; sched.scheduleMode = sR.data.scheduleMode || 'generated'; sched.generatedTypeIds = sR.data.generatedTypeIds || []; sched.storedModelTypeIds = sR.data.storedModelTypeIds || []; sched.notDraftedDates = sR.data.notDraftedDates || []; sched.notDraftedByType = sR.data.notDraftedByType || {}; sched.storedByType = sR.data.storedByType || {}; }
             renderView();
             if (!$('sched-day-modal').classList.contains('hidden')) renderDayModal();
           });
@@ -9262,7 +9262,7 @@
               sched.extraSlots = sR.data.extraSlots || [];
               sched.suppressedOpenSlots = sR.data.suppressedOpenSlots || [];
               sched.draftOpenCounts = sR.data.draftOpenCounts || {};
-              sched.scheduleMode = sR.data.scheduleMode || 'live';
+              sched.scheduleMode = sR.data.scheduleMode || 'generated';
               sched.generatedTypeIds = sR.data.generatedTypeIds || [];
               sched.storedModelTypeIds = sR.data.storedModelTypeIds || [];
               sched.notDraftedDates = sR.data.notDraftedDates || [];
@@ -15806,11 +15806,12 @@ window.qsNpOfferSend = function (btn) {
                   </select>
                 </div>
               </div>
-              <div class="sub-card hidden" id="gs-schedule-mode-card">
-                <h3>How should your schedule fill in?</h3>
-                <p class="set-desc" style="margin-bottom:0.8rem">Each department picks its own. The owner can change any department; a department's admin can change their own department.</p>
-                <div id="gs-schedule-mode-rows"></div>
-              </div>
+              <!-- "How should your schedule fill in?" REMOVED (Deepika,
+                   2026-11-26): "Fill it in automatically" is gone —
+                   every department is "Draft from my rotations" now.
+                   The card and its radios lived here; the server
+                   endpoints stay (PUT rejects 'live'), so restoring
+                   the setting is re-adding this card. -->
               <div class="sub-card">
                 <h3>My appearance</h3>
                 <p class="set-desc" style="margin-bottom:0.8rem">Just for you — each admin picks their own.</p>
@@ -16396,63 +16397,15 @@ window.qsNpOfferSend = function (btn) {
                   window.qsPersonal = p;
                   applyPersonalTheme(p);
                 }).catch(function () {});
-                // Schedule mode (per department, Deepika 2026-11-14):
-                // one row per department the signed-in user can
-                // administer — the owner sees all, a department's
-                // admin sees only theirs, a user with no departments
-                // sees no card (the list comes back empty and the
-                // card stays hidden). The mode is the server's list,
-                // so no role check is needed here; the PUT endpoint
-                // enforces the same access server-side. Each radio
-                // saves its department the moment it is picked —
-                // same Saved./error alerts as the rest of General.
-                (function () {
-                  var smCard = document.getElementById('gs-schedule-mode-card');
-                  var rowsEl = document.getElementById('gs-schedule-mode-rows');
-                  if (!smCard || !rowsEl) return;
-                  api('/api/schedule/schedule-modes').then(function (mr) {
-                    var modes = (mr.ok && mr.data && mr.data.modes) || [];
-                    if (!modes.length) return; // no departments to administer: card stays hidden
-                    smCard.classList.remove('hidden');
-                    rowsEl.innerHTML = modes.map(function (m) {
-                      var gid = 'gs-schedule-mode-' + m.departmentId;
-                      return '<div class="form-row" style="margin-bottom:0.6rem">' +
-                        '<div style="font-weight:600;margin-bottom:0.2rem">' + esc(m.name) + '</div>' +
-                        '<label style="display:block;cursor:pointer"><input type="radio" name="' + gid + '" value="live" style="width:auto"' + (m.mode === 'live' ? ' checked' : '') + '> <b>Fill it in automatically</b></label>' +
-                        '<p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Your rotations fill the schedule in on their own.</p>' +
-                        '<label style="display:block;cursor:pointer"><input type="radio" name="' + gid + '" value="generated" style="width:auto"' + (m.mode === 'generated' ? ' checked' : '') + '> <b>Draft from my rotations</b></label>' +
-                        '<p class="set-desc" style="margin:0.2rem 0 0 1.4rem">Nothing appears until you draft it from your rotations.</p>' +
-                        '</div>';
-                    }).join('');
-                    rowsEl.querySelectorAll('input[type="radio"]').forEach(function (rb) {
-                      rb.addEventListener('change', function () {
-                        var deptId = rb.name.replace('gs-schedule-mode-', '');
-                        var errEl = document.getElementById('general-error');
-                        var okEl = document.getElementById('general-saved');
-                        errEl.classList.add('hidden'); okEl.classList.add('hidden');
-                        var prev = rb.value === 'generated' ? 'live' : 'generated';
-                        var revert = function () {
-                          var other = rowsEl.querySelector('input[name="gs-schedule-mode-' + deptId + '"][value="' + prev + '"]');
-                          if (other) other.checked = true;
-                        };
-                        api('/api/schedule/schedule-mode/' + deptId, { method: 'PUT', body: JSON.stringify({ mode: rb.value }) }).then(function (r) {
-                          if (r.ok) {
-                            okEl.classList.remove('hidden');
-                            setTimeout(function () { okEl.classList.add('hidden'); }, 3000);
-                          } else {
-                            revert();
-                            errEl.textContent = (r.data && r.data.error) || 'Could not save.';
-                            errEl.classList.remove('hidden');
-                          }
-                        }).catch(function () {
-                          revert();
-                          errEl.textContent = 'Network error.';
-                          errEl.classList.remove('hidden');
-                        });
-                      });
-                    });
-                  }).catch(function () {});
-                })();
+                // Schedule mode picker REMOVED (Deepika, 2026-11-26):
+                // "Fill it in automatically" is gone — every
+                // department is "Draft from my rotations" now. The
+                // per-department radios that fetched
+                // /api/schedule/schedule-modes and PUT
+                // /schedule-mode/:id lived here; the endpoints stay
+                // (PUT rejects 'live'), so restoring the setting is
+                // re-adding this block.
+
               }
               // Light chrome: a light saved colour flips header/footer text dark.
               window.applyChromeLightClass = function (el, color) {
@@ -21645,7 +21598,7 @@ window.qsNpOfferSend = function (btn) {
         // administer is generated. In a fully live company the
         // option is never added, so the whole flow stays hidden
         // and inert.
-        var bulkScheduleMode = 'live';
+        var bulkScheduleMode = 'generated';
         var draftPanelInit = false;
         var draftPreset = '4w';
         function loadBulkScheduleMode() {
@@ -21653,7 +21606,7 @@ window.qsNpOfferSend = function (btn) {
             var modes = (r.ok && r.data && r.data.modes) || [];
             bulkScheduleMode = modes.some(function (m) { return m.mode === 'generated'; }) ? 'generated' : 'live';
             syncBulkDraftOption();
-          }).catch(function () { bulkScheduleMode = 'live'; syncBulkDraftOption(); });
+          }).catch(function () { bulkScheduleMode = 'generated'; syncBulkDraftOption(); });
         }
         function syncBulkDraftOption() {
           var sel = $('bulk-action');
@@ -23554,7 +23507,7 @@ window.qsNpOfferSend = function (btn) {
         var msUnpublishedCounts = {}; // draft-open rule: reserved drafts, by date|type
         var msDraftOpenCounts = {}; // per-slot open publish state: draft opens by date|type (Deepika, 2026-11-17)
         var msIncludesDrafts = false; // employees never see drafts in `shifts`
-        var msScheduleMode = 'live'; // background rotations: 'live' | 'generated' | 'mixed'
+        var msScheduleMode = 'generated'; // background rotations: 'live' | 'generated' | 'mixed'
         var msGeneratedTypeIds = []; // generated shift types (stored-model open count) — from /shifts
         var msNotDraftedByType = {}; // managers only; the server sends employees {}
         var msStoredModelTypeIds = []; // stored-model (detached) types, for the stored-opens count
@@ -23863,7 +23816,7 @@ window.qsNpOfferSend = function (btn) {
               msUnpublishedCounts = rs[3].data.unpublishedCounts || {};
               msDraftOpenCounts = rs[3].data.draftOpenCounts || {};
               msIncludesDrafts = rs[3].data.includesDrafts !== false;
-              msScheduleMode = rs[3].data.scheduleMode || 'live';
+              msScheduleMode = rs[3].data.scheduleMode || 'generated';
               msGeneratedTypeIds = rs[3].data.generatedTypeIds || [];
               msNotDraftedByType = rs[3].data.notDraftedByType || {};
               msStoredModelTypeIds = rs[3].data.storedModelTypeIds || [];
@@ -24958,7 +24911,7 @@ window.qsNpOfferSend = function (btn) {
               msUnpublishedCounts = sR.data.unpublishedCounts || {};
               msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
-              msScheduleMode = sR.data.scheduleMode || 'live';
+              msScheduleMode = sR.data.scheduleMode || 'generated';
               msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
               msStoredModelTypeIds = sR.data.storedModelTypeIds || [];
@@ -24994,7 +24947,7 @@ window.qsNpOfferSend = function (btn) {
               msUnpublishedCounts = sR.data.unpublishedCounts || {};
               msDraftOpenCounts = sR.data.draftOpenCounts || {};
               msIncludesDrafts = sR.data.includesDrafts !== false;
-              msScheduleMode = sR.data.scheduleMode || 'live';
+              msScheduleMode = sR.data.scheduleMode || 'generated';
               msGeneratedTypeIds = sR.data.generatedTypeIds || [];
               msNotDraftedByType = sR.data.notDraftedByType || {};
               msStoredModelTypeIds = sR.data.storedModelTypeIds || [];

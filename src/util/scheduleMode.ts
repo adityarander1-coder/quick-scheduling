@@ -7,6 +7,17 @@
  * the per-department table from it); all readers go through these
  * helpers now.
  *
+ * "Fill it in automatically" REMOVED (Deepika, 2026-11-26): the
+ * setting is gone from Settings and every department is generated —
+ * migration 123 moved all 'live' rows to 'generated', and a missing
+ * row now means 'generated' (it used to mean 'live'). The 'live'
+ * code paths (the computed open-slot model, the live draw in
+ * drawRotationOccurrences, the 'live' branches in the readers) are
+ * KEPT IN PLACE, unused, marked kept-for-restore — do not delete
+ * them; restoring the setting is a small change (re-add the Settings
+ * UI, re-allow 'live' in PUT /schedule-mode/:id, flip these defaults
+ * back).
+ *
  * A shift type's mode: a type belongs to departments through
  * shift_type_departments (and the legacy department_id column on
  * shift_types for older rows — same rule as shiftTypeDeptMap). A
@@ -15,8 +26,8 @@
  * keeps drawing in the live department's view (the read paths filter
  * per shift, so the live department still sees it and the generated
  * one doesn't draw it).
- * A type with no departments at all is treated as live (same as the
- * no-department case in getShiftsForRange: unscoped types always
+ * A type with no departments at all is treated as generated (same as
+ * the no-department case in getShiftsForRange: unscoped types always
  * draw).
  */
 type QueryFn = (text: string, params: any[]) => Promise<{ rows: any[] }>;
@@ -24,7 +35,7 @@ type QueryFn = (text: string, params: any[]) => Promise<{ rows: any[] }>;
 export type ScheduleMode = 'live' | 'generated';
 export type CompanyModeSummary = 'live' | 'generated' | 'mixed';
 
-/** Modes for every department of a company (missing row = 'live'). */
+/** Modes for every department of a company (missing row = 'generated' — auto-fill removed 2026-11-26). */
 export async function getDepartmentModes(
   q: QueryFn,
   companyId: string
@@ -87,20 +98,24 @@ export async function getTypeDepartments(
 
 /**
  * The set of shift types that are 'generated': every department the
- * type belongs to is generated. Types in no department are live.
+ * type belongs to is generated. Types in no department are generated
+ * (auto-fill removed 2026-11-26: no department = no live department).
  */
 export async function getGeneratedTypeIds(
   q: QueryFn,
   companyId: string
 ): Promise<Set<string>> {
-  const [typeDepts, modes] = await Promise.all([
+  const [typeDepts, modes, allTypes] = await Promise.all([
     getTypeDepartments(q, companyId),
     getDepartmentModes(q, companyId),
+    q('SELECT id FROM shift_types WHERE company_id = $1', [companyId]),
   ]);
   const out = new Set<string>();
-  for (const [typeId, depts] of typeDepts) {
-    if (depts.size && [...depts].every((d) => (modes.get(d) || 'live') === 'generated')) {
-      out.add(typeId);
+  for (const r of allTypes.rows) {
+    const depts = typeDepts.get(r.id);
+    if (!depts || !depts.size) { out.add(r.id); continue; }
+    if ([...depts].every((d) => (modes.get(d) || 'generated') === 'generated')) {
+      out.add(r.id);
     }
   }
   return out;
@@ -165,7 +180,9 @@ export async function isTypeGenerated(
 /**
  * Company-wide summary for the grid header / response field:
  * 'live' when no department is generated, 'generated' when every
- * department is generated, 'mixed' otherwise.
+ * department is generated, 'mixed' otherwise. A company with no
+ * departments at all reads 'generated' (auto-fill removed
+ * 2026-11-26: new companies default to Draft from my rotations).
  */
 export async function getCompanyModeSummary(
   q: QueryFn,
@@ -173,11 +190,11 @@ export async function getCompanyModeSummary(
 ): Promise<CompanyModeSummary> {
   const modes = await getDepartmentModes(q, companyId);
   const { rows } = await q('SELECT id FROM departments WHERE company_id = $1', [companyId]);
-  if (!rows.length) return 'live';
+  if (!rows.length) return 'generated';
   let any = false;
   let all = true;
   for (const r of rows) {
-    const m = modes.get(r.id) || 'live';
+    const m = modes.get(r.id) || 'generated';
     if (m === 'generated') any = true;
     else all = false;
   }
@@ -533,7 +550,7 @@ export async function checkRotationsGeneratable(
   for (const rid of blocked) {
     for (const t of typesByRotation.get(rid) || []) {
       for (const d of typeDepts.get(t) || []) {
-        if ((modes.get(d) || 'live') !== 'generated') liveDeptIds.add(d);
+        if ((modes.get(d) || 'generated') !== 'generated') liveDeptIds.add(d);
       }
     }
   }

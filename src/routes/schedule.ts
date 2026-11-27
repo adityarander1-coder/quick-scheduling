@@ -6695,7 +6695,7 @@ router.get('/schedule-modes', requireRole('owner', 'scheduler'), async (req: Req
     res.json({
       modes: depts
         .filter((d: any) => administrable.includes(d.id))
-        .map((d: any) => ({ departmentId: d.id, name: d.name, mode: modes.get(d.id) || 'live' })),
+        .map((d: any) => ({ departmentId: d.id, name: d.name, mode: modes.get(d.id) || 'generated' })),
     });
   } catch (err) {
     console.error('[schedule] get schedule modes failed:', err);
@@ -6706,14 +6706,23 @@ router.get('/schedule-modes', requireRole('owner', 'scheduler'), async (req: Req
 // PUT /api/schedule/schedule-mode/:departmentId — flip one
 // department's mode. Server-enforced: the owner can flip any
 // department; a scheduler only one they have edit access to (403
-// otherwise). 400 on anything but 'live' | 'generated'.
+// otherwise).
+// "Fill it in automatically" REMOVED (Deepika, 2026-11-26): mode
+// 'live' is rejected here — departments are 'Draft from my rotations'
+// now. The endpoint and the 'live' value are KEPT for restore (the
+// Settings UI that called it is gone); restoring the setting is
+// re-adding that UI and re-allowing 'live' below.
 router.put('/schedule-mode/:departmentId', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const departmentId = String(req.params.departmentId || '');
     const mode = String(req.body?.mode || '');
-    if (mode !== 'live' && mode !== 'generated') {
-      res.status(400).json({ error: "Mode must be 'live' or 'generated'." });
+    if (mode === 'live') {
+      res.status(400).json({ error: "'Fill it in automatically' was removed — departments are 'Draft from my rotations' now." });
+      return;
+    }
+    if (mode !== 'generated') {
+      res.status(400).json({ error: "Mode must be 'generated'." });
       return;
     }
     const { rows: drows } = await query(
