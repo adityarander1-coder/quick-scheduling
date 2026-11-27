@@ -911,6 +911,189 @@ export async function unpublishOpenSlotsForPairs(
 }
 
 /**
+ * Batched per-pair inputs shared by the two read-only previews
+ * below (Deepika, 2026-11-26 — merged Move to draft + Remove
+ * panels). ONE read of targets / extras / suppressions / drafts /
+ * filled counts, then each preview applies its own action's
+ * formula — so preview and action can never disagree. Formulas:
+ * - unpublish move: stored pair → the published extras; computed
+ *   pair → max(0, shortfall + extra - suppressed).
+ * - whole-type close (closeTypeForDate totalBefore): max(0,
+ *   shortfall + extra - suppressed), shortfall from the effective
+ *   target (0 on undrafted generated dates).
+ * - count-limited close (openSlotTotals.total, the extra-slots
+ *   clamp): stored-model pair → max(0, extra + draft -
+ *   suppressed); otherwise max(0, target + extra - filled -
+ *   suppressed) with the RAW target.
+ */
+export interface OpenSlotPairInputs {
+  date: string;
+  shiftTypeId: string;
+  target: number;
+  effTarget: number;
+  extra: number;
+  supp: number;
+  draft: number;
+  filled: number;
+  stored: boolean;
+  storedModel: boolean;
+  shortfall: number;
+}
+export async function openSlotPairInputs(
+  q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
+  generatedTypeIds: Set<string>, includeLive = true
+): Promise<OpenSlotPairInputs[]> {
+  const list = dedupePairs(pairs).filter((p) => includeLive || generatedTypeIds.has(p.shiftTypeId));
+  if (!list.length) return [];
+  const dates = [...new Set(list.map((p) => p.date))].sort();
+  const typeIds = [...new Set(list.map((p) => p.shiftTypeId))];
+  const from = dates[0];
+  const to = dates[dates.length - 1];
+  const notDrafted = await getNotDraftedByType(q, companyId, generatedTypeIds, from, to);
+  const storedKeys = new Set<string>();
+  {
+    const storedByType = await getStoredModelDates(q, companyId, generatedTypeIds, from, to);
+    for (const [typeId, ds] of Object.entries(storedByType)) {
+      for (const d of ds) storedKeys.add(`${d}|${typeId}`);
+    }
+  }
+  const { rows: trows } = await q(
+    `SELECT shift_type_id AS "shiftTypeId", target_count, weekdays,
+            start_date::text AS start_date, end_date::text AS end_date
+     FROM staffing_targets WHERE company_id = $1 AND shift_type_id = ANY($2::uuid[])`,
+    [companyId, typeIds]
+  );
+  const targets = new Map<string, any>();
+  for (const r of trows) if (!targets.has(r.shiftTypeId)) targets.set(r.shiftTypeId, r);
+  const sumBy = async (table: string, idCast: 'uuid' | 'text') => {
+    const { rows } = await q(
+      `SELECT date::text AS date, shift_type_id AS "shiftTypeId", COALESCE(SUM(count), 0)::int AS n
+       FROM ${table} WHERE company_id = $1 AND date >= $2 AND date <= $3 AND shift_type_id = ANY($4::${idCast}[])
+       GROUP BY date, shift_type_id`,
+      [companyId, from, to, typeIds]
+    );
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(`${r.date}|${r.shiftTypeId}`, Number(r.n || 0));
+    return m;
+  };
+  const extras = await sumBy('extra_open_slots', 'uuid');
+  const suppressed = await sumBy('suppressed_open_slots', 'text');
+  const drafts = await sumBy('draft_open_slots', 'text');
+  const filled = new Map<string, number>();
+  for (const s of await getShiftsForRange(q, companyId, from, to)) {
+    if (!s.shiftTypeId) continue;
+    const k = `${s.date}|${s.shiftTypeId}`;
+    filled.set(k, (filled.get(k) || 0) + 1);
+  }
+  return list.map((p) => {
+    const k = pairKey(p);
+    const t = targets.get(p.shiftTypeId);
+    let target = 0;
+    if (t) {
+      const dow = new Date(p.date + 'T12:00:00').getDay();
+      const wdays: number[] = Array.isArray(t.weekdays) ? t.weekdays : [0, 1, 2, 3, 4, 5, 6];
+      const sd: string | null = t.start_date || null;
+      const ed: string | null = t.end_date || null;
+      if (wdays.indexOf(dow) !== -1 && !(sd && p.date < sd) && !(ed && p.date > ed)) {
+        target = Number(t.target_count) || 0;
+      }
+    }
+    const undrafted = (notDrafted[p.shiftTypeId] || []).includes(p.date);
+    const effTarget = undrafted ? 0 : target;
+    const f = filled.get(k) || 0;
+    const extra = Math.max(0, extras.get(k) || 0);
+    const draft = drafts.get(k) || 0;
+    const supp = suppressed.get(k) || 0;
+    const stored = storedKeys.has(k) || draft > 0;
+    const storedModel = generatedTypeIds.has(p.shiftTypeId) && storedKeys.has(k);
+    const shortfall = Math.max(0, effTarget - f);
+    return {
+      date: p.date, shiftTypeId: p.shiftTypeId,
+      target, effTarget, extra, supp, draft, filled: f,
+      stored, storedModel, shortfall,
+    };
+  });
+}
+
+/**
+ * Read-only preview of unpublishOpenSlotsForPairs (Deepika,
+ * 2026-11-26 — the merged Move to draft panel's Preview, built
+ * from Publish's preview pattern): the same pair enumeration and
+ * the same per-pair math, but it WRITES NOTHING. Returns how many
+ * published opens the move would move, per pair and per type, so
+ * the preview and the action can never disagree. Keep the math in
+ * sync with unpublishOpenSlotsForPairs above — the move-to-draft
+ * proof suite checks preview counts against the action's
+ * opensMoved on the same fixture state.
+ */
+export async function previewUnpublishOpensForPairs(
+  q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
+  generatedTypeIds: Set<string>, includeLive = true
+): Promise<{ opensMoved: number; pairsTouched: number; byType: Array<{ shiftTypeId: string; count: number }> }> {
+  const inputs = await openSlotPairInputs(q, companyId, pairs, generatedTypeIds, includeLive);
+  let opensMoved = 0;
+  let pairsTouched = 0;
+  const byTypeMap = new Map<string, number>();
+  for (const p of inputs) {
+    // Stored pair: only the published extras move (the draft opens
+    // are already draft). Computed pair: the visible opens move.
+    const moved = p.stored ? p.extra : Math.max(0, p.shortfall + p.extra - p.supp);
+    // A write happens exactly when moved > 0 (stored branch: extra
+    // > 0; computed branch: visible > 0 with an empty draft count)
+    // — same trigger as unpublishOpenSlotsForPairs.
+    if (moved > 0) {
+      opensMoved += moved;
+      pairsTouched++;
+      byTypeMap.set(p.shiftTypeId, (byTypeMap.get(p.shiftTypeId) || 0) + moved);
+    }
+  }
+  const byType = [...byTypeMap.entries()].map(([shiftTypeId, count]) => ({ shiftTypeId, count }));
+  return { opensMoved, pairsTouched, byType };
+}
+
+/**
+ * Read-only preview of the Remove panel's close side (Deepika,
+ * 2026-11-26 — merged Remove): how many visible opens the close
+ * would really remove, per pair and per type, WRITING NOTHING.
+ * howMany = 0 means the whole-type close (POST /closed-shifts,
+ * closeTypeForDate totalBefore); a number means the count-limited
+ * close (POST /extra-slots count:-N, clamped to
+ * openSlotTotals.total per date). Same formulas as the actions —
+ * the remove proof suite checks preview counts against the
+ * actions' closed counts on the same fixture state.
+ */
+export async function previewCloseOpensForPairs(
+  q: OpenSlotQuery, companyId: string, pairs: OpenSlotPair[],
+  generatedTypeIds: Set<string>, howMany: number
+): Promise<{ closes: number; pairsTouched: number; byType: Array<{ shiftTypeId: string; count: number }> }> {
+  const inputs = await openSlotPairInputs(q, companyId, pairs, generatedTypeIds, true);
+  let closes = 0;
+  let pairsTouched = 0;
+  const byTypeMap = new Map<string, number>();
+  for (const p of inputs) {
+    let perPair: number;
+    if (howMany > 0) {
+      // Count-limited close: clamp to the visible total the
+      // extra-slots endpoint clamps to (openSlotTotals.total).
+      const visible = p.storedModel
+        ? Math.max(0, p.extra + p.draft - p.supp)
+        : Math.max(0, p.target + p.extra - p.filled - p.supp);
+      perPair = Math.min(howMany, visible);
+    } else {
+      // Whole-type close: closeTypeForDate totalBefore.
+      perPair = Math.max(0, p.shortfall + p.extra - p.supp);
+    }
+    if (perPair > 0) {
+      closes += perPair;
+      pairsTouched++;
+      byTypeMap.set(p.shiftTypeId, (byTypeMap.get(p.shiftTypeId) || 0) + perPair);
+    }
+  }
+  const byType = [...byTypeMap.entries()].map(([shiftTypeId, count]) => ({ shiftTypeId, count }));
+  return { closes, pairsTouched, byType };
+}
+
+/**
  * The rotation's own opens for one date+type: staffing-target
  * shortfall (target - filled, clamped at 0), the same math the
  * draft uses — used when a publish is undone, so the day goes back

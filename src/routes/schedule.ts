@@ -34,7 +34,7 @@ import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getStoredModelDates, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
 import { generateRotations, touchRotation, touchRotationsForGroup, resetToAutoRotation, undoResetToAutoRotation, RESET_MODES } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot } from '../util/openSlots.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, previewUnpublishOpensForPairs, previewCloseOpensForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -4778,6 +4778,402 @@ router.post('/open-slots/bulk-unpublish', requireRole('owner', 'scheduler'), asy
     res.json({ ok: true, opensMoved, pairsTouched });
   } catch (err) {
     console.error('[schedule] bulk-unpublish open slots failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+
+// Job-role narrowing for the merged panels (Deepika, 2026-11-26):
+// a picked role narrows PEOPLE to those holding it (home role or
+// a secondary membership role) and SHIFT TYPES to those the role
+// can work — the same rule checkShiftEligibility enforces per
+// person: an explicit eligible list must contain the role; an
+// empty list means all roles of the type's own departments.
+async function usersHoldingJobRoles(
+  companyId: string, roleIds: string[], deptIds: string[] = []
+): Promise<string[]> {
+  const { rows } = await query(
+    `SELECT DISTINCT u.id FROM users u
+     LEFT JOIN user_department_memberships m ON m.user_id = u.id
+     WHERE u.company_id = $1 AND u.is_active = true
+       AND (u.job_role_id = ANY($2::uuid[]) OR m.job_role_id = ANY($2::uuid[]))
+       ${deptIds.length ? 'AND (u.department_id = ANY($3::uuid[]) OR m.department_id = ANY($3::uuid[]))' : ''}`,
+    deptIds.length ? [companyId, roleIds, deptIds] : [companyId, roleIds]
+  );
+  return rows.map((r: any) => String(r.id));
+}
+async function filterTypeIdsByJobRoles(
+  companyId: string, typeIds: string[], roleIds: string[]
+): Promise<string[]> {
+  if (!roleIds.length || !typeIds.length) return typeIds;
+  const { rows: stRows } = await query(
+    `SELECT st.id, st.eligible_job_role_ids AS "eligible",
+            st.department_id AS "deptId",
+            COALESCE((SELECT json_agg(std.department_id) FROM shift_type_departments std WHERE std.shift_type_id = st.id), '[]') AS "deptIds"
+     FROM shift_types st WHERE st.company_id = $1 AND st.id = ANY($2::uuid[])`,
+    [companyId, typeIds]
+  );
+  const { rows: rrows } = await query(
+    'SELECT id, department_id AS "deptId" FROM job_roles WHERE company_id = $1 AND id = ANY($2::uuid[])',
+    [companyId, roleIds]
+  );
+  const roleSet = new Set(roleIds.map(String));
+  const roleDeptSet = new Set(rrows.map((r: any) => String(r.deptId)));
+  return stRows.filter((st: any) => {
+    const elig: string[] = Array.isArray(st.eligible) ? st.eligible.map(String) : [];
+    if (elig.length) return elig.some((id: string) => roleSet.has(id));
+    const depts = [...(st.deptIds || []), st.deptId].filter(Boolean).map(String);
+    if (!depts.length) return true; // no departments: open to every role
+    return depts.some((d: string) => roleDeptSet.has(d));
+  }).map((st: any) => String(st.id));
+}
+
+// Shared scope resolution for the merged-panel previews
+// (Deepika, 2026-11-26): departments narrow TYPES only (the
+// brief: "a picked department limits to that department's
+// types"); employees and job roles narrow PEOPLE. Returns
+// typeScope/userScope as null (no restriction — the Run uses the
+// old no-filter path) or a list (possibly empty: the restriction
+// matched nothing, so that side is skipped, never widened).
+async function resolveMergedScope(
+  req: Request, res: Response, companyId: string,
+  body: { userIds?: string[]; shiftTypeIds?: string[]; departmentIds?: string[]; jobRoleIds?: string[] }
+): Promise<{ typeScope: string[] | null; userScope: string[] | null } | null> {
+  const userIds = (body.userIds || []).filter((x: any) => typeof x === 'string' && x);
+  const pickedTypes = (body.shiftTypeIds || []).filter((x: any) => typeof x === 'string' && x);
+  const deptIds = (body.departmentIds || []).filter((x: any) => typeof x === 'string' && x);
+  const roleIds = (body.jobRoleIds || []).filter((x: any) => typeof x === 'string' && x);
+  if (userIds.length) {
+    const { rows: urows } = await query('SELECT id FROM users WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, userIds]);
+    if (urows.length !== userIds.length) {
+      res.status(400).json({ error: 'Unknown team member.' });
+      return null;
+    }
+  }
+  if (deptIds.length) {
+    const { rows: drows } = await query('SELECT id FROM departments WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, deptIds]);
+    if (drows.length !== deptIds.length) {
+      res.status(400).json({ error: 'Unknown department.' });
+      return null;
+    }
+    // Scheduler: the active department must be one of the picked
+    // ones (the Run endpoints enforce the same).
+    if (!(await requireActiveDepartment(req, res, deptIds))) return null;
+  }
+  if (roleIds.length) {
+    const { rows: rrows } = await query('SELECT id FROM job_roles WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, roleIds]);
+    if (rrows.length !== roleIds.length) {
+      res.status(400).json({ error: 'Unknown job role.' });
+      return null;
+    }
+  }
+  // Types: picked types, else every type; narrowed by department
+  // (types in those departments) and by role (types the role can
+  // work). Null when nothing narrows types at all.
+  let typeScope: string[] | null = null;
+  if (pickedTypes.length || deptIds.length || roleIds.length) {
+    let ids: string[];
+    if (pickedTypes.length) {
+      const { rows: stRows } = await query('SELECT id FROM shift_types WHERE id = ANY($1::uuid[]) AND company_id = $2', [pickedTypes, companyId]);
+      if (stRows.length !== pickedTypes.length) {
+        res.status(400).json({ error: 'Unknown shift type.' });
+        return null;
+      }
+      ids = pickedTypes;
+    } else {
+      const { rows: allRows } = await query('SELECT id FROM shift_types WHERE company_id = $1', [companyId]);
+      ids = allRows.map((r: any) => String(r.id));
+    }
+    if (deptIds.length) {
+      const { rows: trows } = await query(
+        `SELECT DISTINCT st.id FROM shift_types st
+         LEFT JOIN shift_type_departments std ON std.shift_type_id = st.id
+         WHERE st.company_id = $1 AND (std.department_id = ANY($2::uuid[]) OR st.department_id = ANY($2::uuid[]))`,
+        [companyId, deptIds]
+      );
+      const deptTypeSet = new Set(trows.map((r: any) => String(r.id)));
+      ids = ids.filter((id) => deptTypeSet.has(id));
+    }
+    if (roleIds.length) ids = await filterTypeIdsByJobRoles(companyId, ids, roleIds);
+    typeScope = ids;
+  }
+  if (typeScope && typeScope.length) {
+    if (!(await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeScope, companyId)))) return null;
+  } else if (userIds.length) {
+    if (!(await requireActiveDepartment(req, res, await usersDepartmentIds(userIds, companyId)))) return null;
+  }
+  // People: picked employees, else everyone holding the picked
+  // roles. Null when no person-level filter is picked — the Run
+  // then uses the old no-members path (userIds=[]).
+  let userScope: string[] | null = null;
+  if (userIds.length || roleIds.length) {
+    if (userIds.length && roleIds.length) {
+      const holders = new Set(await usersHoldingJobRoles(companyId, roleIds));
+      userScope = userIds.filter((id) => holders.has(String(id)));
+    } else if (userIds.length) {
+      userScope = userIds;
+    } else {
+      userScope = await usersHoldingJobRoles(companyId, roleIds);
+    }
+  }
+  return { typeScope, userScope };
+}
+
+// The (date, type) pairs a merged-panel preview enumerates:
+// every pair with a stored extra, plus every type with a
+// staffing target on those dates — the same enumeration the
+// bulk-unpublish action uses.
+async function mergedPreviewPairs(
+  companyId: string, dates: string[], typeScope: string[] | null
+): Promise<Array<{ date: string; shiftTypeId: string }>> {
+  // typeScope null = no restriction (all types); typeScope [] = a
+  // picked filter matched NOTHING — the filter MUST still apply
+  // (ANY('{}') matches no rows), or a matched-nothing scope would
+  // enumerate every type's pairs and the preview would count opens
+  // the Run must never touch.
+  const typeFilter = typeScope !== null ? ' AND shift_type_id = ANY($3::uuid[])' : '';
+  const typeParams: any[] = typeScope !== null ? [typeScope] : [];
+  const { rows: extraRows } = await query(
+    `SELECT DISTINCT date::text AS date, shift_type_id AS "shiftTypeId"
+     FROM extra_open_slots WHERE company_id = $1 AND date = ANY($2::date[])${typeFilter}`,
+    [companyId, dates, ...typeParams]
+  );
+  const pairSet = new Map<string, { date: string; shiftTypeId: string }>();
+  for (const r of extraRows) pairSet.set(`${r.date}|${r.shiftTypeId}`, { date: r.date, shiftTypeId: r.shiftTypeId });
+  const targetTypeFilter = typeScope !== null ? ' AND shift_type_id = ANY($2::uuid[])' : '';
+  const targetParams: any[] = typeScope !== null ? [typeScope] : [];
+  const { rows: targetRows } = await query(
+    `SELECT DISTINCT shift_type_id AS "shiftTypeId" FROM staffing_targets WHERE company_id = $1${targetTypeFilter}`,
+    [companyId, ...targetParams]
+  );
+  for (const t of targetRows) {
+    for (const d of dates) pairSet.set(`${d}|${t.shiftTypeId}`, { date: d, shiftTypeId: t.shiftTypeId });
+  }
+  return [...pairSet.values()];
+}
+
+// Names for a preview's by-type breakdown.
+async function mergedPreviewTypeNames(
+  companyId: string, typeIds: string[]
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (!typeIds.length) return names;
+  const { rows: nameRows } = await query(
+    'SELECT id, name FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
+    [companyId, typeIds]
+  );
+  for (const r of nameRows) names.set(r.id, r.name);
+  return names;
+}
+
+// POST /api/schedule/unpublish/preview — the merged Move to draft
+// panel's Preview (Deepika, 2026-11-26 — built from Publish's
+// preview pattern): count what the merged Run would move, WITHOUT
+// writing anything. Body: { dates:[...], userIds?:[...],
+// shiftTypeIds?:[...], departmentIds?:[...], jobRoleIds?:[...] }.
+// The assigned count is the grid's own visible published shifts
+// (getShiftsForRange: stored rows + drawn occurrences, a stored
+// row suppressing its own occurrence), so the preview counts each
+// shift once. The opens count is the read-only mirror of
+// unpublishOpenSlotsForPairs, so preview and action cannot
+// disagree on opens. The response also carries the RESOLVED scope
+// (userIds/typeIds) — the Run sends exactly those back, so preview
+// and Run can never drift apart. `route` names which
+// assigned-shifts path the Run will take: 'bulk-publish-state'
+// when members, types, departments or roles narrow the scope;
+// 'days' when nothing does — the whole-day path flips only the
+// legacy day flag and moves no shifts on the grid, so
+// `assignedWillMove` is 0 there and the preview says so plainly
+// instead of promising shifts it cannot move; 'none' when the
+// filters matched nothing at all, so the assigned side is skipped
+// rather than widened to everyone.
+router.post('/unpublish/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates: string[] = Array.isArray(req.body?.dates) ? [...new Set<string>(req.body.dates.filter(isValidDate))].sort() : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'At least one valid date is required.' });
+      return;
+    }
+    const scope = await resolveMergedScope(req, res, companyId, req.body ?? {});
+    if (!scope) return;
+    const { typeScope, userScope } = scope;
+    const generated = await getGeneratedTypeIds(query, companyId);
+    // The member scope the assigned count uses: the resolved
+    // person list when a person-level filter is picked; otherwise
+    // the same default bulk-publish-state uses when no members
+    // are named (active department for a scheduler, company-wide
+    // for the owner).
+    let scopeUserIds: string[];
+    if (userScope !== null) {
+      scopeUserIds = userScope;
+    } else if (typeScope !== null && typeScope.length) {
+      const dc = await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeScope, companyId));
+      if (!dc) return;
+      const scopeDeptId = dc.departmentId || null;
+      const scopeSql = scopeDeptId
+        ? 'SELECT id FROM users WHERE company_id = $1 AND is_active = true AND department_id = $2'
+        : 'SELECT id FROM users WHERE company_id = $1 AND is_active = true';
+      const scopeParams = scopeDeptId ? [companyId, scopeDeptId] : [companyId];
+      const { rows: allUsers } = await query(scopeSql, scopeParams);
+      scopeUserIds = allUsers.map((r: any) => r.id);
+    } else {
+      const { rows: allUsers } = await query('SELECT id FROM users WHERE company_id = $1 AND is_active = true', [companyId]);
+      scopeUserIds = allUsers.map((r: any) => r.id);
+    }
+    const scopeUserSet = new Set(scopeUserIds.map(String));
+    const scopeTypeSet = typeScope !== null ? new Set(typeScope.map(String)) : null;
+    // Assigned shifts: the grid's visible published shifts in the
+    // picked dates and scope.
+    const from = dates[0];
+    const to = dates[dates.length - 1];
+    const dateSet = new Set(dates);
+    const visible = await getShiftsForRange(query, companyId, from, to);
+    let assignedShifts = 0;
+    const assignedByType = new Map<string, number>();
+    for (const s of visible) {
+      if (!dateSet.has(s.date)) continue;
+      if (!s.published) continue;
+      if (!scopeUserSet.has(String(s.userId))) continue;
+      if (scopeTypeSet && !scopeTypeSet.has(String(s.shiftTypeId))) continue;
+      assignedShifts++;
+      assignedByType.set(String(s.shiftTypeId), (assignedByType.get(String(s.shiftTypeId)) || 0) + 1);
+    }
+    // Open slots: the same pair enumeration as bulk-unpublish.
+    const pairs = await mergedPreviewPairs(companyId, dates, typeScope);
+    const opens = pairs.length
+      ? await previewUnpublishOpensForPairs(query, companyId, pairs, generated, true)
+      : { opensMoved: 0, pairsTouched: 0, byType: [] };
+    // Names for the by-type breakdown.
+    const byTypeIds = [...new Set([...assignedByType.keys(), ...opens.byType.map((b: any) => b.shiftTypeId)])];
+    const names = await mergedPreviewTypeNames(companyId, byTypeIds);
+    const byType = byTypeIds
+      .map((id) => ({
+        shiftTypeId: id,
+        name: names.get(id) || 'Shift type',
+        assigned: assignedByType.get(id) || 0,
+        opens: (opens.byType.find((b: any) => b.shiftTypeId === id) || { count: 0 }).count,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // Which assigned-shifts path the Run will take. 'none' when a
+    // picked filter matched nothing — the Run skips the assigned
+    // side instead of widening it to everyone.
+    const emptyScope = (userScope !== null && userScope.length === 0) || (typeScope !== null && typeScope.length === 0);
+    const route = emptyScope ? 'none' : (userScope !== null || typeScope !== null) ? 'bulk-publish-state' : 'days';
+    res.json({
+      ok: true,
+      route,
+      assignedShifts,
+      assignedWillMove: route === 'bulk-publish-state' ? assignedShifts : 0,
+      opens: opens.opensMoved,
+      pairsTouched: opens.pairsTouched,
+      byType,
+      userIds: userScope !== null ? userScope : [],
+      typeIds: typeScope !== null ? typeScope : [],
+    });
+  } catch (err) {
+    console.error('[schedule] unpublish preview failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/schedule/remove/preview — the merged Remove panel's
+// Preview (Deepika, 2026-11-26): count what the merged Run would
+// remove, WITHOUT writing anything. Body: { dates:[...],
+// userIds?:[...], shiftTypeIds?:[...], departmentIds?:[...],
+// jobRoleIds?:[...], howMany?: number } (howMany 0/empty = close
+// all per date, like the old Close panel). `deletes` is the grid's
+// own visible assigned shifts in scope (draft AND published —
+// delete removes both); `closes` is the read-only mirror of the
+// close actions (whole-type close or count-limited close, per
+// howMany), so preview and action cannot disagree. The response
+// carries the RESOLVED scope (userIds/typeIds) for the Run to
+// send back verbatim.
+router.post('/remove/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+  try {
+    const companyId = req.session.companyId!;
+    const dates: string[] = Array.isArray(req.body?.dates) ? [...new Set<string>(req.body.dates.filter(isValidDate))].sort() : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'At least one valid date is required.' });
+      return;
+    }
+    const howMany = Math.max(0, Math.min(20, parseInt(req.body?.howMany, 10) || 0));
+    const scope = await resolveMergedScope(req, res, companyId, req.body ?? {});
+    if (!scope) return;
+    const { typeScope, userScope } = scope;
+    const generated = await getGeneratedTypeIds(query, companyId);
+    let scopeUserIds: string[];
+    if (userScope !== null) {
+      scopeUserIds = userScope;
+    } else if (typeScope !== null && typeScope.length) {
+      const dc = await requireActiveDepartment(req, res, await shiftTypesDepartmentIds(typeScope, companyId));
+      if (!dc) return;
+      const scopeDeptId = dc.departmentId || null;
+      const scopeSql = scopeDeptId
+        ? 'SELECT id FROM users WHERE company_id = $1 AND is_active = true AND department_id = $2'
+        : 'SELECT id FROM users WHERE company_id = $1 AND is_active = true';
+      const scopeParams = scopeDeptId ? [companyId, scopeDeptId] : [companyId];
+      const { rows: allUsers } = await query(scopeSql, scopeParams);
+      scopeUserIds = allUsers.map((r: any) => r.id);
+    } else {
+      const { rows: allUsers } = await query('SELECT id FROM users WHERE company_id = $1 AND is_active = true', [companyId]);
+      scopeUserIds = allUsers.map((r: any) => r.id);
+    }
+    const scopeUserSet = new Set(scopeUserIds.map(String));
+    const scopeTypeSet = typeScope !== null ? new Set(typeScope.map(String)) : null;
+    // Assigned shifts to delete: every visible shift in scope
+    // (draft and published — delete removes both).
+    const from = dates[0];
+    const to = dates[dates.length - 1];
+    const dateSet = new Set(dates);
+    const visible = await getShiftsForRange(query, companyId, from, to);
+    let deletes = 0;
+    const deletesByType = new Map<string, number>();
+    for (const s of visible) {
+      if (!dateSet.has(s.date)) continue;
+      if (!scopeUserSet.has(String(s.userId))) continue;
+      if (scopeTypeSet && !scopeTypeSet.has(String(s.shiftTypeId))) continue;
+      deletes++;
+      deletesByType.set(String(s.shiftTypeId), (deletesByType.get(String(s.shiftTypeId)) || 0) + 1);
+    }
+    // Open slots to close: the same pair enumeration as the close
+    // actions, counted with each action's own formula.
+    const pairs = await mergedPreviewPairs(companyId, dates, typeScope);
+    const closes = pairs.length
+      ? await previewCloseOpensForPairs(query, companyId, pairs, generated, howMany)
+      : { closes: 0, pairsTouched: 0, byType: [] };
+    const byTypeIds = [...new Set([...deletesByType.keys(), ...closes.byType.map((b: any) => b.shiftTypeId)])];
+    const names = await mergedPreviewTypeNames(companyId, byTypeIds);
+    const byType = byTypeIds
+      .map((id) => ({
+        shiftTypeId: id,
+        name: names.get(id) || 'Shift type',
+        deletes: deletesByType.get(id) || 0,
+        closes: (closes.byType.find((b: any) => b.shiftTypeId === id) || { count: 0 }).count,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json({
+      ok: true,
+      deletes,
+      closes: closes.closes,
+      pairsTouched: closes.pairsTouched,
+      howMany,
+      byType,
+      userIds: userScope !== null ? userScope : [],
+      typeIds: typeScope !== null ? typeScope : [],
+      // Types that actually have open-slot pairs in scope — the
+      // close side runs per type, and when the scope is "all" this
+      // is the list that has anything to close.
+      closeTypeIds: [...new Set(pairs.map((p: any) => p.shiftTypeId))],
+      // 'none' when a picked filter matched NOTHING (an empty
+      // resolved list) — the Run must skip the delete side
+      // entirely there: a bulk-delete with empty userIds and no
+      // shiftTypeId deletes EVERYTHING in range, which is the
+      // no-filter behaviour, not the matched-nothing behaviour.
+      route: ((userScope !== null && userScope.length === 0) || (typeScope !== null && typeScope.length === 0)) ? 'none' : 'scoped',
+    });
+  } catch (err) {
+    console.error('[schedule] remove preview failed:', err);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
