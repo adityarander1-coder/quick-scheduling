@@ -8617,6 +8617,7 @@ const PERSONAL_DEFAULTS: Record<string, string> = {
   header_color: '',        // hex, empty = theme default
   footer_color: '',        // hex, empty = theme default
   schedule_size: '100',    // 100 | 80 | 70 — schedule grid scale (Deepika 2026-11-02)
+  show_job_roles: '0',     // '0' | '1' — show job role text under names on the schedule grid (Deepika 2026-11-27)
 };
 
 // GET /api/schedule/general-settings
@@ -8707,6 +8708,8 @@ router.put('/personal-settings', requireRole('owner', 'scheduler', 'employee'), 
       { res.status(400).json({ error: 'Invalid theme.' }); return; }
     if (body.schedule_size && !['100', '80', '70'].includes(String(body.schedule_size)))
       { res.status(400).json({ error: 'Invalid schedule size.' }); return; }
+    if (body.show_job_roles && !['0', '1'].includes(String(body.show_job_roles)))
+      { res.status(400).json({ error: 'Invalid show_job_roles.' }); return; }
     for (const ck of ['header_color', 'footer_color']) {
       if (body[ck] && !/^#[0-9a-fA-F]{6}$/.test(body[ck]))
         { res.status(400).json({ error: 'Colors must be hex like #1a73e8.' }); return; }
