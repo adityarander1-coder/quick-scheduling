@@ -22790,17 +22790,21 @@ window.qsNpOfferSend = function (btn) {
           if (cc.peopleLosingPublished && cc.peopleLosingPublished.length) {
             h += '<div style="font-size:0.9rem;margin:6px 0"><b>' + cc.peopleLosingPublished.length + ' ' + (cc.peopleLosingPublished.length === 1 ? 'person loses' : 'people lose') + ' a published shift:</b> ' + esc(cc.peopleLosingPublished.map(function (p) { return p.personName; }).join(', ')) + '. Shown here only — they are not told.</div>';
           }
-          // Skipped shifts that will not come back (vacation/ended).
+          // Skipped shifts that will not come back (vacation/ended/
+          // previously deleted — Deepika, 2026-11-27, marker fix:
+          // in Keep, deleted shifts never come back, bulk or
+          // one-by-one, and the preview must say so with names).
           var wont = {};
           (pv.skippedDetail || []).forEach(function (sd) {
-            if (sd.reason !== 'vacation' && sd.reason !== 'ended') return;
+            if (sd.reason !== 'vacation' && sd.reason !== 'ended' && sd.reason !== 'excluded') return;
             var k = sd.personName + '|' + sd.reason;
             wont[k] = wont[k] || { name: sd.personName, reason: sd.reason, n: 0 };
             wont[k].n++;
           });
           Object.keys(wont).forEach(function (k) {
             var w = wont[k];
-            h += '<div style="font-size:0.9rem;margin:4px 0">' + w.n + ' shift' + (w.n === 1 ? '' : 's') + ' won\'t come back — ' + esc(w.name) + ' is ' + (w.reason === 'vacation' ? 'on vacation' : 'ended') + '.</div>';
+            var why = w.reason === 'vacation' ? 'is on vacation' : w.reason === 'ended' ? 'is ended' : 'was deleted';
+            h += '<div style="font-size:0.9rem;margin:4px 0">' + w.n + ' shift' + (w.n === 1 ? '' : 's') + ' won\'t come back — ' + esc(w.name) + ' ' + why + '.</div>';
           });
           if (pv.rotationlessAll) h += '<div style="font-size:0.9rem;margin:6px 0;color:var(--dim)">These shifts have no rotation — their shifts are manual and their opens rebuild from the target. Rotation options are greyed out with 0.</div>';
           h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">' + esc(bulkMergedScopeLine(draftDates, draftDepts, draftRoles, draftTypes, draftEmps)) + '</p>';

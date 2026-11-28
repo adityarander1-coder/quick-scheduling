@@ -163,7 +163,7 @@ function personDisplay(a: any): string {
 export async function loadGenerationContext(
   q: QueryFn, companyId: string, from: string, to: string,
   rotationIds: string[],
-  opts?: { ignoreBulkExclusions?: boolean }
+  opts?: { ignoreAllExclusions?: boolean }
 ): Promise<GenerationContext> {
   const { rows: vacRows } = await q(
     `SELECT ra.user_id AS "userId", p.start_date::text AS "startDate", p.end_date::text AS "endDate"
@@ -188,13 +188,19 @@ export async function loadGenerationContext(
     if (!pauseMap.has(p.rotationId)) pauseMap.set(p.rotationId, []);
     pauseMap.get(p.rotationId)!.push({ start: p.startDate, end: p.endDate });
   }
-  const { rows: exclRows } = await q(
-    `SELECT rotation_id AS "rotationId", user_id AS "userId",
-            date::text AS "date", shift_type_id AS "shiftTypeId"
-     FROM rotation_shift_exclusions
-     WHERE company_id = $1 AND date >= $2 AND date <= $3${opts?.ignoreBulkExclusions ? ` AND origin <> 'bulk'` : ''}`,
-    [companyId, from, to]
-  );
+  // Marker fix (Deepika, 2026-11-27): a fresh dry run computes as
+  // if every exclusion were already cleared (the fresh real run
+  // clears them all); a keep dry run computes with every
+  // exclusion standing, so deleted shifts count as skipped.
+  const { rows: exclRows } = opts?.ignoreAllExclusions
+    ? { rows: [] }
+    : await q(
+      `SELECT rotation_id AS "rotationId", user_id AS "userId",
+              date::text AS "date", shift_type_id AS "shiftTypeId"
+       FROM rotation_shift_exclusions
+       WHERE company_id = $1 AND date >= $2 AND date <= $3`,
+      [companyId, from, to]
+    );
   const exclSet = new Set(exclRows.map((e: any) =>
     `${e.rotationId}|${e.userId}|${e.date}|${e.shiftTypeId}`
   ));
@@ -771,17 +777,19 @@ export interface GenerateSummary {
   /** Dry run only: exclusions (previously deleted instances) in range. */
   deletedCount?: number;
   /**
-   * Dry run only: bulk-delete exclusions in range — the ones this
-   * draft would clear so the range re-drafts. Real run only: how
-   * many bulk-delete exclusions the draft actually cleared.
+   * Dry run only: bulk-delete exclusions in range — the ones a
+   * fresh draft would clear so the range re-drafts (in keep mode
+   * they stay, and the people do not come back). Real run only:
+   * how many bulk-delete exclusions the draft actually cleared
+   * (0 in keep mode).
    */
   bulkDeletedCount?: number;
   clearedBulkExclusions?: number;
   /**
    * Fresh only, real run: how many exclusions of ANY origin the
    * fresh reset cleared in scope (one-by-one AND bulk), split
-   * below. Keep mode clears bulk only, so clearedExclusions
-   * equals clearedBulkExclusions there.
+   * below. Keep mode clears none, so clearedExclusions is 0
+   * there.
    */
   clearedExclusions?: number;
   clearedExclusionsSingle?: number;
@@ -1458,19 +1466,20 @@ export async function generateRotations(
   const onlyUserIds = opts.userIds?.length ? new Set(opts.userIds) : undefined;
   const onlyShiftTypeIds = opts.shiftTypeIds?.length ? new Set(opts.shiftTypeIds) : undefined;
 
-  // Bulk-deleted ranges re-draft (Deepika, 2026-11-23 — draft fix):
-  // a bulk delete clears a range so it can be re-drafted, and its
-  // exclusions are range-clear markers. The draft clears them in
-  // its own scope (rotations, picked types/users, range) BEFORE
-  // computing occurrences, so the people come back. Fresh mode
+  // Deleted shifts never come back in Keep (Deepika, 2026-11-27 —
+  // marker fix: a bulk-deleted shift and a one-by-one deleted
+  // shift look identical on the schedule, so Keep clearing bulk
+  // markers but not single ones gave the same action different
+  // results for no visible reason). Keep mode clears NO
+  // exclusion markers — neither 'bulk' nor 'single'. Fresh mode
   // (Deepika, 2026-11-24 — "Bring back everything I deleted")
   // clears exclusions of EVERY origin in the same scope — the
-  // one-by-one deletes come back too. Keep mode still clears bulk
-  // only: one-by-one deletes stay. Draft mode only; the migration
-  // stamps live truth and must not clear anything. The dry run
-  // never writes: it computes with bulk exclusions ignored instead
-  // (below); the fresh dry-run counts below preview the full
-  // clear.
+  // one-by-one deletes come back too. Draft mode only; the
+  // migration stamps live truth and must not clear anything. The
+  // dry run never writes: a fresh dry run computes with every
+  // exclusion ignored (below), so it previews the full clear;
+  // a keep dry run computes with every exclusion standing, so
+  // deleted shifts count as skipped, never as would-create.
   let clearedBulkExclusions = 0;
   let clearedExclusions = 0;
   let clearedExclusionsSingle = 0;
@@ -1496,7 +1505,10 @@ export async function generateRotations(
   // cleared exclusion, so a hand-added extra survives whenever
   // the deletes don't cover it).
   const clearedExclusionsByPair = new Map<string, number>();
-  if (publishMode === 'draft' && !opts.dryRun) {
+  // Marker fix (Deepika, 2026-11-27): only Fresh deletes
+  // exclusions. Keep clears none, so only Fresh brings deleted
+  // shifts back.
+  if (publishMode === 'draft' && !opts.dryRun && mode === 'fresh') {
     const clearParams: any[] = [companyId, rotationIds, from, to];
     let clearScope = '';
     if (onlyShiftTypeIds) {
@@ -1507,11 +1519,10 @@ export async function generateRotations(
       clearScope += ` AND user_id = ANY($${clearParams.length + 1}::uuid[])`;
       clearParams.push([...onlyUserIds]);
     }
-    const originFilter = mode === 'fresh' ? '' : ` AND origin = 'bulk'`;
     const cleared = await tx(
       `DELETE FROM rotation_shift_exclusions
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
-         AND date >= $3 AND date <= $4${originFilter}${clearScope}
+         AND date >= $3 AND date <= $4${clearScope}
        RETURNING rotation_id AS "rotationId", user_id AS "userId",
                  origin, date::text AS date, shift_type_id AS "shiftTypeId"`,
       clearParams
@@ -1528,11 +1539,13 @@ export async function generateRotations(
       });
     }
   }
-  // The dry run previews the real run, so it computes as if the
-  // bulk exclusions were already cleared; the real run above
-  // deleted them, so it reads the plain context.
+  // The dry run previews the real run. Fresh clears every
+  // exclusion first, so a fresh dry run computes as if they were
+  // already gone; Keep clears none, so a keep dry run computes
+  // with every exclusion standing. The real run above deleted
+  // them (fresh only), so it reads the plain context.
   const ctx = await loadGenerationContext(tx, companyId, from, to, rotationIds,
-    opts.dryRun ? { ignoreBulkExclusions: true } : undefined);
+    opts.dryRun && mode === 'fresh' ? { ignoreAllExclusions: true } : undefined);
   const compOpts = { publishMode, collectDeparted: true, today, onlyUserIds, onlyShiftTypeIds };
   // Rotation-less types (Deepika, 2026-11-15): picked generated types
   // no active rotation produces. A call with no rotations at all is
@@ -1584,10 +1597,10 @@ export async function generateRotations(
          AND date >= $3 AND date <= $4 AND origin = 'single'${userScope}`,
       [companyId, rotationIds, from, to, ...userParams]
     );
-    // Bulk-delete exclusions in scope: the draft clears these, so
-    // the people come back — they are NOT "people you deleted" for
-    // the dialog's promise, and wouldCreate above already counts
-    // them as placeable.
+    // Bulk-delete exclusions in scope. Fresh clears these, so the
+    // people come back and wouldCreate above already counts them
+    // as placeable; Keep clears none, so they stay excluded and
+    // wouldCreate does not count them.
     const { rows: bulkRows } = await tx(
       `SELECT COUNT(*)::int AS n FROM rotation_shift_exclusions
        WHERE company_id = $1 AND rotation_id = ANY($2::uuid[])
@@ -2064,8 +2077,9 @@ export async function generateRotations(
   // stored shifts and the open-slot state, so the reset runs
   // BEFORE step 1 computes — otherwise step 1 would store against
   // the old drafts and step 2 would consume opens that were never
-  // re-stored. Exclusions were already cleared above (before the
-  // context load) — all origins in fresh, bulk only in keep.
+  // re-stored. Exclusions were already cleared above (fresh only,
+  // before the context load) — all origins in fresh; keep clears
+  // none (Deepika, 2026-11-27 — marker fix).
   // The reset clears, in the draft's scope (rotations, picked
   // types/users, range; step-1 types for the open slots):
   //   - every still-draft row of the call's rotations (hand-added
