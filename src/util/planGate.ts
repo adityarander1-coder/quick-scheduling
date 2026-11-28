@@ -83,10 +83,26 @@ export interface ShiftChoiceItem {
   options: ShiftChoiceOption[];
 }
 
+/** One structured choice item (Deepika, 2026-11-27 — Draft two
+ * options): when the question is WHICH panel option the draft
+ * should run with, the options are the panel's own choices —
+ * the two main options, then the two simple choices — as tappable
+ * buttons, one per option, never a Yes/No. `field` names the plan
+ * field the pick fills in (`draftScope` / `draftChoice`); the
+ * replan reads the pick back from the stitched resolution line
+ * (clarifyOptions.resolutionLine), so the value itself never
+ * travels anywhere but the option list. */
+export interface ChoiceItem {
+  kind: 'choice';
+  field: string;
+  question: string;
+  options: { value: string; label: string }[];
+}
+
 /** Any row of a clarification's options block. Legacy stored rows
  * (migration 103) carry no `kind` on name items — readers treat a
  * missing kind as 'name'. */
-export type ClarificationItem = NameAmbiguityItem | ShiftChoiceItem;
+export type ClarificationItem = NameAmbiguityItem | ShiftChoiceItem | ChoiceItem;
 
 export type GateResult =
   | { ok: true; details?: string[] }
@@ -1560,6 +1576,120 @@ export async function gatePlanChanges(
         const visibleAfter = Math.max(1, capacity);
         c.unassignDetail = `leaves ${visibleAfter} open ${type.name} slot${visibleAfter === 1 ? '' : 's'} on ${date}`;
         gateDetails.push(`Remove ${user.fullName} from ${type.name} on ${date} — ${c.unassignDetail}`);
+      }
+    }
+  }
+
+  // ---- 1d-draft. draft from rotations --------------------------------
+  // draft_schedule (Deepika, 2026-11-27 — Draft two-options): the
+  // AI's draft-from-rotations path asks the person the SAME options
+  // as in the panel boxes, as a clarification, before planning —
+  // the two main options first, then the two simple choices. The
+  // planner emits the change with the dates (and type/department
+  // when named) and leaves draftScope/draftChoice out when the
+  // request doesn't say; the gate asks here with tappable choice
+  // rows, one round per question — scope first, then the choice —
+  // and the replan fills the field in from the stitched answer.
+  // A prose answer naming specific categories ("close only the
+  // published opens") rides the six clear flags instead of a
+  // simple choice, so the gate accepts either a choice or flags.
+  // The shift type must exist when named (never a guess); the
+  // department must exist when named and, when a type is named
+  // too, the type must belong to it. The executor re-checks at
+  // approval time, so a plan that was fine when written but whose
+  // schedule has since changed still fails honestly.
+  {
+    const draftChanges = list.filter((c) => c.action === 'draft_schedule');
+    if (draftChanges.length) {
+      const { rows: strows } = await query(
+        'SELECT id, name FROM shift_types WHERE company_id = $1 AND is_active = true',
+        [companyId]
+      );
+      const typeByName = new Map(strows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      const { rows: drows } = await query(
+        'SELECT id, name FROM departments WHERE company_id = $1', [companyId]
+      );
+      const deptByName = new Map(drows.map((r: any) => [norm(r.name), { id: r.id, name: r.name }]));
+      const validDate = (d: any) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+        && !Number.isNaN(new Date(d + 'T00:00:00Z').getTime());
+      const CLEAR_FLAGS = [
+        'clearOpenPublished', 'clearOpenDraft',
+        'clearDeleteManualPublished', 'clearDeleteManualDraft',
+        'clearDeleteRotationPublished', 'clearDeleteRotationDraft',
+      ] as const;
+      for (const c of draftChanges) {
+        const first = c.date || c.fromDate;
+        const last = c.toDate || c.date || c.fromDate;
+        if (!first || !validDate(first) || (c.toDate && !validDate(c.toDate)) || (first && last && String(first) > String(last))) {
+          return { ok: false, question: `Which dates should I draft from rotations for?` };
+        }
+        const type = c.shiftType ? typeByName.get(norm(c.shiftType)) || null : null;
+        if (c.shiftType && !type) {
+          return { ok: false, question: `I couldn't find a shift type called "${c.shiftType}". Which shift type should I draft from rotations for?` };
+        }
+        if (type) c.shiftType = type.name; // canonical
+        if (c.department && String(c.department).trim()) {
+          const named = deptByName.get(norm(c.department)) || null;
+          if (!named) {
+            return { ok: false, question: `I couldn't find a department called "${c.department}". Which department should I draft from rotations in?` };
+          }
+          if (type) {
+            const deptIds = await shiftTypesDepartmentIds([type.id], companyId);
+            if (!deptIds.includes(named.id)) {
+              return { ok: false, question: `${type.name} isn't part of ${named.name}. Which department should I draft ${type.name} from rotations in?` };
+            }
+          }
+          c.department = named.name; // canonical
+        }
+        const hasClearFlags = CLEAR_FLAGS.some((f) => (c as any)[f] === true);
+        // The two main options — asked first, as the panel asks
+        // them first. The pick fills draftScope on the replan.
+        if (c.draftScope !== 'new' && c.draftScope !== 'already') {
+          const range = String(first) === String(last) ? String(first) : `${first} – ${last}`;
+          return {
+            ok: false,
+            question: `Should I draft ${type ? type.name : 'from rotations'} ${range} for new dates, or for dates that already have published or drafted shifts?`,
+            items: [{
+              kind: 'choice' as const,
+              field: 'draftScope',
+              question: 'Draft for new dates, or for dates that already have published or drafted shifts',
+              options: [
+                { value: 'new', label: 'Draft for new dates' },
+                { value: 'already', label: 'Draft for already published or drafted dates' },
+              ],
+            }],
+          };
+        }
+        // The two simple choices — asked when the already-path was
+        // picked and neither a simple choice nor specific clear
+        // flags were given. The pick fills draftChoice on the replan.
+        if (c.draftScope === 'already' && c.draftChoice !== 'keep' && c.draftChoice !== 'fresh' && !hasClearFlags) {
+          const range = String(first) === String(last) ? String(first) : `${first} – ${last}`;
+          return {
+            ok: false,
+            question: `Those dates already have shifts — should I keep what is there and draft what is missing, or draft everything fresh for ${type ? type.name : 'those dates'} ${range}?`,
+            items: [{
+              kind: 'choice' as const,
+              field: 'draftChoice',
+              question: 'Keep what is there and draft what is missing, or draft everything fresh',
+              options: [
+                { value: 'keep', label: 'Keep what is there, draft what is missing' },
+                { value: 'fresh', label: 'Draft everything fresh' },
+              ],
+            }],
+          };
+        }
+        // Plan numbers: one plain line per change — what the draft
+        // will run, in the panel's own words. No counts here: the
+        // counts come from the draft preview (the panel) or the
+        // executor's result, never from a second engine run.
+        const scopeLabel = c.draftScope === 'new'
+          ? 'for new dates'
+          : c.draftChoice === 'fresh' ? 'draft everything fresh'
+          : c.draftChoice === 'keep' ? 'keep what is there, draft what is missing'
+          : hasClearFlags ? 'with the picked clear options'
+          : 'for already published or drafted dates';
+        gateDetails.push(`Draft ${type ? type.name : 'from rotations'} ${first} – ${last} ${scopeLabel}`);
       }
     }
   }

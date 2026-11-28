@@ -26,13 +26,18 @@
  *   - { kind: 'import', undo: { shiftIds, rows }, redo: { kind: 'import', rows } }
  *     (a schedule upload — Deepika, 2026-11-20; undo removes exactly
  *     the rows the import added, redo puts them back)
- *   - { kind: 'reset', undo: { restoredShiftIds, replacedRows,
+ *   - { kind: 'draft', undo: { restoredShiftIds, replacedRows,
  *       clearedExclusions, clearedSuppressions, addedExtras,
  *       addedDraftOpens, consumedExtras, consumedDraftOpens,
- *       coverageGenerationId },
- *       redo: { kind: 'reset', body: { mode, dates, shiftTypeIds } } }
- *     (an auto-rotation reset — Deepika, 2026-11-25; undo reverses
- *     the snapshot exactly, redo replays the reset call)
+ *       coverageGenerationId, addedExclusions,
+ *       clearedNegativeExtras },
+ *       redo: { kind: 'draft', body: { rotationIds, userIds,
+ *       shiftTypeIds, from, to, mode, clear } } }
+ *     (a Draft two-options clear-and-draft — Deepika, 2026-11-27;
+ *     undo reverses the snapshot exactly, redo replays the
+ *     generate call. The auto-rotation reset that used to own
+ *     this shape is removed; the shape lives on as the draft
+ *     undo.)
  * Task undo is NOT stored here — it is already server-side
  * (src/util/planUndo.ts) and is untouched.
  *
@@ -309,10 +314,29 @@ export function cleanResetUndoSnapshot(u: any): any | null {
   const addedDraftOpens = cleanList(u.addedDraftOpens, cleanPairCount);
   const consumedExtras = cleanList(u.consumedExtras, cleanPairCount);
   const consumedDraftOpens = cleanList(u.consumedDraftOpens, cleanPairCount);
+  // Draft two-options only (Deepika, 2026-11-27): exclusions the
+  // draft clear WROTE (delete-manual markers — the undo deletes
+  // them again) and negative extra rows (closes) the clear
+  // removed (the undo re-inserts them). Both optional; old
+  // snapshots carry neither.
+  const cleanExcl = (x: any): any | null => {
+    if (!isPlainObject(x)) return null;
+    if (!isUuid(x.rotationId) || !isUuid(x.userId) || !isValidDate(x.date) || !isNonEmptyString(x.shiftTypeId)) return null;
+    if (x.origin !== undefined && x.origin !== 'single' && x.origin !== 'bulk') return null;
+    return { rotationId: x.rotationId, userId: x.userId, date: x.date, shiftTypeId: x.shiftTypeId, origin: x.origin || 'single' };
+  };
+  const addedExclusions = cleanList(u.addedExclusions, cleanExcl);
+  const clearedNegativeExtras = cleanList(u.clearedNegativeExtras, (x: any): any | null => {
+    if (!isPlainObject(x) || !isValidDate(x.date) || !isNonEmptyString(x.shiftTypeId)) return null;
+    if (!Number.isInteger(x.count) || x.count >= 0 || x.count < -1000) return null;
+    return { date: x.date, shiftTypeId: x.shiftTypeId, count: x.count };
+  });
   if (!restoredShiftIds || !replacedRows || !clearedExclusions || !clearedSuppressions
-    || !addedExtras || !addedDraftOpens || !consumedExtras || !consumedDraftOpens) return null;
+    || !addedExtras || !addedDraftOpens || !consumedExtras || !consumedDraftOpens
+    || !addedExclusions || !clearedNegativeExtras) return null;
   const total = restoredShiftIds.length + replacedRows.length + clearedExclusions.length + clearedSuppressions.length
-    + addedExtras.length + addedDraftOpens.length + consumedExtras.length + consumedDraftOpens.length;
+    + addedExtras.length + addedDraftOpens.length + consumedExtras.length + consumedDraftOpens.length
+    + addedExclusions.length + clearedNegativeExtras.length;
   if (!total || total > 1000) return null;
   let coverageGenerationId: string | null = null;
   if (u.coverageGenerationId !== undefined && u.coverageGenerationId !== null) {
@@ -322,6 +346,7 @@ export function cleanResetUndoSnapshot(u: any): any | null {
   return {
     restoredShiftIds, replacedRows, clearedExclusions, clearedSuppressions,
     addedExtras, addedDraftOpens, consumedExtras, consumedDraftOpens, coverageGenerationId,
+    addedExclusions, clearedNegativeExtras,
   };
 }
 
@@ -329,21 +354,35 @@ function cleanResetUndo(u: any): any | null {
   return cleanResetUndoSnapshot(u);
 }
 
-/** A reset redo: replay the original reset call with the same body
- *  (mirrors the openslot redo pattern). The body carries the
- *  RESOLVED type list — for 'everything' that is every type in
- *  scope, so an empty list is only valid for that mode. */
-function cleanResetRedo(r: any): any | null {
-  if (!isPlainObject(r) || r.kind !== 'reset') return null;
+/** A draft redo: replay the original generate call with the
+ *  same body (mirrors the openslot redo pattern). The body carries
+ *  the RESOLVED rotation/type/user lists and the clear flags, so
+ *  a redo re-clears and re-drafts exactly what the first run did.
+ *  `clear`, when present, must be an object of booleans only. */
+function cleanDraftRedo(r: any): any | null {
+  if (!isPlainObject(r) || r.kind !== 'draft') return null;
   if (!isPlainObject(r.body)) return null;
   const b = r.body;
-  if (['opens', 'rotations', 'everything', 'keep-staff'].indexOf(b.mode) === -1) return null;
-  if (!Array.isArray(b.dates) || !b.dates.length || b.dates.length > 366) return null;
-  if (b.dates.some((d: any) => !isValidDate(d))) return null;
+  if (!isValidDate(b.from) || !isValidDate(b.to) || b.from > b.to) return null;
+  if (!Array.isArray(b.rotationIds) || b.rotationIds.length > 1000) return null;
+  if (b.rotationIds.some((t: any) => !isNonEmptyString(t))) return null;
   if (!Array.isArray(b.shiftTypeIds) || b.shiftTypeIds.length > 1000) return null;
   if (b.shiftTypeIds.some((t: any) => !isNonEmptyString(t))) return null;
-  if (!b.shiftTypeIds.length && b.mode !== 'everything') return null;
-  return { kind: 'reset', body: { mode: b.mode, dates: b.dates, shiftTypeIds: b.shiftTypeIds } };
+  if (!Array.isArray(b.userIds) || b.userIds.length > 1000) return null;
+  if (b.userIds.some((t: any) => !isNonEmptyString(t))) return null;
+  if (!b.rotationIds.length && !b.shiftTypeIds.length) return null;
+  if (b.mode !== undefined && b.mode !== 'keep' && b.mode !== 'fresh') return null;
+  let clear: any = undefined;
+  if (b.clear !== undefined && b.clear !== null) {
+    if (!isPlainObject(b.clear)) return null;
+    const keys = ['openPublished', 'openDraft', 'deleteManualPublished', 'deleteManualDraft', 'deleteRotationPublished', 'deleteRotationDraft'];
+    clear = {};
+    for (const k of keys) {
+      if (b.clear[k] !== undefined && typeof b.clear[k] !== 'boolean') return null;
+      if (b.clear[k] !== undefined) clear[k] = b.clear[k];
+    }
+  }
+  return { kind: 'draft', body: { rotationIds: b.rotationIds, userIds: b.userIds, shiftTypeIds: b.shiftTypeIds, from: b.from, to: b.to, mode: b.mode || 'keep', clear } };
 }
 
 /** Keep an entry's action time (`at`, stamped by the client when the
@@ -403,12 +442,12 @@ export function cleanUndoEntry(e: any): any | null {
     if (!redo) return null;
     return withAt({ kind: 'import', undo, redo }, e);
   }
-  if (e.kind === 'reset') {
+  if (e.kind === 'draft') {
     const undo = cleanResetUndo(e.undo);
     if (!undo) return null;
-    const redo = cleanResetRedo(e.redo);
+    const redo = cleanDraftRedo(e.redo);
     if (!redo) return null;
-    return withAt({ kind: 'reset', undo, redo }, e);
+    return withAt({ kind: 'draft', undo, redo }, e);
   }
   return null;
 }
@@ -421,7 +460,7 @@ export function cleanRedoEntry(e: any): any | null {
   if (e.kind === 'delete') { const r = cleanDeleteRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'openslot') { const r = cleanOpenSlotRedo(e); return r ? withAt(r, e) : null; }
   if (e.kind === 'import') { const r = cleanImportRedo(e); return r ? withAt(r, e) : null; }
-  if (e.kind === 'reset') { const r = cleanResetRedo(e); return r ? withAt(r, e) : null; }
+  if (e.kind === 'draft') { const r = cleanDraftRedo(e); return r ? withAt(r, e) : null; }
   return null;
 }
 

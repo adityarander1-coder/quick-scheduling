@@ -169,6 +169,7 @@ interface PlanChange {
           'bulk_publish' | 'bulk_unpublish' |
           'close_open_slots' |
           'add_open_slots' |
+          'draft_schedule' |
           'add_session' | 'update_session' | 'cancel_session';
   person?: string;          // name for assign/unassign/update_team_member
   fromPerson?: string;       // for move/swap
@@ -216,6 +217,25 @@ interface PlanChange {
   cycleDays?: number;       // cycle length in days, 1-84 (with days)
   endDate?: string;         // optional last day of the rotation (YYYY-MM-DD)
   rotationName?: string;    // optional rotation name
+  // Draft-from-rotations fields (draft_schedule, Deepika
+  // 2026-11-27 — Draft two-options): draftScope is the panel's
+  // main option ('new' = draft for new dates, 'already' = draft
+  // for already published or drafted dates); draftChoice is the
+  // simple choice on the already-path ('keep' = keep what is
+  // there, draft what is missing; 'fresh' = draft everything
+  // fresh). The six clear flags are the More-choices picks —
+  // a prose answer naming specific categories sets them instead
+  // of a simple choice. The gate asks either as a clarification
+  // when the request doesn't say, so the planner NEVER guesses
+  // scope or choice: leave them out when unstated.
+  draftScope?: 'new' | 'already'; // for draft_schedule
+  draftChoice?: 'keep' | 'fresh'; // for draft_schedule, already-path
+  clearOpenPublished?: boolean; // for draft_schedule — close published opens
+  clearOpenDraft?: boolean; // for draft_schedule — close draft opens
+  clearDeleteManualPublished?: boolean; // for draft_schedule — delete hand-placed published shifts
+  clearDeleteManualDraft?: boolean; // for draft_schedule — delete hand-placed draft shifts
+  clearDeleteRotationPublished?: boolean; // for draft_schedule — delete rotation published shifts (rebuilt)
+  clearDeleteRotationDraft?: boolean; // for draft_schedule — delete rotation draft shifts (rebuilt)
   // Calendar session fields (add_session / update_session / cancel_session)
   dashboard?: string;       // dashboard name, e.g. "Calendars"
   title?: string;           // add_session: the title; update_session: the NEW title
@@ -325,7 +345,7 @@ Respond with JSON only, no other text:
   "emailType": "change_request|schedule_question|settings_change|bulk_action|other",
   "changes": [
     {
-      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|change_member_role_in_department|set_staffing_target|bulk_publish|bulk_unpublish|close_open_slots|add_open_slots|add_session|update_session|cancel_session",
+      "action": "assign|assign_recurring|unassign|move|swap|add_job_role|rename_job_role|add_department|rename_department|add_team_member|update_team_member|add_shift_type|rename_shift_type|add_rotation|change_member_role_in_department|set_staffing_target|bulk_publish|bulk_unpublish|close_open_slots|add_open_slots|draft_schedule|add_session|update_session|cancel_session",
       "person": "Full Name (for assign/unassign/update_team_member/change_member_role_in_department)",
       "fromPerson": "Full Name (for move/swap)",
       "toPerson": "Full Name (for move/swap)",
@@ -348,6 +368,14 @@ Respond with JSON only, no other text:
       "keepTotal": "Number, the TOTAL slots (filled + open) to KEEP per date, closing only the excess (for close_open_slots, e.g. 14)",
       "addCount": "Number, how many open slots to add per date (for add_open_slots, e.g. 3)",
       "targetTotal": "Number, the TOTAL slots (filled + open) to reach per date (for add_open_slots top-up, e.g. 14)",
+      "draftScope": "'new' for new dates, or 'already' for already published or drafted dates (for draft_schedule)",
+      "draftChoice": "'keep' (keep what is there, draft what is missing) or 'fresh' (draft everything fresh) — for draft_schedule on already-published/drafted dates",
+      "clearOpenPublished": "true to close published open slots (for draft_schedule)",
+      "clearOpenDraft": "true to close draft open slots (for draft_schedule)",
+      "clearDeleteManualPublished": "true to delete hand-placed published shifts, not rebuilt (for draft_schedule)",
+      "clearDeleteManualDraft": "true to delete hand-placed draft shifts, not rebuilt (for draft_schedule)",
+      "clearDeleteRotationPublished": "true to delete rotation published shifts, rebuilt from the rotation (for draft_schedule)",
+      "clearDeleteRotationDraft": "true to delete rotation draft shifts, rebuilt from the rotation (for draft_schedule)",
       "weekdays": "Array of weekday numbers 0=Sun..6=Sat (for add_rotation, e.g. [1,3,5] = Mon/Wed/Fri)",
       "cycleWeeks": "Number, every N weeks (for add_rotation, 1 = every week, 2 = every other week)",
       "days": "Array of cycle-day numbers, 1-based (for add_rotation, e.g. [1,2,3,4,5,6,7] for 7 on / 7 off)",
@@ -407,6 +435,7 @@ Rules:
   - NEVER delete a job role: there is no delete action for job roles — the AI can add a job role but can NEVER delete one. If the request asks to delete a job role, do NOT emit any change — set needsClarification to "I can't delete job roles — the AI can add a job role but never delete one. An admin can delete it in Settings → Job roles." and confidence to "low".
   Match department/shift type names against the lists above; if none matches, ask in needsClarification. If critical info is missing, set needsClarification.
 - For "bulk_action": fill in "changes" with bulk actions. Supported: "bulk_publish" needs fromDate + toDate (publishes all draft shifts in range); "bulk_unpublish" needs fromDate + toDate (moves to draft). Optional: shiftType to limit to a specific shift type. Resolve relative dates against today. OPEN-ONLY (Deepika, 2026-11-22): when the request names only the OPEN slots ("unpublish open ... slots", "open slots to be unpublished", "only the open slots"), set openOnly: true on the bulk_unpublish change — the executor then leaves every assigned shift published and moves only the open slots to draft — and keep the word "open" in the plan title, so the approver sees the scope before tapping. Without openOnly, bulk_unpublish moves assigned shifts AND open slots together.
+- DRAFT FROM ROTATIONS (Deepika, 2026-11-27 \u2014 the two-options panel): when the request asks to draft / generate / build the schedule from the rotations ("draft the schedule for Dec 2-5", "draft from rotations", "re-draft December"), use action "draft_schedule" with fromDate + toDate (or date for one day). Optional: shiftType to limit to one shift type, department to limit to one department. draftScope is the panel's main option: "new" when the request says the dates are NEW ("draft for new dates", "draft Dec 8-12" with no mention of existing shifts), "already" when it says the dates ALREADY have published or drafted shifts ("re-draft", "draft over", "already published", "redo"). draftChoice is the simple choice on the already-path: "keep" for "keep what is there, draft what is missing"; "fresh" for "draft everything fresh", "start fresh", "re-draft everything", "bring back everything I deleted". NEVER GUESS the scope or the choice: if the request doesn't say new vs already, or keep vs fresh, emit the draft_schedule change with the dates and WITHOUT draftScope / draftChoice \u2014 the system asks the person the panel's options with buttons, and the answer comes back as one of these exact sentences, which you read back into the fields: "Draft for new dates." \u2192 draftScope "new"; "Draft for already published or drafted dates." \u2192 draftScope "already"; "Keep what is there, draft what is missing." \u2192 draftChoice "keep"; "Draft everything fresh." \u2192 draftChoice "fresh". A reply naming SPECIFIC categories instead of a simple choice sets the clear flags, not draftChoice: "close only the published opens" \u2192 clearOpenPublished true; "close the draft opens" \u2192 clearOpenDraft true; "delete the hand-placed shifts" \u2192 clearDeleteManualPublished true (published) / clearDeleteManualDraft true (draft); "delete the rotation shifts and rebuild them" \u2192 clearDeleteRotationPublished / clearDeleteRotationDraft true. A month name means the WHOLE month, never today. If no dates are given at all, do NOT emit the change \u2014 set needsClarification to ask which dates, and confidence to "low".
 - Calendar sessions live on dashboards (see the dashboard / session lists above). Use these actions, classified as "change_request":
   - "add_session": needs dashboard + title + date. Optional: startTime/endTime (convert "8am" to "08:00", "12:30pm" to "12:30"), presenter, supervisor, location (a room name or any location text), sessionType (one of that dashboard's session types), department (pick from that dashboard's departments when the sender names one), notes. If it repeats, set recurRule ("weekly" for weekly, etc.), recurInterval for every-N (e.g. "every other week" = weekly + 2), recurUntil when an end date is given.
   - "update_session": needs dashboard + sessionTitle (the session's current title — match it against the calendar session list). Set ONLY the fields being changed: title (a rename), presenter, supervisor, location, startTime, endTime, sessionType, notes, newDate (to move it). For a repeating session: if the sender names one date and doesn't say "all/every", set date to that date and scope to "date" (just that date changes); use scope "series" to change every occurrence.

@@ -3,6 +3,8 @@
 import crypto from 'node:crypto';
 import { query, withTransaction } from '../db.js';
 import { getDepartmentAccess, shiftTypesDepartmentIds } from './departmentAccess.js';
+import { checkRotationsGeneratable } from './scheduleMode.js';
+import { generateRotations, resolveDraftClear, type DraftClear } from './rotationEngine.js';
 import { closeOpenSlots, closeTypeForDate, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, storedTotals, suppressedTotal, draftOpenTotal, consumeOpenSlotForAssign } from './openSlots.js';
 import { getGeneratedTypeIds, getNotDraftedByType, getStoredModelTypeIds, getStoredModelDates } from './scheduleMode.js';
 import { saveSpeakers, loadSpeakers, loadBeneficiaries, saveBeneficiaries } from './sessionPeople.js';
@@ -20,6 +22,7 @@ interface PlanChange {
           'bulk_publish' | 'bulk_unpublish' |
           'close_open_slots' |
           'add_open_slots' |
+          'draft_schedule' |
           'add_session' | 'update_session' | 'cancel_session';
   person?: string;
   fromPerson?: string;
@@ -63,6 +66,19 @@ interface PlanChange {
   addCount?: number; // add this many open slots per date
   // Open-slot top-up field (add_open_slots, Deepika 2026-11-20):
   targetTotal?: number; // top up so the TOTAL (filled + open) reaches this per date
+  // Draft-from-rotations fields (draft_schedule, Deepika
+  // 2026-11-27 — Draft two-options): the panel's main option and
+  // simple choice, plus the six More-choices clear flags. The
+  // gate asks either as a clarification when the request doesn't
+  // say; the executor re-checks at approval time.
+  draftScope?: 'new' | 'already'; // draft_schedule — main option
+  draftChoice?: 'keep' | 'fresh'; // draft_schedule — already-path simple choice
+  clearOpenPublished?: boolean; // draft_schedule — close published opens
+  clearOpenDraft?: boolean; // draft_schedule — close draft opens
+  clearDeleteManualPublished?: boolean; // draft_schedule — delete hand-placed published shifts
+  clearDeleteManualDraft?: boolean; // draft_schedule — delete hand-placed draft shifts
+  clearDeleteRotationPublished?: boolean; // draft_schedule — delete rotation published shifts (rebuilt)
+  clearDeleteRotationDraft?: boolean; // draft_schedule — delete rotation draft shifts (rebuilt)
   // Per-person rotation fields (add_rotation, Deepika 2026-11-17)
   weekdays?: number[]; // 0=Sun..6=Sat, weekly pattern
   cycleWeeks?: number; // 1 = every week, 2 = every other week (default 1)
@@ -2334,6 +2350,135 @@ export async function executePlan(
             message: `${publish ? 'Published' : 'Moved to draft'} ${count} shift(s) from ${change.fromDate} to ${change.toDate}${shiftTypeId ? ` (${change.shiftType})` : ''}`
           });
         }
+      } else if (change.action === 'draft_schedule' && (change.date || (change.fromDate && change.toDate))) {
+        // Draft from rotations (Deepika, 2026-11-27 — Draft
+        // two-options): the AI's draft runs the SAME engine the
+        // panel's Run does — generateRotations in one transaction,
+        // with the panel's clear semantics. Scope resolves from the
+        // named shift type, else the named department's types, else
+        // every generated type; rotations are every active rotation
+        // covering those types (the engine only ever loads the
+        // rotations it is handed, so an empty list would draft
+        // rotation-less types only). The per-department gate from
+        // /generate applies to the rotations; rotation-less types
+        // draft regardless of their department's mode, exactly as
+        // the panel does. Access is enforced per type department
+        // (canEditDepartment — email approval passes, the token is
+        // the auth). Undo rides planUndo's table snapshots (shifts,
+        // extra/draft/suppressed opens, exclusions), like every
+        // other plan change — the engine's own undo snapshot is
+        // not used here. No History entry is written, matching
+        // bulk_publish/bulk_unpublish from the AI doors.
+        const first = String(change.date || change.fromDate);
+        const last = String(change.toDate || change.date || change.fromDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(first) || !/^\d{4}-\d{2}-\d{2}$/.test(last) || first > last) {
+          throw new Error(`Give a valid date or date range to draft from rotations for.`);
+        }
+        let draftTypeIds: string[] = [];
+        let draftTypeName: string | null = null;
+        if (change.shiftType) {
+          const st = await findShiftType(companyId, change.shiftType);
+          if (!st) throw new Error(`Shift type not found: ${change.shiftType}`);
+          draftTypeIds = [st.id];
+          draftTypeName = st.name;
+        }
+        let draftDept: { id: string; name: string } | null = null;
+        if (change.department && String(change.department).trim()) {
+          draftDept = await findDepartment(companyId, change.department);
+          if (!draftDept) throw new Error(`Department not found: ${change.department}`);
+          if (draftTypeIds.length) {
+            const deptIds = await shiftTypesDepartmentIds(draftTypeIds, companyId);
+            if (!deptIds.includes(draftDept.id)) {
+              throw new Error(`${draftTypeName} isn't part of ${draftDept.name}.`);
+            }
+          } else {
+            const { rows: dtRows } = await query(
+              `SELECT DISTINCT st.id FROM shift_types st
+               LEFT JOIN shift_type_departments std ON std.shift_type_id = st.id
+               WHERE st.company_id = $1 AND st.is_active = true
+                 AND (std.department_id = $2 OR st.department_id = $2)`,
+              [companyId, draftDept.id]
+            );
+            draftTypeIds = dtRows.map((r: any) => String(r.id));
+          }
+        }
+        if (!draftTypeIds.length) {
+          draftTypeIds = [...(await getGeneratedTypeIds(query as any, companyId))];
+        }
+        if (!draftTypeIds.length) {
+          throw new Error(`Nothing to draft from rotations for ${first} – ${last} — no generated shift types${draftDept ? ` in ${draftDept.name}` : ''}.`);
+        }
+        const { rows: rotRows } = await query(
+          `SELECT DISTINCT r.id FROM rotations r
+           LEFT JOIN rotation_assignments ra ON ra.rotation_id = r.id
+           WHERE r.company_id = $1 AND r.is_active = true
+             AND (ra.shift_type_id = ANY($2::uuid[]) OR r.group_shift_type_id = ANY($2::uuid[]))`,
+          [companyId, draftTypeIds]
+        );
+        const rotationIds = rotRows.map((r: any) => String(r.id));
+        const genGate = await checkRotationsGeneratable(query as any, companyId, rotationIds);
+        if (!genGate.ok) {
+          const names = genGate.liveDepartmentNames;
+          throw new Error(names.length
+            ? `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still set to fill in automatically — switch ${names.length === 1 ? 'it' : 'them'} to 'Draft from my rotations' in General Settings first.`
+            : `One of these rotations is in a department that still fills in automatically — switch it to 'Draft from my rotations' in General Settings first.`);
+        }
+        const typeDeptIds = await shiftTypesDepartmentIds(draftTypeIds, companyId);
+        for (const deptId of typeDeptIds) {
+          if (!(await canEditDepartment(companyId, createdBy, deptId))) {
+            const { rows: dn } = await query('SELECT name FROM departments WHERE id = $1 AND company_id = $2', [deptId, companyId]);
+            throw new Error(`You don't have edit access to ${dn[0]?.name || 'that department'} — a scheduler can only draft in departments they administer.`);
+          }
+        }
+        const mode = change.draftScope === 'already' && change.draftChoice === 'fresh' ? 'fresh' : 'keep';
+        const flagNames = [
+          'clearOpenPublished', 'clearOpenDraft',
+          'clearDeleteManualPublished', 'clearDeleteManualDraft',
+          'clearDeleteRotationPublished', 'clearDeleteRotationDraft',
+        ] as const;
+        const hasFlags = flagNames.some((f) => (change as any)[f] === true);
+        const clear: DraftClear | undefined = hasFlags
+          ? {
+              openPublished: change.clearOpenPublished === true,
+              openDraft: change.clearOpenDraft === true,
+              deleteManualPublished: change.clearDeleteManualPublished === true,
+              deleteManualDraft: change.clearDeleteManualDraft === true,
+              deleteRotationPublished: change.clearDeleteRotationPublished === true,
+              deleteRotationDraft: change.clearDeleteRotationDraft === true,
+            }
+          : undefined;
+        const summary = await withTransaction(async (tx) => {
+          const q: any = (text: string, params?: any[]) => tx.query(text, params);
+          return generateRotations(q, companyId, {
+            rotationIds, from: first, to: last, mode, createdBy,
+            shiftTypeIds: draftTypeIds, clear,
+          });
+        });
+        const cc = summary.clearCounts;
+        const closed = cc ? cc.openPublished + cc.openDraft : 0;
+        const deleted = cc
+          ? cc.deleteManualPublished + cc.deleteManualDraft + cc.deleteRotationPublished + cc.deleteRotationDraft
+          : 0;
+        const scopeLabel = change.draftScope === 'new' ? 'for new dates'
+          : change.draftChoice === 'fresh' ? 'draft everything fresh'
+          : change.draftChoice === 'keep' ? 'keep what is there, draft what is missing'
+          : hasFlags ? 'with the picked clear options'
+          : 'for already published or drafted dates';
+        let msg = `Drafted ${summary.created} draft shift${summary.created === 1 ? '' : 's'} for ${draftTypeName || (draftDept ? draftDept.name : 'rotations')} ${first} – ${last} (${scopeLabel})`;
+        if ((summary.targetsStored || 0) > 0 && summary.created === 0) msg += ` — stored ${summary.targetsStored} target open${summary.targetsStored === 1 ? '' : 's'}`;
+        if (closed) msg += ` — closed ${closed} open slot${closed === 1 ? '' : 's'}`;
+        if (deleted) msg += ` — deleted ${deleted} shift${deleted === 1 ? '' : 's'}`;
+        if (cc && cc.peopleLosingPublished.length) {
+          msg += ` — ${cc.peopleLosingPublished.length} ${cc.peopleLosingPublished.length === 1 ? 'person loses' : 'people lose'} a published shift (${cc.peopleLosingPublished.map((p: any) => p.personName).join(', ')})`;
+        }
+        if (summary.created === 0 && closed === 0 && deleted === 0 && (summary.targetsStored || 0) === 0) {
+          // A 0-draft is a no-op report, not a success (same rule as
+          // the bulk-unpublish 0-move): say plainly that nothing was
+          // drafted, so the plan reads partial instead of claiming a
+          // draft that never happened.
+          throw new Error(`Nothing to draft — no ${draftTypeName || 'rotation'} shifts to draft for ${first} – ${last}.`);
+        }
+        results.push({ action: 'draft_schedule', success: true, message: msg });
       } else if (change.action === 'close_open_slots' && change.shiftType && (change.date || (change.fromDate && change.toDate))) {
         // Close open slots (Deepika, 2026-11-19 — walkthrough item 1):
         // the AI's first way to touch open slots. Only ever closes

@@ -183,6 +183,17 @@ export function changeProblems(change: any): string[] {
       if (missing(change.fromDate)) problems.push('no start date given');
       if (missing(change.toDate)) problems.push('no end date given');
       break;
+    case 'draft_schedule':
+      // Draft from rotations (Deepika, 2026-11-27): dates are the
+      // only required field — the shift type / department are
+      // optional, and the scope (new vs already) and choice (keep
+      // vs fresh) are NEVER guessed: the gate asks them as
+      // clickable choices when they are missing. Without this case
+      // the shared validator called the action unsupported, which
+      // also marked the change incomplete and forced the
+      // clarification email prose-only (no option buttons).
+      if (missing(change.date) && (missing(change.fromDate) || missing(change.toDate))) problems.push('no date given');
+      break;
     case 'close_open_slots': {
       if (missing(change.shiftType)) problems.push('no shift type given');
       if (missing(change.date) && (missing(change.fromDate) || missing(change.toDate))) problems.push('no date given');

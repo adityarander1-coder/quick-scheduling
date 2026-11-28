@@ -62,7 +62,8 @@ export async function mergeClarificationItems(
     const plan = opts.plan;
     const requestText = opts.requestText;
     const gateShiftItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind === 'shift'));
-    const gateNameItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind !== 'shift'));
+    const gateChoiceItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind === 'choice'));
+    const gateNameItems: any[] = ((opts.gateItems || []).filter((it: any) => it.kind !== 'shift' && it.kind !== 'choice'));
     // A gate refusal with no click rows is the whole answer (Deepika,
     // 2026-11-17 — the AI can never delete a job role): the request's
     // words must not be re-read as name fragments. "Nurse" in "Nurse
@@ -73,7 +74,7 @@ export async function mergeClarificationItems(
     // slots, a missing rotation pattern) keep their plain wording the
     // same way; anything carrying click rows, a holder mismatch, a
     // conflict, or incomplete fields still flows through the merge.
-    if (gateQuestion && !gateNameItems.length && !gateShiftItems.length && !gateHolderMismatch && !opts.gateBlockedByConflict && !(opts.incompleteCount || 0)) {
+    if (gateQuestion && !gateNameItems.length && !gateShiftItems.length && !gateChoiceItems.length && !gateHolderMismatch && !opts.gateBlockedByConflict && !(opts.incompleteCount || 0)) {
       return { detail: gateQuestion, items: null };
     }
     const seenFrag = new Set<string>();
@@ -146,8 +147,11 @@ export async function mergeClarificationItems(
     }
     // Order (Deepika's confirmed order for the live case):
     // taker, shift, giver — the shift row sits after the first
-    // name row.
-    const merged: any[] = [...nameItems];
+    // name row. Choice rows (draft options) carry no name fragment
+    // and no shift, so they ride after the name/shift rows, in the
+    // gate's own order — the panel asks the main option first,
+    // then the simple choice, and the gate asks one at a time.
+    const merged: any[] = [...nameItems, ...gateChoiceItems];
     for (const s of shiftItems) merged.splice(merged.length ? 1 : 0, 0, s);
     const complete = merged.length > 0
       && !derived.unresolved.length

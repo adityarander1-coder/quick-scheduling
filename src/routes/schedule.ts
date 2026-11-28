@@ -33,8 +33,9 @@ import { getShiftsForRange } from '../util/shiftRange.js';
 import { HEALTHCARE_SHIFT_PRESETS } from '../util/healthcareShiftPresets.js';
 import { excludeRotationInstances, findRotationOccurrences, ensureOpenSlotForDelete } from '../util/planExecutor.js';
 import { getDepartmentModes, setDepartmentMode, getGeneratedTypeIds, getStoredModelTypeIds, getTypeDepartments, getUndraftedDates, getNotDraftedByType, getStoredModelDates, getCompanyModeSummary, checkRotationsGeneratable, isTypeGenerated, getLastGenerations } from '../util/scheduleMode.js';
-import { generateRotations, touchRotation, touchRotationsForGroup, resetToAutoRotation, undoResetToAutoRotation, RESET_MODES } from '../util/rotationEngine.js';
-import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, previewUnpublishOpensForPairs, previewCloseOpensForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot } from '../util/openSlots.js';
+import { generateRotations, touchRotation, touchRotationsForGroup, undoResetToAutoRotation, resolveDraftClear } from '../util/rotationEngine.js';
+import type { DraftClear } from '../util/rotationEngine.js';
+import { closeOpenSlots, closeTypeForDate, clearDraftOpenSlots, clearOpenSlotClosures, deleteOneOpenSlot, publishOpenSlotsForPairs, unpublishOpenSlotsForPairs, previewUnpublishOpensForPairs, previewCloseOpensForPairs, shortfallFor, suppressedTotal, setDraftOpenCount, storedOpenSlots, consumeExtraOpenSlot, consumeOpenSlotForAssign, consumeOpenSlotForAssignDetailed, returnConsumedOpenSlot, openSlotPairInputs } from '../util/openSlots.js';
 import type { PendingClarification } from '../util/pendingClarifications.js';
 import {
   cleanSpeakers, saveSpeakers, loadSpeakers, sessionsWithSpeakers, speakerMirror,
@@ -6741,19 +6742,17 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 // The Stage 4 migration tool calls generateRotations directly.
 //
 // Body: { rotationIds: string[], from, to, mode?: 'keep'|'fresh',
-//         dryRun?: boolean,
+//         dryRun?: boolean, clear?: DraftClear,
 //         userIds?: string[], shiftTypeIds?: string[] }.
 //   userIds / shiftTypeIds (Deepika, 2026-11-14 — pick by shift +
 //   employees): a PARTIAL draft — only those members' turns, only
 //   those types. The group dealing runs unchanged; unpicked members'
 //   turns produce no rows. Absent = the whole rotation, as before.
 //   Both are validated against the company (unknown ids 400).
-//   dryRun: compute only, write nothing — the client calls it first;
-//     when existingDrafts > 0, deletedCount > 0, or a fresh re-draft
-//     would bring something back, it shows the D1 choice dialog
-//     (keep vs re-draft from the rotations, with the plain notice
-//     and the fresh counts) and re-calls with the mode she picked.
-//     A clean range generates directly (mode 'keep').
+//   dryRun: compute only, write nothing — the client calls it first
+//     (the two-options panel calls /generate/preview instead, which
+//     wraps the same dry run). A clean range generates directly
+//     (mode 'keep').
 //   mode 'keep': hand fixes + deletions stay; the draft only adds
 //     what is still missing — targets first, then the rotations.
 //   mode 'fresh' (Deepika, 2026-11-24 — "Bring back everything I
@@ -6761,12 +6760,21 @@ router.post('/rotations/:id/apply', requireRole('owner', 'scheduler'), async (re
 //     the rotations as they are now — still-draft rows are deleted
 //     and re-placed, exclusions of every origin are cleared so
 //     deleted people come back, and closed-open suppressions are
-//     cleared so closed days come back as opens. Published rows
-//     and hand-added rows are never touched, in either mode.
-//   Both modes NEVER touch published rows, and NEVER touch hand-added
-//   rows (rotation_id NULL) — a re-draft only adds rotation-origin
-//   rows, because there is no rotation to replace a hand-added shift
-//   from (Nov 13, 11:59 PM).
+//     cleared so closed days come back as opens. Without `clear`,
+//     published rows and hand-added rows are never touched, in
+//     either mode — with `clear` present the picked categories ARE
+//     touched (see below).
+//   clear (Deepika, 2026-11-27 — Draft two-options): the panel's
+//     six explicit flags (see DraftClear in rotationEngine). When
+//     present it REPLACES the mode's old never-touch rule: the
+//     picked categories ARE touched — published rows and
+//     hand-added rows go when their flag is ticked, ANY opens in
+//     range go when an open flag is ticked, and fresh opens from
+//     rotations and targets come back as drafts. Absent, 'fresh'
+//     means all six flags on and 'keep' means none. The whole
+//     clear-and-draft runs in ONE transaction and returns ONE
+//     undo snapshot (`undo`) — one Undo tap brings back
+//     everything it removed (published shifts + opens).
 // ---------------------------------------------------------------------------
 router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
@@ -6784,6 +6792,18 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     const to = String(req.body?.to || '');
     const dryRun = req.body?.dryRun === true;
     const genMode = req.body?.mode === 'fresh' ? 'fresh' : 'keep';
+    // Draft two-options (Deepika, 2026-11-27): the panel's six
+    // explicit clear flags. Unknown keys are ignored; the engine
+    // resolves absent `clear` from the mode (fresh = all on).
+    const rawClear = (req.body?.clear && typeof req.body.clear === 'object') ? req.body.clear : null;
+    const clear: DraftClear | undefined = rawClear ? {
+      openPublished: rawClear.openPublished === true,
+      openDraft: rawClear.openDraft === true,
+      deleteManualPublished: rawClear.deleteManualPublished === true,
+      deleteManualDraft: rawClear.deleteManualDraft === true,
+      deleteRotationPublished: rawClear.deleteRotationPublished === true,
+      deleteRotationDraft: rawClear.deleteRotationDraft === true,
+    } : undefined;
     if (!rotationIds.length && !shiftTypeIds.length) {
       res.status(400).json({ error: 'Pick at least one rotation.' });
       return;
@@ -6850,6 +6870,7 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
         rotationIds, from, to, mode: genMode, dryRun: true, createdBy: req.session.userId!,
         userIds: userIds.length ? userIds : undefined,
         shiftTypeIds: shiftTypeIds.length ? shiftTypeIds : undefined,
+        clear,
       });
       // createdRows is for the migration report (direct engine
       // caller); the HTTP client only needs the counts.
@@ -6863,6 +6884,7 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
         rotationIds, from, to, mode: genMode, createdBy: req.session.userId!,
         userIds: userIds.length ? userIds : undefined,
         shiftTypeIds: shiftTypeIds.length ? shiftTypeIds : undefined,
+        clear,
       });
     });
     // Audit entries are written AFTER the commit (auditLog uses the
@@ -6874,7 +6896,11 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
     // something (a no-op re-draft saves no copy). Step 1 storing
     // targets counts as a change: a rotation-less draft stores
     // opens and creates no shifts.
-    if (summary.created > 0 || summary.replacedDrafts > 0 || (summary.targetsStored || 0) > 0) {
+    if (summary.created > 0 || summary.replacedDrafts > 0 || (summary.targetsStored || 0) > 0
+      || (summary.clearCounts && (
+        summary.clearCounts.openPublished + summary.clearCounts.openDraft
+        + summary.clearCounts.deleteManualPublished + summary.clearCounts.deleteManualDraft
+        + summary.clearCounts.deleteRotationPublished + summary.clearCounts.deleteRotationDraft) > 0)) {
       const rotNames = [...new Set((summary.perRotation || []).map((p: any) => p.rotationName).filter(Boolean))];
       const what = rotNames.length ? rotNames.join(', ') : `${shiftTypeIds.length} shift type${shiftTypeIds.length === 1 ? '' : 's'}`;
       // Truthful History (Deepika, 2026-11-23 — draft fix): a "0
@@ -6882,6 +6908,17 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
       // "0 draft shifts" with no reason, although every occurrence
       // had been skipped as previously deleted.
       let historySummary = `Drafted ${what}, ${from} – ${to} — ${summary.created} draft shift${summary.created === 1 ? '' : 's'}`;
+      // Draft two-options (Deepika, 2026-11-27): ONE History entry
+      // for the whole clear-and-draft — the clear counts ride on
+      // the same entry, never a second one.
+      const cc = summary.clearCounts;
+      if (cc) {
+        const closed = cc.openPublished + cc.openDraft;
+        const deleted = cc.deleteManualPublished + cc.deleteManualDraft + cc.deleteRotationPublished + cc.deleteRotationDraft;
+        if (closed) historySummary += ` — closed ${closed} open slot${closed === 1 ? '' : 's'} (${cc.openPublished} published, ${cc.openDraft} draft)`;
+        if (deleted) historySummary += ` — deleted ${deleted} shift${deleted === 1 ? '' : 's'} (${cc.deleteManualPublished + cc.deleteManualDraft} manual, ${cc.deleteRotationPublished + cc.deleteRotationDraft} rotation)`;
+        if (cc.peopleLosingPublished.length) historySummary += ` — ${cc.peopleLosingPublished.length} ${cc.peopleLosingPublished.length === 1 ? 'person loses' : 'people lose'} a published shift (${cc.peopleLosingPublished.map((p: any) => p.personName).join(', ')})`;
+      }
       const sk = summary.skipped || {};
       const skParts = [
         sk.vacation ? `${sk.vacation} on vacation` : '',
@@ -6925,113 +6962,154 @@ router.post('/generate', requireRole('owner', 'scheduler'), async (req: Request,
   }
 });
 
-// POST /api/schedule/reset — auto-rotation reset (Deepika, 2026-11-25:
-// "reset options for those dates back to your rotation settings").
-// Where Settings chooses auto-rotation, if a schedule is deleted or
-// removed — even open shifts — this puts the picked dates back to the
-// rotation settings. Four modes, all scoped to the picked dates ONLY:
-//   opens — open slots back to what the settings say (staff untouched)
-//   rotations — rotation people back, fresh (opens untouched)
-//   everything — opens AND rotations for the picked dates, all shifts
-//   keep-staff — missing rotation people back around current staff
-// UI only — a manual function, not an AI plan function. One undo
-// entry for the whole reset (the endpoint returns the snapshot; the
-// client pushes it via qsPushResetUndo). A History entry names the
-// mode, dates, and shifts.
-router.post('/reset', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// POST /api/schedule/generate/preview — the Draft two-options
+// panel's Preview (Deepika, 2026-11-27 — built from the merged
+// Move to draft / Remove preview pattern): count what the Run
+// would clear and what the draft would rebuild, WITHOUT writing
+// anything. Body: { rotationIds, userIds?, shiftTypeIds?,
+// dates:[...], departmentIds?, jobRoleIds?, clear?, mode? }.
+// The Run sends the same body back (plus from/to = the dates'
+// span), so preview and Run can never drift apart. Response:
+// the dry-run summary (wouldCreate, targetsStored, skipped +
+// skippedDetail — vacation/ended skips are the "won't come
+// back" lines), clearCounts (opens to close + shifts to delete,
+// split published/draft and manual/rotation, plus the people
+// who lose a published shift — preview ONLY, never notified),
+// hasExisting (any visible shift or open on the picked dates —
+// the mixed-range steer: a "new dates" pick on a range that
+// already has shifts switches to the already-path), and
+// rotationlessTypeIds (picked types no rotation produces —
+// their rotation options stay visible but greyed out with 0).
+router.post('/generate/preview', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
-    const mode = String(req.body?.mode || '');
-    if (!(RESET_MODES as string[]).includes(mode)) {
-      res.status(400).json({ error: 'Pick one of the four reset modes.' });
+    const dates: string[] = Array.isArray(req.body?.dates) ? [...new Set<string>(req.body.dates.filter(isValidDate))].sort() : [];
+    if (!dates.length) {
+      res.status(400).json({ error: 'Pick at least one date.' });
       return;
     }
-    // A redo replay carries the redo window time, so the server
-    // refuses a replay after the window (ordinary calls never send
-    // windowAt).
-    if (undoWindowExpired(req.body?.windowAt)) {
-      res.status(400).json({ error: REDO_WINDOW_EXPIRED_MSG });
-      return;
-    }
-    const dates = Array.isArray(req.body?.dates)
-      ? [...new Set(req.body.dates.filter((x: any) => typeof x === 'string'))].sort() as string[]
+    const scope = await resolveMergedScope(req, res, companyId, req.body ?? {});
+    if (!scope) return;
+    const { typeScope, userScope } = scope;
+    const rotationIds = Array.isArray(req.body?.rotationIds)
+      ? [...new Set(req.body.rotationIds.filter((x: any) => typeof x === 'string'))] as string[]
       : [];
-    if (!dates.length || dates.length > 366 || dates.some((d) => !isValidDate(d))) {
-      res.status(400).json({ error: 'Pick at least one date (at most a year at a time).' });
-      return;
-    }
-    let shiftTypeIds = Array.isArray(req.body?.shiftTypeIds)
-      ? [...new Set(req.body.shiftTypeIds.filter((x: any) => typeof x === 'string'))] as string[]
-      : [];
-    // Mode 3 (everything) takes all shift types on the picked dates
-    // — no multiselect was stated for it. The other modes need an
-    // explicit pick.
-    if (mode === 'everything' && !shiftTypeIds.length) {
-      const { rows } = await query(
+    let shiftTypeIds = typeScope !== null ? typeScope : (Array.isArray(req.body?.shiftTypeIds) ? req.body.shiftTypeIds.filter((x: any) => typeof x === 'string') : []);
+    const userIds = userScope !== null ? userScope : (Array.isArray(req.body?.userIds) ? req.body.userIds.filter((x: any) => typeof x === 'string') : []);
+    // No filter narrowed the types at all: the draft covers every
+    // active shift type (the merged panels' "All" = no filter).
+    if (!shiftTypeIds.length && typeScope === null) {
+      const { rows: allTypes } = await query(
         'SELECT id FROM shift_types WHERE company_id = $1 AND is_active = true',
         [companyId]
       );
-      shiftTypeIds = rows.map((r: any) => r.id);
+      shiftTypeIds = allTypes.map((r: any) => String(r.id));
     }
-    if (!shiftTypeIds.length) {
-      res.status(400).json({ error: 'Pick at least one shift type.' });
+    const from = dates[0];
+    const to = dates[dates.length - 1];
+    const genMode = req.body?.mode === 'fresh' ? 'fresh' : 'keep';
+    const rawClear = (req.body?.clear && typeof req.body.clear === 'object') ? req.body.clear : null;
+    const clear: DraftClear | undefined = rawClear ? {
+      openPublished: rawClear.openPublished === true,
+      openDraft: rawClear.openDraft === true,
+      deleteManualPublished: rawClear.deleteManualPublished === true,
+      deleteManualDraft: rawClear.deleteManualDraft === true,
+      deleteRotationPublished: rawClear.deleteRotationPublished === true,
+      deleteRotationDraft: rawClear.deleteRotationDraft === true,
+    } : undefined;
+    if (!rotationIds.length && !shiftTypeIds.length) {
+      res.status(400).json({ error: 'Pick at least one shift.' });
       return;
     }
-    const { rows: found } = await query(
-      'SELECT id FROM shift_types WHERE company_id = $1 AND id = ANY($2::uuid[])',
-      [companyId, shiftTypeIds]
-    );
-    if (found.length !== shiftTypeIds.length) {
-      res.status(400).json({ error: 'Unknown shift type in the reset.' });
+    const gate = await checkRotationsGeneratable(query, companyId, rotationIds);
+    if (!gate.ok) {
+      const names = gate.liveDepartmentNames;
+      const msg = names.length
+        ? `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still set to fill in automatically — switch ${names.length === 1 ? 'it' : 'them'} to 'Draft from my rotations' in General Settings first.`
+        : `One of these rotations is in a department that still fills in automatically — switch it to 'Draft from my rotations' in General Settings first.`;
+      res.status(403).json({ error: msg });
       return;
     }
-    // Department scoping: the scheduler's active department must be
-    // one of the picked types' departments (same rule as the
-    // rotation-less draft).
-    const deptIds = await shiftTypesDepartmentIds(shiftTypeIds, companyId);
-    if (!(await requireActiveDepartment(req, res, deptIds))) return;
-    const summary = await withTransaction(async (tx) => {
-      const q: any = (text: string, params?: any[]) => tx.query(text, params);
-      return resetToAutoRotation(q, companyId, {
-        mode: mode as any, dates, shiftTypeIds, createdBy: req.session.userId!,
-      });
+    const summary = await generateRotations(query as any, companyId, {
+      rotationIds, from, to, mode: genMode, dryRun: true, createdBy: req.session.userId!,
+      userIds: userIds.length ? userIds : undefined,
+      shiftTypeIds: shiftTypeIds.length ? shiftTypeIds : undefined,
+      clear,
     });
-    // Audit entries are written AFTER the commit (auditLog uses the
-    // global query — writing inside the transaction would leave
-    // phantom rows on a rollback).
-    for (const e of summary.auditEntries || []) await auditLog(e);
-    const changed = summary.restoredShifts > 0 || summary.reopenedOpens > 0
-      || summary.replacedDrafts > 0 || summary.clearedExclusions > 0
-      || summary.clearedSuppressions > 0;
-    if (changed) {
-      const modeLabel: Record<string, string> = {
-        opens: 'opens only', rotations: 'rotations', everything: 'everything',
-        'keep-staff': 'keep current staff',
-      };
-      const typeNames = summary.perType.map((p) => p.typeName).join(', ');
-      const historySummary = `Reset to auto-rotation (${modeLabel[mode] || mode}), ${summary.from} – ${summary.to} — ${typeNames}: restored ${summary.restoredShifts} shift${summary.restoredShifts === 1 ? '' : 's'}, reopened ${summary.reopenedOpens} open slot${summary.reopenedOpens === 1 ? '' : 's'}`;
-      await recordHistorySnapshot({
-        companyId, actorId: req.session.userId!, trigger: 'draft-change',
-        summary: historySummary,
-        from: summary.from, to: summary.to, departmentIds: deptIds,
-        shiftTypeIds, userIds: [],
-      });
+    const { createdRows: _cr, ...rest } = summary as any;
+    // hasExisting: any visible assigned shift on the picked dates
+    // in scope, or any visible open — the mixed-range steer.
+    const dateSet = new Set(dates);
+    const visible = await getShiftsForRange(query, companyId, from, to);
+    const scopeUserSet = userScope !== null ? new Set(userScope.map(String)) : null;
+    const scopeTypeSet = typeScope !== null ? new Set(typeScope.map(String)) : null;
+    let hasExistingShifts = false;
+    for (const s of visible) {
+      if (!dateSet.has(s.date)) continue;
+      if (scopeUserSet && !scopeUserSet.has(String(s.userId))) continue;
+      if (scopeTypeSet && !scopeTypeSet.has(String(s.shiftTypeId))) continue;
+      hasExistingShifts = true;
+      break;
     }
-    const { auditEntries: _ae2, ...rest } = summary;
-    res.json({ ok: true, ...rest });
+    let hasExistingOpens = false;
+    if (!hasExistingShifts) {
+      const pairs = await mergedPreviewPairs(companyId, dates, typeScope);
+      if (pairs.length) {
+        const generated = await getGeneratedTypeIds(query, companyId);
+        const inputs = await openSlotPairInputs(query, companyId, pairs, generated, true);
+        for (const p of inputs) {
+          const vis = p.storedModel
+            ? Math.max(0, p.extra + p.draft - p.supp)
+            : Math.max(0, p.shortfall + p.extra - p.supp);
+          if (vis > 0) { hasExistingOpens = true; break; }
+        }
+      }
+    }
+    // Rotation-less picked types: no active rotation produces
+    // them — their rotation options stay visible but greyed out
+    // with 0 (Deepika, 2026-11-27, gap #6).
+    let rotationlessTypeIds: string[] = [];
+    if (shiftTypeIds.length) {
+      const { rows: prod } = await query(
+        `SELECT DISTINCT shift_type_id AS "shiftTypeId" FROM rotation_assignments ra
+         JOIN rotations r ON r.id = ra.rotation_id
+         WHERE r.company_id = $1 AND r.is_active = true AND shift_type_id = ANY($2::uuid[])`,
+        [companyId, shiftTypeIds]
+      );
+      const produced = new Set(prod.map((r: any) => String(r.shiftTypeId)));
+      const { rows: gprod } = await query(
+        `SELECT DISTINCT group_shift_type_id AS "shiftTypeId" FROM rotations
+         WHERE company_id = $1 AND is_active = true AND group_shift_type_id = ANY($2::uuid[])`,
+        [companyId, shiftTypeIds]
+      );
+      for (const r of gprod) produced.add(String(r.shiftTypeId));
+      rotationlessTypeIds = shiftTypeIds.filter((t: string) => !produced.has(String(t)));
+    }
+    res.json({
+      ok: true,
+      ...rest,
+      hasExisting: hasExistingShifts || hasExistingOpens,
+      hasExistingShifts,
+      hasExistingOpens,
+      rotationlessTypeIds,
+      rotationlessAll: shiftTypeIds.length > 0 && rotationlessTypeIds.length === shiftTypeIds.length,
+      userIds,
+      typeIds: shiftTypeIds,
+    });
   } catch (err: any) {
-    console.error('[schedule] reset failed:', err);
+    console.error('[schedule] generate preview failed:', err);
     res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
   }
 });
 
-// POST /api/schedule/reset/undo — undo an auto-rotation reset
-// (Deepika, 2026-11-25). Reverses the reset's snapshot exactly:
-// the restored shifts go, the replaced drafts and cleared markers
-// come back, the added opens come off, the consumed opens go back
-// on. 60-second window, like other bulk actions. Department-scoped
-// to the types the reset touched.
-router.post('/reset/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
+// POST /api/schedule/generate/undo — undo ONE clear-and-draft
+// (Deepika, 2026-11-27): reverses the snapshot the generate
+// returned, exactly — the created draft shifts go, the deleted
+// shifts and cleared markers come back, the opens go back to
+// what they were. 60-second window, like other bulk actions.
+// The reverser is undoResetToAutoRotation (the reset is gone;
+// the snapshot shape is shared with the draft undo).
+router.post('/generate/undo', requireRole('owner', 'scheduler'), async (req: Request, res: Response) => {
   try {
     const companyId = req.session.companyId!;
     const undo = cleanResetUndoSnapshot(req.body?.undo);
@@ -7039,16 +7117,14 @@ router.post('/reset/undo', requireRole('owner', 'scheduler'), async (req: Reques
       res.status(400).json({ error: 'Nothing to undo.' });
       return;
     }
-    // 60-second window (Deepika, 2026-11-20): the entry carries the
-    // reset's time (`at`, stamped by the client when the reset
-    // happened); an undo after the window is refused server-side.
     if (undoWindowExpired(req.body?.at)) {
       res.status(400).json({ error: UNDO_WINDOW_EXPIRED_MSG });
       return;
     }
     const typeIds: string[] = [];
     for (const arr of [undo.addedExtras, undo.addedDraftOpens, undo.consumedExtras,
-      undo.consumedDraftOpens, undo.clearedSuppressions, undo.replacedRows, undo.clearedExclusions]) {
+      undo.consumedDraftOpens, undo.clearedSuppressions, undo.replacedRows, undo.clearedExclusions,
+      undo.addedExclusions, undo.clearedNegativeExtras]) {
       for (const x of arr || []) {
         if (x.shiftTypeId && !typeIds.includes(x.shiftTypeId)) typeIds.push(x.shiftTypeId);
       }
@@ -7062,10 +7138,17 @@ router.post('/reset/undo', requireRole('owner', 'scheduler'), async (req: Reques
     });
     res.json({ ok: true, ...result });
   } catch (err: any) {
-    console.error('[schedule] reset undo failed:', err);
+    console.error('[schedule] generate undo failed:', err);
     res.status(err?.status || 500).json({ error: err?.message || 'Something went wrong. Please try again.' });
   }
 });
+
+// Reset to auto-rotation — REMOVED (Deepika, 2026-11-27): the
+// Draft two-options panel replaces it; "Draft everything fresh"
+// brings deleted shifts and closed opens back as drafts, then
+// Publish. The /reset and /reset/undo endpoints and the engine
+// are gone; the undo snapshot shape lives on as the draft undo
+// (POST /api/schedule/generate/undo above).
 
 // GET /api/schedule/schedule-modes — the departments the signed-in
 // user can administer, each with its current mode. Owner: all

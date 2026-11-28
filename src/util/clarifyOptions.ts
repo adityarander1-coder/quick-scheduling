@@ -8,13 +8,15 @@
 // only, never the fragment; a single candidate is a single
 // full-name button, same code as the multi-candidate rows — there
 // is deliberately no Yes/No shape anywhere. Shift rows offer the
-// candidate shifts (holder + type) the same way. The mandatory
-// escape line rides with every options block: when none of the
-// options are right, the sender replies in their own words or
-// finishes with the form, exactly as before this feature existed.
+// candidate shifts (holder + type) the same way. Choice rows
+// (Deepika, 2026-11-27 — Draft two-options) offer the panel's
+// own options the same way. The mandatory escape line rides with
+// every options block: when none of the options are right, the
+// sender replies in their own words or finishes with the form,
+// exactly as before this feature existed.
 
 import { escHtml } from './mailer.js';
-import type { NameAmbiguityItem, ShiftChoiceItem, ShiftChoiceOption, ClarificationItem } from './planGate.js';
+import type { NameAmbiguityItem, ShiftChoiceItem, ShiftChoiceOption, ChoiceItem, ClarificationItem } from './planGate.js';
 
 export const NONE_OF_THESE_TEXT =
   'None of these right? Open the link and pick the person from the list.';
@@ -43,15 +45,30 @@ export function shiftOptionLabel(o: ShiftChoiceOption): string {
   return `${o.holderName} — ${o.shiftTypeName}`;
 }
 
+/** Namespaced pick value for a choice option, so it can never
+ * collide with a user id in the stored answers map. */
+export function choiceOptionKey(field: string, value: string): string {
+  return `choice:${field}:${value}`;
+}
+
+export function findChoiceOption(item: ChoiceItem, pick: string): { value: string; label: string } | null {
+  return (item.options || []).find((o) => choiceOptionKey(item.field, o.value) === pick) || null;
+}
+
 /** The recorded pick's display label: a name for a name row, the
- * "holder — type" label for a shift row (namespaced pick values
- * can never collide with user ids). Null when the pick does not
- * belong to this item — an invalid pick never resolves a row. */
+ * "holder — type" label for a shift row, the option label for a
+ * choice row (namespaced pick values can never collide with user
+ * ids). Null when the pick does not belong to this item — an
+ * invalid pick never resolves a row. */
 export function pickName(item: any, pick: string): string | null {
   if (!pick) return null;
   if (item.kind === 'shift') {
     const o = findShiftOption(item, pick);
     return o ? shiftOptionLabel(o) : null;
+  }
+  if (item.kind === 'choice') {
+    const o = findChoiceOption(item, pick);
+    return o ? o.label : null;
   }
   const c = (item.candidates || []).find((x: any) => x.id === pick);
   return c ? c.name : null;
@@ -60,11 +77,25 @@ export function pickName(item: any, pick: string): string | null {
 /** The resolution line a pick appends to the original request for
  * the replan: a name row states what the fragment means; a shift
  * row states whose shift is being given up, so the planner builds
- * the move from the right holder. */
+ * the move from the right holder; a choice row states the panel
+ * option in the request's own words, so the planner fills the
+ * field in (the prompt's draft rules read exactly these
+ * sentences back into draftScope / draftChoice). */
 export function resolutionLine(item: any, pick: string): string | null {
   if (item.kind === 'shift') {
     const o = findShiftOption(item, pick);
     return o ? `${o.shiftTypeName} on ${o.date} is ${o.holderName}'s shift.` : null;
+  }
+  if (item.kind === 'choice') {
+    const o = findChoiceOption(item, pick);
+    if (!o) return null;
+    const sentences: Record<string, string> = {
+      'draftScope:new': 'Draft for new dates.',
+      'draftScope:already': 'Draft for already published or drafted dates.',
+      'draftChoice:keep': 'Keep what is there, draft what is missing.',
+      'draftChoice:fresh': 'Draft everything fresh.',
+    };
+    return sentences[`${item.field}:${o.value}`] || `${o.label}.`;
   }
   const name = pickName(item, pick);
   return name ? `"${item.fragment}" means ${name}.` : null;
@@ -76,6 +107,10 @@ export function pickSummaryLine(item: any, pick: string): string {
   if (item.kind === 'shift') {
     const o = findShiftOption(item, pick);
     return o ? `${o.shiftTypeName} on ${o.date} is ${o.holderName}'s shift` : '';
+  }
+  if (item.kind === 'choice') {
+    const o = findChoiceOption(item, pick);
+    return o ? o.label : '';
   }
   const name = pickName(item, pick);
   return name ? `"${item.fragment}" means ${name}` : '';
@@ -98,11 +133,13 @@ export function pickMatchesFragment(
 }
 
 /** The question line for one item: a name row asks who the
- * fragment means; a shift row asks which shift is being given up.
- * A name row carrying its own `question` (a candidate list, not a
- * disambiguation) shows that instead. */
+ * fragment means; a shift row asks which shift is being given up;
+ * a choice row asks its own question. A name row carrying its own
+ * `question` (a candidate list, not a disambiguation) shows that
+ * instead. */
 export function itemQuestion(item: ClarificationItem): string {
   if ((item as ShiftChoiceItem).kind === 'shift') return (item as ShiftChoiceItem).label;
+  if ((item as ChoiceItem).kind === 'choice') return (item as ChoiceItem).question;
   const nameItem = item as NameAmbiguityItem;
   if (nameItem.question) return nameItem.question;
   return `Who did you mean by "${nameItem.fragment}"?`;
@@ -123,6 +160,9 @@ export function buildDetailFromItems(items: ClarificationItem[], originalDetail:
     if ((item as ShiftChoiceItem).kind === 'shift') {
       const shift = item as ShiftChoiceItem;
       parts.push(`Which shift is being given up on ${shift.date} — ${shift.options.map((o) => `${o.holderName}'s ${o.shiftTypeName}`).join(' or ')}?`);
+    } else if ((item as ChoiceItem).kind === 'choice') {
+      const choice = item as ChoiceItem;
+      parts.push(`${choice.question} — ${choice.options.map((o) => o.label).join(' or ')}?`);
     } else {
       const nameItem = item as NameAmbiguityItem;
       const names = [...nameItem.candidates];
@@ -159,6 +199,15 @@ export function buildOptionsEmailBlock(
         textRows.push(`- ${label}: ${clarifyPickUrl(token, i, key)}`);
         htmlRows.push(
           `<p style="margin:4px 0"><a href="${clarifyPickUrl(token, i, key)}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;">${escHtml(label)}</a></p>`
+        );
+      }
+    } else if ((item as ChoiceItem).kind === 'choice') {
+      const choice = item as ChoiceItem;
+      for (const o of choice.options) {
+        const key = choiceOptionKey(choice.field, o.value);
+        textRows.push(`- ${o.label}: ${clarifyPickUrl(token, i, key)}`);
+        htmlRows.push(
+          `<p style="margin:4px 0"><a href="${clarifyPickUrl(token, i, key)}" style="background:#0e7c86;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;display:inline-block;">${escHtml(o.label)}</a></p>`
         );
       }
     } else {
@@ -219,6 +268,9 @@ export function answerPageHtml(args: {
       if ((item as ShiftChoiceItem).kind === 'shift') {
         const o = findShiftOption(item as ShiftChoiceItem, picked);
         pickedLabel = o ? shiftOptionLabel(o) : null;
+      } else if ((item as ChoiceItem).kind === 'choice') {
+        const o = findChoiceOption(item as ChoiceItem, picked);
+        pickedLabel = o ? o.label : null;
       } else {
         pickedLabel = (item as NameAmbiguityItem).candidates.find((c) => c.id === picked)?.name || null;
       }
@@ -231,7 +283,9 @@ export function answerPageHtml(args: {
     const buttons: Array<{ pick: string; label: string }> =
       (item as ShiftChoiceItem).kind === 'shift'
         ? (item as ShiftChoiceItem).options.map((o) => ({ pick: shiftOptionKey(o), label: shiftOptionLabel(o) }))
-        : (item as NameAmbiguityItem).candidates.map((c) => ({ pick: c.id, label: c.name }));
+        : (item as ChoiceItem).kind === 'choice'
+          ? (item as ChoiceItem).options.map((o) => ({ pick: choiceOptionKey((item as ChoiceItem).field, o.value), label: o.label }))
+          : (item as NameAmbiguityItem).candidates.map((c) => ({ pick: c.id, label: c.name }));
     for (const b of buttons) {
       rows.push(
         `<form method="post" action="${action}" style="display:inline-block;margin:4px 8px 4px 0">` +

@@ -4496,13 +4496,15 @@
           return true;
         };
 
-        // Auto-rotation reset undo (Deepika, 2026-11-25): one entry
-        // for the whole reset — Undo reverses the snapshot exactly
-        // (restored shifts go, replaced drafts and cleared markers
-        // come back, added opens come off, consumed opens go back
-        // on), Redo replays the reset call and collects a fresh
-        // snapshot, so undo/redo can alternate.
-        window.qsPushResetUndo = function (undoPayload, redoBody) {
+        // Draft two-options undo (Deepika, 2026-11-27): one entry
+        // for the whole clear-and-draft — Undo reverses the snapshot
+        // exactly (created draft shifts go, deleted shifts and
+        // cleared markers come back, opens go back to what they
+        // were), Redo replays the generate call and collects a
+        // fresh snapshot, so undo/redo can alternate. The
+        // auto-rotation reset that used to own this shape is
+        // removed; the shape lives on as the draft undo.
+        window.qsPushDraftUndo = function (undoPayload, redoBody) {
           if (!undoPayload) return false;
           var has = (undoPayload.restoredShiftIds && undoPayload.restoredShiftIds.length)
             || (undoPayload.replacedRows && undoPayload.replacedRows.length)
@@ -4511,9 +4513,11 @@
             || (undoPayload.addedExtras && undoPayload.addedExtras.length)
             || (undoPayload.addedDraftOpens && undoPayload.addedDraftOpens.length)
             || (undoPayload.consumedExtras && undoPayload.consumedExtras.length)
-            || (undoPayload.consumedDraftOpens && undoPayload.consumedDraftOpens.length);
+            || (undoPayload.consumedDraftOpens && undoPayload.consumedDraftOpens.length)
+            || (undoPayload.addedExclusions && undoPayload.addedExclusions.length)
+            || (undoPayload.clearedNegativeExtras && undoPayload.clearedNegativeExtras.length);
           if (!has) return false;
-          qsUndoStack.push(qsStampUndo({ kind: 'reset', undo: undoPayload, redo: { kind: 'reset', body: redoBody || {} } }));
+          qsUndoStack.push(qsStampUndo({ kind: 'draft', undo: undoPayload, redo: { kind: 'draft', body: redoBody || {} } }));
           qsRedoStack.length = 0;
           qsUndoCap();
           qsUndoBtnSync();
@@ -4736,24 +4740,26 @@
               pageSuccess('Redone.');
               refreshShifts();
             }).catch(function () { pageError('Could not redo that import.'); });
-          } else if (r.kind === 'reset') {
-            // Redo an undone reset: replay the original reset call;
-            // it returns a fresh undo payload, pushed back as one
-            // entry (like the openslot redo). The replay carries the
-            // redo window time, so the server refuses a replay after
-            // the window (ordinary calls never send windowAt).
-            var resetBody = Object.assign({}, r.body || {}, { windowAt: r.at });
-            api('/api/schedule/reset', { method: 'POST', body: JSON.stringify(resetBody) }).then(function (res) {
-              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that reset.'); refreshShifts(); return; }
+          } else if (r.kind === 'draft') {
+            // Redo an undone draft: replay the original generate
+            // call; it returns a fresh undo payload, pushed back
+            // as one entry (like the openslot redo). The replay
+            // carries the redo window time, so the server refuses
+            // a replay after the window (ordinary calls never send
+            // windowAt). The generate endpoint does not take a
+            // windowAt, so the time is carried only in the entry.
+            var draftBody = Object.assign({}, r.body || {});
+            api('/api/schedule/generate', { method: 'POST', body: JSON.stringify(draftBody) }).then(function (res) {
+              if (!res.ok) { pageError((res.data && res.data.error) || 'Could not redo that draft.'); refreshShifts(); return; }
               if (res.data && res.data.undo) {
-                qsUndoStack.push(qsStampUndo({ kind: 'reset', undo: res.data.undo, redo: r }));
+                qsUndoStack.push(qsStampUndo({ kind: 'draft', undo: res.data.undo, redo: r }));
                 qsUndoCap();
                 qsUndoBtnSync();
               }
               pageSuccess('Redone.');
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
-            }).catch(function () { pageError('Could not redo that reset.'); });
+            }).catch(function () { pageError('Could not redo that draft.'); });
           } else {
             var s = shiftById(r.shiftId);
             api('/api/schedule/shifts/' + r.shiftId + '/drag-move', { method: 'POST', body: JSON.stringify({ date: r.date, shiftTypeId: r.typeId, windowAt: r.at }) }).then(function (res) {
@@ -4839,22 +4845,25 @@
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
             }).catch(function () { pageError('Could not undo that import.'); });
-          } else if (u.kind === 'reset') {
-            // Undo an auto-rotation reset: reverse the snapshot
-            // exactly (Deepika, 2026-11-25).
-            api('/api/schedule/reset/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
-              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that reset.'); refreshShifts(); return; }
+          } else if (u.kind === 'draft') {
+            // Undo a Draft two-options clear-and-draft: reverse
+            // the snapshot exactly (Deepika, 2026-11-27) — the
+            // created draft shifts go, the deleted shifts and
+            // cleared markers come back, the opens go back to
+            // what they were.
+            api('/api/schedule/generate/undo', { method: 'POST', body: JSON.stringify({ undo: u.undo, at: u.at }) }).then(function (r) {
+              if (!r.ok) { pageError((r.data && r.data.error) || 'Could not undo that draft.'); refreshShifts(); return; }
               if (u.redo) { qsRedoStack.push(u.redo); qsUndoCap(); qsPersistUndoHistory(); }
               var removed = (r.data && r.data.restoredShiftsRemoved) || 0;
               var skipped = (r.data && r.data.skipped) || [];
               if (skipped.length) {
-                pageError('Reset undone — ' + removed + ' shift(s) removed. ' + skipped.length + ' part(s) could not be put back: ' + skipped.map(function (s) { return s.message || 'could not be put back'; }).join('; ') + '.');
+                pageError('Draft undone — ' + removed + ' shift(s) removed. ' + skipped.length + ' part(s) could not be put back: ' + skipped.map(function (s) { return s.message || 'could not be put back'; }).join('; ') + '.');
               } else {
-                pageSuccess('Reset undone — the schedule is back as it was. Tap Redo in the top bar to redo it.');
+                pageSuccess('Draft undone — the schedule is back as it was. Tap Redo in the top bar to redo it.');
               }
               refreshShifts();
               if (typeof window.qsMsLoadData === 'function') window.qsMsLoadData();
-            }).catch(function () { pageError('Could not undo that reset.'); });
+            }).catch(function () { pageError('Could not undo that draft.'); });
           } else if (u.kind === 'swap') {
             // Undo a manual drag-swap by swapping the same pair back.
             // (Pre-existing gap, found 2026-11-21 while proving the
@@ -12119,6 +12128,7 @@ window.qsNpOfferSend = function (btn) {
           }
           function buttonsFor(it) {
             if (it.kind === 'shift') return it.options.map(function (o) { return { pick: 'shift:' + o.holderId + ':' + o.shiftTypeId + ':' + o.date, label: o.holderName + ' \u2014 ' + o.shiftTypeName }; });
+            if (it.kind === 'choice') return it.options.map(function (o) { return { pick: 'choice:' + it.field + ':' + o.value, label: o.label }; });
             return (it.candidates || []).map(function (c) { return { pick: c.id, label: c.name }; });
           }
           function postPick(body, done) {
@@ -20820,10 +20830,11 @@ window.qsNpOfferSend = function (btn) {
         #tab-bulk .ba-panel-col .btn, #tab-bulk .ba-panel-col .btn-secondary { border-radius:999px; }
         #tab-bulk #bulk-close-panel { display:grid; grid-template-columns:1fr 1.25fr; gap:22px; }
         #tab-bulk #bulk-close-panel > div:nth-child(3), #tab-bulk #bulk-close-panel > div:nth-child(4) { grid-column:1 / -1; }
-        /* Draft schedule from rotation: picker checkboxes must stay
+        /* Draft schedule from rotation (two-options panel, Deepika
+           2026-11-27): the More-choices checkboxes must stay
            checkbox-sized — the phone CSS below makes panel inputs
            width:100%, which would stretch them full-width. */
-        #bulk-draft-panel input[type="checkbox"] { width: auto !important; flex: none; }
+        #ba-panel-draft-schedule input[type="checkbox"] { width: auto !important; flex: none; }
         #tab-bulk #bulk-members > label:nth-child(even) { background: #e8edee; border-radius: 4px; }
         #tab-bulk .ba-below { border-radius:20px; box-shadow:0 2px 14px rgba(8,63,77,.08); }
         /* PUBLISH PICKER (Deepika, 2026-11-22): the What-to-publish
@@ -20874,7 +20885,6 @@ window.qsNpOfferSend = function (btn) {
           <option value="publish">Publish shifts</option>
           <option value="unpublish">Move to draft</option>
           <option value="open-slots">Open extra slots</option>
-          <option value="reset-autorotation">Reset to auto-rotation</option>
         </select>
       </div>
       <div class="ba-card">
@@ -20884,7 +20894,6 @@ window.qsNpOfferSend = function (btn) {
           <button type="button" data-bulk-action="publish" class="active">Publish<span class="sub">Assigned drafts, open drafts, or both</span></button>
           <button type="button" data-bulk-action="unpublish">Move to draft<span class="sub">Assigned shifts, open slots, or both</span></button>
           <button type="button" data-bulk-action="open-slots">Open extra slots<span class="sub">Add open slots per date</span></button>
-          <button type="button" data-bulk-action="reset-autorotation">Reset to auto-rotation<span class="sub">Bring back deleted shifts and closed opens</span></button>
           <button type="button" data-bulk-action="draft-schedule">Draft schedule from rotation<span class="sub">Generate from rotations</span></button>
         </aside>
         <div class="ba-panel-col">
@@ -21124,96 +21133,118 @@ window.qsNpOfferSend = function (btn) {
             </div>
             <p style="font-size:12px;color:#7a9499;margin-top:8px;line-height:1.45">Works any time — even on a closed date.</p>
           </div>
-          <!-- DRAFT SCHEDULE FROM ROTATION -->
+          <!-- DRAFT SCHEDULE FROM ROTATION — two main options
+               (Deepika, 2026-11-27, approved mock v8): "Draft for
+               new dates" (like current drafting, NO multi-select
+               options) vs "Draft for already published or drafted
+               dates" (two simple choices first, details under
+               "More choices"). Both paths share the SAME filters
+               (Department, Job roles, Shifts, Employees with
+               search, Dates Add date / Add range in the
+               Close-shifts format); every filter is a multi-select
+               with an "All" option, like the merged panels. NO
+               Period presets on either path. Nothing is pre-ticked;
+               Run stays greyed out until something is picked. -->
           <div class="ba-action-panel" id="ba-panel-draft-schedule">
             <h3>Draft schedule from rotation</h3>
-            <p class="lede">Generate draft shifts from the rotation patterns for the period below.</p>
-            <div class="ba-top-row">
-              <div class="ba-dates" id="ba-slot-draft-dates"></div>
+            <p class="lede">Generate draft shifts from the rotation patterns for the dates below.</p>
+            <div style="margin:2px 0 14px">
+              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">What kind of dates?</div>
+              <div class="bulk-pub-kind bulk-draft-main-choice" data-main="new">
+                <span class="bulk-pub-kind-tick">&#10003;</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Draft for new dates</span><span class="sub">For dates with nothing on them yet. Works like today.</span></span>
+              </div>
+              <div class="bulk-pub-kind bulk-draft-main-choice" data-main="already">
+                <span class="bulk-pub-kind-tick">&#10003;</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Draft for already published or drafted dates</span><span class="sub">For dates that already have shifts. Pick what happens to them first.</span></span>
+              </div>
             </div>
-            <!-- Draft schedule from rotation (background rotations, Deepika
-                 2026-11-13). Shown only when the Action is
-                 "Draft schedule from rotation", which itself only exists
-                 while the company is in generated mode. Picking (Deepika,
-                 Nov 14): by SHIFT (multi-select or All) + TEAM MEMBERS
-                 (multi-select or All) — NOT by rotation names; the panel
-                 resolves the picks to the rotations behind them. -->
-            <div id="bulk-draft-panel" class="hidden" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px">
-              <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
-                <div style="flex:1 1 260px;min-width:220px">
-                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shifts</label>
-                  <div id="bulk-draft-types" style="background:#fff;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:150px;overflow-y:auto;min-width:220px"></div>
-                </div>
-                <div style="flex:1 1 260px;min-width:220px">
-                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Team members</label>
-                  <div id="bulk-draft-members" style="background:#fff;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:150px;overflow-y:auto;min-width:220px"></div>
-                </div>
-                <div>
-                  <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Period</label>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="4w">Next 4 weeks</button>
-                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="3m">Next 3 months</button>
-                    <button type="button" class="btn-secondary bulk-draft-preset" data-preset="custom">Custom</button>
+            <div id="bulk-draft-simple-wrap" class="hidden" style="margin:2px 0 14px">
+              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">What happens to what is already there?</div>
+              <div class="bulk-pub-kind bulk-draft-simple-choice" data-simple="keep">
+                <span class="bulk-pub-kind-tick">&#10003;</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Keep what is there, draft what is missing</span><span class="sub">Published and hand-added shifts stay. Only the gaps get drafted.</span></span>
+              </div>
+              <div class="bulk-pub-kind bulk-draft-simple-choice" data-simple="fresh">
+                <span class="bulk-pub-kind-tick">&#10003;</span>
+                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Draft everything fresh</span><span class="sub">Everything in the picked range goes away, published included, then it drafts fresh from rotations and targets.</span></span>
+              </div>
+              <div style="border-top:1px solid #e2ecec;margin-top:12px;padding-top:10px">
+                <span id="bulk-draft-more-link" style="color:#0e7c86;font-weight:700;font-size:13px;cursor:pointer">More choices &#9662;</span>
+                <p style="font-size:12px;color:#7a9499;margin:4px 0 0;line-height:1.45">Close, delete and keep, one by one — open slots and assigned shifts, published and drafts. Picking anything here replaces the two simple choices above.</p>
+                <div id="bulk-draft-more-wrap" class="hidden" style="margin-top:10px">
+                  <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Draft from rotations by</div>
+                  <div class="qs-ms" id="bulk-draft-more">
+                    <button type="button" class="qs-ms-btn" id="bulk-draft-more-btn" aria-haspopup="listbox">Pick what to close, delete or keep &#9662;</button>
+                    <div class="qs-ms-pop hidden" id="bulk-draft-more-pop" role="listbox" style="min-width:520px">
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:10px 12px">
+                        <div>
+                          <div style="font-size:12px;font-weight:800;color:#0e7c86;padding-bottom:5px;border-bottom:2px solid #0e7c86;margin-bottom:7px">Close / Delete</div>
+                          <div id="bulk-draft-more-close"></div>
+                        </div>
+                        <div>
+                          <div style="font-size:12px;font-weight:800;color:#166534;padding-bottom:5px;border-bottom:2px solid #166534;margin-bottom:7px">Keep</div>
+                          <div id="bulk-draft-more-keep"></div>
+                        </div>
+                      </div>
+                      <p style="font-size:11px;color:#0e7c86;margin:8px 12px 10px;line-height:1.45">Published and drafts are separate checkboxes. Ticking "Close open slots — published" un-ticks "Keep open slots — published" only. Ticking "Close all open slots" un-ticks both "Keep open slots" options.</p>
+                    </div>
                   </div>
-                  <p style="font-size:0.82rem;color:var(--dim);margin:8px 0 0">Custom uses the From / To dates above.</p>
                 </div>
               </div>
-              <div style="margin-top:12px">
-                <button type="button" id="bulk-draft-run" class="btn">Draft schedule</button>
+            </div>
+            <div class="bulk-fld" style="margin-bottom:14px">
+              <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Department</label>
+              <div class="qs-ms" id="bulk-draft-depts">
+                <button type="button" class="qs-ms-btn" id="bulk-draft-depts-btn" aria-haspopup="listbox">All departments &#9662;</button>
+                <div class="qs-ms-pop hidden" id="bulk-draft-depts-pop" role="listbox"></div>
               </div>
             </div>
-          </div>
-          <!-- RESET TO AUTO-ROTATION -->
-          <div class="ba-action-panel" id="ba-panel-reset-autorotation">
-            <h3>Reset to auto-rotation</h3>
-            <p class="lede">If a schedule was deleted or removed — even open shifts — put the picked dates back to the rotation settings.</p>
-            <div style="margin:2px 0 16px">
-              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;margin-bottom:8px">What to reset</div>
-              <div class="bulk-pub-kind bulk-reset-mode on" data-mode="opens">
-                <span class="bulk-pub-kind-tick">✓</span>
-                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset opens only</span><span class="sub">Bring back the open slots to what the settings say. Assigned staff stay exactly as they are.</span></span>
-              </div>
-              <div class="bulk-pub-kind bulk-reset-mode" data-mode="rotations">
-                <span class="bulk-pub-kind-tick">✓</span>
-                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset rotations</span><span class="sub">Bring back the rotation people for those shifts. Opens are not touched.</span></span>
-              </div>
-              <div class="bulk-pub-kind bulk-reset-mode" data-mode="everything">
-                <span class="bulk-pub-kind-tick">✓</span>
-                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Reset everything</span><span class="sub">Opens AND rotations for the picked dates — all shifts on those dates.</span></span>
-              </div>
-              <div class="bulk-pub-kind bulk-reset-mode" data-mode="keep-staff">
-                <span class="bulk-pub-kind-tick">✓</span>
-                <span class="bulk-pub-kind-body"><span class="bulk-pub-kind-title">Keep current staff and reset rotations</span><span class="sub">Everyone assigned stays where they are. The missing rotation people come back.</span></span>
+            <div class="bulk-fld" style="margin-bottom:14px">
+              <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Job roles &mdash; multi-select</label>
+              <div class="qs-ms" id="bulk-draft-roles">
+                <button type="button" class="qs-ms-btn" id="bulk-draft-roles-btn" aria-haspopup="listbox">All job roles &#9662;</button>
+                <div class="qs-ms-pop hidden" id="bulk-draft-roles-pop" role="listbox"></div>
               </div>
             </div>
-            <div id="bulk-reset-panel" style="display:grid;grid-template-columns:1fr 1.25fr;gap:22px">
-              <div>
-                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Departments</label>
-                <div id="bulk-reset-depts" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:120px;overflow-y:auto"></div>
-                <p style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Tick departments to narrow the shift types. None ticked means all departments.</p>
+            <div class="bulk-fld" style="margin-bottom:14px">
+              <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shifts</label>
+              <div class="qs-ms" id="bulk-draft-types">
+                <button type="button" class="qs-ms-btn" id="bulk-draft-types-btn" aria-haspopup="listbox">All shifts &#9662;</button>
+                <div class="qs-ms-pop hidden" id="bulk-draft-types-pop" role="listbox"></div>
               </div>
-              <div id="bulk-reset-types-wrap">
-                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Shift types</label>
-                <div id="bulk-reset-types" style="background:#f8fbfb;border:1px solid #e2ecec;border-radius:16px;padding:14px 16px;max-height:140px;overflow-y:auto"></div>
-                <p id="bulk-reset-all-types-note" class="hidden" style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Reset everything covers all shift types on the picked dates — no need to pick them.</p>
-              </div>
-              <div style="grid-column:1 / -1">
-                <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Dates</label>
-                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-                  <input type="date" id="bulk-reset-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-                  <button type="button" id="bulk-reset-add-date" class="btn-secondary" style="padding:8px 12px">Add date</button>
+            </div>
+            <div class="bulk-fld" style="margin-bottom:14px">
+              <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Employees</label>
+              <div class="qs-ms" id="bulk-draft-emps">
+                <button type="button" class="qs-ms-btn" id="bulk-draft-emps-btn" aria-haspopup="listbox">All employees &#9662;</button>
+                <div class="qs-ms-pop hidden" id="bulk-draft-emps-pop" role="listbox">
+                  <input type="text" class="qs-ms-search" id="bulk-draft-emp-search" placeholder="Search employees&hellip;" autocomplete="off">
+                  <div id="bulk-draft-emps-list"></div>
                 </div>
-                <div id="bulk-reset-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
-                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
-                  <input type="date" id="bulk-reset-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-                  <span style="color:#7a9499;font-size:13px">to</span>
-                  <input type="date" id="bulk-reset-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
-                  <button type="button" id="bulk-reset-add-span" class="btn-secondary" style="padding:8px 12px">Add range</button>
-                </div>
-                <p id="bulk-reset-hint" class="hidden" style="font-size:13px;color:#b7791f;background:#fdf6e3;border-radius:10px;padding:9px 12px;margin:14px 0 0">Pick at least one shift type and one date</p>
               </div>
             </div>
-            <div class="ba-run-row" id="ba-slot-reset-run"></div>
+            <div style="margin-bottom:14px">
+              <label style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#5b7a80;font-weight:700;display:block;margin-bottom:8px">Dates</label>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px">
+                <input type="date" id="bulk-draft-date" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                <button type="button" id="bulk-draft-add-date" class="btn-secondary" style="padding:8px 14px">Add date</button>
+              </div>
+              <div id="bulk-draft-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+                <input type="date" id="bulk-draft-span-from" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                <span style="color:#5b7a80">to</span>
+                <input type="date" id="bulk-draft-span-to" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+                <button type="button" id="bulk-draft-add-span" class="btn-secondary" style="padding:8px 14px">Add range</button>
+              </div>
+              <p style="font-size:12px;color:#7a9499;margin:8px 0 0;line-height:1.45">Add one date at a time, or add a range — the same date picker as Close shifts.</p>
+            </div>
+            <div id="bulk-draft-preview-box" style="border:1px solid #0e7c86;background:#f2fafa;border-radius:10px;padding:14px 16px">
+              <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#0e7c86;font-weight:700;margin-bottom:6px">Preview</div>
+              <div id="bulk-draft-preview" style="font-size:0.92rem"></div>
+              <div style="margin-top:12px"><button type="button" id="bulk-draft-run" class="btn" disabled>Draft schedule</button></div>
+            </div>
+            <p id="bulk-draft-hint" class="hidden" style="font-size:13px;color:#b7791f;background:#fdf6e3;border-radius:10px;padding:9px 12px;margin:14px 0 0">Pick what kind of dates, then at least one date</p>
           </div>
         </div>
       </div>
@@ -21313,10 +21344,10 @@ window.qsNpOfferSend = function (btn) {
             }).join('');
           $('bulk-members').innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem">No matches.</p>';
           syncBulkSelectAll();
-          // The draft pickers list the same members — refresh them
-          // when the member list arrives or changes (guarded: only
-          // while the draft panel is open).
-          if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
+          // The draft dropdowns list the same members — refresh
+          // them when the member list arrives or changes
+          // (guarded: only while the draft panel is open).
+          if ($('bulk-action') && $('bulk-action').value === 'draft-schedule' && typeof loadBulkDraftFilters === 'function') loadBulkDraftFilters();
         }
         function syncBulkSelectAll() {
           var boxes = document.querySelectorAll('.bulk-member-cb');
@@ -21335,8 +21366,7 @@ window.qsNpOfferSend = function (btn) {
             bulkAllShiftTypes = r.data.shiftTypes || [];
             renderBulkPubTypes();
             renderBulkCloseTypes();
-            renderResetTypes();
-            if ($('bulk-draft-panel') && !$('bulk-draft-panel').classList.contains('hidden')) renderDraftPickers();
+            if ($('bulk-action') && $('bulk-action').value === 'draft-schedule' && typeof loadBulkDraftFilters === 'function') loadBulkDraftFilters();
             var sel = $('bulk-shifttype');
             // Department scope: bulk writes apply to the active department only.
             // Global filter: non-owners only see shift types in the selected department.
@@ -21361,7 +21391,6 @@ window.qsNpOfferSend = function (btn) {
           var isRemove = (a === 'remove');
           var isPublish = a === 'publish';
           var isDraft = a === 'draft-schedule';
-          var isReset = a === 'reset-autorotation';
           // The merged Move to draft panel (Deepika, 2026-11-26) has
           // its own dropdowns and its own Close-style date picker —
           // the shared From/To, Team members and Shift type filter
@@ -21371,12 +21400,12 @@ window.qsNpOfferSend = function (btn) {
           $('bulk-slot-options').classList.toggle('hidden', !isSlotAction);
           $('bulk-count-wrap').style.display = a === 'open-slots' ? '' : 'none';
           var mw = $('bulk-members-wrap');
-          if (mw) mw.style.display = (isSlotAction || isDraft || isReset || isUnpub || isRemove) ? 'none' : '';
+          if (mw) mw.style.display = (isSlotAction || isDraft || isUnpub || isRemove) ? 'none' : '';
           // Close shifts uses its own pickers (departments + types +
-          // dates) instead of the From / To range. Reset to
-          // auto-rotation does too. So does merged Move to draft.
-          var frw = $('bulk-from-wrap'); if (frw) frw.style.display = (isReset || isUnpub || isRemove) ? 'none' : '';
-          var tow = $('bulk-to-wrap'); if (tow) tow.style.display = (isReset || isUnpub || isRemove) ? 'none' : '';
+          // dates) instead of the From / To range. So does merged
+          // Move to draft.
+          var frw = $('bulk-from-wrap'); if (frw) frw.style.display = (isUnpub || isRemove) ? 'none' : '';
+          var tow = $('bulk-to-wrap'); if (tow) tow.style.display = (isUnpub || isRemove) ? 'none' : '';
           var po = $('bulk-pub-opts');
           if (po) po.style.display = isPublish ? 'flex' : 'none';
           var run = $('bulk-run');
@@ -21390,15 +21419,9 @@ window.qsNpOfferSend = function (btn) {
             run.style.display = isDraft ? 'none' : '';
           }
           syncBulkCloseRun();
-          syncResetRun();
-          if (isReset) { loadResetDepts(); renderResetTypes(); renderResetChips(); syncResetModeRows(); }
-          var dp = $('bulk-draft-panel');
-          if (dp) {
-            dp.classList.toggle('hidden', !isDraft);
-            if (isDraft) {
-              loadDraftData();
-              if (!draftPanelInit) { draftPanelInit = true; setDraftPreset('4w'); }
-            }
+          if (isDraft) {
+            loadDraftData();
+            loadBulkDraftFilters();
           }
           if (!isPublish) resetBulkPublishPreview();
           if (isUnpub) loadBulkUnpubFilters();
@@ -21441,9 +21464,9 @@ window.qsNpOfferSend = function (btn) {
             var d = slot(destId);
             if (el && d && el.parentNode !== d) d.appendChild(el);
           }
-          var datesSlot = { publish: 'ba-slot-publish-dates', 'open-slots': 'ba-slot-open-dates', 'draft-schedule': 'ba-slot-draft-dates' }[a];
+          var datesSlot = { publish: 'ba-slot-publish-dates', 'open-slots': 'ba-slot-open-dates' }[a];
           if (datesSlot) { move($('bulk-from-wrap'), datesSlot); move($('bulk-to-wrap'), datesSlot); }
-          var runSlot = { publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', remove: 'ba-slot-remove-run', 'open-slots': 'ba-slot-open-run', 'reset-autorotation': 'ba-slot-reset-run' }[a];
+          var runSlot = { publish: 'ba-slot-publish-run', unpublish: 'ba-slot-unpublish-run', remove: 'ba-slot-remove-run', 'open-slots': 'ba-slot-open-run' }[a];
           if (runSlot) move($('bulk-run'), runSlot);
           var memSlot = { publish: 'ba-slot-publish-members' }[a];
           if (memSlot) move($('bulk-members-wrap'), memSlot);
@@ -22162,6 +22185,7 @@ window.qsNpOfferSend = function (btn) {
         function refreshMergedPanels() {
           if (bulkUnpubDropdowns) Object.keys(bulkUnpubDropdowns).forEach(function (k) { bulkUnpubDropdowns[k].refresh(); });
           if (bulkRemoveDropdowns) Object.keys(bulkRemoveDropdowns).forEach(function (k) { bulkRemoveDropdowns[k].refresh(); });
+          if (typeof loadBulkDraftFilters === 'function') loadBulkDraftFilters();
         }
         initBulkUnpubPanel();
         initBulkRemovePanel();
@@ -22412,15 +22436,13 @@ window.qsNpOfferSend = function (btn) {
           next(0);
         }
 
-        // ---- Draft schedule from rotation (background rotations,
-        // Deepika 2026-11-13 — per department, 2026-11-14) ----
+        // ---- Draft schedule from rotation — two main options
+        // (Deepika, 2026-11-27, approved mock v8) ----
         // The action exists while ANY department the user can
         // administer is generated. In a fully live company the
         // option is never added, so the whole flow stays hidden
         // and inert.
         var bulkScheduleMode = 'generated';
-        var draftPanelInit = false;
-        var draftPreset = '4w';
         function loadBulkScheduleMode() {
           api('/api/schedule/schedule-modes').then(function (r) {
             var modes = (r.ok && r.data && r.data.modes) || [];
@@ -22442,60 +22464,23 @@ window.qsNpOfferSend = function (btn) {
           } else if (opt) {
             opt.remove();
             if (sel.value === 'draft-schedule') sel.value = 'publish';
-            var dp = $('bulk-draft-panel');
-            if (dp) dp.classList.add('hidden');
           }
           updateBulkSlotVisibility();
         }
         function draftFmt(d) {
           return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
         }
-        function draftAddDays(dateStr, n) {
-          var d = new Date(dateStr + 'T12:00:00');
-          d.setDate(d.getDate() + n);
-          return draftFmt(d);
-        }
-        function draftAddMonths(dateStr, n) {
-          var d = new Date(dateStr + 'T12:00:00');
-          var day = d.getDate();
-          d.setDate(1);
-          d.setMonth(d.getMonth() + n);
-          var last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-          d.setDate(Math.min(day, last));
-          return draftFmt(d);
-        }
-        function setDraftPreset(preset) {
-          draftPreset = preset;
-          document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
-            var on = b.getAttribute('data-preset') === preset;
-            b.classList.toggle('btn', on);
-            b.classList.toggle('btn-secondary', !on);
-          });
-          if (preset === 'custom') return;
-          var today = draftFmt(new Date());
-          $('bulk-from').value = today;
-          $('bulk-to').value = preset === '3m' ? draftAddMonths(today, 3) : draftAddDays(today, 27);
-        }
         // ---- Draft schedule from rotation: pick by SHIFT + TEAM
         // MEMBERS (Deepika, 2026-11-14), never by rotation name.
         // The panel loads the rotations (and group memberships) only
         // to RESOLVE the picks to rotationIds — no rotation name is
-        // ever rendered here. Defaults: All shifts + All team
-        // members (the same as the old all-rotations-ticked default).
+        // ever rendered here.
         var draftRotations = [];
         var draftGroups = [];
         var draftDataLoaded = false;
         var draftLastPicks = null;
+        var draftLastBody = null;
         function loadDraftData() {
-          var boxT = $('bulk-draft-types');
-          var boxM = $('bulk-draft-members');
-          // Keep the current lists on screen while reloading: blanking
-          // them to "Loading…" would eat a re-draft tap made in that
-          // split second ("Nothing to draft" with the boxes ticked a
-          // moment before).
-          var hadList = !!(boxT && boxT.querySelector('.bulk-draft-type-cb'));
-          if (boxT && !hadList) boxT.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading shifts…</p>';
-          if (boxM && !hadList) boxM.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Loading team members…</p>';
           Promise.all([
             api('/api/schedule/rotations'),
             api('/api/schedule/rotation-groups').catch(function () { return { ok: false }; })
@@ -22503,11 +22488,8 @@ window.qsNpOfferSend = function (btn) {
             if (rs[0] && rs[0].ok) draftRotations = rs[0].data.rotations || [];
             if (rs[1] && rs[1].ok) draftGroups = (rs[1].data && rs[1].data.groups) || [];
             draftDataLoaded = true;
-            renderDraftPickers();
-          }).catch(function () {
-            if (boxT && !hadList) boxT.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load shifts.</p>';
-            if (boxM && !hadList) boxM.innerHTML = '<p style="color:var(--dim);font-size:0.85rem;margin:2px">Could not load team members.</p>';
-          });
+            renderDraftMore();
+          }).catch(function () {});
         }
         // Shift types the draft can produce: ALL shift types
         // (Deepika, 2026-11-15 — "all shifts should show in drafts
@@ -22548,82 +22530,18 @@ window.qsNpOfferSend = function (btn) {
           });
           return out;
         }
-        function renderDraftPickers() {
-          var boxT = $('bulk-draft-types');
-          var boxM = $('bulk-draft-members');
-          if (!boxT || !boxM || !draftDataLoaded) return;
-          // Preserve the current picks across re-renders (data
-          // arriving late, department filter changes, post-generate
-          // refresh). A box that did not exist before defaults to the
-          // "All" state; the first render is All checked.
-          var prevT = {}, prevM = {};
-          var prevAllT = true, prevAllM = true, hadT = false, hadM = false;
-          var allTEl = document.getElementById('bulk-draft-types-all');
-          var allMEl = document.getElementById('bulk-draft-members-all');
-          if (allTEl) { prevAllT = allTEl.checked; hadT = true; }
-          if (allMEl) { prevAllM = allMEl.checked; hadM = true; }
-          document.querySelectorAll('.bulk-draft-type-cb').forEach(function (cb) { prevT[cb.value] = cb.checked; });
-          document.querySelectorAll('.bulk-draft-member-cb').forEach(function (cb) { prevM[cb.value] = cb.checked; });
-          var types = draftOfferedTypes();
-          var members = draftOfferedMembers();
-          var typeHtml = '<label style="display:block;font-size:0.9rem;font-weight:600;padding:2px 4px;cursor:pointer;color:#222">' +
-            '<input type="checkbox" id="bulk-draft-types-all" style="margin-right:6px">All shifts</label>' +
-            (types.length ? types.map(function (st) {
-              var checked = hadT ? (prevT.hasOwnProperty(st.id) ? prevT[st.id] : prevAllT) : true;
-              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
-                '<input type="checkbox" class="bulk-draft-type-cb" value="' + st.id + '"' + (checked ? ' checked' : '') + ' style="margin-right:6px">' + esc(st.name) + '</label>';
-            }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shifts to draft from.</p>');
-          var memberHtml = '<label style="display:block;font-size:0.9rem;font-weight:600;padding:2px 4px;cursor:pointer;color:#222">' +
-            '<input type="checkbox" id="bulk-draft-members-all" style="margin-right:6px">All team members</label>' +
-            (members.length ? members.map(function (u) {
-              var nm = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.email;
-              var checked = hadM ? (prevM.hasOwnProperty(u.id) ? prevM[u.id] : prevAllM) : true;
-              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
-                '<input type="checkbox" class="bulk-draft-member-cb" value="' + u.id + '"' + (checked ? ' checked' : '') + ' style="margin-right:6px">' + esc(nm) + '</label>';
-            }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No team members in scope.</p>');
-          boxT.innerHTML = typeHtml;
-          boxM.innerHTML = memberHtml;
-          syncDraftAll('types');
-          syncDraftAll('members');
-        }
-        function syncDraftAll(which) {
-          var boxes = document.querySelectorAll(which === 'types' ? '.bulk-draft-type-cb' : '.bulk-draft-member-cb');
-          var all = document.getElementById(which === 'types' ? 'bulk-draft-types-all' : 'bulk-draft-members-all');
-          if (!all) return;
-          all.checked = boxes.length > 0 && Array.prototype.every.call(boxes, function (cb) { return cb.checked; });
-        }
-        // "All" toggles the whole list; ticking/unticking one box
-        // re-syncs "All". Delegated on the static boxes so the
-        // handlers survive re-renders.
-        (function () {
-          var boxT = document.getElementById('bulk-draft-types');
-          var boxM = document.getElementById('bulk-draft-members');
-          if (boxT) boxT.addEventListener('change', function (e) {
-            var t = e.target;
-            if (t.id === 'bulk-draft-types-all') {
-              document.querySelectorAll('.bulk-draft-type-cb').forEach(function (cb) { cb.checked = t.checked; });
-            } else if (t.classList.contains('bulk-draft-type-cb')) {
-              syncDraftAll('types');
-            }
+        // Types no generatable rotation produces: they draft their
+        // open positions from the target (rotation-places-0). The
+        // server re-derives this authoritatively; this is only the
+        // panel's gate for allowing a draft with no rotation in it.
+        function rotationlessDraftTypeIds(typeIds) {
+          var produced = {};
+          (draftRotations || []).forEach(function (r) {
+            if (!r.isActive || r.generatable === false) return;
+            (r.assignments || []).forEach(function (a) { if (a.shiftTypeId) produced[a.shiftTypeId] = true; });
+            if (r.groupShiftTypeId) produced[r.groupShiftTypeId] = true;
           });
-          if (boxM) boxM.addEventListener('change', function (e) {
-            var t = e.target;
-            if (t.id === 'bulk-draft-members-all') {
-              document.querySelectorAll('.bulk-draft-member-cb').forEach(function (cb) { cb.checked = t.checked; });
-            } else if (t.classList.contains('bulk-draft-member-cb')) {
-              syncDraftAll('members');
-            }
-          });
-        })();
-        function selectedDraftTypeIds() {
-          var ids = [];
-          document.querySelectorAll('.bulk-draft-type-cb:checked').forEach(function (cb) { ids.push(cb.value); });
-          return ids;
-        }
-        function selectedDraftMemberIds() {
-          var ids = [];
-          document.querySelectorAll('.bulk-draft-member-cb:checked').forEach(function (cb) { ids.push(cb.value); });
-          return ids;
+          return typeIds.filter(function (t) { return !produced[t]; });
         }
         // Resolve the picks to rotations. Per-person rotation: include
         // it when ANY assignment matches a picked shift AND a picked
@@ -22631,8 +22549,8 @@ window.qsNpOfferSend = function (btn) {
         // picked AND ANY member is picked — the engine then drafts
         // just the picked members' turns (dealing unchanged).
         function resolveDraftPicks() {
-          var typeIds = selectedDraftTypeIds();
-          var userIds = selectedDraftMemberIds();
+          var typeIds = draftTypes.length ? draftTypes.slice() : draftOfferedTypes().map(function (st) { return st.id; });
+          var userIds = draftEmps.length ? draftEmps.slice() : draftOfferedMembers().map(function (u) { return u.id; });
           var rotIds = [];
           (draftRotations || []).forEach(function (r) {
             if (!r.isActive || r.generatable === false) return;
@@ -22650,106 +22568,400 @@ window.qsNpOfferSend = function (btn) {
           var rotationlessTypeIds = rotationlessDraftTypeIds(typeIds);
           return { rotationIds: rotIds, userIds: userIds, shiftTypeIds: typeIds, rotationlessTypeIds: rotationlessTypeIds };
         }
-        // Types no generatable rotation produces: they draft their
-        // open positions from the target (rotation-places-0). The
-        // server re-derives this authoritatively; this is only the
-        // panel's gate for allowing a draft with no rotation in it.
-        function rotationlessDraftTypeIds(typeIds) {
-          var produced = {};
-          (draftRotations || []).forEach(function (r) {
-            if (!r.isActive || r.generatable === false) return;
-            (r.assignments || []).forEach(function (a) { if (a.shiftTypeId) produced[a.shiftTypeId] = true; });
-            if (r.groupShiftTypeId) produced[r.groupShiftTypeId] = true;
+        // ---- Draft two-options state (Deepika, 2026-11-27) ----
+        // Nothing is pre-ticked when the panel opens: no main
+        // option, no simple choice, no More choice. Run stays
+        // greyed out until something is picked (same as the other
+        // merged panels).
+        var draftMain = null; // 'new' | 'already'
+        var draftSimple = null; // 'keep' | 'fresh'
+        var draftMore = {
+          closeOpenPublished: false, closeOpenDraft: false, closeAllOpens: false,
+          delManualPublished: false, delManualDraft: false,
+          delRotationPublished: false, delRotationDraft: false, delAllShifts: false,
+          keepOpenPublished: false, keepOpenDraft: false,
+          keepManualPublished: false, keepManualDraft: false,
+          keepRotationPublished: false, keepRotationDraft: false,
+        };
+        var draftDepts = [];
+        var draftRoles = [];
+        var draftTypes = [];
+        var draftEmps = [];
+        var draftDates = [];
+        var draftPreview = null;
+        var draftPreviewLoading = false;
+        var draftPreviewTimer = null;
+        var draftDropdowns = null;
+        var draftDatesPicker = null;
+        var draftSteerNote = '';
+        var draftMoreOpen = false;
+        var DRAFT_MORE_CLOSE = [
+          { key: 'closeOpenPublished', label: 'Close open slots — published' },
+          { key: 'closeOpenDraft', label: 'Close open slots — drafts' },
+          { key: 'closeAllOpens', label: 'Close all open slots', all: true },
+          { key: 'delManualPublished', label: 'Delete assigned shifts — manual — published' },
+          { key: 'delManualDraft', label: 'Delete assigned shifts — manual — drafts' },
+          { key: 'delRotationPublished', label: 'Delete assigned shifts — rotations — published', rot: true },
+          { key: 'delRotationDraft', label: 'Delete assigned shifts — rotations — drafts', rot: true },
+          { key: 'delAllShifts', label: 'Delete all assigned shifts', all: true },
+        ];
+        var DRAFT_MORE_KEEP = [
+          { key: 'keepOpenPublished', label: 'Keep open slots — published' },
+          { key: 'keepOpenDraft', label: 'Keep open slots — drafts' },
+          { key: 'keepManualPublished', label: 'Keep assigned shifts — manual — published' },
+          { key: 'keepManualDraft', label: 'Keep assigned shifts — manual — drafts' },
+          { key: 'keepRotationPublished', label: 'Keep assigned shifts — rotations — published', rot: true },
+          { key: 'keepRotationDraft', label: 'Keep assigned shifts — rotations — drafts', rot: true },
+        ];
+        // Matching Keep for each Close/Delete (un-tick rule: ticking
+        // a Close/Delete un-ticks the matching Keep for that SAME
+        // status only; ticking a Keep un-ticks its matching
+        // Close/Delete the same way).
+        var DRAFT_MORE_PAIRS = {
+          closeOpenPublished: 'keepOpenPublished', closeOpenDraft: 'keepOpenDraft',
+          delManualPublished: 'keepManualPublished', delManualDraft: 'keepManualDraft',
+          delRotationPublished: 'keepRotationPublished', delRotationDraft: 'keepRotationDraft',
+        };
+        function draftMoreAny() {
+          return Object.keys(draftMore).some(function (k) { return draftMore[k]; });
+        }
+        function draftMoreClear() {
+          // The six explicit clear flags the server takes. Keep
+          // options are display-only: anything not ticked to close
+          // or delete is KEPT, exactly as it is.
+          if (draftSimple === 'fresh') {
+            return { openPublished: true, openDraft: true, deleteManualPublished: true, deleteManualDraft: true, deleteRotationPublished: true, deleteRotationDraft: true };
+          }
+          return {
+            openPublished: !!draftMore.closeOpenPublished || !!draftMore.closeAllOpens,
+            openDraft: !!draftMore.closeOpenDraft || !!draftMore.closeAllOpens,
+            deleteManualPublished: !!draftMore.delManualPublished || !!draftMore.delAllShifts,
+            deleteManualDraft: !!draftMore.delManualDraft || !!draftMore.delAllShifts,
+            deleteRotationPublished: !!draftMore.delRotationPublished || !!draftMore.delAllShifts,
+            deleteRotationDraft: !!draftMore.delRotationDraft || !!draftMore.delAllShifts,
+          };
+        }
+        function draftClearAny(c) {
+          return !!(c && (c.openPublished || c.openDraft || c.deleteManualPublished || c.deleteManualDraft || c.deleteRotationPublished || c.deleteRotationDraft));
+        }
+        // Are the picked shift types all rotation-less (Day NP,
+        // Nephrology)? Their rotation options stay visible but
+        // GREYED OUT with 0 — they are not hidden.
+        function draftRotationlessAll() {
+          var typeIds = draftTypes.length ? draftTypes : draftOfferedTypes().map(function (st) { return st.id; });
+          if (!typeIds.length) return false;
+          return rotationlessDraftTypeIds(typeIds).length === typeIds.length;
+        }
+        function renderDraftMore() {
+          var closeBox = $('bulk-draft-more-close');
+          var keepBox = $('bulk-draft-more-keep');
+          if (!closeBox || !keepBox) return;
+          var rotOff = draftRotationlessAll();
+          function row(opt) {
+            var off = rotOff && opt.rot;
+            var tag = '';
+            if (off) tag = '<span style="margin-left:auto;font-size:11px;color:#7a9499">0</span>';
+            else if (draftPreview && draftPreview.clearCounts) {
+              var cc = draftPreview.clearCounts;
+              var n = { closeOpenPublished: cc.openPublished, closeOpenDraft: cc.openDraft, delManualPublished: cc.deleteManualPublished, delManualDraft: cc.deleteManualDraft, delRotationPublished: cc.deleteRotationPublished, delRotationDraft: cc.deleteRotationDraft }[opt.key];
+              if (typeof n === 'number' && n > 0) tag = '<span style="margin-left:auto;font-size:11px;color:#7a9499">' + n + '</span>';
+            }
+            return '<label class="qs-ms-opt' + (off ? '" style="opacity:.55' : '') + '"><input type="checkbox" data-draft-more="' + opt.key + '"' + (draftMore[opt.key] ? ' checked' : '') + (off ? ' disabled' : '') + '> ' + esc(opt.label) + tag + '</label>';
+          }
+          closeBox.innerHTML = DRAFT_MORE_CLOSE.map(row).join('');
+          keepBox.innerHTML = DRAFT_MORE_KEEP.map(row).join('');
+          var btn = $('bulk-draft-more-btn');
+          if (btn) {
+            var picked = [];
+            DRAFT_MORE_CLOSE.concat(DRAFT_MORE_KEEP).forEach(function (opt) {
+              if (draftMore[opt.key]) picked.push(opt.label);
+            });
+            btn.innerHTML = esc(picked.length ? (picked.length <= 2 ? picked.join(', ') : picked.length + ' choices picked') : 'Pick what to close, delete or keep') + ' &#9662;';
+          }
+        }
+        function setDraftMore(key, on) {
+          if (draftRotationlessAll() && (key === 'delRotationPublished' || key === 'delRotationDraft' || key === 'keepRotationPublished' || key === 'keepRotationDraft')) on = false;
+          draftMore[key] = !!on;
+          if (on) {
+            if (key === 'closeAllOpens') {
+              draftMore.closeOpenPublished = true; draftMore.closeOpenDraft = true;
+              draftMore.keepOpenPublished = false; draftMore.keepOpenDraft = false;
+            } else if (key === 'delAllShifts') {
+              draftMore.delManualPublished = true; draftMore.delManualDraft = true;
+              draftMore.delRotationPublished = !draftRotationlessAll(); draftMore.delRotationDraft = !draftRotationlessAll();
+              draftMore.keepManualPublished = false; draftMore.keepManualDraft = false;
+              draftMore.keepRotationPublished = false; draftMore.keepRotationDraft = false;
+            } else if (DRAFT_MORE_PAIRS[key]) {
+              draftMore[DRAFT_MORE_PAIRS[key]] = false;
+            } else {
+              var rev = null;
+              Object.keys(DRAFT_MORE_PAIRS).forEach(function (k) { if (DRAFT_MORE_PAIRS[k] === key) rev = k; });
+              if (rev) draftMore[rev] = false;
+              if (key === 'keepOpenPublished' || key === 'keepOpenDraft') draftMore.closeAllOpens = false;
+              if (key === 'keepManualPublished' || key === 'keepManualDraft' || key === 'keepRotationPublished' || key === 'keepRotationDraft') draftMore.delAllShifts = false;
+            }
+          } else {
+            if (key === 'closeAllOpens') { draftMore.closeOpenPublished = false; draftMore.closeOpenDraft = false; }
+            if (key === 'delAllShifts') { draftMore.delManualPublished = false; draftMore.delManualDraft = false; draftMore.delRotationPublished = false; draftMore.delRotationDraft = false; }
+          }
+          // Picking anything in More choices replaces the two
+          // simple choices above.
+          if (draftMoreAny()) draftSimple = null;
+          renderDraftChoices();
+          renderDraftMore();
+          loadDraftPreview();
+        }
+        function renderDraftChoices() {
+          document.querySelectorAll('.bulk-draft-main-choice').forEach(function (row) {
+            row.classList.toggle('on', row.getAttribute('data-main') === draftMain);
           });
-          return typeIds.filter(function (t) { return !produced[t]; });
+          var simpleWrap = $('bulk-draft-simple-wrap');
+          if (simpleWrap) simpleWrap.classList.toggle('hidden', draftMain !== 'already');
+          document.querySelectorAll('.bulk-draft-simple-choice').forEach(function (row) {
+            row.classList.toggle('on', row.getAttribute('data-simple') === draftSimple);
+          });
+          var link = $('bulk-draft-more-link');
+          if (link) link.innerHTML = draftMoreOpen ? 'More choices &#9652;' : 'More choices &#9662;';
+          var moreWrap = $('bulk-draft-more-wrap');
+          if (moreWrap) moreWrap.classList.toggle('hidden', !draftMoreOpen || draftMain !== 'already');
+          syncDraftRun();
+        }
+        function draftPreviewBody() {
+          var picks = resolveDraftPicks();
+          var clear = draftMain === 'already' ? draftMoreClear() : { openPublished: false, openDraft: false, deleteManualPublished: false, deleteManualDraft: false, deleteRotationPublished: false, deleteRotationDraft: false };
+          return {
+            rotationIds: picks.rotationIds,
+            userIds: draftEmps.slice(),
+            shiftTypeIds: draftTypes.slice(),
+            departmentIds: draftDepts.slice(),
+            jobRoleIds: draftRoles.slice(),
+            dates: draftDates.slice().sort(),
+            clear: clear,
+            mode: draftSimple === 'fresh' ? 'fresh' : 'keep',
+          };
+        }
+        function renderDraftPreview() {
+          var box = $('bulk-draft-preview');
+          if (!box) return;
+          var pv = draftPreview;
+          if (!pv) {
+            box.innerHTML = '<p style="font-size:0.92rem;margin:6px 0;color:var(--dim)">Pick what kind of dates and at least one date to see what will change.</p>';
+            return;
+          }
+          var h = '';
+          if (draftSteerNote) h += '<p style="font-size:0.92rem;margin:6px 0;color:#b7791f">' + esc(draftSteerNote) + '</p>';
+          var cc = pv.clearCounts || { openPublished: 0, openDraft: 0, deleteManualPublished: 0, deleteManualDraft: 0, deleteRotationPublished: 0, deleteRotationDraft: 0, peopleLosingPublished: [] };
+          var closed = cc.openPublished + cc.openDraft;
+          var deleted = cc.deleteManualPublished + cc.deleteManualDraft + cc.deleteRotationPublished + cc.deleteRotationDraft;
+          if (draftMain === 'new') {
+            h += '<div style="font-size:0.92rem;margin:6px 0"><b>Nothing is removed.</b> ' + (pv.wouldCreate || 0) + ' draft shift' + ((pv.wouldCreate || 0) === 1 ? '' : 's') + ' will be made from the rotations.</div>';
+          } else if (!closed && !deleted) {
+            h += '<div style="font-size:0.92rem;margin:6px 0"><b>Nothing is removed.</b> ' + (pv.wouldCreate || 0) + ' draft shift' + ((pv.wouldCreate || 0) === 1 ? '' : 's') + ' will be made from the rotations.</div>';
+          } else {
+            var bits = [];
+            if (closed) bits.push(closed + ' open slot' + (closed === 1 ? '' : 's') + ' will close (' + cc.openPublished + ' published, ' + cc.openDraft + ' draft)');
+            if (deleted) bits.push(deleted + ' assigned shift' + (deleted === 1 ? '' : 's') + ' will be deleted (' + (cc.deleteManualPublished + cc.deleteManualDraft) + ' manual, ' + (cc.deleteRotationPublished + cc.deleteRotationDraft) + ' rotation)');
+            h += '<div style="font-size:0.92rem;margin:6px 0"><b>' + bits.join(', ') + '.</b> Then ' + (pv.wouldCreate || 0) + ' draft shift' + ((pv.wouldCreate || 0) === 1 ? '' : 's') + ' will be made from the rotations.</div>';
+          }
+          if (pv.targetsStored) h += '<div style="font-size:0.9rem;margin:4px 0">' + pv.targetsStored + ' open position' + (pv.targetsStored === 1 ? '' : 's') + ' from the staffing targets.</div>';
+          if (cc.peopleLosingPublished && cc.peopleLosingPublished.length) {
+            h += '<div style="font-size:0.9rem;margin:6px 0"><b>' + cc.peopleLosingPublished.length + ' ' + (cc.peopleLosingPublished.length === 1 ? 'person loses' : 'people lose') + ' a published shift:</b> ' + esc(cc.peopleLosingPublished.map(function (p) { return p.personName; }).join(', ')) + '. Shown here only — they are not told.</div>';
+          }
+          // Skipped shifts that will not come back (vacation/ended).
+          var wont = {};
+          (pv.skippedDetail || []).forEach(function (sd) {
+            if (sd.reason !== 'vacation' && sd.reason !== 'ended') return;
+            var k = sd.personName + '|' + sd.reason;
+            wont[k] = wont[k] || { name: sd.personName, reason: sd.reason, n: 0 };
+            wont[k].n++;
+          });
+          Object.keys(wont).forEach(function (k) {
+            var w = wont[k];
+            h += '<div style="font-size:0.9rem;margin:4px 0">' + w.n + ' shift' + (w.n === 1 ? '' : 's') + ' won\'t come back — ' + esc(w.name) + ' is ' + (w.reason === 'vacation' ? 'on vacation' : 'ended') + '.</div>';
+          });
+          if (pv.rotationlessAll) h += '<div style="font-size:0.9rem;margin:6px 0;color:var(--dim)">These shifts have no rotation — their shifts are manual and their opens rebuild from the target. Rotation options are greyed out with 0.</div>';
+          h += '<p style="font-size:0.85rem;color:var(--dim);margin:8px 0 0">' + esc(bulkMergedScopeLine(draftDates, draftDepts, draftRoles, draftTypes, draftEmps)) + '</p>';
+          box.innerHTML = h;
+        }
+        function syncDraftRun() {
+          var run = $('bulk-draft-run');
+          var hint = $('bulk-draft-hint');
+          if (!run) return;
+          var okMain = !!draftMain;
+          var okDates = draftDates.length > 0;
+          var okChoice = draftMain === 'new' || !!draftSimple || draftMoreAny();
+          var ok = okMain && okDates && okChoice && draftPreview && !draftPreviewLoading;
+          run.disabled = !ok;
+          if (hint) {
+            var msg = !okMain ? 'Pick what kind of dates, then at least one date'
+              : !okDates ? 'Pick at least one date'
+              : !okChoice ? 'Pick "Keep what is there" or "Draft everything fresh" — or one of the More choices'
+              : '';
+            hint.textContent = msg;
+            hint.classList.toggle('hidden', !msg);
+          }
+        }
+        function loadDraftPreview() {
+          if (!$('bulk-action') || $('bulk-action').value !== 'draft-schedule') return;
+          if (draftPreviewTimer) clearTimeout(draftPreviewTimer);
+          draftPreviewTimer = setTimeout(function () {
+            if (!draftMain || !draftDates.length) {
+              draftPreview = null;
+              renderDraftPreview();
+              syncDraftRun();
+              return;
+            }
+            draftPreviewLoading = true;
+            syncDraftRun();
+            api('/api/schedule/generate/preview', { method: 'POST', body: JSON.stringify(draftPreviewBody()) }).then(function (r) {
+              draftPreviewLoading = false;
+              if (!r.ok) {
+                draftPreview = null;
+                showResult((r.data && r.data.error) || 'Could not preview.', true);
+                renderDraftPreview();
+                syncDraftRun();
+                return;
+              }
+              // Mixed-range steer (Deepika, 2026-11-27, gap #10):
+              // "Draft for new dates" picked for a range that already
+              // has shifts switches to the already-path — never the
+              // old popup.
+              if (draftMain === 'new' && r.data && r.data.hasExisting) {
+                draftMain = 'already';
+                draftSimple = null;
+                draftSteerNote = 'These dates already have shifts — switched to "Draft for already published or drafted dates". Pick what happens to them.';
+                renderDraftChoices();
+                loadDraftPreview();
+                return;
+              }
+              draftPreview = r.data;
+              hideResult();
+              renderDraftMore();
+              renderDraftPreview();
+              syncDraftRun();
+            }).catch(function () {
+              draftPreviewLoading = false;
+              draftPreview = null;
+              showResult('Network error.', true);
+              renderDraftPreview();
+              syncDraftRun();
+            });
+          }, 200);
+        }
+        function loadBulkDraftFilters() {
+          if (draftDropdowns) Object.keys(draftDropdowns).forEach(function (k) { draftDropdowns[k].refresh(); });
+          if (draftDatesPicker) draftDatesPicker.render();
+          renderDraftMore();
+          loadDraftPreview();
+        }
+        function initBulkDraftPanel() {
+          if (draftDropdowns) return;
+          draftDropdowns = {
+            depts: qsMsDropdown({
+              btnId: 'bulk-draft-depts-btn', popId: 'bulk-draft-depts-pop', allLabel: 'All departments',
+              getItems: function () { return bulkMergedDepts().map(function (d) { return { id: d.id, name: d.name }; }); },
+              getPicked: function () { return draftDepts; },
+              setPicked: function (ids) { draftDepts = ids; },
+              onChange: function () { loadDraftPreview(); },
+            }),
+            roles: qsMsDropdown({
+              btnId: 'bulk-draft-roles-btn', popId: 'bulk-draft-roles-pop', allLabel: 'All job roles',
+              getItems: function () { return bulkMergedRoles().map(function (r) { return { id: r.id, name: bulkMergedRoleLabel(r) }; }); },
+              getPicked: function () { return draftRoles; },
+              setPicked: function (ids) { draftRoles = ids; },
+              onChange: function () { loadDraftPreview(); },
+            }),
+            types: qsMsDropdown({
+              btnId: 'bulk-draft-types-btn', popId: 'bulk-draft-types-pop', allLabel: 'All shifts',
+              getItems: function () { return bulkMergedTypes().map(function (st) { return { id: st.id, name: st.name }; }); },
+              getPicked: function () { return draftTypes; },
+              setPicked: function (ids) { draftTypes = ids; },
+              onChange: function () { renderDraftMore(); loadDraftPreview(); },
+            }),
+            emps: qsMsDropdown({
+              btnId: 'bulk-draft-emps-btn', popId: 'bulk-draft-emps-pop', listId: 'bulk-draft-emps-list', searchId: 'bulk-draft-emp-search', allLabel: 'All employees',
+              getItems: function () { return bulkMergedMembers().map(function (u) { return { id: u.id, name: bulkMergedMemberName(u) }; }); },
+              getPicked: function () { return draftEmps; },
+              setPicked: function (ids) { draftEmps = ids; },
+              onChange: function () { loadDraftPreview(); },
+            }),
+          };
+          draftDatesPicker = qsDatesPicker('bulk-draft',
+            function () { return draftDates; },
+            function (ds) { draftDates = ds; },
+            function () { loadDraftPreview(); });
+          document.querySelectorAll('.bulk-draft-main-choice').forEach(function (row) {
+            row.addEventListener('click', function () {
+              draftMain = row.getAttribute('data-main');
+              draftSteerNote = '';
+              renderDraftChoices();
+              renderDraftMore();
+              loadDraftPreview();
+            });
+          });
+          document.querySelectorAll('.bulk-draft-simple-choice').forEach(function (row) {
+            row.addEventListener('click', function () {
+              draftSimple = row.getAttribute('data-simple');
+              // A simple choice replaces any More choices.
+              Object.keys(draftMore).forEach(function (k) { draftMore[k] = false; });
+              renderDraftChoices();
+              renderDraftMore();
+              loadDraftPreview();
+            });
+          });
+          var moreLink = $('bulk-draft-more-link');
+          if (moreLink) moreLink.addEventListener('click', function () {
+            draftMoreOpen = !draftMoreOpen;
+            renderDraftChoices();
+          });
+          var moreBtn = $('bulk-draft-more-btn');
+          if (moreBtn) moreBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var pop = $('bulk-draft-more-pop');
+            var wasHidden = pop.classList.contains('hidden');
+            document.querySelectorAll('.qs-ms-pop').forEach(function (p) { p.classList.add('hidden'); });
+            if (wasHidden) pop.classList.remove('hidden');
+          });
+          var morePop = $('bulk-draft-more-pop');
+          if (morePop) {
+            morePop.addEventListener('click', function (e) { e.stopPropagation(); });
+            morePop.addEventListener('change', function (e) {
+              var cb = e.target;
+              if (!cb || cb.tagName !== 'INPUT' || !cb.getAttribute('data-draft-more')) return;
+              setDraftMore(cb.getAttribute('data-draft-more'), cb.checked);
+            });
+          }
+          renderDraftChoices();
+          renderDraftMore();
         }
         function runDraftSchedule() {
           var picks = resolveDraftPicks();
-          var from = $('bulk-from').value, to = $('bulk-to').value;
+          var dates = draftDates.slice().sort();
+          if (!draftMain) { showResult('Pick what kind of dates first.', true); return; }
+          if (!dates.length) { showResult('Pick at least one date.', true); return; }
+          if (draftMain === 'already' && !draftSimple && !draftMoreAny()) { showResult('Pick "Keep what is there" or "Draft everything fresh" — or one of the More choices.', true); return; }
           if (!picks.shiftTypeIds.length || !picks.userIds.length) { showResult('Pick at least one shift and one team member.', true); return; }
           if (!picks.rotationIds.length && !picks.rotationlessTypeIds.length) { showResult('Nothing to draft for these picks — no rotation covers the shifts and people you picked.', true); return; }
-          if (!from || !to || from > to) { showResult('Pick a valid date range.', true); return; }
+          // Mixed-range steer: the preview already switches the
+          // panel when "new dates" lands on shifts; a stale
+          // preview must never let the run through anyway.
+          if (draftMain === 'new' && draftPreview && draftPreview.hasExisting) {
+            draftMain = 'already';
+            draftSimple = null;
+            draftSteerNote = 'These dates already have shifts — switched to "Draft for already published or drafted dates". Pick what happens to them.';
+            renderDraftChoices();
+            loadDraftPreview();
+            return;
+          }
           draftLastPicks = picks;
-          var btn = $('bulk-draft-run');
-          btn.disabled = true;
-          showResult('Checking what would change…', false);
-          // 90-second timeout (Deepika, 2026-11-24 — the dry-run check hung
-          // forever on Jan 1–10, 2027, on her computer AND her phone, even
-          // after a reload: the request never answered and the screen gave
-          // no error and no way to retry. A healthy check answers in
-          // seconds; a cold start can take about a minute. When the
-          // timeout fires the catch below shows a plain error and
-          // re-enables the button, so she can retry without reloading.
-          api('/api/schedule/generate', { method: 'POST', timeoutMs: 90000, body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, dryRun: true }) }).then(function (r) {
-            if (!r.ok) { btn.disabled = false; showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
-            var existing = (r.data && r.data.existingDrafts) || 0;
-            var deleted = (r.data && r.data.deletedCount) || 0;
-            // Bulk-deleted shifts (Deepika, 2026-11-23 — draft fix):
-            // a bulk delete clears a range so it can be re-drafted,
-            // so those shifts come BACK in this draft — they are not
-            // "people you deleted" for the promise below.
-            var bulkDeleted = (r.data && r.data.bulkDeletedCount) || 0;
-            // Fresh counts (Deepika, 2026-11-24 — "Bring back
-            // everything I deleted"): what "Re-draft from the
-            // rotations" would bring back on this same call.
-            var fresh = {
-              people: (r.data && r.data.freshExclusions) || 0,
-              single: (r.data && r.data.freshExclusionsSingle) || 0,
-              bulk: (r.data && r.data.freshExclusionsBulk) || 0,
-              closed: (r.data && r.data.freshSuppressions) || 0,
-              drafts: (r.data && r.data.freshDraftShifts) || 0,
-              opens: (r.data && r.data.freshDraftOpens) || 0
-            };
-            var freshWouldChange = fresh.people + fresh.closed + fresh.drafts;
-            if (!existing && !deleted && !bulkDeleted && !freshWouldChange) { doGenerate('keep'); return; }
-            // D1 (Deepika, 2026-11-13; two buttons again since
-            // 2026-11-24): re-drafting asks at the moment, ONE
-            // prompt with the plain notice, BEFORE she taps. Keep
-            // only adds what is still missing — hand fixes stay,
-            // people deleted one by one stay deleted; shifts
-            // cleared with a bulk delete come back. Fresh replaces
-            // everything from the rotations as they are now.
-            btn.disabled = false;
-            if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
-            hideResult();
-            window.qsShowDialog('Draft again for these dates?',
-              '<p>This range already has ' + existing + ' draft shifts from these rotations, and ' + deleted + ' people you deleted' + (bulkDeleted ? ', and ' + bulkDeleted + ' shift' + (bulkDeleted === 1 ? '' : 's') + ' you cleared with a bulk delete' : '') + (fresh.closed ? ', and ' + fresh.closed + ' closed open position' + (fresh.closed === 1 ? '' : 's') : '') + '.</p>' +
-              '<p><strong>Keep the changes I made and redraft</strong><br>Your hand fixes stay, and anyone you deleted one by one stays deleted. Everything else refreshes from the rotation as it is now.' + (bulkDeleted ? ' Shifts you cleared with a bulk delete come back in this draft.' : '') + '</p>' +
-              '<p><strong>Re-draft from the rotations</strong><br>Everything is replaced from the rotation as it is now. Your hand fixes go away, and anyone you deleted comes back. Closed open positions come back too.</p>',
-              [
-                { label: 'Keep the changes I made and redraft', primary: true, onClick: function () { doGenerate('keep'); } },
-                { label: 'Re-draft from the rotations', onClick: function () { showFreshConfirm(fresh); } },
-                { label: 'Cancel', onClick: function () { hideResult(); } }
-              ]);
-          }).catch(function (err) {
-            btn.disabled = false;
-            if (err && err.name === 'AbortError') { showResult('The check did not answer — try again.', true); return; }
-            showResult('Network error.', true);
-          });
+          var mode = draftSimple === 'fresh' ? 'fresh' : 'keep';
+          var clear = draftMain === 'already' ? draftMoreClear() : null;
+          doGenerate(mode, clear);
         }
-        // Fresh confirmation (Deepika, 2026-11-24): the counts
-        // first — what will come back — before she commits to
-        // replacing everything. Published shifts and hand-added
-        // shifts are never touched.
-        function showFreshConfirm(fresh) {
-          var parts = [];
-          if (fresh.people) parts.push('bring back ' + fresh.people + ' ' + (fresh.people === 1 ? 'person' : 'people') + ' you deleted' + (fresh.single && fresh.bulk ? ' (' + fresh.single + ' one by one, ' + fresh.bulk + ' with a bulk delete)' : fresh.single ? ' (one by one)' : fresh.bulk ? ' (with a bulk delete)' : ''));
-          if (fresh.closed) parts.push('reopen ' + fresh.closed + ' closed open position' + (fresh.closed === 1 ? '' : 's'));
-          if (fresh.drafts) parts.push('replace ' + fresh.drafts + ' draft shift' + (fresh.drafts === 1 ? '' : 's'));
-          var what = parts.length
-            ? 'This will ' + parts.join(', ') + '. '
-            : 'Nothing you deleted or closed is in this range — this will rebuild the draft shifts from the rotations as they are now. ';
-          if (!window.qsShowDialog) { showResult('Could not open the re-draft choice. Please reload and try again.', true); return; }
-          window.qsShowDialog('Re-draft from the rotations?',
-            '<p>' + what + 'Your hand fixes go away. Published shifts and hand-added shifts are never touched.</p>',
-            [
-              { label: 'Yes, re-draft from the rotations', primary: true, onClick: function () { doGenerate('fresh'); } },
-              { label: 'Cancel', onClick: function () { hideResult(); } }
-            ]);
-        }
-        function doGenerate(mode) {
+        function doGenerate(mode, clear) {
           var picks = draftLastPicks || resolveDraftPicks();
-          var from = $('bulk-from').value, to = $('bulk-to').value;
+          var dates = draftDates.slice().sort();
+          var from = dates[0], to = dates[dates.length - 1];
           var btn = $('bulk-draft-run');
           btn.disabled = true;
           showResult('Drafting…', false);
@@ -22768,7 +22980,17 @@ window.qsNpOfferSend = function (btn) {
           // and a fresh re-run deletes the first run's draft rows and
           // re-creates them, so a timed-out draft that finished on
           // the server anyway is never duplicated.
-          api('/api/schedule/generate', { method: 'POST', timeoutMs: 180000, body: JSON.stringify({ rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode }) }).then(function (r) {
+          var body = { rotationIds: picks.rotationIds, userIds: picks.userIds, shiftTypeIds: picks.shiftTypeIds, from: from, to: to, mode: mode };
+          if (clear && draftClearAny(clear)) body.clear = clear;
+          // The preview's RESOLVED scope, when the Run has one, is
+          // what the Run sends — so preview and Run can never drift
+          // apart (merged-panel rule).
+          if (draftPreview && draftPreview.userIds && draftPreview.typeIds) {
+            body.userIds = draftPreview.userIds;
+            body.shiftTypeIds = draftPreview.typeIds;
+          }
+          draftLastBody = body;
+          api('/api/schedule/generate', { method: 'POST', timeoutMs: 180000, body: JSON.stringify(body) }).then(function (r) {
             btn.disabled = false;
             if (!r.ok) { showResult((r.data && r.data.error) || 'Could not draft.', true); return; }
             showDraftResult(r.data || {});
@@ -22805,13 +23027,28 @@ window.qsNpOfferSend = function (btn) {
           if (d.clearedSuppressions) html += '<br>Reopened ' + d.clearedSuppressions + ' closed open position' + (d.clearedSuppressions === 1 ? '' : 's') + '.';
           if (d.clearedDraftOpens) html += '<br>Cleared ' + d.clearedDraftOpens + ' stored draft open position' + (d.clearedDraftOpens === 1 ? '' : 's') + ' and rebuilt them from the targets.';
           if (d.clearedStaleExtras) html += '<br>Removed ' + d.clearedStaleExtras + ' extra open position' + (d.clearedStaleExtras === 1 ? '' : 's') + ' left over from the deleted shifts.';
+          // Draft two-options (Deepika, 2026-11-27): the clear
+          // counts ride on the same result, and ONE Undo covers
+          // the whole clear-and-draft.
+          var cc = d.clearCounts;
+          if (cc) {
+            var closed = (cc.openPublished || 0) + (cc.openDraft || 0);
+            var deleted = (cc.deleteManualPublished || 0) + (cc.deleteManualDraft || 0) + (cc.deleteRotationPublished || 0) + (cc.deleteRotationDraft || 0);
+            if (closed) html += '<br>Closed ' + closed + ' open slot' + (closed === 1 ? '' : 's') + ' (' + (cc.openPublished || 0) + ' published, ' + (cc.openDraft || 0) + ' draft).';
+            if (deleted) html += '<br>Deleted ' + deleted + ' shift' + (deleted === 1 ? '' : 's') + ' (' + ((cc.deleteManualPublished || 0) + (cc.deleteManualDraft || 0)) + ' manual, ' + ((cc.deleteRotationPublished || 0) + (cc.deleteRotationDraft || 0)) + ' rotation).';
+            if (cc.peopleLosingPublished && cc.peopleLosingPublished.length) html += '<br>' + cc.peopleLosingPublished.length + ' ' + (cc.peopleLosingPublished.length === 1 ? 'person loses' : 'people lose') + ' a published shift: ' + esc(cc.peopleLosingPublished.map(function (p) { return p.personName; }).join(', ')) + '. They were not told.';
+          }
+          if (d.undo && typeof window.qsPushDraftUndo === 'function') {
+            if (window.qsPushDraftUndo(d.undo, draftLastBody || {})) {
+              html += '<br>Tap Undo in the top bar to undo this draft (within 60 seconds).';
+            }
+          }
           var el = $('bulk-result');
           el.innerHTML = html;
           el.classList.remove('hidden');
           el.classList.remove('alert-error');
           el.classList.add('alert-success');
         }
-
         // ---- Publish (unified door, Deepika 2026-11-10) ----
         // "Publish shifts" here is THE publish: it runs the Step-2
         // engine (preview → confirm → batch) scoped by this panel's
@@ -23048,9 +23285,6 @@ window.qsNpOfferSend = function (btn) {
           // is the in-app dialog, like Close's.
           if (action === 'unpublish') { runBulkUnpub(); return; }
           if (action === 'remove') { runBulkRemove(); return; }
-          // Reset to auto-rotation has its own pickers (mode + types
-          // + dates) and its own in-app confirm, too.
-          if (action === 'reset-autorotation') { runReset(); return; }
           if (action === 'draft-schedule') return; // the draft panel has its own button.
           var from = $('bulk-from').value;
           var to = $('bulk-to').value;
@@ -23140,254 +23374,6 @@ window.qsNpOfferSend = function (btn) {
           });
         })();
 
-        // ---- Bulk Actions "Reset to auto-rotation" (Deepika,
-        // 2026-11-25): put picked dates back to the rotation
-        // settings. Four modes (her words): opens only, rotations,
-        // everything, keep current staff. Own pickers (mode +
-        // departments + types + dates, mirroring Close shifts), own
-        // in-app confirm naming mode/types/date count, ONE undo
-        // entry for the whole reset.
-        var resetMode = 'opens'; // 'opens' | 'rotations' | 'everything' | 'keep-staff'
-        var resetDepts = []; // department ids (empty = all)
-        var resetTypeIds = []; // shift type ids
-        var resetDates = []; // ISO dates, sorted
-        var RESET_MODE_LABELS = {
-          opens: 'Reset opens only', rotations: 'Reset rotations',
-          everything: 'Reset everything', 'keep-staff': 'Keep current staff and reset rotations',
-        };
-        function syncResetModeRows() {
-          document.querySelectorAll('.bulk-reset-mode').forEach(function (row) {
-            row.classList.toggle('on', row.getAttribute('data-mode') === resetMode);
-          });
-          var note = $('bulk-reset-all-types-note');
-          if (note) note.classList.toggle('hidden', resetMode !== 'everything');
-          var typesBox = $('bulk-reset-types');
-          if (typesBox) typesBox.style.opacity = resetMode === 'everything' ? '0.45' : '';
-          var deptsBox = $('bulk-reset-depts');
-          if (deptsBox) deptsBox.style.opacity = resetMode === 'everything' ? '0.45' : '';
-        }
-        function resetOfferedTypes() {
-          return bulkCloseOfferedTypes();
-        }
-        function loadResetDepts() {
-          var box = $('bulk-reset-depts');
-          if (!box) return;
-          var known = bulkCloseAllDepts();
-          if (known) { renderResetDepts(known); return; }
-          api('/api/departments').then(function (r) {
-            renderResetDepts(r.ok && r.data.departments ? r.data.departments : []);
-          }).catch(function () { renderResetDepts([]); });
-        }
-        function renderResetDepts(allDepts) {
-          var box = $('bulk-reset-depts');
-          if (!box) return;
-          var depts = (allDepts || []).filter(function (d) {
-            return !window.qsCanViewDept || window.qsCanViewDept(d.id);
-          });
-          box.innerHTML = depts.length ? depts.map(function (d) {
-            var checked = resetDepts.indexOf(String(d.id)) !== -1 ? ' checked' : '';
-            return '<label style="display:block;font-size:0.9rem;padding:2px 4px;cursor:pointer;color:#222">' +
-              '<input type="checkbox" class="bulk-reset-dept-cb" value="' + d.id + '"' + checked + ' style="margin-right:6px">' + esc(d.name) + '</label>';
-          }).join('') : '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No departments.</p>';
-          renderResetTypes();
-        }
-        function renderResetTypes() {
-          var box = $('bulk-reset-types');
-          if (!box) return;
-          var types = resetOfferedTypes();
-          var depts = bulkCloseAllDepts();
-          var selDepts = resetDepts.slice();
-          function deptName(id) {
-            var d = (depts || []).find(function (x) { return String(x.id) === String(id); });
-            return d ? d.name : null;
-          }
-          var order = [];
-          (depts || []).forEach(function (d) { order.push(String(d.id)); });
-          var groups = {};
-          types.forEach(function (st) {
-            var ids = bulkCloseDeptIdsOf(st);
-            if (!ids.length) {
-              (groups[''] = groups[''] || []).push(st);
-              return;
-            }
-            ids.forEach(function (id) {
-              if (selDepts.length && selDepts.indexOf(String(id)) === -1) return;
-              (groups[String(id)] = groups[String(id)] || []).push(st);
-            });
-          });
-          var keys = order.filter(function (id) { return groups[id] && groups[id].length; });
-          if (groups[''] && groups[''].length && !selDepts.length) keys.push('');
-          var html = keys.map(function (key) {
-            var name = key === '' ? 'No department' : (deptName(key) || 'Department');
-            var rows = groups[key].map(function (st) {
-              var checked = resetTypeIds.indexOf(String(st.id)) !== -1 ? ' checked' : '';
-              return '<label style="display:block;font-size:0.9rem;padding:2px 4px 2px 22px;cursor:pointer;color:#222">' +
-                '<input type="checkbox" class="bulk-reset-type-cb" value="' + st.id + '"' + checked + ' style="margin-right:6px">' + esc(st.name) + '</label>';
-            }).join('');
-            return '<div class="bulk-reset-type-group" data-dept="' + esc(name) + '"><div class="bulk-reset-type-group-h" style="font-size:0.88rem;font-weight:700;padding:4px 4px 0;color:#222">' + esc(name) + '</div>' + rows + '</div>';
-          }).join('');
-          box.innerHTML = html || '<p style="color:var(--dim);font-size:0.85rem;margin:2px">No shift types for these departments.</p>';
-        }
-        function resetSyncTypeBoxes() {
-          document.querySelectorAll('.bulk-reset-type-cb').forEach(function (cb) {
-            cb.checked = resetTypeIds.indexOf(String(cb.value)) !== -1;
-          });
-        }
-        function renderResetChips() {
-          var box = $('bulk-reset-chips');
-          if (!box) return;
-          resetDates = resetDates.slice().sort();
-          box.innerHTML = resetDates.map(function (d) {
-            var label = bulkPubFmtDay(d);
-            return '<span class="bulk-reset-chip" data-date="' + d + '" style="display:inline-flex;align-items:center;gap:4px;background:#fff;color:#222;border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;font-size:0.85rem">' + esc(label) +
-              '<button type="button" data-remove-date="' + d + '" aria-label="Remove ' + esc(label) + '" style="border:none;background:none;cursor:pointer;font-size:1rem;line-height:1;padding:0 2px;color:#6b7280">×</button></span>';
-          }).join('');
-          syncResetRun();
-        }
-        function resetAddDate(d) {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(d || '')) return false;
-          if (resetDates.indexOf(d) === -1) resetDates.push(d);
-          renderResetChips();
-          return true;
-        }
-        function syncResetRun() {
-          var run = $('bulk-run');
-          var hint = $('bulk-reset-hint');
-          if (!$('bulk-action')) return;
-          var isReset = $('bulk-action').value === 'reset-autorotation';
-          var needsTypes = resetMode !== 'everything';
-          var ok = resetDates.length > 0 && (!needsTypes || resetTypeIds.length > 0);
-          // Only touch the shared Run button while the reset panel is
-          // active: writing disabled=false here would undo the Close
-          // panel's gating (syncBulkCloseRun runs just before us).
-          if (run && isReset) run.disabled = !ok;
-          if (hint) hint.classList.toggle('hidden', !isReset || ok);
-        }
-        // The confirm is the in-app dialog (same pattern as the
-        // bulk-close upgrade): it names the mode, the selected
-        // types, and the number of dates before anything is written.
-        function runReset() {
-          var dates = resetDates.slice().sort();
-          var mode = resetMode;
-          if (!dates.length) { showResult('Pick at least one date.', true); return; }
-          var types = [];
-          if (mode !== 'everything') {
-            types = resetTypeIds.map(function (id) {
-              return (bulkAllShiftTypes || []).find(function (st) { return String(st.id) === String(id); });
-            }).filter(Boolean);
-            if (!types.length) { showResult('Pick at least one shift type.', true); return; }
-          }
-          var typeNames = mode === 'everything' ? 'all shift types' : types.map(function (st) { return st.name; }).join(', ');
-          var dateWord = dates.length + ' date' + (dates.length === 1 ? '' : 's');
-          var what = RESET_MODE_LABELS[mode] || mode;
-          var msg = what + ' for ' + typeNames + ' on ' + dateWord + ' (' + dates.map(bulkPubFmtDay).join(', ') + ')? '
-            + (mode === 'opens' ? 'Closed opens come back to what the settings say. Assigned staff are not touched.'
-              : mode === 'rotations' ? 'Deleted rotation people come back. Opens are not touched.'
-              : mode === 'everything' ? 'Opens AND rotation people come back for every shift on those dates.'
-              : 'Everyone assigned stays where they are. The missing rotation people come back.');
-          var go = function () { doReset(mode, types, dates); };
-          if (window.qsShowDialog) {
-            window.qsShowDialog('Reset to auto-rotation?', '<p>' + esc(msg) + '</p>', [
-              { label: 'Cancel' },
-              { label: 'Reset', primary: true, onClick: go }
-            ]);
-          } else if (confirm(msg)) go();
-        }
-        function doReset(mode, types, dates) {
-          showResult('Working…', false);
-          var body = { mode: mode, dates: dates };
-          if (mode !== 'everything') body.shiftTypeIds = types.map(function (st) { return st.id; });
-          var typeNames = mode === 'everything' ? 'all shift types' : types.map(function (st) { return st.name; }).join(', ');
-          api('/api/schedule/reset', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
-            if (!r.ok) { showResult((r.data && r.data.error) || 'Could not reset.', true); return; }
-            var d = r.data || {};
-            var parts = [];
-            if (d.restoredShifts) parts.push('brought back ' + d.restoredShifts + ' shift' + (d.restoredShifts === 1 ? '' : 's'));
-            if (d.reopenedOpens) parts.push('reopened ' + d.reopenedOpens + ' open slot' + (d.reopenedOpens === 1 ? '' : 's'));
-            if (d.clearedSuppressions && !d.reopenedOpens) parts.push('reopened ' + d.clearedSuppressions + ' closed open position' + (d.clearedSuppressions === 1 ? '' : 's'));
-            if (d.replacedDrafts) parts.push('replaced ' + d.replacedDrafts + ' draft shift' + (d.replacedDrafts === 1 ? '' : 's'));
-            var notes = [];
-            (d.noRotationTypes || []).forEach(function (n) { notes.push(n + ' has no rotation — rotations not restored for it'); });
-            (d.noTargetTypes || []).forEach(function (n) { notes.push(n + ' has no staffing target — opens not restored for it'); });
-            (d.liveSkippedRotations || []).forEach(function (n) { notes.push('rotation ' + n + ' is in a department that still fills in automatically — skipped'); });
-            var sk = d.skipped || {};
-            var skTotal = (sk.vacation || 0) + (sk.alreadyHasShift || 0) + (sk.ended || 0) + (sk.excluded || 0) + (sk.past || 0);
-            if (d.skippedFull) notes.push(d.skippedFull + ' rotation ' + (d.skippedFull === 1 ? 'person' : 'people') + ' skipped — those dates are already full');
-            var dateNames = dates.map(bulkPubFmtDay).join(', ');
-            var msg = parts.length
-              ? 'Done — ' + (RESET_MODE_LABELS[mode] || mode) + ' for ' + typeNames + ' on ' + dates.length + ' date(s): ' + parts.join(', ') + '.'
-              : 'Nothing changed — no deleted shifts or closed opens for ' + typeNames + ' on ' + dates.length + ' date(s): ' + dateNames + '.';
-            if (skTotal) msg += ' Skipped ' + skTotal + ' (vacation ' + (sk.vacation || 0) + ', already has a shift ' + (sk.alreadyHasShift || 0) + ', ended ' + (sk.ended || 0) + ', previously deleted ' + (sk.excluded || 0) + ', past ' + (sk.past || 0) + ').';
-            if (notes.length) msg += ' ' + notes.join('; ') + '.';
-            if (d.undo && typeof window.qsPushResetUndo === 'function') {
-              window.qsPushResetUndo(d.undo, body);
-              msg += ' Tap Undo in the top bar to undo this reset (within 60 seconds).';
-            }
-            showResult(msg, false);
-            // A finished run clears the picks, so the next run
-            // starts fresh and can never silently re-reset the last
-            // run's types and dates.
-            resetTypeIds = [];
-            resetDates = [];
-            renderResetTypes();
-            renderResetChips();
-            if (window.qsReloadScheduleGrid) { try { window.qsReloadScheduleGrid(); } catch (e) {} }
-          }).catch(function () { showResult('Network error.', true); });
-        }
-        (function initResetPanel() {
-          document.querySelectorAll('.bulk-reset-mode').forEach(function (row) {
-            row.addEventListener('click', function () {
-              resetMode = row.getAttribute('data-mode') || 'opens';
-              syncResetModeRows();
-              syncResetRun();
-            });
-          });
-          var deptBox = document.getElementById('bulk-reset-depts');
-          if (deptBox) deptBox.addEventListener('change', function (e) {
-            var t = e.target;
-            if (!t.classList.contains('bulk-reset-dept-cb')) return;
-            resetDepts = [];
-            document.querySelectorAll('.bulk-reset-dept-cb:checked').forEach(function (cb) { resetDepts.push(String(cb.value)); });
-            renderResetTypes();
-          });
-          var typeBox = document.getElementById('bulk-reset-types');
-          if (typeBox) typeBox.addEventListener('change', function (e) {
-            var t = e.target;
-            if (!t.classList.contains('bulk-reset-type-cb')) return;
-            resetTypeIds = [];
-            document.querySelectorAll('.bulk-reset-type-cb:checked').forEach(function (cb) {
-              if (resetTypeIds.indexOf(String(cb.value)) === -1) resetTypeIds.push(String(cb.value));
-            });
-            resetSyncTypeBoxes();
-            syncResetRun();
-          });
-          var addBtn = document.getElementById('bulk-reset-add-date');
-          if (addBtn) addBtn.addEventListener('click', function () {
-            var inp = $('bulk-reset-date');
-            if (!inp || !resetAddDate(inp.value)) { showResult('Pick a date first.', true); return; }
-            inp.value = '';
-          });
-          var spanBtn = document.getElementById('bulk-reset-add-span');
-          if (spanBtn) spanBtn.addEventListener('click', function () {
-            var f = $('bulk-reset-span-from').value, t = $('bulk-reset-span-to').value;
-            if (!f || !t || f > t) { showResult('Pick a valid date range for the span.', true); return; }
-            datesInRange(f, t).forEach(resetAddDate);
-            $('bulk-reset-span-from').value = '';
-            $('bulk-reset-span-to').value = '';
-          });
-          var chips = document.getElementById('bulk-reset-chips');
-          if (chips) chips.addEventListener('click', function (e) {
-            var b = e.target.closest ? e.target.closest('[data-remove-date]') : null;
-            if (!b) return;
-            var d = b.getAttribute('data-remove-date');
-            resetDates = resetDates.filter(function (x) { return x !== d; });
-            renderResetChips();
-          });
-        })();
-
-        document.querySelectorAll('.bulk-draft-preset').forEach(function (b) {
-          b.addEventListener('click', function () { setDraftPreset(b.getAttribute('data-preset')); });
-        });
         $('bulk-draft-run').addEventListener('click', runDraftSchedule);
         $('bulk-pub-confirm').addEventListener('click', bulkPubConfirm);
         // PUBLISH PICKER rows: the row's teal state follows its checkbox.
@@ -23403,6 +23389,10 @@ window.qsNpOfferSend = function (btn) {
         window.qsRefreshBulkMembers = function () {
           if (isActive()) { renderBulkMembers($('bulk-member-search').value); loadBulkShiftTypes(); loadJobRoles(); loadBulkPubDepts(); }
         };
+        // The draft panel inits last: its state vars live in
+        // the draft section above, and the merged inits above
+        // call loadBulkDraftFilters through refreshMergedPanels.
+        initBulkDraftPanel();
         updateBulkSlotVisibility();
       })();
       </script>
